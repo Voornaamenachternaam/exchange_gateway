@@ -1,0 +1,4 @@
+/target
+**/*.sqlite
+.env
+.DS_Store
