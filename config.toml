@@ -1,0 +1,8 @@
+bind = "0.0.0.0:8443"
+http_bind = "0.0.0.0:8080"
+tls_cert = "/etc/exchange-gateway/cert.pem"
+tls_key  = "/etc/exchange-gateway/key.pem"
+caldav_base = "http://stalwart:8080/dav/"
+db_path = "/var/lib/exchange-gateway/state.db"
+hmac_secret = "CHANGE_ME_TO_A_STRONG_SECRET"
+log_level = "info"
