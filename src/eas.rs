@@ -1,103 +1,57 @@
+use axum::{extract::Extension, http::StatusCode, response::IntoResponse};
+use axum::http::HeaderMap;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
-use warp::reply::Response;
-use warp::http::StatusCode;
-use crate::caldav;
-use crate::caldav::AppState;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as base64_engine;
-use quick_xml::Reader;
-use quick_xml::events::Event;
-use std::convert::Infallible;
+use std::sync::Arc;
+use crate::models::AppState;
+use crate::wbxml::Wbxml;
+use crate::sync;
+use anyhow::Result;
 
-pub async fn handle_activesync(state: std::sync::Arc<AppState>, auth: Option<String>, body: Bytes) -> Result<impl warp::Reply, Infallible> {
-    // Basic auth parsing
-    let (user, pass) = match parse_basic(auth) {
-        Ok(v) => v,
-        Err(_) => {
-            let res = warp::reply::with_status("Unauthorized", StatusCode::UNAUTHORIZED);
-            return Ok(res);
-        }
-    };
-
-    // Create CalDAV client for the user
-    let caldav_client = match caldav::make_caldav_client(&state.cfg, &user, &pass).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("CalDAV error: {:?}", e);
-            return Ok(warp::reply::with_status("Bad Gateway", StatusCode::BAD_GATEWAY));
-        }
-    };
-
-    // Attempt to parse EAS XML (WBXML is common; client might send XML)
-    let mut reader = Reader::from_reader(body.reader());
-    reader.trim_text(true);
-    let mut buf = Vec::new();
-    let mut op = None;
-    loop {
-        match reader.read_event(&mut buf) {
-            Ok(Event::Start(e)) => {
-                match e.name() {
-                    b"Sync" => { op = Some("Sync"); break; }
-                    b"ItemOperations" => { op = Some("ItemOperations"); break; }
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    match op {
-        Some("Sync") => {
-            let resp = build_eas_sync_response().await;
-            Ok(warp::reply::with_status(resp, StatusCode::OK))
-        }
-        Some("ItemOperations") => {
-            let resp = build_eas_itemoperations_response().await;
-            Ok(warp::reply::with_status(resp, StatusCode::OK))
-        }
-        _ => Ok(warp::reply::with_status("Unsupported ActiveSync operation", StatusCode::BAD_REQUEST))
-    }
-}
-
-async fn build_eas_sync_response() -> String {
-    r#"<?xml version="1.0" encoding="utf-8"?>
-<Sync xmlns="AirSync:">
-  <Collections>
-    <Collection>
-      <Class>Calendar</Class>
-      <SyncKey>0</SyncKey>
-      <CollectionId>1</CollectionId>
-      <Status>1</Status>
-      <Commands/>
-    </Collection>
-  </Collections>
-</Sync>"#.to_string()
-}
-
-async fn build_eas_itemoperations_response() -> String {
-    r#"<?xml version="1.0" encoding="utf-8"?>
-<ItemOperations xmlns="ItemOperations:">
-  <Status>1</Status>
-</ItemOperations>"#.to_string()
-}
-
-fn parse_basic(header: Option<String>) -> Result<(String, String), ()> {
-    if let Some(h) = header {
-        let h = h.trim();
-        if h.to_lowercase().starts_with("basic ") {
-            let b64 = &h[6..];
-            if let Ok(decoded) = base64_engine.decode(b64) {
-                if let Ok(s) = String::from_utf8(decoded) {
-                    let mut parts = s.splitn(2, ':');
-                    if let (Some(u), Some(p)) = (parts.next(), parts.next()) {
-                        return Ok((u.to_string(), p.to_string()));
+fn parse_basic_auth(headers: &HeaderMap) -> Option<(String,String)> {
+    if let Some(v) = headers.get("authorization") {
+        if let Ok(s) = v.to_str() {
+            let s = s.trim();
+            if s.to_lowercase().starts_with("basic ") {
+                let b64 = s[6..].trim();
+                if let Ok(bytes) = BASE64.decode(b64.as_bytes()) {
+                    if let Ok(creds) = String::from_utf8(bytes) {
+                        if let Some(idx) = creds.find(':') {
+                            let user = creds[..idx].to_string();
+                            let pass = creds[idx+1..].to_string();
+                            return Some((user, pass));
+                        }
                     }
                 }
             }
         }
     }
-    Err(())
+    None
+}
+
+pub async fn handle_activesync(Extension(state): Extension<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+    let payload = body.to_vec();
+    let wbxml = Wbxml::new();
+    let xml = match wbxml.decode(&payload) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e)).into_response(),
+    };
+
+    let (username, password) = parse_basic_auth(&headers).unwrap_or((String::new(), String::new()));
+
+    // Minimal parse to route command: look for <FolderSync> or <Sync>
+    if xml.contains("<FolderSync") {
+        let resp = r#"<?xml version="1.0" encoding="utf-8"?><FolderSync><Status>1</Status><SyncKey>0</SyncKey><Folders><Folder><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Folder></Folders></FolderSync>"#;
+        return (StatusCode::OK, resp.to_string()).into_response();
+    } else if xml.contains("<Sync") {
+        // call sync engine
+        let owner = if !username.is_empty() { username.as_str() } else { "demo" };
+        let collection_id = "1";
+        match sync::perform_sync(state, owner, collection_id, "0", 100, &username, &password).await {
+            Ok(resp_xml) => return (StatusCode::OK, resp_xml).into_response(),
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Sync error: {}", e)).into_response(),
+        }
+    }
+
+    (StatusCode::BAD_REQUEST, "Unsupported ActiveSync command").into_response()
 }
