@@ -56,6 +56,7 @@ jobs:
           set -euo pipefail
           # --force ensures the tools are installed/updated if already present
           cargo install --force clippy-sarif sarif-fmt
+        continue-on-error: true
 
       - name: Apply automatic clippy fixes
         id: run-fix
@@ -70,6 +71,7 @@ jobs:
           else
             echo "changes_detected=false" >> "$GITHUB_OUTPUT"
           fi
+        continue-on-error: true
 
       - name: Create local commit with clippy fixes (if any)
         id: commit-fixes
@@ -87,7 +89,7 @@ jobs:
           # NOTE: intentionally do NOT push here. The StepSecurity action below will detect local changes and push using the provided token.
           echo "created_branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
-      - name: Create or update Pull Request for clippy fixes (StepSecurity)
+      - name: Create or update Pull Request for clippy fixes 
         if: steps.commit-fixes.outputs.created_branch != ''
         uses: peter-evans/create-or-update-comment@v5.0.0
         env:
@@ -105,7 +107,7 @@ jobs:
       # -------------------------
       # Use step-security/clippy-action for a check-run / annotations
       # -------------------------
-      - name: Run Clippy (annotations via step-security/clippy-action)
+      - name: Run Clippy
         uses: auguwu/clippy-action@master
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
