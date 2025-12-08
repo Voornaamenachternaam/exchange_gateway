@@ -1,0 +1,34 @@
+services:
+  stalwart:
+    image: stalwartlabs/stalwart:latest
+/
+/
+/
+
+  exchange-gateway:
+    build: .
+    image: exchange-gateway:latest
+    container_name: exchange-gateway
+    environment:
+      - TZ=[TZ]
+      - RUST_LOG=info
+    restart: unless-stopped
+    volumes:
+      - /armblock/exchange-gateway/config:/etc/exchange-gateway
+      - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
+    ports:
+      - "8443:8443"
+      - "8081:8080"
+    depends_on:
+      - stalwart
+    networks:
+      - network1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  network1:
+    external: true
