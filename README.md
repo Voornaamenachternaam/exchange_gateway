@@ -8,3 +8,7 @@ This repository implements an Exchange-compatible gateway in Rust 1.91.1 (editio
 2. Build:
    ```bash
    docker build -t exchange-gateway:latest .
+3. Start with docker-compose:
+   docker compose up -d
+4. Health check:
+   curl http://localhost:8081/health
