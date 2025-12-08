@@ -1,67 +1,69 @@
-use libdav::caldav::CalDavClient;
-use libdav::auth::{Auth, Password};
-use libdav::dav::WebDavClient;
-use hyper_rustls::HttpsConnectorBuilder;
-use std::sync::Arc;
-use url::Url;
-use std::fs;
-use std::collections::HashMap;
+use crate::config::Config;
+use anyhow::Result;
+use reqwest::Client;
 
-// Configuration for connecting to Stalwart
-#[derive(Clone)]
-pub struct Config {
-    pub bind: String,
-    pub caldav_url: String,
-    pub tls_cert: String,
-    pub tls_key: String,
+pub struct CaldavClient {
+    base: String,
+    client: Client,
 }
 
-// Load config from a TOML file (keys: bind, caldav_url, tls paths)
-pub fn load_config(path: &str) -> Config {
-    // In a real implementation, parse the file. Here we use defaults or environment.
-    // For example purposes, we hardcode or read from path if exists.
-    let toml_str = fs::read_to_string(path).unwrap_or_default();
-    let mut cfg = Config {
-        bind: "0.0.0.0:8443".into(),
-        caldav_url: "https://stalwart/dav/cal/".into(),
-        tls_cert: "/etc/exchange-gateway/cert.pem".into(),
-        tls_key: "/etc/exchange-gateway/key.pem".into(),
-    };
-    // Parsing TOML is omitted for brevity.
-    cfg
+impl CaldavClient {
+    pub fn new(cfg: &Config) -> Self {
+        let client = Client::builder().build().unwrap();
+        CaldavClient { base: cfg.caldav_base.clone(), client }
+    }
+
+    pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
+        // Convention: Stalwart calendar home at {base}/{username}/calendar/
+        let url = format!("{}cal/{}", self.base.trim_end_matches('/'), username);
+        let resp = self.client.get(&url).basic_auth(username, Some(password)).send().await?;
+        if resp.status().is_success() {
+            Ok(vec![url])
+        } else {
+            Err(anyhow::anyhow!("failed to discover calendars: {}", resp.status()))
+        }
+    }
+
+    pub async fn query_events(&self, collection_href: &str, start: &str, end: &str, username: &str, password: &str) -> Result<String> {
+        let report = format!(r#"<?xml version="1.0" encoding="utf-8" ?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <D:getetag/>
+    <C:calendar-data/>
+  </D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="{start}" end="{end}" />
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>"#, start=start, end=end);
+
+        let resp = self.client.request(reqwest::Method::from_bytes(b"REPORT")?, collection_href)
+            .basic_auth(username, Some(password))
+            .header("Content-Type","application/xml")
+            .body(report)
+            .send().await?;
+        let txt = resp.text().await?;
+        Ok(txt)
+    }
+
+    pub async fn get_event(&self, resource_href: &str, username: &str, password: &str) -> Result<String> {
+        let resp = self.client.get(resource_href).basic_auth(username, Some(password)).send().await?;
+        let txt = resp.text().await?;
+        Ok(txt)
+    }
+
+    pub async fn put_event(&self, collection_href: &str, resource_name: &str, ics: &str, username: &str, password: &str) -> Result<String> {
+        let url = format!("{}/{}", collection_href.trim_end_matches('/'), resource_name);
+        let resp = self.client.put(&url).basic_auth(username, Some(password)).body(ics.to_string()).header("Content-Type","text/calendar; charset=utf-8").send().await?;
+        let etag = resp.headers().get("ETag").map(|v| v.to_str().unwrap_or("").to_string()).unwrap_or_default();
+        if resp.status().is_success() { Ok(etag) } else { Err(anyhow::anyhow!("put failed: {}", resp.status())) }
+    }
+
+    pub async fn delete_event(&self, resource_href: &str, username: &str, password: &str) -> Result<()> {
+        let resp = self.client.delete(resource_href).basic_auth(username, Some(password)).send().await?;
+        if resp.status().is_success() || resp.status().as_u16() == 204 { Ok(()) } else { Err(anyhow::anyhow!("delete failed: {}", resp.status())) }
+    }
 }
-
-// Create a new CalDAV client given user credentials
-pub async fn new_client(config: &Config, user: &str, password: &str) -> CalDavClient<hyper::Client<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>> {
-    let uri = Url::parse(&config.caldav_url).expect("Invalid URL");
-    let auth = Auth::Basic { username: user.to_string(), password: Some(Password::from(password.to_string())) };
-    let https = HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .danger_accept_invalid_certs(true) // if using self-signed cert for Stalwart
-        .build();
-    let webdav = WebDavClient::new(uri.clone().into(), auth, https);
-    // Bootstrap to find calendar home
-    CalDavClient::new_via_bootstrap(webdav).await.unwrap()
-}
-
-// (The CalDavClient can be used to find calendars and resources.)
-// Example function to find all calendars for the user
-pub async fn list_calendars(client: &CalDavClient<impl hyper::client::connect::Connect + Clone + Send + Sync + 'static>) -> Vec<String> {
-    // Find the home set (principal) URL
-    let home_set = client.find_calendar_home_set(&Url::parse("principal:").unwrap()).await.unwrap();
-    let calendars = client.find_calendars(&home_set[0]).await.unwrap();
-    calendars.into_iter().map(|c| c.href.to_string()).collect()
-}
-
-// Example function to fetch all events from a given calendar URL
-pub async fn get_events(client: &CalDavClient<impl hyper::client::connect::Connect + Clone + Send + Sync + 'static>, calendar_href: &str) -> Vec<String> {
-    // Use REPORT or WebDAV query; here simplified to list all VEVENTs
-    let resources = client.get_calendar_resources(calendar_href, vec!["calendar-data".to_string()]).await.unwrap();
-    resources.into_iter().map(|res| {
-        String::from_utf8(res.data).unwrap_or_default()  // ICS data as string
-    }).collect()
-}
-
-// Additional helper methods (create, update, delete events) would wrap WebDAV PUT/DELETE.
-// For brevity, these are not shown but would use client.create_resource, client.delete, etc.
-
