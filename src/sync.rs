@@ -8,18 +8,21 @@ use uuid::Uuid;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use base64::Engine;
+
 type HmacSha256 = Hmac<Sha256>;
 
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC init");
     mac.update(resource_href.as_bytes());
     let result = mac.finalize().into_bytes();
+    // Make sure Engine trait is in scope
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&result)
 }
 
 pub fn generate_change_key(etag: &str) -> String {
+    // Use timestamp_nanos_opt(). If it returns None, fall back to seconds*1e9
     let now = Utc::now();
-    let nan = now.timestamp_nanos_opt().single().unwrap_or(now.timestamp() * 1_000_000_000);
+    let nan = now.timestamp_nanos_opt().unwrap_or(now.timestamp() * 1_000_000_000);
     let payload = format!("{}:{}", etag, nan);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.as_bytes())
 }
@@ -34,6 +37,7 @@ pub async fn perform_sync(state: Arc<AppState>, owner: &str, collection_id: &str
     let start = (Utc::now() - chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
     let end = (Utc::now() + chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
 
+    // Query events (we keep the returned value in case future code uses it)
     let _multistatus = caldav.query_events(&collection_href, &start, &end, username_for_caldav, password_for_caldav).await?;
 
     let new_sync_key = Uuid::new_v4().to_string();
