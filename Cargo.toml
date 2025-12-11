@@ -1,29 +1,50 @@
 [package]
 name = "exchange_gateway"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.92.0"
 
 [dependencies]
+# Tokio runtime
 tokio = { version = "^1.48.0", features = ["full"] }
+
+# HTTP server / framework
 axum = "^0.8.7"
 hyper = "^1.8.1"
+
+# HTTP client (reqwest) - using rustls + json features (valid feature names).
 reqwest = { version = "^0.12.24", features = ["rustls-tls", "json"] }
-quick-xml = "^0.38.4"
+
+# XML parsing (quick-xml) - pinned to published version on docs.rs/crates
+quick-xml = "0.38.0"
+
+# Serialization
 serde = { version = "^1.0.228", features = ["derive"] }
 serde_json = "^1.0.145"
-toml = "^0.9.8"
-sqlx = { version = "^0.8.6", features = ["sqlite", "runtime-tokio-native-tls", "macros"] }
+toml = "0.9.8"
+
+# SQLx - use separate runtime + TLS + sqlite + macros (matches SQLx docs)
+sqlx = { version = "^0.8.6", features = ["sqlite", "runtime-tokio", "tls-native-tls", "macros"] }
+
+# Errors, tracing, utilities
 anyhow = "^1.0.100"
 thiserror = "^2.0.17"
 tracing = "^0.1.43"
 tracing-subscriber = "^0.3.22"
+
+# Binary/utility crates and crypto helpers
 base64 = "^0.22.1"
 uuid = { version = "^1.19.0", features = ["v4"] }
 chrono = { version = "^0.4.42", features = ["serde"] }
+
+# Calendar/recurrence / iCalendar helpers
 rrule = "^0.14.0"
-icalendar = "^0.17.5"
+icalendar = "0.17.4"
+
+# crypto helpers
 hmac = "^0.12.1"
 sha2 = "^0.10.9"
+
+# bytes & misc
 bytes = "^1.11.0"
 lazy_static = "^1.5.0"
