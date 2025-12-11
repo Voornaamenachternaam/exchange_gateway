@@ -13,6 +13,7 @@ impl Storage {
         if let Some(parent) = Path::new(db_path).parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // sqlite in-file DSN
         let db_url = format!("sqlite://{}?mode=rwc", db_path);
         let pool = SqlitePoolOptions::new().max_connections(5).connect(&db_url).await?;
         Ok(Self { pool, db_path: db_path.to_string() })
