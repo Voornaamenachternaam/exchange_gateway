@@ -45,18 +45,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(|| async { "OK" }))
         .layer(Extension(state));
 
-    // Parse address and bind std listener
+    // Parse address and bind a Tokio TcpListener (async)
     let addr: SocketAddr = cfg.http_bind.parse()?;
     println!("Listening on http://{}", addr);
 
-    // Create a std listener and set non-blocking so hyper can use it.
-    let std_listener = std::net::TcpListener::bind(addr)?;
-    std_listener.set_nonblocking(true)?;
-
-    // Convert std listener to hyper's AddrIncoming and build server from it.
-    // AddrIncoming::from_listener is stable for hyper 0.14.x
-    let incoming = hyper::server::conn::AddrIncoming::from_listener(std_listener)?;
-    hyper::Server::builder(incoming).serve(app.into_make_service()).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Serve the app via axum::serve which accepts a Tokio TcpListener.
+    // This approach is stable across axum 0.8.x and hyper 1.x (the versions in your Cargo.toml).
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
