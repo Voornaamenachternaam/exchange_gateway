@@ -3,6 +3,7 @@ use axum::{
     Router,
     routing::{post, get},
     extract::Extension,
+    Server,
 };
 use std::net::SocketAddr;
 
@@ -48,8 +49,8 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = cfg.http_bind.parse()?;
     println!("Listening on http://{}", addr);
 
-    // Correct hyper server bind usage
-    hyper::Server::bind(&addr)
+    // Use axum::Server (re-export of hyper Server) which is compatible with axum versions
+    Server::bind(&addr)
         .serve(app.into_make_service())
         .await?;
 
