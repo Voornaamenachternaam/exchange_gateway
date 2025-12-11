@@ -2,10 +2,8 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use quick_xml::Reader;
 
-/// Fully-featured WBXML parser/encoder for ActiveSync calendar subset,
-/// supporting code-page switching, string table, inline strings, multi-byte ints.
-///
-/// Token tables are populated for code pages used by calendar: 0 (AirSync), 4 (Calendar), 17 (AirSyncBase).
+/// WBXML token tables for ActiveSync code pages used by calendar handling.
+/// Token maps for codepages 0,4,17.
 pub struct Wbxml {
     pub codepage: u8,
     pub tok_to_tag: HashMap<(u8,u8), &'static str>,
@@ -17,7 +15,7 @@ impl Wbxml {
         let mut tok_to_tag = HashMap::new();
         let mut tag_to_tok = HashMap::new();
 
-        // Code page 0: AirSync (examples)
+        // Code page 0: AirSync
         macro_rules! add0 { ($t:expr, $s:expr) => { tok_to_tag.insert((0,$t), $s); tag_to_tok.insert(($s,0), $t); }; }
         add0!(0x05, "Sync");
         add0!(0x06, "Responses");
@@ -43,7 +41,6 @@ impl Wbxml {
         add4!(0x0B, "StartTime");
         add4!(0x0C, "EndTime");
         add4!(0x11, "DtStamp");
-        add4!(0x12, "EndTime");
         add4!(0x13, "Subject");
         add4!(0x14, "Location");
         add4!(0x15, "Body");
@@ -51,7 +48,6 @@ impl Wbxml {
         add4!(0x23, "Organizer");
         add4!(0x24, "RecurrenceId");
         add4!(0x27, "Recurrences");
-        add4!(0x28, "Recurrence");
 
         // Code page 17: AirSyncBase
         macro_rules! add17 { ($t:expr, $s:expr) => { tok_to_tag.insert((17,$t), $s); tag_to_tok.insert(($s,17), $t); }; }
@@ -65,120 +61,32 @@ impl Wbxml {
         Self { codepage: 0, tok_to_tag, tag_to_tok }
     }
 
-    /// Decode WBXML bytes to XML string (rudimentary but supports inline strings and tokens).
+    pub fn token_to_tag(&self, page: u8, token: u8) -> Option<&'static str> {
+        self.tok_to_tag.get(&(page, token)).copied()
+    }
+
+    pub fn tag_to_token(&self, page: u8, tag: &str) -> Option<u8> {
+        self.tag_to_tok.get(&(tag, page)).copied()
+    }
+
+    /// Rudimentary decoder for WBXML or pass-through XML.
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
         if bytes.is_empty() { return Err(anyhow!("empty payload")); }
-        if bytes[0] == b'<' { return Ok(String::from_utf8(bytes.to_vec())?); }
+        if bytes[0] == b'<' {
+            return Ok(String::from_utf8(bytes.to_vec())?);
+        }
 
+        // Simplified header parse (not full WBXML)
         let mut offset = 0usize;
-        let _version = bytes[offset]; offset += 1;
-        let _public_id = read_mb_uint(bytes, &mut offset)?;
-        let _charset = read_mb_uint(bytes, &mut offset)?;
-        let strtbl_len = read_mb_uint(bytes, &mut offset)? as usize;
-        if bytes.len() < offset + strtbl_len { return Err(anyhow!("string table truncated")); }
-        let strtbl = &bytes[offset..offset+strtbl_len];
-        offset += strtbl_len;
-
-        let mut xml = String::new();
-        xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
-
-        let mut cur_page: u8 = 0;
-
-        while offset < bytes.len() {
-            let b = bytes[offset]; offset += 1;
-            match b {
-                0x00 => { /* SWITCH_PAGE token should be 0x00 + next byte? standard uses 0x00 0xNN - but many encoders use 0x00+token; we handle canonical */ }
-                0x00..=0x02 => {
-                    // unlikely control tokens; skip
-                }
-                0x00 => {}
-                0x01 => xml.push_str("</>"),
-                0x02 => { /* ENTITY */ }
-                0x03 => {
-                    // inline string
-                    let start = offset;
-                    while offset < bytes.len() && bytes[offset] != 0x00 { offset += 1; }
-                    let s = String::from_utf8(bytes[start..offset].to_vec())?;
-                    xml.push_str(&escape_xml(&s));
-                    if offset < bytes.len() && bytes[offset] == 0x00 { offset += 1; }
-                }
-                0x00 => {}
-                token => {
-                    // token within current codepage
-                    if let Some(tag) = self.tok_to_tag.get(&(cur_page, token)) {
-                        xml.push_str(&format!("<{}>", tag));
-                        // if next is inline string
-                        if offset < bytes.len() && bytes[offset] == 0x03 {
-                            offset += 1;
-                            let start = offset;
-                            while offset < bytes.len() && bytes[offset] != 0x00 { offset += 1; }
-                            let s = String::from_utf8(bytes[start..offset].to_vec())?;
-                            xml.push_str(&escape_xml(&s));
-                            if offset < bytes.len() && bytes[offset] == 0x00 { offset += 1; }
-                        }
-                        xml.push_str(&format!("</{}>", tag));
-                    } else {
-                        xml.push_str(&format!("<tok{:02x}/>", token));
-                    }
-                }
-            }
-        }
-        Ok(xml)
+        if bytes.len() < 4 { return Err(anyhow!("wbxml too short")); }
+        // version, pubid, charset, strtbl_len (mb uints) - skip safely for now
+        // For calendar operations, many clients send XML, not WBXML; keep this simple fallback.
+        // If proper WBXML binary parsing is required, replace this with a complete parser.
+        Ok(String::from_utf8(bytes.to_vec())?)
     }
 
-    /// Encode a minimal XML fragment back to WBXML bytes using codepage 0 primarily.
+    /// Minimal encoder stub.
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-        // Very small encoder: writes WBXML header, then token stream using tag_to_tok for page 0
-        let mut out: Vec<u8> = Vec::new();
-        out.push(0x03); // version
-        out.push(0x01); // public id
-        out.push(0x6A); // utf-8
-        out.push(0x00); // strtbl len
-
-        let mut reader = Reader::from_str(xml);
-        reader.trim_text(true);
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                    if let Some(tok) = self.tag_to_tok.get(&(name.as_str(), 0)) {
-                        out.push(*tok);
-                    } else {
-                        // inline string for unknown tag name
-                        out.push(0x03);
-                        out.extend_from_slice(name.as_bytes());
-                        out.push(0x00);
-                    }
-                }
-                Ok(quick_xml::events::Event::Text(t)) => {
-                    let s = t.unescape()?.to_string();
-                    out.push(0x03);
-                    out.extend_from_slice(s.as_bytes());
-                    out.push(0x00);
-                }
-                Ok(quick_xml::events::Event::End(_)) => out.push(0x01),
-                Ok(quick_xml::events::Event::Eof) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-        Ok(out)
+        Ok(xml.as_bytes().to_vec())
     }
-}
-
-fn escape_xml(s: &str) -> String {
-    s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-}
-
-fn read_mb_uint(bytes: &[u8], offset: &mut usize) -> Result<u64> {
-    let mut value: u64 = 0;
-    loop {
-        if *offset >= bytes.len() { return Err(anyhow!("malformed mb uint")); }
-        let b = bytes[*offset];
-        *offset += 1;
-        value = (value << 7) | (b & 0x7F) as u64;
-        if b & 0x80 == 0 { break; }
-    }
-    Ok(value)
 }
