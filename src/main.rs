@@ -4,7 +4,6 @@ use axum::{
     routing::{post, get},
     extract::Extension,
 };
-use tracing_subscriber;
 use std::net::SocketAddr;
 
 mod config;
@@ -24,6 +23,7 @@ use models::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize tracing/logging
     tracing_subscriber::fmt::init();
 
     // load config
@@ -48,9 +48,10 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = cfg.http_bind.parse()?;
     println!("Listening on http://{}", addr);
 
-    // Use explicit hyper server path to avoid ambiguous imports
-    let server = hyper::server::Server::bind(&addr);
-    server.serve(app.into_make_service()).await?;
+    // Correct hyper server bind usage
+    hyper::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await?;
 
     Ok(())
 }
