@@ -1,8 +1,8 @@
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row, Transaction};
+use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
 use std::path::Path;
 use anyhow::Result;
-use chrono::Utc;
 
+#[derive(Clone)]
 pub struct Storage {
     pub pool: SqlitePool,
     pub db_path: String,
@@ -66,16 +66,6 @@ impl Storage {
         for r in rows {
             res.push((r.get::<String,_>("server_id"), r.get::<String,_>("resource_href")));
         }
-        Ok(res)
-    }
-
-    pub async fn transaction<F, T>(&self, f: F) -> Result<T>
-    where
-        F: for<'c> FnOnce(Transaction<'c, sqlx::Sqlite>) -> futures::future::BoxFuture<'c, Result<T>>,
-    {
-        let mut tx = self.pool.begin().await?;
-        let res = f(tx).await?;
-        tx.commit().await?;
         Ok(res)
     }
 }
