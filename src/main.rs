@@ -53,9 +53,10 @@ async fn main() -> anyhow::Result<()> {
     let std_listener = std::net::TcpListener::bind(addr)?;
     std_listener.set_nonblocking(true)?;
 
-    // Use hyper::Server::from_tcp which accepts a std::net::TcpListener
-    let server = hyper::Server::from_tcp(std_listener)?;
-    server.serve(app.into_make_service()).await?;
+    // Convert std listener to hyper's AddrIncoming and build server from it.
+    // AddrIncoming::from_listener is stable for hyper 0.14.x
+    let incoming = hyper::server::conn::AddrIncoming::from_listener(std_listener)?;
+    hyper::Server::builder(incoming).serve(app.into_make_service()).await?;
 
     Ok(())
 }
