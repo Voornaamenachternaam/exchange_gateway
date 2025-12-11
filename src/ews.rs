@@ -11,7 +11,6 @@ use crate::ews_marshaller;
 use crate::caldav::CaldavClient;
 use crate::sync;
 use crate::utils;
-use anyhow::Result;
 
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String,String)> {
     if let Some(v) = headers.get("authorization") {
