@@ -1,6 +1,7 @@
 use axum::{extract::Extension, http::StatusCode, response::IntoResponse};
 use axum::http::HeaderMap;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use bytes::Bytes;
 use std::sync::Arc;
 use crate::models::AppState;
@@ -14,8 +15,9 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String,String)> {
             let s = s.trim();
             if s.to_lowercase().starts_with("basic ") {
                 let b64 = s[6..].trim();
-                if let Ok(bytes) = BASE64.decode(b64.as_bytes()) {
-                    if let Ok(creds) = String::from_utf8(bytes) {
+                let mut out = Vec::new();
+                if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok() {
+                    if let Ok(creds) = String::from_utf8(out) {
                         if let Some(idx) = creds.find(':') {
                             let user = creds[..idx].to_string();
                             let pass = creds[idx+1..].to_string();
