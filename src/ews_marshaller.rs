@@ -7,10 +7,12 @@ use uuid::Uuid;
 /// Convert EWS CalendarItem XML -> ICS string.
 /// This implementation parses a minimal set of EWS CalendarItem fields:
 /// Subject, Location, Body, Start, End (if present) and then builds an ICS string.
-/// It uses reader.read_text(...) to obtain decoded element text in a robust way.
+///
+/// Implementation notes:
+/// - Uses `reader.read_text(e.name())` to obtain decoded element text (returns Cow<'_, str>).
+/// - Converts the Cow to an owned String with `into_owned()` before assigning to Option<String>.
 pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let mut reader = Reader::from_str(xml);
-    // Do not call reader.trim_text(true) here to avoid API variance across quick-xml versions.
     let mut buf = Vec::new();
 
     let mut subject: Option<String> = None;
@@ -22,21 +24,23 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(QEvent::Start(e)) => {
-                // Use read_text to consume the element's text (decodes/unescapes) in one call.
-                let name = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_lowercase();
-                match reader.read_text(e.local_name(), &mut Vec::new()) {
-                    Ok(txt) => {
-                        match name.as_str() {
-                            "t:subject" | "subject" => subject = Some(txt),
-                            "t:location" | "location" => location = Some(txt),
-                            "t:body" | "body" => description = Some(txt),
-                            "t:start" | "start" => dtstart = Some(txt),
-                            "t:end" | "end" => dtend = Some(txt),
-                            _ => {}
+                // e.name() returns the QName needed by read_text in quick-xml 0.38.x
+                match reader.read_text(e.name()) {
+                    Ok(txt_cow) => {
+                        let txt: String = txt_cow.into_owned();
+                        if let Ok(name_str) = std::str::from_utf8(e.local_name().as_ref()) {
+                            match name_str.to_lowercase().as_str() {
+                                "t:subject" | "subject" => subject = Some(txt),
+                                "t:location" | "location" => location = Some(txt),
+                                "t:body" | "body" => description = Some(txt),
+                                "t:start" | "start" => dtstart = Some(txt),
+                                "t:end" | "end" => dtend = Some(txt),
+                                _ => {}
+                            }
                         }
                     }
                     Err(_) => {
-                        // If we cannot read the inner text, continue gracefully.
+                        // non-fatal: skip element text if it cannot be read/decoded
                     }
                 }
             }
