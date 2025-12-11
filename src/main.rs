@@ -3,7 +3,6 @@ use axum::{
     Router,
     routing::{post, get},
     extract::Extension,
-    Server,
 };
 use std::net::SocketAddr;
 
@@ -46,13 +45,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(|| async { "OK" }))
         .layer(Extension(state));
 
+    // Parse address and bind std listener
     let addr: SocketAddr = cfg.http_bind.parse()?;
     println!("Listening on http://{}", addr);
 
-    // Use axum::Server (re-export of hyper Server) which is compatible with axum versions
-    Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await?;
+    // Create a std listener and set non-blocking so hyper can use it.
+    let std_listener = std::net::TcpListener::bind(addr)?;
+    std_listener.set_nonblocking(true)?;
+
+    // Use hyper::Server::from_tcp which accepts a std::net::TcpListener
+    let server = hyper::Server::from_tcp(std_listener)?;
+    server.serve(app.into_make_service()).await?;
 
     Ok(())
 }
