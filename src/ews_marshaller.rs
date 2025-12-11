@@ -1,37 +1,20 @@
-use anyhow::Result;
-use icalendar::{Calendar, Event};
-use icalendar::Component;
-use icalendar::EventLike;
+use anyhow::{Result, anyhow};
 use quick_xml::Reader;
 use quick_xml::events::Event as QEvent;
-use std::io::Cursor;
-use chrono::Utc;
-use chrono::{DateTime, FixedOffset};
+use chrono::{Utc, DateTime};
 use uuid::Uuid;
 
-/// Convert ICS -> minimal EWS CalendarItem XML snippet (string).
-/// We produce a minimal CalendarItem XML that includes ItemId if provided.
-pub fn ics_to_ews_calendaritem(ics: &str, item_id: &str, change_key: &str) -> Result<String> {
-    // For simplicity produce a minimal CalendarItem XML using string formatting.
-    // This function is a helper for wrapping ICS content into an EWS response shape.
-    let subject = "Calendar event";
-    let body = ics;
-    let xml = format!(
-        r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
-  <t:ItemId Id="{id}" ChangeKey="{ck}"/>
-  <t:Subject>{sub}</t:Subject>
-  <t:Body>{body}</t:Body>
-</t:CalendarItem>"#,
-        id = item_id, ck = change_key, sub = xml_escape(subject), body = xml_escape(body)
-    );
-    Ok(xml)
-}
-
 /// Convert EWS CalendarItem XML -> ICS string.
-/// The parser extracts Subject, Location, Body, Start, End (if present) and builds an ICS.
+/// This implementation parses a minimal set of EWS CalendarItem fields:
+/// Subject, Location, Body, Start, End (if present) and then builds an ICS string.
+/// It uses quick-xml stable decode helper to get text content.
 pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
+    // NOTE: some quick-xml versions expose trim_text; if your installed quick-xml version
+    // does not have it, this line may be removed. It is optional behavior.
+    // We avoid depending on it for correctness.
+    // reader.trim_text(true);
+
     let mut buf = Vec::new();
 
     let mut cur_elem: Option<String> = None;
@@ -49,16 +32,22 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
                 }
             }
             Ok(QEvent::Text(t)) => {
-                if let Ok(txt) = t.unescape() {
-                    if let Some(ref el) = cur_elem {
-                        match el.as_str() {
-                            "t:subject" | "subject" => subject = Some(txt.to_string()),
-                            "t:location" | "location" => location = Some(txt.to_string()),
-                            "t:body" | "body" => description = Some(txt.to_string()),
-                            "t:start" | "start" => dtstart = Some(txt.to_string()),
-                            "t:end" | "end" => dtend = Some(txt.to_string()),
-                            _ => {}
+                // Use stable helper to decode/unescape text into String
+                match t.unescape_and_decode(&reader) {
+                    Ok(txt) => {
+                        if let Some(ref el) = cur_elem {
+                            match el.as_str() {
+                                "t:subject" | "subject" => subject = Some(txt),
+                                "t:location" | "location" => location = Some(txt),
+                                "t:body" | "body" => description = Some(txt),
+                                "t:start" | "start" => dtstart = Some(txt),
+                                "t:end" | "end" => dtend = Some(txt),
+                                _ => {}
+                            }
                         }
+                    }
+                    Err(_) => {
+                        // ignore text parsing errors for best-effort
                     }
                 }
             }
@@ -66,28 +55,17 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
                 cur_elem = None;
             }
             Ok(QEvent::Eof) => break,
-            Err(e) => return Err(anyhow::anyhow!("XML parse error: {}", e)),
+            Err(e) => return Err(anyhow!("XML parse error: {}", e)),
             _ => {}
         }
         buf.clear();
     }
 
-    // Build ical event
-    let mut cal = Calendar::new();
-    let mut ev = Event::new();
-
-    if let Some(s) = subject { ev.summary(&s); }
-    if let Some(d) = description { ev.description(&d); }
-    if let Some(l) = location { ev.location(&l); }
-
-    // Parse datetimes if present (try rfc3339)
+    // Build ICS manually (RFC 5545 minimal)
     let start_dt: DateTime<Utc> = if let Some(s) = dtstart {
         match DateTime::parse_from_rfc3339(&s) {
             Ok(dt) => dt.with_timezone(&Utc),
-            Err(_) => {
-                // try parse as naive local RFC format fallback (best-effort)
-                Utc::now()
-            }
+            Err(_) => Utc::now(),
         }
     } else {
         Utc::now()
@@ -102,14 +80,28 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
         start_dt + chrono::Duration::hours(1)
     };
 
-    ev.starts(start_dt);
-    ev.ends(end_dt);
-    ev.uid(&Uuid::new_v4().to_string());
-    cal.add_event(ev);
+    let uid = Uuid::new_v4().to_string();
+    let summary = subject.as_deref().unwrap_or("Event");
+    let descr = description.as_deref().unwrap_or("");
+    let loc = location.as_deref().unwrap_or("");
 
-    Ok(cal.to_string())
+    let ics = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//ExchangeGateway//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{summary}\r\nDESCRIPTION:{descr}\r\nLOCATION:{loc}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{dtstart}\r\nDTEND:{dtend}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        uid = uid,
+        summary = escape_ics(summary),
+        descr = escape_ics(descr),
+        loc = escape_ics(loc),
+        dtstamp = Utc::now().format("%Y%m%dT%H%M%SZ"),
+        dtstart = start_dt.format("%Y%m%dT%H%M%SZ"),
+        dtend = end_dt.format("%Y%m%dT%H%M%SZ"),
+    );
+
+    Ok(ics)
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace("&", "&amp;").replace("<","&lt;").replace(">","&gt;")
+fn escape_ics(s: &str) -> String {
+    s.replace("\\", "\\\\")
+     .replace("\n", "\\n")
+     .replace(",", "\\,")
+     .replace(";", "\\;")
 }
