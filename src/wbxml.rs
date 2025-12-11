@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use quick_xml::Reader;
 
 /// WBXML token tables for ActiveSync code pages used by calendar handling.
 /// Token maps for codepages 0,4,17.
@@ -76,12 +75,8 @@ impl Wbxml {
             return Ok(String::from_utf8(bytes.to_vec())?);
         }
 
-        // Simplified header parse (not full WBXML)
-        let mut offset = 0usize;
-        if bytes.len() < 4 { return Err(anyhow!("wbxml too short")); }
-        // version, pubid, charset, strtbl_len (mb uints) - skip safely for now
-        // For calendar operations, many clients send XML, not WBXML; keep this simple fallback.
-        // If proper WBXML binary parsing is required, replace this with a complete parser.
+        // Simplified header parse (not full WBXML). Keep simple fallback.
+        let _offset = 0usize;
         Ok(String::from_utf8(bytes.to_vec())?)
     }
 
