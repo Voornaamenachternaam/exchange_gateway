@@ -4,6 +4,7 @@ use axum::{
     routing::{post, get},
     extract::Extension,
 };
+use hyper::Server;
 use tracing_subscriber;
 use std::net::SocketAddr;
 
@@ -16,6 +17,7 @@ mod eas;
 mod sync;
 mod models;
 mod utils;
+mod ews_marshaller;
 
 use config::Config;
 use storage::Storage;
@@ -43,6 +45,10 @@ async fn main() -> anyhow::Result<()> {
 
     let addr: SocketAddr = cfg.http_bind.parse()?;
     println!("Listening on http://{}", addr);
-    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
+
+    Server::try_bind(&addr)?
+        .serve(app.into_make_service())
+        .await?;
+
     Ok(())
 }
