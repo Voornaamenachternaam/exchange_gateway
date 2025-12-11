@@ -7,17 +7,12 @@ use uuid::Uuid;
 /// Convert EWS CalendarItem XML -> ICS string.
 /// This implementation parses a minimal set of EWS CalendarItem fields:
 /// Subject, Location, Body, Start, End (if present) and then builds an ICS string.
-/// It uses quick-xml stable decode helper to get text content.
+/// It uses reader.read_text(...) to obtain decoded element text in a robust way.
 pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let mut reader = Reader::from_str(xml);
-    // NOTE: some quick-xml versions expose trim_text; if your installed quick-xml version
-    // does not have it, this line may be removed. It is optional behavior.
-    // We avoid depending on it for correctness.
-    // reader.trim_text(true);
-
+    // Do not call reader.trim_text(true) here to avoid API variance across quick-xml versions.
     let mut buf = Vec::new();
 
-    let mut cur_elem: Option<String> = None;
     let mut subject: Option<String> = None;
     let mut location: Option<String> = None;
     let mut description: Option<String> = None;
@@ -27,33 +22,25 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(QEvent::Start(e)) => {
-                if let Ok(name) = std::str::from_utf8(e.local_name().as_ref()) {
-                    cur_elem = Some(name.to_lowercase());
-                }
-            }
-            Ok(QEvent::Text(t)) => {
-                // Use stable helper to decode/unescape text into String
-                match t.unescape_and_decode(&reader) {
+                // Use read_text to consume the element's text (decodes/unescapes) in one call.
+                let name = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_lowercase();
+                match reader.read_text(e.local_name(), &mut Vec::new()) {
                     Ok(txt) => {
-                        if let Some(ref el) = cur_elem {
-                            match el.as_str() {
-                                "t:subject" | "subject" => subject = Some(txt),
-                                "t:location" | "location" => location = Some(txt),
-                                "t:body" | "body" => description = Some(txt),
-                                "t:start" | "start" => dtstart = Some(txt),
-                                "t:end" | "end" => dtend = Some(txt),
-                                _ => {}
-                            }
+                        match name.as_str() {
+                            "t:subject" | "subject" => subject = Some(txt),
+                            "t:location" | "location" => location = Some(txt),
+                            "t:body" | "body" => description = Some(txt),
+                            "t:start" | "start" => dtstart = Some(txt),
+                            "t:end" | "end" => dtend = Some(txt),
+                            _ => {}
                         }
                     }
                     Err(_) => {
-                        // ignore text parsing errors for best-effort
+                        // If we cannot read the inner text, continue gracefully.
                     }
                 }
             }
-            Ok(QEvent::End(_)) => {
-                cur_elem = None;
-            }
+            Ok(QEvent::End(_)) => {}
             Ok(QEvent::Eof) => break,
             Err(e) => return Err(anyhow!("XML parse error: {}", e)),
             _ => {}
