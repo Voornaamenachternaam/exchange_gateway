@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crate::models::AppState;
 use crate::wbxml::Wbxml;
 use crate::sync;
-use anyhow::Result;
 
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String,String)> {
     if let Some(v) = headers.get("authorization") {
