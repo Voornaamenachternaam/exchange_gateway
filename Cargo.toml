@@ -1,8 +1,8 @@
 [package]
 name = "exchange_gateway"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
-rust-version = "1.91.1"
+rust-version = "1.92.0"
 
 [dependencies]
 tokio = { version = "^1.48.0", features = ["full"] }
