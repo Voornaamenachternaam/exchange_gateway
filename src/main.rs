@@ -4,7 +4,6 @@ use axum::{
     routing::{post, get},
     extract::Extension,
 };
-use hyper::Server;
 use tracing_subscriber;
 use std::net::SocketAddr;
 
@@ -29,8 +28,11 @@ async fn main() -> anyhow::Result<()> {
 
     // load config
     let cfg = Config::load("/etc/exchange-gateway/config.toml")?;
-    let storage = Storage::new(&cfg.db_path).await?;
-    storage.run_migrations().await?;
+    let storage_plain = Storage::new(&cfg.db_path).await?;
+    storage_plain.run_migrations().await?;
+
+    // store storage in Arc as AppState expects Arc<Storage>
+    let storage = Arc::new(storage_plain);
 
     let state = Arc::new(AppState {
         cfg: cfg.clone(),
@@ -46,9 +48,9 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = cfg.http_bind.parse()?;
     println!("Listening on http://{}", addr);
 
-    Server::try_bind(&addr)?
-        .serve(app.into_make_service())
-        .await?;
+    // Use explicit hyper server path to avoid ambiguous imports
+    let server = hyper::server::Server::bind(&addr);
+    server.serve(app.into_make_service()).await?;
 
     Ok(())
 }
