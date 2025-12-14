@@ -25,21 +25,17 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
         match reader.read_event_into(&mut buf) {
             Ok(QEvent::Start(e)) => {
                 // e.name() returns the QName needed by read_text in quick-xml 0.38.x
-                match reader.read_text(e.name()) {
-                    Ok(txt_cow) => {
-                        let txt: String = txt_cow.into_owned();
-                        if let Ok(name_str) = std::str::from_utf8(e.local_name().as_ref()) {
-                            match name_str.to_lowercase().as_str() {
-                                "t:subject" | "subject" => subject = Some(txt),
-                                "t:location" | "location" => location = Some(txt),
-                                "t:body" | "body" => description = Some(txt),
-                                "t:start" | "start" => dtstart = Some(txt),
-                                "t:end" | "end" => dtend = Some(txt),
-                                _ => {}
-                            }
+                if let Ok(txt_cow) = reader.read_text(e.name()) {
+                    let txt: String = txt_cow.into_owned();
+                    if let Ok(name_str) = std::str::from_utf8(e.local_name().as_ref()) {
+                        match name_str.to_lowercase().as_str() {
+                            "t:subject" | "subject" => subject = Some(txt),
+                            "t:location" | "location" => location = Some(txt),
+                            "t:body" | "body" => description = Some(txt),
+                            "t:start" | "start" => dtstart = Some(txt),
+                            "t:end" | "end" => dtend = Some(txt),
+                            _ => {}
                         }
-                    }
-                    Err(_) => {
                     }
                 }
             }
