@@ -9,24 +9,21 @@ use crate::wbxml::Wbxml;
 use crate::sync;
 
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String,String)> {
-    if let Some(v) = headers.get("authorization") {
-        if let Ok(s) = v.to_str() {
+    if let Some(v) = headers.get("authorization")
+        && let Ok(s) = v.to_str() {
             let s = s.trim();
             if s.to_lowercase().starts_with("basic ") {
                 let b64 = s[6..].trim();
                 let mut out = Vec::new();
-                if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok() {
-                    if let Ok(creds) = String::from_utf8(out) {
-                        if let Some(idx) = creds.find(':') {
+                if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok()
+                    && let Ok(creds) = String::from_utf8(out)
+                        && let Some(idx) = creds.find(':') {
                             let user = creds[..idx].to_string();
                             let pass = creds[idx+1..].to_string();
                             return Some((user, pass));
                         }
-                    }
-                }
             }
         }
-    }
     None
 }
 

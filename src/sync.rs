@@ -16,7 +16,7 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     mac.update(resource_href.as_bytes());
     let result = mac.finalize().into_bytes();
     // Make sure Engine trait is in scope
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&result)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(result)
 }
 
 pub fn generate_change_key(etag: &str) -> String {
@@ -32,7 +32,7 @@ pub async fn perform_sync(state: Arc<AppState>, owner: &str, collection_id: &str
     let storage: &Storage = &state.storage;
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username_for_caldav, password_for_caldav).await?;
-    let collection_href = calendars.get(0).ok_or_else(|| anyhow::anyhow!("no calendars found"))?.clone();
+    let collection_href = calendars.first().ok_or_else(|| anyhow::anyhow!("no calendars found"))?.clone();
 
     let start = (Utc::now() - chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
     let end = (Utc::now() + chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();

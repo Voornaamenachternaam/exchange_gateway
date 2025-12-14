@@ -13,24 +13,21 @@ use crate::sync;
 use crate::utils;
 
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String,String)> {
-    if let Some(v) = headers.get("authorization") {
-        if let Ok(s) = v.to_str() {
+    if let Some(v) = headers.get("authorization")
+        && let Ok(s) = v.to_str() {
             let s = s.trim();
             if s.to_lowercase().starts_with("basic ") {
                 let b64 = s[6..].trim();
                 let mut out = Vec::new();
-                if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok() {
-                    if let Ok(creds) = String::from_utf8(out) {
-                        if let Some(idx) = creds.find(':') {
+                if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok()
+                    && let Ok(creds) = String::from_utf8(out)
+                        && let Some(idx) = creds.find(':') {
                             let user = creds[..idx].to_string();
                             let pass = creds[idx+1..].to_string();
                             return Some((user, pass));
                         }
-                    }
-                }
             }
         }
-    }
     None
 }
 
@@ -79,8 +76,8 @@ async fn handle_create_item(state: Arc<AppState>, xml: &str, user:&str, password
                     return (StatusCode::BAD_GATEWAY, format!("CalDAV error: {}", e)).into_response();
                 }
             };
-            let coll = calendars.get(0).unwrap().clone();
-            let resource_name = format!("{}.ics", uuid::Uuid::new_v4().to_string());
+            let coll = calendars.first().unwrap().clone();
+            let resource_name = format!("{}.ics", uuid::Uuid::new_v4());
             match caldav.put_event(&coll, &resource_name, &ics, owner, password).await {
                 Ok(etag) => {
                     let resource_href = format!("{}/{}", coll.trim_end_matches('/'), resource_name);
@@ -89,12 +86,12 @@ async fn handle_create_item(state: Arc<AppState>, xml: &str, user:&str, password
                     let change_key = sync::generate_change_key(&etag);
                     let resp_body = format!(r#"<m:CreateItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:Items><t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><t:ItemId Id="{id}" ChangeKey="{ck}"/></t:CalendarItem></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#, id=server_id, ck=change_key);
                     let soap = utils::ews_soap_envelope(&resp_body);
-                    return (StatusCode::OK, soap).into_response();
+                    (StatusCode::OK, soap).into_response()
                 }
-                Err(e) => return (StatusCode::BAD_GATEWAY, format!("CalDAV put error: {}", e)).into_response(),
+                Err(e) => (StatusCode::BAD_GATEWAY, format!("CalDAV put error: {}", e)).into_response(),
             }
         }
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid EWS CalendarItem: {}", e)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("Invalid EWS CalendarItem: {}", e)).into_response(),
     }
 }
 
