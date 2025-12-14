@@ -1,25 +1,25 @@
-use std::sync::Arc;
 use axum::{
     Router,
-    routing::{post, get},
     extract::Extension,
+    routing::{get, post},
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-mod config;
-mod storage;
-mod wbxml;
 mod caldav;
-mod ews;
+mod config;
 mod eas;
-mod sync;
-mod models;
-mod utils;
+mod ews;
 mod ews_marshaller;
+mod models;
+mod storage;
+mod sync;
+mod utils;
+mod wbxml;
 
 use config::Config;
-use storage::Storage;
 use models::AppState;
+use storage::Storage;
 
 async fn startup_self_check(cfg: &Config, storage: &Storage) {
     // read config fields to mark them used
@@ -85,4 +85,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
- 
