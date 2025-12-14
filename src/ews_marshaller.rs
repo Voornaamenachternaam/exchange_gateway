@@ -40,7 +40,6 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
                         }
                     }
                     Err(_) => {
-                        // non-fatal: skip element text if it cannot be read/decoded
                     }
                 }
             }
