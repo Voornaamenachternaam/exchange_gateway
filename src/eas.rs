@@ -1,38 +1,46 @@
-use axum::{extract::Extension, http::StatusCode, response::IntoResponse};
+use crate::models::AppState;
+use crate::sync;
+use crate::wbxml::Wbxml;
 use axum::http::HeaderMap;
-use base64::engine::general_purpose::STANDARD as BASE64;
+use axum::{extract::Extension, http::StatusCode, response::IntoResponse};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use std::sync::Arc;
-use crate::models::AppState;
-use crate::wbxml::Wbxml;
-use crate::sync;
 
-fn parse_basic_auth(headers: &HeaderMap) -> Option<(String,String)> {
+fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     if let Some(v) = headers.get("authorization")
-        && let Ok(s) = v.to_str() {
-            let s = s.trim();
-            if s.to_lowercase().starts_with("basic ") {
-                let b64 = s[6..].trim();
-                let mut out = Vec::new();
-                if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok()
-                    && let Ok(creds) = String::from_utf8(out)
-                        && let Some(idx) = creds.find(':') {
-                            let user = creds[..idx].to_string();
-                            let pass = creds[idx+1..].to_string();
-                            return Some((user, pass));
-                        }
+        && let Ok(s) = v.to_str()
+    {
+        let s = s.trim();
+        if s.to_lowercase().starts_with("basic ") {
+            let b64 = s[6..].trim();
+            let mut out = Vec::new();
+            if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok()
+                && let Ok(creds) = String::from_utf8(out)
+                && let Some(idx) = creds.find(':')
+            {
+                let user = creds[..idx].to_string();
+                let pass = creds[idx + 1..].to_string();
+                return Some((user, pass));
             }
         }
+    }
     None
 }
 
-pub async fn handle_activesync(Extension(state): Extension<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+pub async fn handle_activesync(
+    Extension(state): Extension<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
     let payload = body.to_vec();
     let wbxml = Wbxml::new();
     let xml = match wbxml.decode(&payload) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e)).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e)).into_response();
+        }
     };
 
     let (username, password) = parse_basic_auth(&headers).unwrap_or((String::new(), String::new()));
@@ -43,11 +51,22 @@ pub async fn handle_activesync(Extension(state): Extension<Arc<AppState>>, heade
         return (StatusCode::OK, resp.to_string()).into_response();
     } else if xml.contains("<Sync") {
         // call sync engine
-        let owner = if !username.is_empty() { username.as_str() } else { "demo" };
+        let owner = if !username.is_empty() {
+            username.as_str()
+        } else {
+            "demo"
+        };
         let collection_id = "1";
-        match sync::perform_sync(state, owner, collection_id, "0", 100, &username, &password).await {
+        match sync::perform_sync(state, owner, collection_id, "0", 100, &username, &password).await
+        {
             Ok(resp_xml) => return (StatusCode::OK, resp_xml).into_response(),
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Sync error: {}", e)).into_response(),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Sync error: {}", e),
+                )
+                    .into_response();
+            }
         }
     }
 
