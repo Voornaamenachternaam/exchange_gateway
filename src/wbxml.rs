@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
 /// WBXML token tables for ActiveSync code pages used by calendar handling.
 /// Token maps for codepages 0,4,17.
 pub struct Wbxml {
     pub codepage: u8,
-    pub tok_to_tag: HashMap<(u8,u8), &'static str>,
-    pub tag_to_tok: HashMap<(&'static str,u8), u8>,
+    pub tok_to_tag: HashMap<(u8, u8), &'static str>,
+    pub tag_to_tok: HashMap<(&'static str, u8), u8>,
 }
 
 impl Wbxml {
@@ -15,7 +15,12 @@ impl Wbxml {
         let mut tag_to_tok = HashMap::new();
 
         // Code page 0: AirSync
-        macro_rules! add0 { ($t:expr, $s:expr) => { tok_to_tag.insert((0,$t), $s); tag_to_tok.insert(($s,0), $t); }; }
+        macro_rules! add0 {
+            ($t:expr, $s:expr) => {
+                tok_to_tag.insert((0, $t), $s);
+                tag_to_tok.insert(($s, 0), $t);
+            };
+        }
         add0!(0x05, "Sync");
         add0!(0x06, "Responses");
         add0!(0x07, "Add");
@@ -32,7 +37,12 @@ impl Wbxml {
         add0!(0x2A, "ApplicationData");
 
         // Code page 4: Calendar
-        macro_rules! add4 { ($t:expr, $s:expr) => { tok_to_tag.insert((4,$t), $s); tag_to_tok.insert(($s,4), $t); }; }
+        macro_rules! add4 {
+            ($t:expr, $s:expr) => {
+                tok_to_tag.insert((4, $t), $s);
+                tag_to_tok.insert(($s, 4), $t);
+            };
+        }
         add4!(0x05, "Timezone");
         add4!(0x06, "AllDayEvent");
         add4!(0x07, "Attendees");
@@ -49,7 +59,12 @@ impl Wbxml {
         add4!(0x27, "Recurrences");
 
         // Code page 17: AirSyncBase
-        macro_rules! add17 { ($t:expr, $s:expr) => { tok_to_tag.insert((17,$t), $s); tag_to_tok.insert(($s,17), $t); }; }
+        macro_rules! add17 {
+            ($t:expr, $s:expr) => {
+                tok_to_tag.insert((17, $t), $s);
+                tag_to_tok.insert(($s, 17), $t);
+            };
+        }
         add17!(0x05, "BodyPreference");
         add17!(0x06, "Type");
         add17!(0x0A, "Body");
@@ -57,7 +72,11 @@ impl Wbxml {
         add17!(0x0C, "EstimatedDataSize");
         add17!(0x0D, "Truncated");
 
-        Self { codepage: 0, tok_to_tag, tag_to_tok }
+        Self {
+            codepage: 0,
+            tok_to_tag,
+            tag_to_tok,
+        }
     }
 
     pub fn token_to_tag(&self, page: u8, token: u8) -> Option<&'static str> {
@@ -70,7 +89,9 @@ impl Wbxml {
 
     /// Rudimentary decoder for WBXML or pass-through XML.
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
-        if bytes.is_empty() { return Err(anyhow!("empty payload")); }
+        if bytes.is_empty() {
+            return Err(anyhow!("empty payload"));
+        }
         if bytes[0] == b'<' {
             return Ok(String::from_utf8(bytes.to_vec())?);
         }
