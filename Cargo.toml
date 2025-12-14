@@ -13,15 +13,15 @@ axum = "^0.8.7"
 hyper = "^1.8.1"
 
 # HTTP client (reqwest) - using rustls + json features (valid feature names).
-reqwest = { version = "^0.12.24", features = ["rustls-tls", "json"] }
+reqwest = { version = "^0.12.25", features = ["rustls-tls", "json"] }
 
 # XML parsing (quick-xml) - pinned to published version on docs.rs/crates
-quick-xml = "0.38.0"
+quick-xml = "^0.38.0"
 
 # Serialization
 serde = { version = "^1.0.228", features = ["derive"] }
 serde_json = "^1.0.145"
-toml = "0.9.8"
+toml = "^0.9.8"
 
 # SQLx - use separate runtime + TLS + sqlite + macros (matches SQLx docs)
 sqlx = { version = "^0.8.6", features = ["sqlite", "runtime-tokio", "tls-native-tls", "macros"] }
@@ -39,7 +39,7 @@ chrono = { version = "^0.4.42", features = ["serde"] }
 
 # Calendar/recurrence / iCalendar helpers
 rrule = "^0.14.0"
-icalendar = "0.17.4"
+icalendar = "^0.17.4"
 
 # crypto helpers
 hmac = "^0.12.1"
