@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let storage = Arc::new(storage_plain);
 
     // Run the startup self-check to exercise symbols that trigger clippy warnings.
-    startup_self_check(&cfg, &*storage).await;
+    startup_self_check(&cfg, &storage).await;
 
     let state = Arc::new(AppState {
         cfg: cfg.clone(),
