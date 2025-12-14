@@ -16,14 +16,15 @@ jobs:
   rust-clippy-analyze:
     name: Run rust-clippy analyzing
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6.0.1
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
-      - name: Setup Rust toolchain (dtolnay/rust-toolchain)
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           profile: minimal
@@ -36,68 +37,46 @@ jobs:
           set -euo pipefail
           rustup component add clippy || true
 
-      - name: Install required cargo tools
+      - name: Install SARIF tooling
         run: |
           set -euo pipefail
           cargo install --force clippy-sarif sarif-fmt
         continue-on-error: true
 
-      - name: Apply automatic clippy fixes
-        id: run-fix
+      - name: Run cargo clippy --fix
         run: |
           set -euo pipefail
           cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features || true
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "changes_detected=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changes_detected=false" >> "$GITHUB_OUTPUT"
-          fi
-        continue-on-error: true
 
-      - name: Create local commit with clippy fixes (if any)
-        id: commit-fixes
-        if: steps.run-fix.outputs.changes_detected == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          BRANCH="clippy-fixes/$(date -u +%Y%m%d%H%M%S)"
-          git checkout -b "$BRANCH"
-          git add -A
-          git commit -m "Apply automatic suggestions from cargo clippy --fix"
-          git push --set-upstream origin "$BRANCH"
-          echo "created_branch=$BRANCH" >> "$GITHUB_OUTPUT"
-        continue-on-error: true
-
-      - name: Create Pull Request for clippy fixes
-        if: steps.commit-fixes.outputs.created_branch != ''
+      - name: Create Pull Request with fixes
         uses: peter-evans/create-pull-request@v5.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          branch: ${{ steps.commit-fixes.outputs.created_branch }}
-          base: ${{ github.event.repository.default_branch }}
-          title: "Apply automatic suggestions from cargo clippy --fix"
-          body: "This PR contains automatic fixes applied by `cargo clippy --fix`."
-          labels: auto-clippy,ci
-          commit-message: "[create-pull-request] automated change"
-          delete-branch: false
-          draft: false
-
-      - name: Run Clippy (annotations / check-run)
-        uses: auguwu/clippy-action@master
-        continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          branch: clippy-fixes
+          delete-branch: false
+          title: Apply automatic suggestions from cargo clippy --fix
+          body: This PR contains automatic fixes applied by `cargo clippy --fix`.
+          labels: auto-clippy,ci
+          commit-message: Apply automatic suggestions from cargo clippy --fix
 
-      - name: Run rust-clippy (output SARIF)
+      - name: Run Clippy (annotations)
+        uses: auguwu/clippy-action@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
+
+      - name: Generate SARIF output
         run: |
           set -euo pipefail
-          cargo clippy --all-features --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
-
-      - name: Upload analysis results to GitHub
-        uses: github/codeql-action/upload-sarif@v4
+          cargo clippy --all-features --message-format=json \
+            | clippy-sarif \
+            | tee rust-clippy-results.sarif \
+            | sarif-fmt
         continue-on-error: true
+
+      - name: Upload SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: rust-clippy-results.sarif
+        continue-on-error: true
+ 
