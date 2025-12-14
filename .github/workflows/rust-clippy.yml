@@ -1,12 +1,3 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-# rust-clippy is a tool that runs a bunch of lints to catch common
-# mistakes in your Rust code and help improve your Rust code.
-# More details at https://github.com/rust-lang/rust-clippy
-# and https://rust-lang.github.io/rust-clippy/
-
 name: rust-clippy analyze
 
 on:
@@ -14,24 +5,24 @@ on:
   schedule:
     - cron: '40 2 * * *'
 
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+  security-events: write
+  actions: read
+
 jobs:
   rust-clippy-analyze:
     name: Run rust-clippy analyzing
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: write
-      checks: write          # allow the clippy-action to write check runs
-      security-events: write
-      actions: read          # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
     steps:
       - name: Checkout code
         uses: actions/checkout@v6.0.1
         with:
           fetch-depth: 0
-          persist-credentials: false   # let the following action use the GITHUB_TOKEN you pass via env
+          persist-credentials: false
 
-      # Use dtolnay/rust-toolchain to set up the Rust toolchain
       - name: Setup Rust toolchain (dtolnay/rust-toolchain)
         uses: dtolnay/rust-toolchain@master
         with:
@@ -43,13 +34,11 @@ jobs:
       - name: Ensure clippy component is available
         run: |
           set -euo pipefail
-          # Extra ensure step in case the toolchain action didn't add it for some reason
           rustup component add clippy || true
 
       - name: Install required cargo tools
         run: |
           set -euo pipefail
-          # --force ensures the tools are installed/updated if already present
           cargo install --force clippy-sarif sarif-fmt
         continue-on-error: true
 
@@ -57,10 +46,7 @@ jobs:
         id: run-fix
         run: |
           set -euo pipefail
-          # Run cargo clippy fixes (will modify files if applicable)
-          # allow-dirty/allow-staged permit modifying the working tree
           cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features || true
-          # expose whether there are working-tree changes
           if [ -n "$(git status --porcelain)" ]; then
             echo "changes_detected=true" >> "$GITHUB_OUTPUT"
           else
@@ -71,48 +57,34 @@ jobs:
       - name: Create local commit with clippy fixes (if any)
         id: commit-fixes
         if: steps.run-fix.outputs.changes_detected == 'true'
-        continue-on-error: true
         run: |
           set -euo pipefail
-          # Configure git user for the commit (if not already set)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           BRANCH="clippy-fixes/$(date -u +%Y%m%d%H%M%S)"
           git checkout -b "$BRANCH"
           git add -A
           git commit -m "Apply automatic suggestions from cargo clippy --fix"
-          # NOTE: intentionally do NOT push here. The StepSecurity action below will detect local changes and push using the provided token.
           echo "created_branch=$BRANCH" >> "$GITHUB_OUTPUT"
-
-      - name: Create or update Pull Request for clippy fixes 
-        if: steps.commit-fixes.outputs.created_branch != ''
-        uses: peter-evans/create-or-update-comment@v5.0.0
         continue-on-error: true
+
+      - name: Create Pull Request for clippy fixes
+        if: steps.commit-fixes.outputs.created_branch != ''
+        uses: peter-evans/create-pull-request@v5.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # Provide the branch that was created locally.
           branch: ${{ steps.commit-fixes.outputs.created_branch }}
-          # Do NOT set `title` or `body` so the action will generate them automatically.
-          # Ensure the action updates the PR title/body automatically (default behavior);
-          # set this explicitly to true for clarity.
-          update-pull-request-title-and-body: true
-          # Optional: add helpful labels
+          title: "Apply automatic suggestions from cargo clippy --fix"
+          body: "This PR contains automatic fixes applied by `cargo clippy --fix`."
           labels: auto-clippy,ci
 
-      # -------------------------
-      # Use step-security/clippy-action for a check-run / annotations
-      # -------------------------
-      - name: Run Clippy
+      - name: Run Clippy (annotations / check-run)
         uses: auguwu/clippy-action@master
         continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # -------------------------
-      # Also produce SARIF exactly like before (cargo clippy -> clippy-sarif -> sarif-fmt)
-      # -------------------------
       - name: Run rust-clippy (output SARIF)
         continue-on-error: true
         run: |
