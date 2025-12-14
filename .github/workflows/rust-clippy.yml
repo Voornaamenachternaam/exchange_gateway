@@ -18,11 +18,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout code (no credentials)
         uses: actions/checkout@v6.0.1
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -43,41 +43,23 @@ jobs:
           cargo install --force clippy-sarif sarif-fmt
         continue-on-error: true
 
-      - name: Run cargo clippy --fix
+      - name: Run cargo clippy --fix (may modify files)
         id: clippy_fix
         run: |
           set -euo pipefail
           cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features || true
-
           if [ -n "$(git status --porcelain)" ]; then
             echo "changes=true" >> "$GITHUB_OUTPUT"
           else
             echo "changes=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit and push fixes
-        if: steps.clippy_fix.outputs.changes == 'true'
-        id: push_branch
-        env:
-          BRANCH_NAME: clippy-fixes-${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git checkout -b "$BRANCH_NAME"
-          git add -A
-          git commit -m "Apply automatic suggestions from cargo clippy --fix"
-          git push --set-upstream origin "$BRANCH_NAME"
-
-          echo "branch=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Create Pull Request
+      - name: Create or update Pull Request with fixes
         if: steps.clippy_fix.outputs.changes == 'true'
         uses: peter-evans/create-pull-request@v5.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ steps.push_branch.outputs.branch }}
+          branch: clippy-fixes-${{ github.run_id }}
           base: ${{ github.event.repository.default_branch }}
           title: Apply automatic suggestions from cargo clippy --fix
           body: This PR contains automatic fixes applied by `cargo clippy --fix`.
@@ -96,14 +78,10 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          cargo clippy --all-features --message-format=json \
-            | clippy-sarif \
-            | tee rust-clippy-results.sarif \
-            | sarif-fmt
+          cargo clippy --all-features --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
 
-      - name: Upload SARIF
+      - name: Upload SARIF to GitHub
         uses: github/codeql-action/upload-sarif@v4
         continue-on-error: true
         with:
           sarif_file: rust-clippy-results.sarif
-
