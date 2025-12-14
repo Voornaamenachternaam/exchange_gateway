@@ -47,7 +47,7 @@ jobs:
         id: clippy_fix
         run: |
           set -euo pipefail
-          cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features || true
+          cargo clippy --fix --all-targets --all-features || true
           if [ -n "$(git status --porcelain)" ]; then
             echo "changes=true" >> "$GITHUB_OUTPUT"
           else
