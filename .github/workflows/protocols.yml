@@ -1,0 +1,97 @@
+name: Daily PDF to Excel Processor
+
+on:
+  # Runs at 06:00 UTC every day
+  schedule:
+    - cron: '0 6 * * *'
+  # Allows you to run this manually from the Actions tab for testing
+  workflow_dispatch:
+
+jobs:
+  process-pdfs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      # 1. Checkout code (Standard setup)
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.1
+
+      # 2. Setup Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v6.1.0
+        with:
+         python-version: '3.13'
+         check-latest: true 
+
+      # 3. Install Python libraries for PDF and Excel processing
+      - name: Install dependencies
+        run: |
+          pip install pandas openpyxl pdfplumber
+
+      # 4. Download and Unzip the file
+      # Replaces 'YOUR_FIXED_URL_HERE' with your actual URL or ${{ secrets.ZIP_URL }}
+      - name: Download and Extract ZIP
+        env:
+          TARGET_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip' 
+        run: |
+          echo "Downloading from $TARGET_URL..."
+          curl -L -o download.zip "$TARGET_URL"
+          
+          echo "Unzipping files..."
+          # -o: overwrite without prompting
+          # -j: junk paths (flatten folders) so all files end up in current dir
+          unzip -o -j download.zip "*.pdf" || echo "No PDFs found in root or extraction warning"
+
+      # 5. Run Python script to merge PDF text into Excel
+      # This creates the script on the fly and runs it immediately
+      - name: Convert PDFs to Excel
+        run: |
+          cat <<EOF > process_pdfs.py
+          import glob
+          import pandas as pd
+          import pdfplumber
+          import os
+
+          pdf_files = glob.glob("*.pdf")
+          data = []
+
+          print(f"Found {len(pdf_files)} PDF files.")
+
+          for pdf_file in pdf_files:
+              try:
+                  text_content = ""
+                  with pdfplumber.open(pdf_file) as pdf:
+                      for page in pdf.pages:
+                          # Extract text and handle NoneTypes
+                          page_text = page.extract_text()
+                          if page_text:
+                              text_content += page_text + "\n"
+                  
+                  # Append to list: Filename in col A, Content in col B
+                  data.append({"Filename": pdf_file, "Content": text_content})
+                  print(f"Processed: {pdf_file}")
+              except Exception as e:
+                  print(f"Error processing {pdf_file}: {e}")
+
+          if data:
+              df = pd.DataFrame(data)
+              # Create Excel file
+              output_filename = "combined_pdf_data.xlsx"
+              df.to_excel(output_filename, index=False)
+              print(f"Successfully created {output_filename}")
+          else:
+              print("No data extracted. Excel file not created.")
+          EOF
+          
+          # Execute the script we just wrote
+          python process_pdfs.py
+
+      # 6. Upload the result as an Artifact (v4 is current standard for 2025)
+      - name: Upload Excel Artifact
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: daily-pdf-report
+          path: combined_pdf_data.xlsx
+          retention-days: 5
