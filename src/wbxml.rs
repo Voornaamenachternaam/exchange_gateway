@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
 /// WBXML token tables for ActiveSync code pages used by calendar handling.
@@ -6,8 +6,8 @@ use std::collections::HashMap;
 /// See MS docs: Code Page 4: Calendar. :contentReference[oaicite:1]{index=1}
 pub struct Wbxml {
     pub codepage: u8,
-    pub tok_to_tag: HashMap<(u8,u8), &'static str>,
-    pub tag_to_tok: HashMap<(&'static str,u8), u8>,
+    pub tok_to_tag: HashMap<(u8, u8), &'static str>,
+    pub tag_to_tok: HashMap<(&'static str, u8), u8>,
 }
 
 impl Wbxml {
@@ -16,7 +16,12 @@ impl Wbxml {
         let mut tag_to_tok = HashMap::new();
 
         // Code page 0: AirSync (kept minimal for compatibility)
-        macro_rules! add0 { ($t:expr, $s:expr) => { tok_to_tag.insert((0,$t), $s); tag_to_tok.insert(($s,0), $t); }; }
+        macro_rules! add0 {
+            ($t:expr, $s:expr) => {
+                tok_to_tag.insert((0, $t), $s);
+                tag_to_tok.insert(($s, 0), $t);
+            };
+        }
         add0!(0x05, "Sync");
         add0!(0x06, "Responses");
         add0!(0x07, "Add");
@@ -33,7 +38,12 @@ impl Wbxml {
         add0!(0x2A, "ApplicationData");
 
         // Code page 4: Calendar (token numbers taken from MS-ASWBXML Code Page 4)
-        macro_rules! add4 { ($t:expr, $s:expr) => { tok_to_tag.insert((4,$t), $s); tag_to_tok.insert(($s,4), $t); }; }
+        macro_rules! add4 {
+            ($t:expr, $s:expr) => {
+                tok_to_tag.insert((4, $t), $s);
+                tag_to_tok.insert(($s, 4), $t);
+            };
+        }
 
         add4!(0x05, "Timezone");
         add4!(0x06, "AllDayEvent");
@@ -41,7 +51,7 @@ impl Wbxml {
         add4!(0x08, "Attendee");
         add4!(0x09, "Email");
         add4!(0x0A, "Name");
-        add4!(0x0B, "Body");           // Note: Body may be replaced by codepage 17 in newer versions
+        add4!(0x0B, "Body"); // Note: Body may be replaced by codepage 17 in newer versions
         add4!(0x0C, "BodyTruncated");
         add4!(0x0D, "BusyStatus");
         add4!(0x0E, "Categories");
@@ -84,7 +94,12 @@ impl Wbxml {
         add4!(0x3C, "ClientUid");
 
         // Code page 17: AirSyncBase (some tags like Body/Location may be mapped here for newer protocol versions)
-        macro_rules! add17 { ($t:expr, $s:expr) => { tok_to_tag.insert((17,$t), $s); tag_to_tok.insert(($s,17), $t); }; }
+        macro_rules! add17 {
+            ($t:expr, $s:expr) => {
+                tok_to_tag.insert((17, $t), $s);
+                tag_to_tok.insert(($s, 17), $t);
+            };
+        }
         add17!(0x05, "BodyPreference");
         add17!(0x06, "Type");
         add17!(0x0A, "Body");
@@ -92,7 +107,11 @@ impl Wbxml {
         add17!(0x0C, "EstimatedDataSize");
         add17!(0x0D, "Truncated");
 
-        Self { codepage: 0, tok_to_tag, tag_to_tok }
+        Self {
+            codepage: 0,
+            tok_to_tag,
+            tag_to_tok,
+        }
     }
 
     /// Return the XML tag for the given code page and token.
@@ -113,7 +132,9 @@ impl Wbxml {
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
         let _cfg = self.codepage;
 
-        if bytes.is_empty() { return Err(anyhow!("empty payload")); }
+        if bytes.is_empty() {
+            return Err(anyhow!("empty payload"));
+        }
         if bytes[0] == b'<' {
             return Ok(String::from_utf8(bytes.to_vec())?);
         }
@@ -128,5 +149,3 @@ impl Wbxml {
         Ok(xml.as_bytes().to_vec())
     }
 }
-
- 
