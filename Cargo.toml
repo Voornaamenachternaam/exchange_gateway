@@ -48,3 +48,12 @@ sha2 = "^0.10.9"
 # bytes & misc
 bytes = "^1.11.0"
 lazy_static = "^1.5.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Note: panic = "unwind" (default) ensures Drop implementations run,
+# allowing MemoryLock and Zeroize to clean up secrets even on panic.
+# This is more important than preventing stack unwinding for a security tool.
+strip = true     # Strips symbols
