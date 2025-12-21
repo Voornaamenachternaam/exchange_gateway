@@ -32,9 +32,12 @@ jobs:
           echo "Downloading from $TARGET_URL..."
           curl -L -o download.zip "$TARGET_URL"
            
-          echo "Unzipping files..."
-          # -j flattens the directory structure so all PDFs are in the root
-          unzip -o -j download.zip "*.pdf" || echo "No PDFs found or warning issued"
+          echo "Unzipping all files flattened..."
+          # Removed "*.pdf" filter to ensure nested files are extracted
+          # -j flattens directory structure (junks paths)
+          # -o overwrites without prompting
+          # -q performs operations quietly
+          unzip -q -o -j download.zip
 
       - name: Convert PDFs to Excel
         run: |
@@ -44,7 +47,9 @@ jobs:
           import pdfplumber
           import os
           import re
+          import sys
 
+          # Find all PDFs in the current directory (now flattened)
           pdf_files = glob.glob("*.pdf")
           output_filename = "combined_pdf_data.xlsx"
           used_sheet_names = set()
@@ -52,52 +57,55 @@ jobs:
           print(f"Found {len(pdf_files)} PDF files.")
 
           if not pdf_files:
-              print("No PDF files found to process.")
-              exit()
+              print("No PDF files found after extraction. Exiting.")
+              sys.exit(0) # Exit gracefully or use sys.exit(1) to fail the job
 
-          # Initialize ExcelWriter with openpyxl engine
+          # Context manager ensures the file is saved and closed properly
           with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
               for pdf_file in pdf_files:
                   try:
-                      # 1. Extract content
+                      print(f"Processing: {pdf_file}")
                       text_content = ""
+                      
+                      # Extract text from PDF
                       with pdfplumber.open(pdf_file) as pdf:
                           for page in pdf.pages:
                               page_text = page.extract_text()
                               if page_text:
                                   text_content += page_text + "\n"
                       
-                      # 2. Create DataFrame (row-by-row structure like your example)
+                      # Create DataFrame: Split by newline to maintain readability in Excel rows
                       lines = text_content.split('\n')
                       df = pd.DataFrame(lines, columns=["Full Content"])
 
-                      # 3. Generate Valid Excel Sheet Name
+                      # --- Sheet Name Sanitization ---
+                      # 1. Get base filename
                       base_name = os.path.splitext(pdf_file)[0]
-                      # Remove invalid Excel characters: : \ / ? * [ ]
+                      
+                      # 2. Remove invalid Excel characters: \ / ? * [ ] :
                       clean_name = re.sub(r'[\\/*?:\[\]]', '', base_name)
                       
-                      # Truncate to 31 chars (Excel limit)
+                      # 3. Truncate to 31 characters (Excel limit)
                       sheet_name = clean_name[:31]
 
-                      # Handle Duplicate Sheet Names
-                      # If truncation results in a duplicate, append _1, _2, etc.
+                      # 4. Handle Duplicates (e.g. Report.pdf and Report.v2.pdf might both truncate to "Report")
                       original_truncated = sheet_name
                       counter = 1
                       while sheet_name in used_sheet_names:
-                          # Shorten further to make room for suffix
                           suffix = f"_{counter}"
+                          # Trim original name to make room for suffix
                           max_len = 31 - len(suffix)
                           sheet_name = original_truncated[:max_len] + suffix
                           counter += 1
                       
                       used_sheet_names.add(sheet_name)
 
-                      # 4. Write to Excel
+                      # Write to specific sheet
                       df.to_excel(writer, sheet_name=sheet_name, index=False)
-                      print(f"Processed: '{pdf_file}' into Sheet: '{sheet_name}'")
+                      print(f"  -> Added as sheet: '{sheet_name}'")
 
                   except Exception as e:
-                      print(f"Error processing {pdf_file}: {e}")
+                      print(f"  -> Error processing {pdf_file}: {e}")
 
           if os.path.exists(output_filename):
               print(f"Successfully created {output_filename}")
