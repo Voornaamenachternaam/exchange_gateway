@@ -19,105 +19,77 @@ jobs:
         uses: actions/setup-python@v6.1.0
         with:
           python-version: '3.13'
-          check-latest: true 
+          check-latest: true
 
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install pandas openpyxl pdfplumber
 
       - name: Download and Extract ZIP
         env:
-          TARGET_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip' 
+          TARGET_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
         run: |
-          echo "Downloading from $TARGET_URL..."
-          curl -L -o download.zip "$TARGET_URL"
-           
-          echo "Unzipping all files flattened..."
-          # Removed "*.pdf" filter to ensure nested files are extracted
-          # -j flattens directory structure (junks paths)
-          # -o overwrites without prompting
-          # -q performs operations quietly
-          unzip -q -o -j download.zip
+          curl -L "$TARGET_URL" -o exchange_protocols.zip
+          unzip -o -j exchange_protocols.zip "*.pdf"
 
       - name: Convert PDFs to Excel
         run: |
-          cat <<EOF > process_pdfs.py
+          cat > process_pdfs.py << 'EOF'
+          import os
           import glob
+          import re
           import pandas as pd
           import pdfplumber
-          import os
-          import re
-          import sys
 
-          # Find all PDFs in the current directory (now flattened)
-          pdf_files = glob.glob("*.pdf")
-          output_filename = "combined_pdf_data.xlsx"
+          pdf_files = sorted(glob.glob("*.pdf"))
+          output_file = "Exchange protocols.xlsx"
           used_sheet_names = set()
 
-          print(f"Found {len(pdf_files)} PDF files.")
-
           if not pdf_files:
-              print("No PDF files found after extraction. Exiting.")
-              sys.exit(0) # Exit gracefully or use sys.exit(1) to fail the job
+              raise RuntimeError("No PDF files found")
 
-          # Context manager ensures the file is saved and closed properly
-          with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
-              for pdf_file in pdf_files:
-                  try:
-                      print(f"Processing: {pdf_file}")
-                      text_content = ""
-                      
-                      # Extract text from PDF
-                      with pdfplumber.open(pdf_file) as pdf:
-                          for page in pdf.pages:
-                              page_text = page.extract_text()
-                              if page_text:
-                                  text_content += page_text + "\n"
-                      
-                      # Create DataFrame: Split by newline to maintain readability in Excel rows
-                      lines = text_content.split('\n')
-                      df = pd.DataFrame(lines, columns=["Full Content"])
+          with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+              for pdf_path in pdf_files:
+                  full_text = []
 
-                      # --- Sheet Name Sanitization ---
-                      # 1. Get base filename
-                      base_name = os.path.splitext(pdf_file)[0]
-                      
-                      # 2. Remove invalid Excel characters: \ / ? * [ ] :
-                      clean_name = re.sub(r'[\\/*?:\[\]]', '', base_name)
-                      
-                      # 3. Truncate to 31 characters (Excel limit)
-                      sheet_name = clean_name[:31]
+                  with pdfplumber.open(pdf_path) as pdf:
+                      for page in pdf.pages:
+                          text = page.extract_text()
+                          if text:
+                              full_text.extend(text.splitlines())
 
-                      # 4. Handle Duplicates (e.g. Report.pdf and Report.v2.pdf might both truncate to "Report")
-                      original_truncated = sheet_name
-                      counter = 1
-                      while sheet_name in used_sheet_names:
-                          suffix = f"_{counter}"
-                          # Trim original name to make room for suffix
-                          max_len = 31 - len(suffix)
-                          sheet_name = original_truncated[:max_len] + suffix
-                          counter += 1
-                      
-                      used_sheet_names.add(sheet_name)
+                  if not full_text:
+                      full_text.append("")
 
-                      # Write to specific sheet
-                      df.to_excel(writer, sheet_name=sheet_name, index=False)
-                      print(f"  -> Added as sheet: '{sheet_name}'")
+                  df = pd.DataFrame(full_text, columns=["Content"])
 
-                  except Exception as e:
-                      print(f"  -> Error processing {pdf_file}: {e}")
+                  base = os.path.splitext(os.path.basename(pdf_path))[0]
+                  clean = re.sub(r'[\\/*?:\[\]]', '', base).strip()
+                  sheet = clean[:31]
 
-          if os.path.exists(output_filename):
-              print(f"Successfully created {output_filename}")
-          else:
-              print("Failed to create Excel file.")
+                  if not sheet:
+                      sheet = "Sheet"
+
+                  original = sheet
+                  index = 1
+                  while sheet in used_sheet_names:
+                      suffix = f"_{index}"
+                      sheet = original[:31 - len(suffix)] + suffix
+                      index += 1
+
+                  used_sheet_names.add(sheet)
+                  df.to_excel(writer, sheet_name=sheet, index=False)
+
+          if not os.path.exists(output_file):
+              raise RuntimeError("Excel file was not created")
           EOF
-           
+
           python process_pdfs.py
 
       - name: Upload Excel Artifact
         uses: actions/upload-artifact@v6.0.0
         with:
           name: daily-pdf-report
-          path: combined_pdf_data.xlsx
+          path: Exchange protocols.xlsx
           retention-days: 5
