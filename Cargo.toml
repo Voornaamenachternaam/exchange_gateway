@@ -9,7 +9,7 @@ rust-version = "1.92.0"
 tokio = { version = "^1.48.0", features = ["full"] }
 
 # HTTP server / framework
-axum = "^0.8.7"
+axum = "^0.8.8"
 hyper = "^1.8.1"
 
 # HTTP client (reqwest) - using rustls + json features (valid feature names).
