@@ -37,7 +37,7 @@ impl CaldavClient {
     }
 
     pub async fn query_events(
-        &self,
+        &self,&&
         collection_href: &str,
         start: &str,
         end: &str,
