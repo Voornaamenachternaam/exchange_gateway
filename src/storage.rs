@@ -1,7 +1,10 @@
+// src/storage.rs
+
 use anyhow::Result;
 use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use std::path::Path;
 
+/// SQLite-based storage for sync state and ID mappings.
 #[derive(Clone)]
 pub struct Storage {
     pub pool: SqlitePool,
@@ -13,16 +16,12 @@ impl Storage {
         if let Some(parent) = Path::new(db_path).parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        // sqlite in-file DSN
         let db_url = format!("sqlite://{}?mode=rwc", db_path);
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(&db_url)
             .await?;
-        Ok(Self {
-            pool,
-            db_path: db_path.to_string(),
-        })
+        Ok(Self { pool, db_path: db_path.to_string() })
     }
 
     pub async fn run_migrations(&self) -> Result<()> {
@@ -32,12 +31,10 @@ impl Storage {
     }
 
     pub async fn get_sync_key(&self, owner: &str, collection_id: &str) -> Result<Option<String>> {
-        let row =
-            sqlx::query("SELECT sync_key FROM sync_state WHERE owner = ? AND collection_id = ?")
-                .bind(owner)
-                .bind(collection_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row = sqlx::query("SELECT sync_key FROM sync_state WHERE owner = ? AND collection_id = ?")
+            .bind(owner).bind(collection_id)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|r| r.get::<String, _>("sync_key")))
     }
 
@@ -49,9 +46,14 @@ impl Storage {
         token: Option<&str>,
     ) -> Result<()> {
         let token = token.unwrap_or("");
-        sqlx::query("INSERT INTO sync_state (owner, collection_id, sync_key, last_sync_token, last_sync_ts) VALUES (?, ?, ?, ?, strftime('%s','now')) ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key=excluded.sync_key, last_sync_token=excluded.last_sync_token, last_sync_ts=strftime('%s','now')")
-            .bind(owner).bind(collection_id).bind(sync_key).bind(token)
-            .execute(&self.pool).await?;
+        sqlx::query("
+            INSERT INTO sync_state (owner, collection_id, sync_key, last_sync_token, last_sync_ts) 
+            VALUES (?, ?, ?, ?, strftime('%s','now')) 
+            ON CONFLICT(owner, collection_id) DO UPDATE 
+              SET sync_key=excluded.sync_key, last_sync_token=excluded.last_sync_token, last_sync_ts=strftime('%s','now')
+        ")
+        .bind(owner).bind(collection_id).bind(sync_key).bind(token)
+        .execute(&self.pool).await?;
         Ok(())
     }
 
@@ -64,9 +66,14 @@ impl Storage {
         uid: &str,
         etag: &str,
     ) -> Result<()> {
-        sqlx::query("INSERT INTO items_map (owner, caldav_href, resource_href, server_id, uid, etag, last_sync) VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now')) ON CONFLICT(server_id) DO UPDATE SET resource_href=excluded.resource_href, uid=excluded.uid, etag=excluded.etag, last_sync=strftime('%s','now')")
-            .bind(owner).bind(caldav_href).bind(resource_href).bind(server_id).bind(uid).bind(etag)
-            .execute(&self.pool).await?;
+        sqlx::query("
+            INSERT INTO items_map (owner, caldav_href, resource_href, server_id, uid, etag, last_sync) 
+            VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now')) 
+            ON CONFLICT(server_id) DO UPDATE 
+              SET resource_href=excluded.resource_href, uid=excluded.uid, etag=excluded.etag, last_sync=strftime('%s','now')
+        ")
+        .bind(owner).bind(caldav_href).bind(resource_href).bind(server_id).bind(uid).bind(etag)
+        .execute(&self.pool).await?;
         Ok(())
     }
 
@@ -91,20 +98,18 @@ impl Storage {
         owner: &str,
         since_unix_ts: i64,
     ) -> Result<Vec<(String, String)>> {
-        let rows = sqlx::query(
-            "SELECT server_id, resource_href FROM items_map WHERE owner = ? AND last_sync >= ?",
-        )
+        let rows = sqlx::query("
+            SELECT server_id, resource_href 
+            FROM items_map 
+            WHERE owner = ? AND last_sync >= ?
+        ")
         .bind(owner)
         .bind(since_unix_ts)
         .fetch_all(&self.pool)
         .await?;
-        let mut res = Vec::new();
-        for r in rows {
-            res.push((
-                r.get::<String, _>("server_id"),
-                r.get::<String, _>("resource_href"),
-            ));
-        }
-        Ok(res)
+        Ok(rows.iter().map(|r| (
+            r.get::<String, _>("server_id"),
+            r.get::<String, _>("resource_href")
+        )).collect())
     }
 }
