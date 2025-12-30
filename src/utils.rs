@@ -1,3 +1,6 @@
+// src/utils.rs
+
+/// Wrap a SOAP body in an Exchange SOAP Envelope.
 pub fn ews_soap_envelope(body: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
