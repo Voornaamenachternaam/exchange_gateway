@@ -1,8 +1,10 @@
-// caldav
+// src/caldav.rs
+
 use crate::config::Config;
 use anyhow::Result;
 use reqwest::Client;
 
+/// Helper for CalDAV operations against Stalwart’s calendar.
 pub struct CaldavClient {
     base: String,
     client: Client,
@@ -17,9 +19,14 @@ impl CaldavClient {
         }
     }
 
+    /// Find the user's calendar collections (home principal).
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
-        // Convention: Stalwart calendar home at {base}/{username}/calendar/
-        let url = format!("{}cal/{}", self.base.trim_end_matches('/'), username);
+        // Stalwart's default calendar home is at /dav/cal/{username}
+        let url = format!(
+            "{}cal/{}",
+            self.base.trim_end_matches('/'),
+            username
+        );
         let resp = self
             .client
             .get(&url)
@@ -36,6 +43,7 @@ impl CaldavClient {
         }
     }
 
+    /// Query events between start and end (RFC3339) and return raw XML (Calendar-query REPORT).
     pub async fn query_events(
         &self,
         collection_href: &str,
@@ -71,10 +79,10 @@ impl CaldavClient {
             .body(report)
             .send()
             .await?;
-        let txt = resp.text().await?;
-        Ok(txt)
+        Ok(resp.text().await?)
     }
 
+    /// Fetch a single event resource (ICS) by its URL.
     pub async fn get_event(
         &self,
         resource_href: &str,
@@ -91,6 +99,7 @@ impl CaldavClient {
         Ok(txt)
     }
 
+    /// PUT (upload) an event ICS into the calendar.
     pub async fn put_event(
         &self,
         collection_href: &str,
@@ -124,6 +133,7 @@ impl CaldavClient {
         }
     }
 
+    /// DELETE an event resource.
     pub async fn delete_event(
         &self,
         resource_href: &str,
