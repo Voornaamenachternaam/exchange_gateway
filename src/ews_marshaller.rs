@@ -1,16 +1,13 @@
+// src/ews_marshaller.rs
+
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use quick_xml::Reader;
 use quick_xml::events::Event as QEvent;
 use uuid::Uuid;
 
-/// Convert EWS CalendarItem XML -> ICS string.
-/// This implementation parses a minimal set of EWS CalendarItem fields:
-/// Subject, Location, Body, Start, End (if present) and then builds an ICS string.
-///
-/// Implementation notes:
-/// - Uses `reader.read_text(e.name())` to obtain decoded element text (returns Cow<'_, str>).
-/// - Converts the Cow to an owned String with `into_owned()` before assigning to Option<String>.
+/// Convert a minimal subset of EWS CalendarItem XML into an ICS string.
+/// Supports Subject, Location, Body, Start, End. (No attendees/recurrence in this stub.)
 pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -24,22 +21,20 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(QEvent::Start(e)) => {
-                // e.name() returns the QName needed by read_text in quick-xml 0.38.x
                 if let Ok(txt_cow) = reader.read_text(e.name()) {
                     let txt: String = txt_cow.into_owned();
                     if let Ok(name_str) = std::str::from_utf8(e.local_name().as_ref()) {
-                        match name_str.to_lowercase().as_str() {
-                            "t:subject" | "subject" => subject = Some(txt),
-                            "t:location" | "location" => location = Some(txt),
-                            "t:body" | "body" => description = Some(txt),
-                            "t:start" | "start" => dtstart = Some(txt),
-                            "t:end" | "end" => dtend = Some(txt),
+                        match name_str {
+                            "t:Subject" | "Subject" => subject = Some(txt),
+                            "t:Location" | "Location" => location = Some(txt),
+                            "t:Body" | "Body" => description = Some(txt),
+                            "t:Start" | "Start" => dtstart = Some(txt),
+                            "t:End" | "End" => dtend = Some(txt),
                             _ => {}
                         }
                     }
                 }
             }
-            Ok(QEvent::End(_)) => {}
             Ok(QEvent::Eof) => break,
             Err(e) => return Err(anyhow!("XML parse error: {}", e)),
             _ => {}
@@ -47,15 +42,13 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
         buf.clear();
     }
 
-    // Build ICS manually (RFC 5545 minimal)
+    // Build ICS (RFC5545) with minimal fields.
     let start_dt: DateTime<Utc> = if let Some(s) = dtstart {
         match DateTime::parse_from_rfc3339(&s) {
             Ok(dt) => dt.with_timezone(&Utc),
             Err(_) => Utc::now(),
         }
-    } else {
-        Utc::now()
-    };
+    } else { Utc::now() };
 
     let end_dt: DateTime<Utc> = if let Some(s) = dtend {
         match DateTime::parse_from_rfc3339(&s) {
@@ -71,23 +64,16 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let descr = description.as_deref().unwrap_or("");
     let loc = location.as_deref().unwrap_or("");
 
+    // Note: no timezone handling, output Zulu times.
     let ics = format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//ExchangeGateway//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{summary}\r\nDESCRIPTION:{descr}\r\nLOCATION:{loc}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{dtstart}\r\nDTEND:{dtend}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//ExchangeGateway//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nDTSTART:{dtstart}\r\nDTEND:{dtend}\r\nSUMMARY:{summary}\r\nDESCRIPTION:{descr}\r\nLOCATION:{loc}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
         uid = uid,
-        summary = escape_ics(summary),
-        descr = escape_ics(descr),
-        loc = escape_ics(loc),
-        dtstamp = Utc::now().format("%Y%m%dT%H%M%SZ"),
+        stamp = Utc::now().format("%Y%m%dT%H%M%SZ"),
         dtstart = start_dt.format("%Y%m%dT%H%M%SZ"),
         dtend = end_dt.format("%Y%m%dT%H%M%SZ"),
+        summary = summary,
+        descr = descr,
+        loc = loc,
     );
-
     Ok(ics)
-}
-
-fn escape_ics(s: &str) -> String {
-    s.replace("\\", "\\\\")
-        .replace("\n", "\\n")
-        .replace(",", "\\,")
-        .replace(";", "\\;")
 }
