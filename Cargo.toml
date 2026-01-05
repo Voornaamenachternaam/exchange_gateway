@@ -6,7 +6,7 @@ rust-version = "1.92.0"
 
 [dependencies]
 # Tokio runtime
-tokio = { version = "^1.48.0", features = ["full"] }
+tokio = { version = "^1.49.0", features = ["full"] }
 
 # HTTP server / framework
 axum = "^0.8.8"
