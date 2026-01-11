@@ -10,12 +10,13 @@ pub struct CaldavClient {
 
 impl CaldavClient {
     pub async fn new(cfg: &Config) -> Self {
-        let client = Client::builder().build().await.unwrap();
+        let client = Client::builder().build().unwrap();
         CaldavClient {
             base: cfg.caldav_base.clone(),
             client,
         }
     }
+}
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
         // Convention: Stalwart calendar home at {base}/{username}/calendar/
