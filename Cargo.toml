@@ -13,7 +13,7 @@ axum = "^0.8.8"
 hyper = "^1.8.1"
 
 # HTTP client (reqwest) - using rustls + json features (valid feature names).
-reqwest = { version = "^0.13.1", features = ["rustls-tls", "json"] }
+reqwest = { version = "^0.13.1", features = ["rustls", "json"] }
 
 # XML parsing (quick-xml) - pinned to published version on docs.rs/crates
 quick-xml = "^0.38.4"
@@ -24,7 +24,10 @@ serde_json = "^1.0.149"
 toml = "^0.9.11"
 
 # SQLx - use separate runtime + TLS + sqlite + macros (matches SQLx docs)
-sqlx = { version = "^0.8.6", features = ["sqlite", "runtime-tokio", "tls-native-tls", "macros"] }
+sqlx = { version = "^0.8.6", features = ["sqlite", "runtime-tokio", "tls-rustls", "macros"] }
+
+# Explicit rustls dependency for compatibility
+rustls = "^0.23.36"
 
 # Errors, tracing, utilities
 anyhow = "^1.0.100"
