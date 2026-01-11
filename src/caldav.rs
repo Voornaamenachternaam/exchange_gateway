@@ -9,8 +9,8 @@ pub struct CaldavClient {
 }
 
 impl CaldavClient {
-    pub fn new(cfg: &Config) -> Self {
-        let client = Client::builder().build().unwrap();
+    pub async fn new(cfg: &Config) -> Self {
+        let client = Client::builder().build().await.unwrap();
         CaldavClient {
             base: cfg.caldav_base.clone(),
             client,

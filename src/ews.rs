@@ -100,7 +100,7 @@ async fn handle_create_item(
     match ews_marshaller::ews_calendaritem_to_ics(xml) {
         Ok(ics) => {
             let owner = if !user.is_empty() { user } else { "demo" };
-            let caldav = CaldavClient::new(&state.cfg);
+            let caldav = CaldavClient::new(&state.cfg).await;
             let calendars = match caldav.find_user_calendars(owner, password).await {
                 Ok(c) => c,
                 Err(e) => {
