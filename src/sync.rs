@@ -40,7 +40,7 @@ pub async fn perform_sync(
     password_for_caldav: &str,
 ) -> Result<String> {
     let storage: &Storage = &state.storage;
-    let caldav = CaldavClient::new(&state.cfg);
+    let caldav = CaldavClient::new(&state.cfg).await?;
     let calendars = caldav
         .find_user_calendars(username_for_caldav, password_for_caldav)
         .await?;

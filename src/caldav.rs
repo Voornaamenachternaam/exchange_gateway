@@ -9,12 +9,12 @@ pub struct CaldavClient {
 }
 
 impl CaldavClient {
-    pub fn new(cfg: &Config) -> Self {
-        let client = Client::builder().build().unwrap();
-        CaldavClient {
+    pub async fn new(cfg: &Config) -> Result<Self> {
+        let client = Client::builder().build().await?;
+        Ok(CaldavClient {
             base: cfg.caldav_base.clone(),
             client,
-        }
+        })
     }
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {

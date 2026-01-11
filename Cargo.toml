@@ -13,7 +13,7 @@ axum = "^0.8.8"
 hyper = "^1.8.1"
 
 # HTTP client (reqwest) - using rustls + json features (valid feature names).
-reqwest = { version = "^0.13.1", features = ["rustls-tls", "json"] }
+reqwest = { version = "^0.13.1", features = ["rustls", "json"] }
 
 # XML parsing (quick-xml) - pinned to published version on docs.rs/crates
 quick-xml = "^0.38.4"
@@ -44,6 +44,9 @@ icalendar = "^0.17.6"
 # crypto helpers
 hmac = "^0.12.1"
 sha2 = "^0.10.9"
+
+# TLS implementation
+rustls = "^0.23.36"
 
 # bytes & misc
 bytes = "^1.11.0"

@@ -100,7 +100,12 @@ async fn handle_create_item(
     match ews_marshaller::ews_calendaritem_to_ics(xml) {
         Ok(ics) => {
             let owner = if !user.is_empty() { user } else { "demo" };
-            let caldav = CaldavClient::new(&state.cfg);
+            let caldav = match CaldavClient::new(&state.cfg).await {
+                Ok(client) => client,
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create CalDAV client: {}", e)).into_response();
+                }
+            };
             let calendars = match caldav.find_user_calendars(owner, password).await {
                 Ok(c) => c,
                 Err(e) => {
