@@ -39,7 +39,7 @@ jobs:
           permission-pull-requests: 'write'
 
       - name: 'Checkout repository'
-        uses: 'actions/checkout@v6.0.1' # ratchet:actions/checkout@v5
+        uses: 'actions/checkout@v6.0.2' # ratchet:actions/checkout@v5
 
       - name: 'Run Gemini pull request review'
         uses: 'google-github-actions/run-gemini-cli@v0.1.19' # ratchet:exclude
