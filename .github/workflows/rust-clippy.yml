@@ -55,7 +55,7 @@ jobs:
 
       - name: Create or update Pull Request with fixes
         if: steps.clippy_fix.outputs.changes == 'true'
-        uses: peter-evans/create-pull-request@v8.0.0
+        uses: peter-evans/create-pull-request@v8.1.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: clippy-fixes-${{ github.run_id }}
