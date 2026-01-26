@@ -1,7 +1,6 @@
 name: try-auto-fix
 
 on: 
-  push:
   pull_request:
   workflow_dispatch: {}
 
@@ -37,7 +36,7 @@ jobs:
 
       - name: Run rustfmt
         run: |
-          cargo fmt --all --check
+          cargo fmt --all
 
       - name: Re-run tests
         run: |
