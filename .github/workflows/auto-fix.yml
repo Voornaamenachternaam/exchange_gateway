@@ -1,7 +1,6 @@
 name: try-auto-fix
 
 on: 
-  push:
   pull_request:
   workflow_dispatch: {}
 
@@ -23,26 +22,17 @@ jobs:
           components: clippy,rustfmt
           override: true
 
-      - name: Cache cargo registry & target
-        uses: actions/cache@v5.0.2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Run initial build & tests
         run: |
           cargo test --workspace
 
       - name: Try cargo fix (compiler fixes)
         run: |
-          cargo fix --workspace --allow-dirty --allow-staged || true
+          cargo fix --all-targets --all-features --workspace --allow-dirty --allow-staged
 
       - name: Try clippy auto-fixes
         run: |
-          cargo clippy --all-targets --all-features --workspace --fix --allow-dirty --allow-staged || true
+          cargo clippy --all-targets --all-features --workspace --fix --allow-dirty --allow-staged
 
       - name: Run rustfmt
         run: |
