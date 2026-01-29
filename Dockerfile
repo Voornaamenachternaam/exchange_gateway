@@ -9,7 +9,7 @@ COPY config.toml ./config.toml
 
 RUN cargo build --release
 
-FROM debian:trixie-slim
+FROM debian:stable-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /usr/src/exchange_gateway/target/release/exchange_gateway /usr/local/bin/exchange_gateway
