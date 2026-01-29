@@ -1,4 +1,6 @@
 # Exchange Gateway (EWS/EAS ↔ CalDAV) for Stalwart Mailserver
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FVoornaamenachternaam%2Fexchange_gateway.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FVoornaamenachternaam%2Fexchange_gateway?ref=badge_shield)
+
 
 This repository implements an Exchange-compatible gateway in Rust that translates Outlook EWS and ActiveSync calendar operations to CalDAV operations against a Stalwart Mailserver instance.
 
@@ -12,3 +14,7 @@ This repository implements an Exchange-compatible gateway in Rust that translate
    docker compose up -d
 4. Health check:
    curl http://localhost:8081/health
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FVoornaamenachternaam%2Fexchange_gateway.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FVoornaamenachternaam%2Fexchange_gateway?ref=badge_large)
