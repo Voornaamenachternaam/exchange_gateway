@@ -1,4 +1,4 @@
-// config
+// config.rs
 use serde::Deserialize;
 use std::fs;
 
