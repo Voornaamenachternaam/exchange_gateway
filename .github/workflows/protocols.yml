@@ -18,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6.2.0
         with:
-          python-version: 'stable'
+          python-version: 'main'
           check-latest: true
 
       - name: Install dependencies
