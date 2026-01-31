@@ -1,0 +1,79 @@
+name: Publish Docker image on release
+
+# Trigger when a GitHub Release is published (this includes the tag and release title)
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+  attestations: write
+
+jobs:
+  publish:
+    name: Build & publish multi-arch Docker image
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.1
+
+      - name: Set variables from release
+        id: vars
+        run: |
+          echo "RELEASE_TAG=${GITHUB_EVENT_RELEASE_TAG_NAME:-${{ github.event.release.tag_name }}}" >> "$GITHUB_ENV"
+          # fall back if event JSON key differs; ensure variable exists
+          echo "IMAGE_NAME=${{ secrets.DOCKER_NAMESPACE }}/${{ secrets.DOCKER_REPO }}" >> "$GITHUB_ENV"
+          echo "FULL_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+        # NOTE: For release event, github.event.release.tag_name contains the tag (e.g. "v0.3.2")
+
+      - name: Setup QEMU (for cross-arch emulation)
+        uses: docker/setup-qemu-action@v3.7.0
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+        with:
+          install: true
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3.7.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push multi-arch image (amd64 + arm64)
+        id: build
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.FULL_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+          # set some useful labels (optional)
+          labels: |
+            org.opencontainers.image.created=${{ steps.build.outputs.created }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # enable buildkit inline cache export/import if you want faster rebuilds (requires registry support)
+          # cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache
+          # cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:cache,mode=max
+
+      - name: Show pushed digest (for logging)
+        run: |
+          echo "build outputs:"
+          echo "  digest: ${{ steps.build.outputs.digest || 'none' }}"
+          echo "  ref: ${{ env.IMAGE_NAME }}:${{ env.FULL_TAG }}"
+        # Note: build-push-action populates steps.build.outputs.digest when push=true
+
+      - name: Generate artifact attestation
+        if: ${{ steps.build.outputs.digest != '' }}
+        uses: actions/attest-build-provenance@v3.2.0
+        with:
+          subject-name: index.docker.io/${{ secrets.DOCKER_NAMESPACE }}/${{ secrets.DOCKER_REPO }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
