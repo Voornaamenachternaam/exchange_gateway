@@ -13,7 +13,7 @@ axum = "^0.8.8"
 hyper = "^1.8.1"
 
 # HTTP client (reqwest) - using rustls + json features (valid feature names).
-reqwest = { version = "^0.13.1", features = ["rustls", "json"] }
+reqwest = { version = "^0.13.2", features = ["rustls", "json"] }
 
 # XML parsing (quick-xml) - pinned to published version on docs.rs/crates
 quick-xml = "^0.39.0"
