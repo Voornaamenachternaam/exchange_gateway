@@ -86,7 +86,7 @@ jobs:
 
       - name: Build and push multi-arch image (amd64 + arm64)
         id: build
-        uses: docker/build-push-action@v6.18.0
+        uses: docker/build-push-action@v6.19.1
         with:
           context: .
           file: ./Dockerfile
