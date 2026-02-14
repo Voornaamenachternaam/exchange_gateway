@@ -2,7 +2,7 @@
 name = "exchange_gateway"
 version = "0.3.3"
 edition = "2024"
-rust-version = "1.93.0"
+rust-version = "1.93.1"
 
 [dependencies]
 # Tokio runtime
