@@ -1,7 +1,7 @@
 use axum::{
-    Router,
     extract::Extension,
     routing::{get, post},
+    Router,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,23 +13,26 @@ mod ews;
 mod ews_marshaller;
 mod models;
 mod sync;
+mod storage;
 mod utils;
 mod wbxml;
 
 use config::Config;
 use models::AppState;
-use sync::Storage; // Storage is now our Cloudflare-backed storage
+use storage::Storage;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
+    // Load configuration
     let cfg = Config::load("/etc/exchange-gateway/config.toml")?;
+    // Initialize storage (Cloudflare Worker-backed)
     let storage = Arc::new(Storage::new(&cfg));
 
     let state = Arc::new(AppState {
         cfg: cfg.clone(),
-        storage: storage.clone(),
+        storage,
     });
 
     let app = Router::new()
@@ -39,10 +42,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(state));
 
     let addr: SocketAddr = cfg.http_bind.parse()?;
-    println!("Listening on http://{}", addr);
+    tracing::info!("Starting exchange_gateway on http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-
+    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
     Ok(())
 }
