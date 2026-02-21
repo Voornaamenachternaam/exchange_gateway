@@ -8,13 +8,14 @@ pub struct Config {
     pub tls_cert: String,
     pub tls_key: String,
     pub caldav_base: String,
-    pub db_path: String,
+
+    // Cloudflare Worker endpoint (the worker you deployed)
+    pub worker_url: String,
+    // Secret value that the Rust gateway will send to the worker in a header
+    pub worker_secret: String,
+
     pub hmac_secret: String,
     pub log_level: Option<String>,
-
-    // Cloudflare Worker settings for D1 storage
-    pub worker_url: String,
-    pub worker_secret: String,
 }
 
 impl Config {
