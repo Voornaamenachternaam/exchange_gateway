@@ -1,17 +1,11 @@
-// ews_marshaller
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use quick_xml::Reader;
 use quick_xml::events::Event as QEvent;
 use uuid::Uuid;
 
-/// Convert EWS CalendarItem XML -> ICS string.
-/// This implementation parses a minimal set of EWS CalendarItem fields:
-/// Subject, Location, Body, Start, End (if present) and then builds an ICS string.
-///
-/// Implementation notes:
-/// - Uses `reader.read_text(e.name())` to obtain decoded element text (returns Cow<'_, str>).
-/// - Converts the Cow to an owned String with `into_owned()` before assigning to Option<String>.
+/// Convert EWS `<CalendarItem>` XML -> ICS string (RFC 5545).
+/// This handles only a minimal subset of fields (Subject, Location, Body, Start, End).
 pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -25,7 +19,6 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(QEvent::Start(e)) => {
-                // e.name() returns the QName needed by read_text in quick-xml 0.38.x
                 if let Ok(txt_cow) = reader.read_text(e.name()) {
                     let txt: String = txt_cow.into_owned();
                     if let Ok(name_str) = std::str::from_utf8(e.local_name().as_ref()) {
@@ -48,7 +41,7 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
         buf.clear();
     }
 
-    // Build ICS manually (RFC 5545 minimal)
+    // Parse date-times or default if missing
     let start_dt: DateTime<Utc> = if let Some(s) = dtstart {
         match DateTime::parse_from_rfc3339(&s) {
             Ok(dt) => dt.with_timezone(&Utc),
@@ -57,7 +50,6 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     } else {
         Utc::now()
     };
-
     let end_dt: DateTime<Utc> = if let Some(s) = dtend {
         match DateTime::parse_from_rfc3339(&s) {
             Ok(dt) => dt.with_timezone(&Utc),
@@ -72,15 +64,18 @@ pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let descr = description.as_deref().unwrap_or("");
     let loc = location.as_deref().unwrap_or("");
 
+    // Build ICS manually
     let ics = format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//ExchangeGateway//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{summary}\r\nDESCRIPTION:{descr}\r\nLOCATION:{loc}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{dtstart}\r\nDTEND:{dtend}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//ExchangeGateway//EN\r\n\
+BEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{summary}\r\nDESCRIPTION:{descr}\r\n\
+LOCATION:{loc}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{dtstart}\r\nDTEND:{dtend}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
         uid = uid,
         summary = escape_ics(summary),
         descr = escape_ics(descr),
         loc = escape_ics(loc),
         dtstamp = Utc::now().format("%Y%m%dT%H%M%SZ"),
         dtstart = start_dt.format("%Y%m%dT%H%M%SZ"),
-        dtend = end_dt.format("%Y%m%dT%H%M%SZ"),
+        dtend   = end_dt.format("%Y%m%dT%H%M%SZ"),
     );
 
     Ok(ics)
