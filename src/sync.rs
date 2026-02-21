@@ -1,86 +1,68 @@
-// sync.rs
-use crate::caldav::CaldavClient;
 use crate::models::AppState;
-use crate::storage::Storage;
+use crate::caldav::CaldavClient;
 use anyhow::Result;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use std::sync::Arc;
 use uuid::Uuid;
+use std::sync::Arc;
 
-type HmacSha256 = Hmac<Sha256>;
+type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
+/// Generate a unique server ID (URL-safe base64 HMAC) for a resource href.
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC init");
     mac.update(resource_href.as_bytes());
     let result = mac.finalize().into_bytes();
-    // Make sure Engine trait is in scope
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(result)
+    URL_SAFE_NO_PAD.encode(result)
 }
 
+/// Generate a ChangeKey from the ETag and current time.
 pub fn generate_change_key(etag: &str) -> String {
-    // Use timestamp_nanos_opt(). If it returns None, fall back to seconds*1e9
     let now = Utc::now();
-    let nan = now
-        .timestamp_nanos_opt()
-        .unwrap_or(now.timestamp() * 1_000_000_000);
+    let nan = now.timestamp_nanos_opt().unwrap_or(now.timestamp() * 1_000_000_000);
     let payload = format!("{}:{}", etag, nan);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.as_bytes())
+    URL_SAFE_NO_PAD.encode(payload.as_bytes())
 }
 
-/// Perform Sync: list changes via CalDAV REPORT, map them to Add/Change/Delete
+/// Perform an ActiveSync Sync: list changes (placeholder implementation).
 pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,
     collection_id: &str,
     _incoming_sync_key: &str,
     _window_size: usize,
-    username_for_caldav: &str,
-    password_for_caldav: &str,
+    username: &str,
+    password: &str,
 ) -> Result<String> {
-    let storage: &Storage = &state.storage;
+    let storage = &state.storage;
     let caldav = CaldavClient::new(&state.cfg);
-    let calendars = caldav
-        .find_user_calendars(username_for_caldav, password_for_caldav)
-        .await?;
-    let collection_href = calendars
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("no calendars found"))?
-        .clone();
+    let calendars = caldav.find_user_calendars(username, password).await?;
+    let collection_href = calendars.first().ok_or_else(|| anyhow::anyhow!("no calendars found"))?.clone();
 
-    let start = (Utc::now() - chrono::Duration::weeks(52))
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string();
-    let end = (Utc::now() + chrono::Duration::weeks(52))
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string();
+    // Query a broad range of events (1 year back/forth)
+    let start = (Utc::now() - chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
+    let end   = (Utc::now() + chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
+    let _multistatus = caldav.query_events(&collection_href, &start, &end, username, password).await?;
 
-    // Query events (we keep the returned value in case future code uses it)
-    let _multistatus = caldav
-        .query_events(
-            &collection_href,
-            &start,
-            &end,
-            username_for_caldav,
-            password_for_caldav,
-        )
-        .await?;
-
+    // Set a new sync key (UUID)
     let new_sync_key = Uuid::new_v4().to_string();
-    storage
-        .set_sync_key(owner, collection_id, &new_sync_key, Some("token"))
-        .await?;
+    storage.set_sync_key(owner, collection_id, &new_sync_key, Some("token")).await?;
 
-    let mut xml = String::new();
-    xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
-    xml.push_str(r#"<Sync xmlns="AirSync:"><Collections><Collection><Class>Calendar</Class>"#);
-    xml.push_str(&format!(r#"<SyncKey>{}</SyncKey>"#, new_sync_key));
-    xml.push_str(&format!(
-        r#"<CollectionId>{}</CollectionId>"#,
-        collection_id
-    ));
-    xml.push_str(r#"<Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#);
+    // Return an empty Sync response (no commands in this simple implementation)
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:">
+             <Collections>
+               <Collection>
+                 <Class>Calendar</Class>
+                 <SyncKey>{}</SyncKey>
+                 <CollectionId>{}</CollectionId>
+                 <Status>1</Status>
+                 <Commands></Commands>
+               </Collection>
+             </Collections>
+           </Sync>"#,
+        new_sync_key, collection_id
+    );
     Ok(xml)
 }
