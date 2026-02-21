@@ -4,9 +4,6 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev ca-certificates &
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY migrations ./migrations
-COPY config.toml ./config.toml
-
 RUN cargo build --release
 
 FROM debian:stable-slim
@@ -14,6 +11,6 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 WORKDIR /app
 COPY --from=builder /usr/src/exchange_gateway/target/release/exchange_gateway /usr/local/bin/exchange_gateway
 COPY config.toml /etc/exchange-gateway/config.toml
-EXPOSE 8443 8080
+EXPOSE 8443 8080 8133
 USER 1000:1000
 ENTRYPOINT ["/usr/local/bin/exchange_gateway", "--config", "/etc/exchange-gateway/config.toml"]
