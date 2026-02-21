@@ -1,6 +1,5 @@
-// models.rs
 use crate::config::Config;
-use crate::storage::Storage;
+use crate::sync::Storage; // Cloudflare storage as Storage
 use std::sync::Arc;
 
 #[derive(Clone)]
