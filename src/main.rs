@@ -1,51 +1,36 @@
 use axum::{
-    extract::Extension,
-    routing::{get, post},
+    routing::{post, any},
     Router,
 };
 use std::net::SocketAddr;
-use std::sync::Arc;
+use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
 
-mod caldav;
-mod config;
-mod eas;
 mod ews;
-mod ews_marshaller;
-mod models;
-mod storage;
+mod activesync;
+mod config;
 mod sync;
-mod utils;
-mod wbxml;
-mod rrule_engine;
+mod worker_client;
 
 use config::Config;
-use models::AppState;
-use storage::Storage;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
-    let cfg = Config::load("/etc/exchange-gateway/config.toml")?;
-
-    // Initialize worker-backed storage (no local DB, no migrations)
-    let storage_client = Storage::new(&cfg.worker_url, &cfg.worker_secret)?;
-    let storage = Arc::new(storage_client);
-
-    let state = Arc::new(AppState {
-        cfg: cfg.clone(),
-        storage,
-    });
+    let config = Config::load("config.toml")?;
 
     let app = Router::new()
-        .route("/EWS/Exchange.asmx", post(ews::handle_ews))
-        .route("/Microsoft-Server-ActiveSync", post(eas::handle_activesync))
-        .route("/health", get(|| async { "OK" }))
-        .layer(Extension(state));
+        .route("/EWS/*path", post(ews::handle))
+        .route("/Microsoft-Server-ActiveSync", any(activesync::handle))
+        .with_state(config);
 
-    let addr: SocketAddr = cfg.http_bind.parse()?;
-    tracing::info!("Listening on http://{}", addr);
+    let addr: SocketAddr = "0.0.0.0:8080".parse()?;
+    let listener = TcpListener::bind(addr).await?;
 
-    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
+    axum::serve(listener, app).await?;
+
     Ok(())
 }
