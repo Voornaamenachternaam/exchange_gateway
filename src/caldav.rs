@@ -1,4 +1,3 @@
-// caldav.rs
 use crate::config::Config;
 use anyhow::Result;
 use reqwest::Client;
@@ -18,7 +17,7 @@ impl CaldavClient {
     }
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
-        // Convention: Stalwart calendar home at {base}/{username}/calendar/
+        // Convention: Stalwart calendar home at {base}/cal/{username}/
         let url = format!("{}cal/{}", self.base.trim_end_matches('/'), username);
         let resp = self
             .client
