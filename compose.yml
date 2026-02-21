@@ -1,34 +1,28 @@
+# compose.yaml-file used by an existing Stalwart Mailserver v0.15.5 container
 services:
   stalwart:
     image: stalwartlabs/stalwart:latest
-/
-/
-/
-
-  exchange-gateway:
-    build: .
-    image: exchange-gateway:latest
-    container_name: exchange-gateway
     environment:
-      - TZ=[TZ]
-      - RUST_LOG=info
+      - TZ=Europe/Amsterdam
+    hostname: mail.example.com
     restart: unless-stopped
     volumes:
-      - /armblock/exchange-gateway/config:/etc/exchange-gateway
-      - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
+      - /armblock/stalwart/opt:/opt/stalwart
     ports:
-      - "8443:8443"
-      - "8081:8080"
-    depends_on:
-      - stalwart
+      - 8080:8080
+      - 8133:8133
+      - 25:25
+      - 465:465
+      - 587:587
+      - 993:993
+      - 4190:4190
+    dns:
+      - redacted_ipv4
+      - redacted_ipv6
     networks:
       - network1
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
 networks:
   network1:
+    name: my-bridge-network
     external: true
