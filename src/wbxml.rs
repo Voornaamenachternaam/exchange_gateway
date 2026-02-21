@@ -1,10 +1,8 @@
-// wbxml.rs
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
-/// WBXML token tables for ActiveSync code pages used by calendar handling.
-/// Token maps are taken to match Microsoft MS-ASWBXML Code Page 4 (Calendar).
-/// See MS docs: Code Page 4: Calendar. :contentReference[oaicite:1]{index=1}
+/// WBXML token tables for ActiveSync code pages (minimal calendar support).
+/// Code page 0: AirSync; Code page 4: Calendar; Code page 17: AirSyncBase.
 pub struct Wbxml {
     pub codepage: u8,
     pub tok_to_tag: HashMap<(u8, u8), &'static str>,
@@ -16,7 +14,7 @@ impl Wbxml {
         let mut tok_to_tag = HashMap::new();
         let mut tag_to_tok = HashMap::new();
 
-        // Code page 0: AirSync (kept minimal for compatibility)
+        // Code page 0: AirSync (minimal)
         macro_rules! add0 {
             ($t:expr, $s:expr) => {
                 tok_to_tag.insert((0, $t), $s);
@@ -38,21 +36,20 @@ impl Wbxml {
         add0!(0x26, "Commands");
         add0!(0x2A, "ApplicationData");
 
-        // Code page 4: Calendar (token numbers taken from MS-ASWBXML Code Page 4)
+        // Code page 4: Calendar (from MS-ASAIRS)
         macro_rules! add4 {
             ($t:expr, $s:expr) => {
                 tok_to_tag.insert((4, $t), $s);
                 tag_to_tok.insert(($s, 4), $t);
             };
         }
-
         add4!(0x05, "Timezone");
         add4!(0x06, "AllDayEvent");
         add4!(0x07, "Attendees");
         add4!(0x08, "Attendee");
         add4!(0x09, "Email");
         add4!(0x0A, "Name");
-        add4!(0x0B, "Body"); // Note: Body may be replaced by codepage 17 in newer versions
+        add4!(0x0B, "Body");
         add4!(0x0C, "BodyTruncated");
         add4!(0x0D, "BusyStatus");
         add4!(0x0E, "Categories");
@@ -94,7 +91,7 @@ impl Wbxml {
         add4!(0x3B, "OnlineMeetingExternalLink");
         add4!(0x3C, "ClientUid");
 
-        // Code page 17: AirSyncBase (some tags like Body/Location may be mapped here for newer protocol versions)
+        // Code page 17: AirSyncBase (for completeness)
         macro_rules! add17 {
             ($t:expr, $s:expr) => {
                 tok_to_tag.insert((17, $t), $s);
@@ -115,38 +112,20 @@ impl Wbxml {
         }
     }
 
-    /// Return the XML tag for the given code page and token.
-    pub fn token_to_tag(&self, page: u8, token: u8) -> Option<&'static str> {
-        // Mark the configured codepage as read (addresses Clippy), but do not alter behavior.
-        let _cfg = self.codepage;
-        self.tok_to_tag.get(&(page, token)).copied()
-    }
-
-    /// Return the token byte for a given tag and page.
-    pub fn tag_to_token(&self, page: u8, tag: &str) -> Option<u8> {
-        let _cfg = self.codepage;
-        self.tag_to_tok.get(&(tag, page)).copied()
-    }
-
-    /// Rudimentary decoder: if payload starts with '<' treat as XML, otherwise pass-through.
-    /// (Full WBXML parsing/serialization is out of scope for this minimal mapping table.)
+    /// Decode WBXML payload: if it starts with '<', treat as XML, else return UTF-8 string.
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
-        let _cfg = self.codepage;
-
         if bytes.is_empty() {
             return Err(anyhow!("empty payload"));
         }
         if bytes[0] == b'<' {
             return Ok(String::from_utf8(bytes.to_vec())?);
         }
-
-        // Simplified behavior: return raw as UTF-8 string if not real WBXML parsing implemented.
+        // No full WBXML parsing implemented; return raw as UTF-8
         Ok(String::from_utf8(bytes.to_vec())?)
     }
 
-    /// Minimal encoder stub (pass-through).
+    /// Stub encoder (identity).
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-        let _cfg = self.codepage;
         Ok(xml.as_bytes().to_vec())
     }
 }
