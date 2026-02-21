@@ -1,17 +1,23 @@
 use crate::models::AppState;
 use crate::caldav::CaldavClient;
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use uuid::Uuid;
 use std::sync::Arc;
 
-type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+use hmac::Hmac;
+use hmac::Mac;
+use hmac::digest::KeyInit;
+use sha2::Sha256;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Generate a unique server ID (URL-safe base64 HMAC) for a resource href.
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC init");
+    let key = secret.as_bytes();
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC init");
     mac.update(resource_href.as_bytes());
     let result = mac.finalize().into_bytes();
     URL_SAFE_NO_PAD.encode(result)
@@ -52,16 +58,16 @@ pub async fn perform_sync(
     // Return an empty Sync response (no commands in this simple implementation)
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:">
-             <Collections>
-               <Collection>
-                 <Class>Calendar</Class>
-                 <SyncKey>{}</SyncKey>
-                 <CollectionId>{}</CollectionId>
-                 <Status>1</Status>
-                 <Commands></Commands>
-               </Collection>
-             </Collections>
-           </Sync>"#,
+  <Collections>
+    <Collection>
+      <Class>Calendar</Class>
+      <SyncKey>{}</SyncKey>
+      <CollectionId>{}</CollectionId>
+      <Status>1</Status>
+      <Commands></Commands>
+    </Collection>
+  </Collections>
+</Sync>"#,
         new_sync_key, collection_id
     );
     Ok(xml)
