@@ -1,4 +1,3 @@
-// config.rs
 use serde::Deserialize;
 use std::fs;
 
@@ -9,7 +8,8 @@ pub struct Config {
     pub tls_cert: String,
     pub tls_key: String,
     pub caldav_base: String,
-    pub db_path: String,
+    pub worker_url: String,
+    pub worker_secret: String,
     pub hmac_secret: String,
     pub log_level: Option<String>,
 }
