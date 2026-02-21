@@ -1,7 +1,7 @@
-# redacted compose.yaml-file used by an existing Stalwart Mailserver v0.15.5 container
 services:
   stalwart:
     image: stalwartlabs/stalwart:latest
+    container_name: stalwart
     environment:
       - TZ=Europe/Amsterdam
     hostname: mail.example.com
@@ -9,20 +9,30 @@ services:
     volumes:
       - /armblock/stalwart/opt:/opt/stalwart
     ports:
-      - 8080:8080
-      - 8133:8133
-      - 25:25
-      - 465:465
-      - 587:587
-      - 993:993
-      - 4190:4190
-    dns:
-      - redacted_ipv4
-      - redacted_ipv6
+      - "8080:8080"
+      - "8133:8133"
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+      - "4190:4190"
+    networks:
+      - network1
+
+  exchange_gateway:
+    image: youruser/exchange_gateway:latest
+    container_name: exchange_gateway
+    environment:
+      - TZ=Europe/Amsterdam
+    volumes:
+      - /armblock/exchange_gateway/config.toml:/etc/exchange-gateway/config.toml:ro
+    ports:
+      - "8133:8133"
+    depends_on:
+      - stalwart
     networks:
       - network1
 
 networks:
   network1:
-    name: my-bridge-network
     external: true
