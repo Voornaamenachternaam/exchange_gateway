@@ -12,32 +12,24 @@ mod eas;
 mod ews;
 mod ews_marshaller;
 mod models;
-mod storage;
 mod sync;
 mod utils;
 mod wbxml;
 
 use config::Config;
 use models::AppState;
-use storage::Storage;
+use sync::Storage; // Storage is now our Cloudflare-backed storage
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt::init();
 
     let cfg = Config::load("/etc/exchange-gateway/config.toml")?;
+    let storage = Arc::new(Storage::new(&cfg));
 
-    // Storage now uses Cloudflare Worker URL + secret
-    let storage_client = Storage::new(&cfg.worker_url, &cfg.worker_secret).await?;
-    let storage = Arc::new(storage_client);
-
-    // Run a lightweight self-check (no DB migrations locally)
-    let wb = wbxml::Wbxml::new();
-    let _ = wb.token_to_tag(4, 0x26);
-
-    let state = Arc::new(models::AppState {
+    let state = Arc::new(AppState {
         cfg: cfg.clone(),
-        storage,
+        storage: storage.clone(),
     });
 
     let app = Router::new()
@@ -49,6 +41,8 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = cfg.http_bind.parse()?;
     println!("Listening on http://{}", addr);
 
-    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
     Ok(())
 }
