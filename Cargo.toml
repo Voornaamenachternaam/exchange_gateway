@@ -1,6 +1,6 @@
 [package]
 name = "exchange_gateway"
-version = "1.0.1"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.93.1"
 
