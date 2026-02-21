@@ -12,10 +12,11 @@ mod eas;
 mod ews;
 mod ews_marshaller;
 mod models;
-mod sync;
 mod storage;
+mod sync;
 mod utils;
 mod wbxml;
+mod rrule_engine;
 
 use config::Config;
 use models::AppState;
@@ -25,10 +26,11 @@ use storage::Storage;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    // Load configuration
     let cfg = Config::load("/etc/exchange-gateway/config.toml")?;
-    // Initialize storage (Cloudflare Worker-backed)
-    let storage = Arc::new(Storage::new(&cfg));
+
+    // Initialize worker-backed storage (no local DB, no migrations)
+    let storage_client = Storage::new(&cfg.worker_url, &cfg.worker_secret)?;
+    let storage = Arc::new(storage_client);
 
     let state = Arc::new(AppState {
         cfg: cfg.clone(),
@@ -42,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(state));
 
     let addr: SocketAddr = cfg.http_bind.parse()?;
-    tracing::info!("Starting exchange_gateway on http://{}", addr);
+    tracing::info!("Listening on http://{}", addr);
 
     axum::Server::bind(&addr).serve(app.into_make_service()).await?;
     Ok(())
