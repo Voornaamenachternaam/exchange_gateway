@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::sync::Storage; // Cloudflare storage as Storage
+use crate::storage::Storage;
 use std::sync::Arc;
 
 #[derive(Clone)]
