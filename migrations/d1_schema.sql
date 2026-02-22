@@ -1,4 +1,3 @@
-// "migrations/d1_schema.sql"
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
