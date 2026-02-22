@@ -1,23 +1,24 @@
 // src/main.rs
 use axum::{
-    routing::{post, any},
-    Router, Server,
+    routing::{any, post},
+    Router,
 };
+use hyper::Server;
 use std::net::SocketAddr;
-use tracing_subscriber::EnvFilter;
 use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 
-mod config;
 mod caldav;
-mod storage;
-mod models;
-mod rrule_engine;
-mod utils;
-mod wbxml;
+mod config;
+mod eas;
 mod ews;
 mod ews_marshaller;
-mod eas;
+mod models;
+mod rrule_engine;
+mod storage;
 mod sync;
+mod utils;
+mod wbxml;
 
 use config::Config;
 use models::AppState;
@@ -34,7 +35,10 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load("/etc/exchange-gateway/config.toml")?;
     // Initialize storage with Cloudflare Worker endpoint and secret
     let storage = Storage::new(&config.worker_url, &config.worker_secret)?;
-    let app_state = Arc::new(AppState { cfg: config.clone(), storage: Arc::new(storage) });
+    let app_state = Arc::new(AppState {
+        cfg: config.clone(),
+        storage: Arc::new(storage),
+    });
 
     // Build router for EWS and ActiveSync endpoints. Handlers use State<Arc<AppState>>.
     let app = Router::new()
@@ -46,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = config.bind.parse()?;
     tracing::info!("listening on http://{}", addr);
 
-    // Serve the application using axum::Server (stable public API)
+    // Serve the application using hyper::Server
     Server::bind(&addr).serve(app.into_make_service()).await?;
 
     Ok(())
