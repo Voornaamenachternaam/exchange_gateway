@@ -6,14 +6,16 @@ use axum::{
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+use std::sync::Arc;
 
-mod ews;
-mod activesync;
 mod config;
+mod ews;
+mod eas;
 mod sync;
-mod worker_client;
 
 use config::Config;
+use crate::models::AppState;
+use crate::storage::Storage;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,16 +23,26 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    // Load gateway configuration
     let config = Config::load("config.toml")?;
+    // Initialize storage with Cloudflare Worker endpoint
+    let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
+    let app_state = Arc::new(AppState {
+        cfg: config.clone(),
+        storage: storage.clone(),
+    });
 
+    // Build router for EWS and ActiveSync endpoints
     let app = Router::new()
         .route("/EWS/*path", post(ews::handle))
-        .route("/Microsoft-Server-ActiveSync", any(activesync::handle))
-        .with_state(config);
+        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
+        .with_state(app_state);
 
-    let addr: SocketAddr = "0.0.0.0:8080".parse()?;
+    // Bind to configured address (e.g., 0.0.0.0:8133)
+    let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
 
+    // Serve the application
     axum::serve(listener, app).await?;
 
     Ok(())
