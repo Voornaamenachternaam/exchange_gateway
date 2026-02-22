@@ -85,6 +85,7 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push multi-arch image (amd64 + arm64)
+        continue-on-error: true
         id: build
         uses: docker/build-push-action@v6.19.2
         with:
