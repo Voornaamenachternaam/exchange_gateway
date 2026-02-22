@@ -3,6 +3,7 @@ use axum::{
     routing::{post, any},
     Router,
 };
+use hyper::Server;
 use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
 use std::sync::Arc;
@@ -46,8 +47,8 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = config.bind.parse()?;
     tracing::info!("listening on http://{}", addr);
 
-    // Serve the application
-    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
+    // Serve the application using hyper::Server
+    Server::bind(&addr).serve(app.into_make_service()).await?;
 
     Ok(())
 }
