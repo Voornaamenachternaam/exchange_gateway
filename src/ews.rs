@@ -13,7 +13,7 @@ use crate::models::AppState;
 
 /// Handle Exchange Web Services (EWS) requests (minimal implementation).
 pub async fn handle(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: String,
 ) -> Response {
@@ -40,7 +40,6 @@ pub async fn handle(
 
     // For now, ignore SOAP content and always return a simple OK response
     let mut reader = Reader::from_str(&body);
-    reader.trim_text(true);
 
     let mut buf = Vec::new();
     loop {
