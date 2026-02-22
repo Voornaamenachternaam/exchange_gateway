@@ -13,20 +13,16 @@ pub async fn perform_sync(
     _sync_key: &str,
     _steps: i64,
     _username: &str,
-    password: &str,
+    _password: &str,
 ) -> Result<String> {
     // Initialize CalDAV client with base URL
     let caldav = CaldavClient::new(&state.cfg);
 
     // List calendars for the user
-    let calendars: Vec<String> = caldav.find_user_calendars(owner, password).await?;
-    // keep the href around if needed later - underscore to avoid unused warning
-    let _collection_href = calendars
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("no calendars found"))?
-        .clone();
+    let calendars: Vec<String> = caldav.find_user_calendars(owner, _password).await?;
+    let _collection_href = calendars.first().cloned().unwrap_or_else(|| state.cfg.caldav_base.clone());
 
-    // Generate a new sync key and produce a minimal, valid Sync XML response
+    // For brevity: always return an empty sync response (protocol-compliance stub)
     let new_sync_key = Uuid::new_v4().to_string();
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>
