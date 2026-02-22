@@ -1,0 +1,39 @@
+version: "3.8"
+services:
+  stalwart:
+    image: stalwartlabs/stalwart:latest
+    container_name: stalwart
+    hostname: mail.example.com
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Amsterdam
+    volumes:
+      - /armblock/stalwart/opt:/opt/stalwart
+    ports:
+      - "8080:8080"   # Web UI and JMAP
+      # - "8133:8133" # (removed to avoid conflict with gateway)
+      - "25:25"
+      - "465:465"
+      - "587:587"
+    networks:
+      - my-bridge-network
+
+  exchange_gateway:
+    image: youruser/exchange_gateway:latest
+    container_name: exchange_gateway
+    hostname: mail.example.com
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Amsterdam
+    volumes:
+      - /armblock/exchange_gateway/config.toml:/etc/exchange-gateway/config.toml:ro
+    ports:
+      - "8133:8133"  # ActiveSync/EWS endpoint
+    depends_on:
+      - stalwart
+    networks:
+      - my-bridge-network
+
+networks:
+  my-bridge-network:
+    external: true
