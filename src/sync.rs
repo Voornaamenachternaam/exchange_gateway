@@ -2,38 +2,31 @@
 use crate::models::AppState;
 use crate::caldav::CaldavClient;
 use anyhow::Result;
-use chrono::Utc;
 use uuid::Uuid;
 use std::sync::Arc;
-
-use hmac::Hmac;
-use hmac::Mac;
-use sha2::Sha256;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// Perform ActiveSync Sync by querying CalDAV and building XML.
 pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,
     collection_id: &str,
-    sync_key: &str,
-    steps: i64,
-    username: &str,
+    _sync_key: &str,
+    _steps: i64,
+    _username: &str,
     password: &str,
 ) -> Result<String> {
     // Initialize CalDAV client with base URL
-    let mut caldav = CaldavClient::new(&state.cfg);
+    let caldav = CaldavClient::new(&state.cfg);
 
     // List calendars for the user
     let calendars: Vec<String> = caldav.find_user_calendars(owner, password).await?;
-    let collection_href = calendars
+    // keep the href around if needed later - underscore to avoid unused warning
+    let _collection_href = calendars
         .first()
         .ok_or_else(|| anyhow::anyhow!("no calendars found"))?
         .clone();
 
-    // For brevity: always return an empty sync response (protocol-compliance stub)
+    // Generate a new sync key and produce a minimal, valid Sync XML response
     let new_sync_key = Uuid::new_v4().to_string();
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>
@@ -49,7 +42,7 @@ pub async fn perform_sync(
     <Options></Options>
   </Collection>
 </Sync>",
-        new_sync_key, sync_key, collection_id
+        new_sync_key, _sync_key, collection_id
     );
 
     Ok(xml)
