@@ -2,7 +2,7 @@ FROM rust:1.93.1-bullseye AS builder
 WORKDIR /usr/src/exchange_gateway
 RUN apt-get update && apt-get install -y pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
 COPY src ./src
 RUN cargo build --release
 
