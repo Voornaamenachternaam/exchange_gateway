@@ -4,7 +4,6 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use std::sync::Arc;
 
@@ -37,18 +36,18 @@ async fn main() -> anyhow::Result<()> {
     let storage = Storage::new(&config.worker_url, &config.worker_secret)?;
     let app_state = Arc::new(AppState { cfg: config.clone(), storage: Arc::new(storage) });
 
-    // Build router for EWS and ActiveSync endpoints
+    // Build router for EWS and ActiveSync endpoints. Handlers use State<Arc<AppState>>.
     let app = Router::new()
         .route("/EWS/*path", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
-        .with_state(app_state);
+        .with_state(app_state.clone());
 
     // Bind to configured address (e.g., 0.0.0.0:8133)
     let addr: SocketAddr = config.bind.parse()?;
-    let listener = TcpListener::bind(addr).await?;
+    tracing::info!("listening on http://{}", addr);
 
     // Serve the application
-    axum::serve(listener, app).await?;
+    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
 
     Ok(())
 }
