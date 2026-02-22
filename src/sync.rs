@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use hmac::Hmac;
 use hmac::Mac;
-use hmac::digest::KeyInit;
 use sha2::Sha256;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -32,7 +31,7 @@ pub fn generate_change_key(etag: &str) -> String {
     URL_SAFE_NO_PAD.encode(payload.as_bytes())
 }
 
-/// Perform an ActiveSync Sync: list changes (placeholder implementation).
+/// Perform an ActiveSync Sync (minimal implementation): fetch events via CalDAV.
 pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,
@@ -44,19 +43,21 @@ pub async fn perform_sync(
 ) -> Result<String> {
     let storage = &state.storage;
     let caldav = CaldavClient::new(&state.cfg);
+
+    // Discover the user's calendar home
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars.first().ok_or_else(|| anyhow::anyhow!("no calendars found"))?.clone();
 
-    // Query a broad range of events (1 year back/forth)
+    // Query events over a wide date range (1 year back/forth)
     let start = (Utc::now() - chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
-    let end   = (Utc::now() + chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
-    let _multistatus = caldav.query_events(&collection_href, &start, &end, username, password).await?;
+    let end = (Utc::now() + chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
+    let _ = caldav.query_events(&collection_href, &start, &end, username, password).await?;
 
-    // Set a new sync key (UUID)
+    // Generate a new SyncKey and store it
     let new_sync_key = Uuid::new_v4().to_string();
     storage.set_sync_key(owner, collection_id, &new_sync_key, Some("token")).await?;
 
-    // Return an empty Sync response (no commands in this simple implementation)
+    // Return an empty Sync response (no actual items returned)
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:">
   <Collections>
