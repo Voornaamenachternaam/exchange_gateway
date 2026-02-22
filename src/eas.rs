@@ -1,11 +1,10 @@
 // src/eas.rs
 use crate::models::AppState;
-use crate::sync;
 use crate::wbxml::Wbxml;
-use axum::http::HeaderMap;
-use axum::{extract::Extension, http::StatusCode, response::IntoResponse};
+use crate::sync;
+use axum::{extract::State, http::HeaderMap, response::IntoResponse};
+use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use std::sync::Arc;
 
@@ -16,15 +15,12 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
             let s = s.trim();
             if s.to_lowercase().starts_with("basic ") {
                 let b64 = &s[6..].trim();
-                let mut out = Vec::new();
-                if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok() {
-                    if let Ok(creds) = String::from_utf8(out) {
-                        if let Some(idx) = creds.find(':') {
-                            let user = creds[..idx].to_string();
-                            let pass = creds[idx+1..].to_string();
-                            return Some((user, pass));
-                        }
-                    }
+                let dec = STANDARD.decode(b64.as_bytes()).ok()?;
+                let creds = String::from_utf8(dec).ok()?;
+                if let Some(idx) = creds.find(':') {
+                    let user = creds[..idx].to_string();
+                    let pass = creds[idx+1..].to_string();
+                    return Some((user, pass));
                 }
             }
         }
@@ -32,28 +28,24 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     None
 }
 
-/// Handle Exchange ActiveSync commands (minimal calendar support).
+/// ActiveSync minimal handler: supports FolderSync and Sync for calendars.
 pub async fn handle(
-    Extension(state): Extension<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // Decode WBXML payload to XML string
+    // Convert bytes -> xml (WBXML decode attempt)
     let payload = body.to_vec();
     let wbxml = Wbxml::new();
-    let xml: String = match wbxml.decode(&payload) {
+    let xml = match wbxml.decode(&payload) {
         Ok(s) => s,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e))
-                .into_response();
-        }
+        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("WBXML decode error: {}", e)).into_response(),
     };
 
-    // Extract credentials (defaults to "demo" if missing)
-    let (username, password) = parse_basic_auth(&headers)
-        .unwrap_or((String::new(), String::new()));
+    // Parse basic auth to figure out username (if present)
+    let (username, password) = parse_basic_auth(&headers).unwrap_or((String::new(), String::new()));
 
-    // Handle FolderSync: advertise one Calendar folder
+    // FolderSync handling: advertise a Calendar folder
     if xml.contains("<FolderSync") {
         let resp = r#"<?xml version="1.0" encoding="utf-8"?>
 <FolderSync>
@@ -61,28 +53,25 @@ pub async fn handle(
   <SyncKey>0</SyncKey>
   <Folders>
     <Folder>
-      <ServerId>1</ServerId>
+      <ServerId>calendar-1</ServerId>
       <ParentId>0</ParentId>
       <DisplayName>Calendar</DisplayName>
       <Type>8</Type>
     </Folder>
   </Folders>
 </FolderSync>"#;
-        return (StatusCode::OK, resp.to_string()).into_response();
+        return (axum::http::StatusCode::OK, resp).into_response();
     }
-    // Handle Sync: call CalDAV query and return Sync XML
-    else if xml.contains("<Sync") {
+
+    // Sync handling: perform a CalDAV query + build minimal sync XML
+    if xml.contains("<Sync") {
+        // owner defaults to username or "demo"
         let owner = if !username.is_empty() { username.as_str() } else { "demo" };
-        let collection_id = "1";
-        match sync::perform_sync(state, owner, collection_id, "0", 100, &username, &password).await {
-            Ok(resp_xml) => return (StatusCode::OK, resp_xml).into_response(),
-            Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Sync error: {}", e))
-                    .into_response();
-            }
+        match sync::perform_sync(state.0.clone(), owner, "calendar-1", "0", 100, &username, &password).await {
+            Ok(xml) => return (axum::http::StatusCode::OK, xml).into_response(),
+            Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("sync error: {}", e)).into_response(),
         }
     }
 
-    // Default response for unsupported commands
-    (StatusCode::BAD_REQUEST, "Unsupported ActiveSync command").into_response()
+    (axum::http::StatusCode::BAD_REQUEST, "Unsupported command").into_response()
 }
