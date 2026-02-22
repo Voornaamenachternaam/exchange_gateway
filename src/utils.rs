@@ -1,3 +1,4 @@
+// src/utils.rs
 /// Wraps a body string in an EWS SOAP envelope.
 pub fn ews_soap_envelope(body: &str) -> String {
     format!(
