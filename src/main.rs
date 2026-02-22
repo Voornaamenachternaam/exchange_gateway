@@ -3,10 +3,11 @@ use axum::{
     routing::{post, any},
     Router,
 };
-use hyper::Server;
+use hyper::server::conn::Http;
 use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
 use std::sync::Arc;
+use tokio::net::TcpListener;
 
 mod config;
 mod caldav;
@@ -47,8 +48,29 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = config.bind.parse()?;
     tracing::info!("listening on http://{}", addr);
 
-    // Serve the application using hyper::Server
-    Server::bind(&addr).serve(app.into_make_service()).await?;
+    // Create TcpListener and a MakeService which provides a per-connection Service.
+    let listener = TcpListener::bind(addr).await?;
+    let make_svc = app.into_make_service_with_connect_info::<SocketAddr>();
 
-    Ok(())
+    loop {
+        let (stream, remote_addr) = listener.accept().await?;
+        let mut make_svc = make_svc.clone();
+
+        // Serve each connection in its own task.
+        tokio::spawn(async move {
+            // Build the per-connection service
+            let svc = match make_svc.make_service(&remote_addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("make_service error for {}: {}", remote_addr, e);
+                    return;
+                }
+            };
+
+            // Serve the HTTP connection (HTTP/1 + HTTP/2 as negotiated)
+            if let Err(err) = Http::new().serve_connection(stream, svc).await {
+                tracing::error!("error serving connection from {}: {}", remote_addr, err);
+            }
+        });
+    }
 }
