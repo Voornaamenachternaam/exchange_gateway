@@ -41,15 +41,17 @@ pub async fn handle(
     // Decode WBXML payload to XML string
     let payload = body.to_vec();
     let wbxml = Wbxml::new();
-    let xml = match wbxml.decode(&payload) {
+    let xml: String = match wbxml.decode(&payload) {
         Ok(s) => s,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e)).into_response();
+            return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e))
+                .into_response();
         }
     };
 
-    // Extract credentials (ignored for minimal implementation)
-    let (username, password) = parse_basic_auth(&headers).unwrap_or((String::new(), String::new()));
+    // Extract credentials (defaults to "demo" if missing)
+    let (username, password) = parse_basic_auth(&headers)
+        .unwrap_or((String::new(), String::new()));
 
     // Handle FolderSync: advertise one Calendar folder
     if xml.contains("<FolderSync") {
@@ -75,11 +77,8 @@ pub async fn handle(
         match sync::perform_sync(state, owner, collection_id, "0", 100, &username, &password).await {
             Ok(resp_xml) => return (StatusCode::OK, resp_xml).into_response(),
             Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Sync error: {}", e),
-                )
-                .into_response();
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Sync error: {}", e))
+                    .into_response();
             }
         }
     }
