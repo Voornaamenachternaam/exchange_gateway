@@ -12,9 +12,11 @@ use sha2::Sha256;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+#[allow(dead_code)]
 type HmacSha256 = Hmac<Sha256>;
 
 /// Generate a unique server ID (URL-safe base64 HMAC) for a resource href.
+#[allow(dead_code)]
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     let key = secret.as_bytes();
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC init");
@@ -24,6 +26,7 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
 }
 
 /// Generate a ChangeKey from the ETag and current time.
+#[allow(dead_code)]
 pub fn generate_change_key(etag: &str) -> String {
     let now = Utc::now();
     let nan = now.timestamp_nanos_opt().unwrap_or(now.timestamp() * 1_000_000_000);

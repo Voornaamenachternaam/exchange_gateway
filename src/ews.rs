@@ -34,9 +34,8 @@ pub async fn handle(
 
     let mut buf = Vec::new();
     while let Ok(event) = reader.read_event_into(&mut buf) {
-        match event {
-            Event::Eof => break,
-            _ => {}
+        if event == Event::Eof {
+            break;
         }
         buf.clear();
     }

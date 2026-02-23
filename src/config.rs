@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::fs;
 
 #[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct Config {
     pub bind: String,
     pub http_bind: String,

@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 /// Convert EWS `<CalendarItem>` XML -> ICS string (RFC 5545).
 /// This handles only a minimal subset of fields (Subject, Location, Body, Start, End).
+#[allow(dead_code)]
 pub fn ews_calendaritem_to_ics(xml: &str) -> Result<String> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -82,6 +83,7 @@ LOCATION:{loc}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{dtstart}\r\nDTEND:{dtend}\r\nEND
     Ok(ics)
 }
 
+#[allow(dead_code)]
 fn escape_ics(s: &str) -> String {
     s.replace("\\", "\\\\")
         .replace("\n", "\\n")

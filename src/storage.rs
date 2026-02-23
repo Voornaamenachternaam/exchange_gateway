@@ -12,6 +12,7 @@ pub struct Storage {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct GetSyncKeyResp {
     sync_key: Option<String>,
 }
@@ -25,6 +26,7 @@ struct SetSyncKeyReq<'a> {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct UpsertItemReq<'a> {
     owner: &'a str,
     caldav_href: &'a str,
@@ -35,6 +37,7 @@ struct UpsertItemReq<'a> {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ItemByServerIdResp {
     found: bool,
     id: Option<i64>,
@@ -42,6 +45,7 @@ struct ItemByServerIdResp {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ChangeRow {
     server_id: String,
     resource_href: String,
@@ -66,6 +70,7 @@ impl Storage {
         self.secret.clone()
     }
 
+    #[allow(dead_code)]
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
         let resp = self
@@ -102,6 +107,7 @@ impl Storage {
     }
 
     /// Get sync key for owner+collection.
+    #[allow(dead_code)]
     pub async fn get_sync_key(&self, owner: &str, collection_id: &str) -> Result<Option<String>> {
         let path = format!("get_sync_key?owner={}&collection_id={}", urlencoding::encode(owner), urlencoding::encode(collection_id));
         let r: GetSyncKeyResp = self.get_json(&path).await?;
@@ -113,21 +119,25 @@ impl Storage {
         let body = SetSyncKeyReq { owner, collection_id, sync_key, token };
         // this worker returns { ok: true } (we don't depend on response body)
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct OkResp { ok: bool }
         let _r: OkResp = self.post_json("set_sync_key", &body).await?;
         Ok(())
     }
 
     /// Upsert an item mapping (owner, caldav_href, resource_href, server_id, uid, etag)
+    #[allow(dead_code)]
     pub async fn upsert_item_map(&self, owner: &str, caldav_href: &str, resource_href: &str, server_id: &str, uid: &str, etag: &str) -> Result<()> {
         let body = UpsertItemReq { owner, caldav_href, resource_href, server_id, uid, etag };
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct OkResp { ok: bool }
         let _r: OkResp = self.post_json("upsert_item_map", &body).await?;
         Ok(())
     }
 
     /// Get item mapping by server_id -> Option<(id, resource_href)>
+    #[allow(dead_code)]
     pub async fn get_item_by_server_id(&self, server_id: &str) -> Result<Option<(i64, String)>> {
         let path = format!("get_item_by_server_id?server_id={}", urlencoding::encode(server_id));
         let r: ItemByServerIdResp = self.get_json(&path).await?;
@@ -141,16 +151,19 @@ impl Storage {
     }
 
     /// Delete item mapping by server_id
+    #[allow(dead_code)]
     pub async fn delete_item_by_server_id(&self, server_id: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> { server_id: &'a str }
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct OkResp { ok: bool }
         let _r: OkResp = self.post_json("delete_item_by_server_id", &Req { server_id }).await?;
         Ok(())
     }
 
     /// List changes since unix timestamp (seconds) for owner -> Vec<(server_id, resource_href)>
+    #[allow(dead_code)]
     pub async fn list_changes_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<(String, String)>> {
         let path = format!("list_changes_since?owner={}&since={}", urlencoding::encode(owner), since_unix_ts);
         let rows: Vec<ChangeRow> = self.get_json(&path).await?;

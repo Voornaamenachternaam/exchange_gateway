@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 /// WBXML token tables for ActiveSync code pages (minimal calendar support).
 /// Code page 0: AirSync; Code page 4: Calendar; Code page 17: AirSyncBase.
+#[allow(dead_code)]
 pub struct Wbxml {
     pub codepage: u8,
     pub tok_to_tag: HashMap<(u8, u8), &'static str>,
@@ -126,6 +127,7 @@ impl Wbxml {
     }
 
     /// Stub encoder (identity).
+    #[allow(dead_code)]
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
         Ok(xml.as_bytes().to_vec())
     }

@@ -75,6 +75,7 @@ impl CaldavClient {
         Ok(txt)
     }
 
+    #[allow(dead_code)]
     pub async fn get_event(
         &self,
         resource_href: &str,
@@ -91,6 +92,7 @@ impl CaldavClient {
         Ok(txt)
     }
 
+    #[allow(dead_code)]
     pub async fn put_event(
         &self,
         collection_href: &str,
@@ -124,6 +126,7 @@ impl CaldavClient {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn delete_event(
         &self,
         resource_href: &str,

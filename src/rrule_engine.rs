@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use rrule::{RRuleSet, Tz};
 
 /// Expand an RFC 5545 RRULE between two dates.
+#[allow(dead_code)]
 pub fn expand_rrule(
     _dtstart: DateTime<Utc>,
     rrule_str: &str,
