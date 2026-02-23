@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build router for EWS and ActiveSync endpoints
     let app = Router::new()
-        .route("/EWS/*path", post(ews::handle))
+        .route("/EWS/{*path}", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
         .with_state(app_state);
 
