@@ -32,13 +32,13 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     None
 }
 
-/// Handle Exchange ActiveSync commands (minimal calendar support).
+/// Handle ActiveSync HTTP requests (WBXML to XML), call perform_sync, and return XML response.
 pub async fn handle(
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // Decode WBXML payload to XML string
+    // Decode WBXML body to XML
     let payload = body.to_vec();
     let wbxml = Wbxml::new();
     let xml = match wbxml.decode(&payload) {
@@ -48,10 +48,10 @@ pub async fn handle(
         }
     };
 
-    // Extract credentials (ignored for minimal implementation)
+    // Extract Basic auth (username/password)
     let (username, password) = parse_basic_auth(&headers).unwrap_or((String::new(), String::new()));
 
-    // Handle FolderSync: advertise one Calendar folder
+    // FolderSync: advertise one calendar folder (ServerId=1)
     if xml.contains("<FolderSync") {
         let resp = r#"<?xml version="1.0" encoding="utf-8"?>
 <FolderSync>
@@ -62,28 +62,37 @@ pub async fn handle(
       <ServerId>1</ServerId>
       <ParentId>0</ParentId>
       <DisplayName>Calendar</DisplayName>
-      <Type>8</Type>
+      <Type>2</Type>
     </Folder>
   </Folders>
 </FolderSync>"#;
         return (StatusCode::OK, resp.to_string()).into_response();
     }
-    // Handle Sync: call CalDAV query and return Sync XML
+    // Provision: (not needed for calendar)
+
+    // Sync: full calendar sync or incremental
     else if xml.contains("<Sync") {
         let owner = if !username.is_empty() { username.as_str() } else { "demo" };
         let collection_id = "1";
-        match sync::perform_sync(state, owner, collection_id, "0", 100, &username, &password).await {
+        // Extract incoming SyncKey from client
+        let incoming_key_tag = "<SyncKey>";
+        let incoming_key = if let Some(start_idx) = xml.find(incoming_key_tag) {
+            let end_idx = xml.find("</SyncKey>").unwrap_or(start_idx);
+            xml[start_idx + incoming_key_tag.len() .. end_idx].to_string()
+        } else {
+            "0".to_string()
+        };
+        // Perform sync logic
+        match sync::perform_sync(state, owner, collection_id, &incoming_key, 100, &username, &password).await {
             Ok(resp_xml) => return (StatusCode::OK, resp_xml).into_response(),
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Sync error: {}", e),
-                )
-                .into_response();
+                ).into_response();
             }
         }
     }
-
-    // Default response for unsupported commands
+    // Other ActiveSync commands are not implemented in this calendar-only gateway
     (StatusCode::BAD_REQUEST, "Unsupported ActiveSync command").into_response()
 }
