@@ -1,0 +1,127 @@
+FAILED: .
+       Compiling exchange_gateway v1.0.2 (/home/runner/work/exchange_gateway/exchange_gateway)
+    error[E0433]: failed to resolve: could not find `Server` in `server`
+      --> src/main.rs:52:26
+       |
+    52 |     let server = server::Server::bind(&addr).serve(app.into_make_service());
+       |                          ^^^^^^ could not find `Server` in `server`
+    
+    warning: unused import: `base64::engine::general_purpose::STANDARD`
+     --> src/ews.rs:3:5
+      |
+    3 | use base64::engine::general_purpose::STANDARD;
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+    
+    warning: unused import: `base64::Engine`
+     --> src/ews.rs:4:5
+      |
+    4 | use base64::Engine;
+      |     ^^^^^^^^^^^^^^
+    
+    warning: unused import: `std::str`
+     --> src/wbxml.rs:3:5
+      |
+    3 | use std::str;
+      |     ^^^^^^^^
+    
+    warning: variable does not need to be mutable
+      --> src/caldav.rs:27:13
+       |
+    27 |         let mut possible = vec![
+       |             ----^^^^^^^^
+       |             |
+       |             help: remove this `mut`
+       |
+       = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+    
+    error[E0609]: no field `0` on type `Arc<AppState>`
+      --> src/eas.rs:70:40
+       |
+    70 |         match sync::perform_sync(state.0.clone(), owner, "calendar-1", "0", 100, &username, &password).await {
+       |                                        ^ unknown field
+       |
+       = note: available fields are: `cfg`, `storage`
+    
+    error[E0599]: no method named `trim_text` found for struct `quick_xml::Reader<R>` in the current scope
+      --> src/ews.rs:36:12
+       |
+    36 |     reader.trim_text(true);
+       |            ^^^^^^^^^ method not found in `quick_xml::Reader<&[u8]>`
+    
+    error[E0599]: no method named `into_response` found for tuple `(StatusCode, [(&str, &str); 1], std::string::String)` in the current scope
+       --> src/ews.rs:50:87
+        |
+     50 |     (axum::http::StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], soap).into_response()
+        |                                                                                       ^^^^^^^^^^^^^ method not found in `(StatusCode, [(&str, &str); 1], std::string::String)`
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/src/response/into_response.rs:115:8
+        |
+    115 |     fn into_response(self) -> Response;
+        |        ------------- the method is available for `(StatusCode, [(&str, &str); 1], std::string::String)` here
+        |
+        = help: items from traits can only be used if the trait is in scope
+    help: trait `IntoResponse` which provides `into_response` is implemented but not in scope; perhaps you want to import it
+        |
+      2 + use axum::response::IntoResponse;
+        |
+    
+    error[E0382]: borrow of moved value: `res`
+       --> src/storage.rs:41:55
+        |
+     32 |         let res = self
+        |             --- move occurs because `res` has type `reqwest::Response`, which does not implement the `Copy` trait
+    ...
+     40 |             let s = res.text().await.unwrap_or_default();
+        |                         ------ `res` moved due to this method call
+     41 |             anyhow::bail!("worker put failed: {} {}", res.status(), s);
+        |                                                       ^^^ value borrowed here after move
+        |
+    note: `reqwest::Response::text` takes ownership of the receiver `self`, which moves `res`
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.13.2/src/async_impl/response.rs:163:23
+        |
+    163 |     pub async fn text(self) -> crate::Result<String> {
+        |                       ^^^^
+    
+    error[E0382]: borrow of moved value: `res`
+       --> src/storage.rs:62:55
+        |
+     49 |         let res = self
+        |             --- move occurs because `res` has type `reqwest::Response`, which does not implement the `Copy` trait
+    ...
+     61 |             let s = res.text().await.unwrap_or_default();
+        |                         ------ `res` moved due to this method call
+     62 |             anyhow::bail!("worker get failed: {} {}", res.status(), s);
+        |                                                       ^^^ value borrowed here after move
+        |
+    note: `reqwest::Response::text` takes ownership of the receiver `self`, which moves `res`
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.13.2/src/async_impl/response.rs:163:23
+        |
+    163 |     pub async fn text(self) -> crate::Result<String> {
+        |                       ^^^^
+    
+    error[E0599]: no method named `into_response` found for tuple `(StatusCode, &'static str)` in the current scope
+       --> src/ews.rs:54:60
+        |
+     54 |     (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        |                                                            ^^^^^^^^^^^^^ method not found in `(StatusCode, &'static str)`
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/axum-core-0.5.6/src/response/into_response.rs:115:8
+        |
+    115 |     fn into_response(self) -> Response;
+        |        ------------- the method is available for `(StatusCode, &'static str)` here
+        |
+        = help: items from traits can only be used if the trait is in scope
+    help: trait `IntoResponse` which provides `into_response` is implemented but not in scope; perhaps you want to import it
+        |
+      2 + use axum::response::IntoResponse;
+        |
+    
+    Some errors have detailed explanations: E0382, E0433, E0599, E0609.
+    For more information about an error, try `rustc --explain E0382`.
+    warning: `exchange_gateway` (bin "exchange_gateway") generated 4 warnings
+    error: could not compile `exchange_gateway` (bin "exchange_gateway") due to 7 previous errors; 4 warnings emitted
+    warning: build failed, waiting for other jobs to finish...
+    warning: `exchange_gateway` (bin "exchange_gateway" test) generated 4 warnings (4 duplicates)
+    error: could not compile `exchange_gateway` (bin "exchange_gateway" test) due to 7 previous errors; 4 warnings emitted
