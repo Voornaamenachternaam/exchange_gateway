@@ -16,7 +16,7 @@ pub async fn handle(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: String,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     // Extract and validate credentials via the CalDAV backend
     let (username, password) = match parse_basic_auth(&headers) {
         Some(creds) => creds,
@@ -44,17 +44,17 @@ pub async fn handle(
     soap_response()
 }
 
-fn unauthorized() -> impl IntoResponse {
+fn unauthorized() -> axum::response::Response {
     (
         axum::http::StatusCode::UNAUTHORIZED,
         "Unauthorized",
-    )
+    ).into_response()
 }
 
-fn soap_response() -> impl IntoResponse {
+fn soap_response() -> axum::response::Response {
     (
         axum::http::StatusCode::OK,
         [("Content-Type", "text/xml; charset=utf-8")],
         r#"<?xml version="1.0" encoding="utf-8"?><Response>OK</Response>"#,
-    )
+    ).into_response()
 }
