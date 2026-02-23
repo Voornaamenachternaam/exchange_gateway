@@ -6,34 +6,25 @@ use axum::{
 };
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
-use crate::config::Config;
+use std::sync::Arc;
+use crate::caldav::CaldavClient;
+use crate::eas::parse_basic_auth;
+use crate::models::AppState;
 
 /// Handle Exchange Web Services (EWS) requests (minimal implementation).
 pub async fn handle(
-    State(config): State<Config>,
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    // Basic Auth: expect "Authorization: Basic <base64>"
-    if let Some(auth) = headers.get("authorization") {
-        if let Ok(auth_str) = auth.to_str() {
-            if let Some(b64) = auth_str.trim().strip_prefix("Basic ") {
-                let mut decoded = Vec::new();
-                if STANDARD.decode_vec(b64.as_bytes(), &mut decoded).is_err() {
-                    return unauthorized();
-                }
-                if String::from_utf8(decoded).is_err() {
-                    return unauthorized();
-                }
-            } else {
-                return unauthorized();
-            }
-        } else {
-            return unauthorized();
-        }
-    } else {
+    // Extract and validate credentials via the CalDAV backend
+    let (username, password) = match parse_basic_auth(&headers) {
+        Some(creds) => creds,
+        None => return unauthorized(),
+    };
+
+    let caldav = CaldavClient::new(&state.cfg);
+    if caldav.find_user_calendars(&username, &password).await.is_err() {
         return unauthorized();
     }
 

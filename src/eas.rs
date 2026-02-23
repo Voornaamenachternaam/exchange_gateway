@@ -10,7 +10,7 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 /// Parse Basic Authorization header (username:password).
-fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
+pub(crate) fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     if let Some(v) = headers.get("authorization") {
         if let Ok(s) = v.to_str() {
             let s = s.trim();
