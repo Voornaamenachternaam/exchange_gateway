@@ -2,8 +2,15 @@ FROM rust:1.93.1-bullseye AS builder
 WORKDIR /usr/src/exchange_gateway
 RUN apt-get update && apt-get install -y pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock ./
+# Copy manifests
+COPY Cargo.toml ./
+# Create dummy main.rs to build dependencies
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN cargo build --release
+
+# Copy actual source
 COPY src ./src
+RUN rm -f target/release/exchange_gateway
 RUN cargo build --release
 
 FROM debian:stable-slim
@@ -13,4 +20,4 @@ COPY --from=builder /usr/src/exchange_gateway/target/release/exchange_gateway /u
 COPY config.toml /etc/exchange-gateway/config.toml
 EXPOSE 8443 8080 8133
 USER 1000:1000
-ENTRYPOINT ["/usr/local/bin/exchange_gateway", "--config", "/etc/exchange-gateway/config.toml"]
+ENTRYPOINT ["/usr/local/bin/exchange_gateway", "--config", "/etc/exchange-gateway/config.toml "]
