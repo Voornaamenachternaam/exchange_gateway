@@ -1,4 +1,4 @@
-name: Daily PDF to Excel Processor
+name: Daily PDF to NDJSON Processor
 
 on:
   schedule:
@@ -11,6 +11,10 @@ jobs:
     permissions:
       contents: read
 
+    env:
+      # Use the exact URL you provided; change if you want a different source.
+      TARGET_URL: 'https://web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.1
@@ -21,75 +25,230 @@ jobs:
           python-version: '3.13'
           check-latest: true
 
-      - name: Install dependencies
+      - name: Install system unzip (if missing) & curl
         run: |
-          pip install --upgrade pip
-          pip install pandas openpyxl pdfplumber
+          sudo apt-get update -y
+          sudo apt-get install -y unzip curl
 
-      - name: Download and Extract ZIP
-        env:
-          TARGET_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
+      - name: Install Python dependencies
         run: |
+          python -m pip install --upgrade pip
+          # pypdf is robust & streaming-friendly for text extraction
+          python -m pip install pypdf
+
+      - name: Download ZIP of PDFs
+        run: |
+          set -euo pipefail
+          echo "Downloading $TARGET_URL"
           curl -L "$TARGET_URL" -o exchange_protocols.zip
-          unzip -o -j exchange_protocols.zip "*.pdf"
+          echo "Contents of downloaded archive:"
+          unzip -l exchange_protocols.zip
 
-      - name: Convert PDFs to Excel
+      - name: Extract PDFs
         run: |
-          cat > process_pdfs.py << 'EOF'
-          import os
-          import glob
-          import re
-          import pandas as pd
-          import pdfplumber
+          set -euo pipefail
+          # extract only pdfs into the workspace root (flatten -j)
+          unzip -o -j exchange_protocols.zip "*.pdf"
+          echo "PDF files extracted:"
+          ls -la *.pdf || true
 
+      - name: Convert PDFs → gzipped NDJSON (one JSON object per page, streaming)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > process_pdfs_to_ndjson_gz.py <<'PY'
+          #!/usr/bin/env python3
+          import glob
+          import json
+          import gzip
+          import hashlib
+          import os
+          import sys
+          from datetime import datetime
+          from pypdf import PdfReader
+
+          OUT_PATH = "Exchange_Protocols_pages.ndjson.gz"
           pdf_files = sorted(glob.glob("*.pdf"))
-          output_file = "Exchange protocols.xlsx"
-          used_sheet_names = set()
 
           if not pdf_files:
-              raise RuntimeError("No PDF files found")
+              print("ERROR: no PDF files found in working directory", file=sys.stderr)
+              sys.exit(2)
 
-          with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+          total_pages_written = 0
+          files_summary = []
+
+          # Write header manifest, then per-page objects, then final manifest.
+          with gzip.open(OUT_PATH, "wt", encoding="utf-8") as out:
+              header = {
+                  "type": "manifest",
+                  "status": "in_progress",
+                  "generated_at": datetime.utcnow().isoformat() + "Z",
+                  "file_count": len(pdf_files),
+                  "note": "Header manifest. Final manifest appended when processing completes."
+              }
+              out.write(json.dumps(header, ensure_ascii=False) + "\n")
+              out.flush()
+
               for pdf_path in pdf_files:
-                  full_text = []
+                  filename = os.path.basename(pdf_path)
 
-                  with pdfplumber.open(pdf_path) as pdf:
-                      for page in pdf.pages:
+                  # compute sha256
+                  sha256 = hashlib.sha256()
+                  try:
+                      with open(pdf_path, "rb") as f:
+                          for chunk in iter(lambda: f.read(65536), b""):
+                              sha256.update(chunk)
+                      sha256_hex = sha256.hexdigest()
+                  except Exception as e:
+                      print(f"ERROR computing sha256 for {pdf_path}: {e}", file=sys.stderr)
+                      sha256_hex = None
+
+                  # open PDF
+                  try:
+                      reader = PdfReader(pdf_path)
+                      pages_count = len(reader.pages)
+                  except Exception as e:
+                      err_obj = {
+                          "type": "file_error",
+                          "filename": filename,
+                          "error": f"PdfReader open failed: {repr(e)}"
+                      }
+                      out.write(json.dumps(err_obj, ensure_ascii=False) + "\n")
+                      out.flush()
+                      files_summary.append({
+                          "filename": filename,
+                          "pages_expected": None,
+                          "pages_written": 0,
+                          "sha256": sha256_hex,
+                          "errors": [str(e)]
+                      })
+                      continue
+
+                  file_errors = []
+                  pages_written = 0
+
+                  for i, page in enumerate(reader.pages, start=1):
+                      try:
                           text = page.extract_text()
-                          if text:
-                              full_text.extend(text.splitlines())
+                          if text is None:
+                              text = ""
+                      except Exception as e:
+                          err = f"extract_text error on page {i}: {repr(e)}"
+                          file_errors.append(err)
+                          text = ""
 
-                  if not full_text:
-                      full_text.append("")
+                      obj = {
+                          "type": "page",
+                          "filename": filename,
+                          "page": i,
+                          "pages_total": pages_count,
+                          "sha256": sha256_hex,
+                          "text": text
+                      }
+                      out.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                      pages_written += 1
+                      total_pages_written += 1
 
-                  df = pd.DataFrame(full_text, columns=["Content"])
+                      # periodic flush to minimize data-loss window
+                      if pages_written % 50 == 0:
+                          out.flush()
 
-                  base = os.path.splitext(os.path.basename(pdf_path))[0]
-                  clean = re.sub(r'[\\/*?:\[\]]', '', base).strip()
-                  sheet = clean[:31]
+                  files_summary.append({
+                      "filename": filename,
+                      "pages_expected": pages_count,
+                      "pages_written": pages_written,
+                      "sha256": sha256_hex,
+                      "errors": file_errors
+                  })
 
-                  if not sheet:
-                      sheet = "Sheet"
+              final_manifest = {
+                  "type": "manifest",
+                  "status": "complete",
+                  "generated_at": datetime.utcnow().isoformat() + "Z",
+                  "file_count": len(pdf_files),
+                  "total_pages_written": total_pages_written,
+                  "files": files_summary
+              }
+              out.write(json.dumps(final_manifest, ensure_ascii=False) + "\n")
+              out.flush()
 
-                  original = sheet
-                  index = 1
-                  while sheet in used_sheet_names:
-                      suffix = f"_{index}"
-                      sheet = original[:31 - len(suffix)] + suffix
-                      index += 1
+          # final checks
+          if not os.path.exists(OUT_PATH):
+              print("ERROR: output file was not created", file=sys.stderr)
+              sys.exit(3)
 
-                  used_sheet_names.add(sheet)
-                  df.to_excel(writer, sheet_name=sheet, index=False)
+          # compute missing pages (best-effort)
+          missing_pages = sum( (f["pages_expected"] or 0) - f["pages_written"] for f in files_summary )
+          if missing_pages > 0:
+              print(f"ERROR: {missing_pages} pages missing according to manifests. See final manifest inside {OUT_PATH}", file=sys.stderr)
+              sys.exit(4)
 
-          if not os.path.exists(output_file):
-              raise RuntimeError("Excel file was not created")
-          EOF
+          print(f"Success: wrote {total_pages_written} pages into {OUT_PATH}")
+          PY
 
-          python process_pdfs.py
+          python process_pdfs_to_ndjson_gz.py
 
-      - name: Upload Excel Artifact
+      - name: Validate NDJSON.gz final manifest (sanity)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip, json, sys, os
+
+          path = "Exchange_Protocols_pages.ndjson.gz"
+          if not os.path.exists(path):
+              print("ERROR: artifact not found for validation", file=sys.stderr)
+              sys.exit(2)
+
+          # Read through the gz and capture the last manifest line that has "type":"manifest" and status "complete"
+          last_manifest = None
+          try:
+              with gzip.open(path, "rt", encoding="utf-8") as fh:
+                  for line in fh:
+                      try:
+                          obj = json.loads(line)
+                      except Exception:
+                          continue
+                      if isinstance(obj, dict) and obj.get("type") == "manifest":
+                          last_manifest = obj
+          except Exception as e:
+              print("ERROR reading gz file for validation:", e, file=sys.stderr)
+              sys.exit(3)
+
+          if not last_manifest:
+              print("ERROR: No manifest found in artifact", file=sys.stderr)
+              sys.exit(4)
+
+          if last_manifest.get("status") != "complete":
+              print("ERROR: final manifest status is not 'complete':", last_manifest.get("status"), file=sys.stderr)
+              sys.exit(5)
+
+          # Per-file checks: ensure pages_written == pages_expected and no errors
+          files = last_manifest.get("files", [])
+          problematic = []
+          for f in files:
+              exp = f.get("pages_expected")
+              written = f.get("pages_written", 0)
+              errs = f.get("errors", [])
+              if exp is not None and written != exp:
+                  problematic.append(f"page-count-mismatch for {f.get('filename')}: expected {exp}, written {written}")
+              if errs:
+                  problematic.append(f"errors for {f.get('filename')}: {errs}")
+
+          if problematic:
+              print("ERROR: Validation failed. Problems detected:")
+              for p in problematic:
+                  print("  -", p)
+              sys.exit(6)
+
+          print("Validation OK: final manifest complete and all files/pages validated.")
+          sys.exit(0)
+          PY
+
+      - name: Upload NDJSON.gz artifact
         uses: actions/upload-artifact@v6.0.0
         with:
-          name: daily-pdf-report
-          path: Exchange protocols.xlsx
+          name: exchange-protocols-ndjson
+          path: Exchange_Protocols_pages.ndjson.gz
           retention-days: 5
