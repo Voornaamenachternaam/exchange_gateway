@@ -1,132 +1,237 @@
 // src/wbxml.rs
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
-/// WBXML token tables for ActiveSync code pages (minimal calendar support).
-/// Code page 0: AirSync; Code page 4: Calendar; Code page 17: AirSyncBase.
-pub struct Wbxml {
-    pub codepage: u8,
-    pub tok_to_tag: HashMap<(u8, u8), &'static str>,
-    pub tag_to_tok: HashMap<(&'static str, u8), u8>,
+// WBXML Global Tokens
+const SWITCH_PAGE: u8 = 0x00;
+const END: u8 = 0x01;
+const STR_I: u8 = 0x03;
+
+lazy_static::lazy_static! {
+    static ref TAG_TO_NAME: HashMap<(u8, u8), &'static str> = {
+        let mut m = HashMap::new();
+        
+        // Code Page 0: AirSync
+        m.insert((0, 0x05), "Sync");
+        m.insert((0, 0x06), "Responses");
+        m.insert((0, 0x07), "Add");
+        m.insert((0, 0x08), "Change");
+        m.insert((0, 0x09), "Delete");
+        m.insert((0, 0x0B), "SyncKey");
+        m.insert((0, 0x0C), "ClientId");
+        m.insert((0, 0x0D), "ServerId");
+        m.insert((0, 0x0E), "Status");
+        m.insert((0, 0x0F), "Collection");
+        m.insert((0, 0x10), "Class");
+        m.insert((0, 0x12), "CollectionId");
+        m.insert((0, 0x18), "Commands");
+        m.insert((0, 0x1F), "ApplicationData");
+
+        // Code Page 4: Calendar (Prefix 'Calendar')
+        m.insert((4, 0x05), "Calendar:Timezone");
+        m.insert((4, 0x06), "Calendar:AllDayEvent");
+        m.insert((4, 0x0B), "Calendar:Body");
+        m.insert((4, 0x0D), "Calendar:BusyStatus");
+        m.insert((4, 0x11), "Calendar:DtStamp");
+        m.insert((4, 0x12), "Calendar:EndTime");
+        m.insert((4, 0x13), "Calendar:Exception");
+        m.insert((4, 0x14), "Calendar:Exceptions");
+        m.insert((4, 0x15), "Calendar:Deleted");
+        m.insert((4, 0x16), "Calendar:ExceptionStartTime");
+        m.insert((4, 0x17), "Calendar:Location");
+        m.insert((4, 0x1B), "Calendar:Recurrence");
+        m.insert((4, 0x1C), "Calendar:Type"); // Recurrence Type
+        m.insert((4, 0x1D), "Calendar:Until");
+        m.insert((4, 0x1E), "Calendar:Occurrences");
+        m.insert((4, 0x1F), "Calendar:Interval");
+        m.insert((4, 0x20), "Calendar:DayOfWeek");
+        m.insert((4, 0x21), "Calendar:DayOfMonth");
+        m.insert((4, 0x22), "Calendar:WeekOfMonth");
+        m.insert((4, 0x23), "Calendar:MonthOfYear");
+        m.insert((4, 0x24), "Calendar:Reminder");
+        m.insert((4, 0x25), "Calendar:Sensitivity");
+        m.insert((4, 0x26), "Calendar:Subject");
+        m.insert((4, 0x27), "Calendar:StartTime");
+        m.insert((4, 0x28), "Calendar:UID");
+
+        // Code Page 17: AirSyncBase (Prefix 'AirSyncBase')
+        m.insert((17, 0x05), "AirSyncBase:BodyPreference");
+        m.insert((17, 0x06), "AirSyncBase:Type"); // Body Type
+        m.insert((17, 0x07), "AirSyncBase:TruncationSize");
+        m.insert((17, 0x0A), "AirSyncBase:Body");
+        m.insert((17, 0x0B), "AirSyncBase:Data");
+        m.insert((17, 0x0C), "AirSyncBase:EstimatedDataSize");
+        m.insert((17, 0x0D), "AirSyncBase:Truncated");
+
+        m
+    };
+
+    static ref NAME_TO_TAG: HashMap<&'static str, (u8, u8)> = {
+        let mut m = HashMap::new();
+        for ((cp, id), name) in TAG_TO_NAME.iter() {
+            m.insert(*name, (*cp, *id));
+        }
+        m
+    };
 }
 
+pub struct Wbxml;
+
 impl Wbxml {
-    pub fn new() -> Self {
-        let mut tok_to_tag = HashMap::new();
-        let mut tag_to_tok = HashMap::new();
+    pub fn new() -> Self { Wbxml }
 
-        // Code page 0: AirSync (minimal)
-        macro_rules! add0 {
-            ($t:expr, $s:expr) => {
-                tok_to_tag.insert((0, $t), $s);
-                tag_to_tok.insert(($s, 0), $t);
-            };
-        }
-        add0!(0x05, "Sync");
-        add0!(0x06, "Responses");
-        add0!(0x07, "Add");
-        add0!(0x08, "Change");
-        add0!(0x09, "Delete");
-        add0!(0x0B, "SyncKey");
-        add0!(0x0D, "ServerId");
-        add0!(0x0C, "ClientId");
-        add0!(0x0E, "Status");
-        add0!(0x0F, "Collection");
-        add0!(0x10, "Class");
-        add0!(0x12, "CollectionId");
-        add0!(0x26, "Commands");
-        add0!(0x2A, "ApplicationData");
-
-        // Code page 4: Calendar (from MS-ASAIRS)
-        macro_rules! add4 {
-            ($t:expr, $s:expr) => {
-                tok_to_tag.insert((4, $t), $s);
-                tag_to_tok.insert(($s, 4), $t);
-            };
-        }
-        add4!(0x05, "Timezone");
-        add4!(0x06, "AllDayEvent");
-        add4!(0x07, "Attendees");
-        add4!(0x08, "Attendee");
-        add4!(0x09, "Email");
-        add4!(0x0A, "Name");
-        add4!(0x0B, "Body");
-        add4!(0x0C, "BodyTruncated");
-        add4!(0x0D, "BusyStatus");
-        add4!(0x0E, "Categories");
-        add4!(0x0F, "Category");
-        add4!(0x11, "DtStamp");
-        add4!(0x12, "EndTime");
-        add4!(0x13, "Exception");
-        add4!(0x14, "Exceptions");
-        add4!(0x15, "Deleted");
-        add4!(0x16, "ExceptionStartTime");
-        add4!(0x17, "Location");
-        add4!(0x18, "MeetingStatus");
-        add4!(0x19, "OrganizerEmail");
-        add4!(0x1A, "OrganizerName");
-        add4!(0x1B, "Recurrence");
-        add4!(0x1C, "Type");
-        add4!(0x1D, "Until");
-        add4!(0x1E, "Occurrences");
-        add4!(0x1F, "Interval");
-        add4!(0x20, "DayOfWeek");
-        add4!(0x21, "DayOfMonth");
-        add4!(0x22, "WeekOfMonth");
-        add4!(0x23, "MonthOfYear");
-        add4!(0x24, "Reminder");
-        add4!(0x25, "Sensitivity");
-        add4!(0x26, "Subject");
-        add4!(0x27, "StartTime");
-        add4!(0x28, "UID");
-        add4!(0x29, "AttendeeStatus");
-        add4!(0x2A, "AttendeeType");
-        add4!(0x33, "DisallowNewTimeProposal");
-        add4!(0x34, "ResponseRequested");
-        add4!(0x35, "AppointmentReplyTime");
-        add4!(0x36, "ResponseType");
-        add4!(0x37, "CalendarType");
-        add4!(0x38, "IsLeapMonth");
-        add4!(0x39, "FirstDayOfWeek");
-        add4!(0x3A, "OnlineMeetingConfLink");
-        add4!(0x3B, "OnlineMeetingExternalLink");
-        add4!(0x3C, "ClientUid");
-
-        // Code page 17: AirSyncBase (for completeness)
-        macro_rules! add17 {
-            ($t:expr, $s:expr) => {
-                tok_to_tag.insert((17, $t), $s);
-                tag_to_tok.insert(($s, 17), $t);
-            };
-        }
-        add17!(0x05, "BodyPreference");
-        add17!(0x06, "Type");
-        add17!(0x0A, "Body");
-        add17!(0x0B, "Data");
-        add17!(0x0C, "EstimatedDataSize");
-        add17!(0x0D, "Truncated");
-
-        Self {
-            codepage: 0,
-            tok_to_tag,
-            tag_to_tok,
-        }
-    }
-
-    /// Decode WBXML payload: if it starts with '<', treat as XML, else return UTF-8 string.
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
-        if bytes.is_empty() {
-            return Err(anyhow!("empty payload"));
+        if bytes.is_empty() { return Err(anyhow!("Empty WBXML payload")); }
+        if bytes[0] == b'<' { return Ok(String::from_utf8(bytes.to_vec())?); }
+
+        let mut pos = 0;
+        let _version = bytes[pos]; pos += 1;
+        let _public_id = bytes[pos]; pos += 1;
+        let _charset = bytes[pos]; pos += 1;
+        let _str_table_len = bytes[pos]; pos += 1; 
+
+        let mut current_code_page = 0u8;
+        let mut xml_stack: Vec<String> = Vec::new();
+        let mut output = String::new();
+        
+        output.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+
+        while pos < bytes.len() {
+            let token = bytes[pos];
+            pos += 1;
+
+            match token {
+                SWITCH_PAGE => {
+                    if pos >= bytes.len() { break; }
+                    current_code_page = bytes[pos];
+                    pos += 1;
+                }
+                END => {
+                    if let Some(tag) = xml_stack.pop() {
+                        output.push_str(&format!("</{}>", tag));
+                    }
+                }
+                STR_I => {
+                    let mut s_bytes = Vec::new();
+                    while pos < bytes.len() && bytes[pos] != 0 {
+                        s_bytes.push(bytes[pos]);
+                        pos += 1;
+                    }
+                    pos += 1;
+                    let content = String::from_utf8_lossy(&s_bytes);
+                    let escaped = content.replace("&", "&amp;")
+                                         .replace("<", "&lt;")
+                                         .replace(">", "&gt;");
+                    output.push_str(&escaped);
+                }
+                0x05..=0x3F => { 
+                    let has_content = (token & 0x40) != 0;
+                    let tag_id = token & 0x3F;
+
+                    if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
+                        output.push_str(&format!("<{}>", name));
+                        if has_content {
+                            xml_stack.push(name.to_string());
+                        } else {
+                            output.push_str(&format!("</{}>", name));
+                        }
+                    } else {
+                         let unknown = format!("Tag_{}_{}", current_code_page, tag_id);
+                         output.push_str(&format!("<{}>", unknown));
+                         if has_content { xml_stack.push(unknown); } 
+                         else { output.push_str(&format!("</{}>", unknown)); }
+                    }
+                }
+                _ => {}
+            }
         }
-        if bytes[0] == b'<' {
-            return Ok(String::from_utf8(bytes.to_vec())?);
-        }
-        // No full WBXML parsing implemented; return raw as UTF-8
-        Ok(String::from_utf8(bytes.to_vec())?)
+        Ok(output)
     }
 
-    /// Stub encoder (identity).
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-        Ok(xml.as_bytes().to_vec())
+        let mut buf = Vec::new();
+        buf.push(0x03); // Version 1.3
+        buf.push(0x01); // Public ID
+        buf.push(0x6A); // Charset UTF-8
+        buf.push(0x00); // String Table Length
+
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.trim_text(true);
+        let mut current_code_page = 0u8;
+        let mut buf_event = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf_event) {
+                Ok(quick_xml::events::Event::Start(e)) => {
+                    let name = e.name().local_name();
+                    let name_str = std::str::from_utf8(name.as_ref())?;
+                    
+                    if let Some((cp, tag)) = NAME_TO_TAG.get(name_str) {
+                        if *cp != current_code_page {
+                            buf.push(SWITCH_PAGE);
+                            buf.push(*cp);
+                            current_code_page = *cp;
+                        }
+                        buf.push(tag | 0x40);
+                    } else {
+                        // Fallback for simple names (legacy compatibility)
+                        let mut found = false;
+                        for (k, (cp, tag)) in NAME_TO_TAG.iter() {
+                             // Check if the local name matches (after prefix)
+                            if k.ends_with(name_str) { 
+                                if *cp != current_code_page {
+                                    buf.push(SWITCH_PAGE);
+                                    buf.push(*cp);
+                                    current_code_page = *cp;
+                                }
+                                buf.push(tag | 0x40);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found { tracing::warn!("Unknown tag in encoder: {}", name_str); }
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(e)) => {
+                    let name = e.name().local_name();
+                    let name_str = std::str::from_utf8(name.as_ref())?;
+                    if let Some((cp, tag)) = NAME_TO_TAG.get(name_str) {
+                        if *cp != current_code_page {
+                            buf.push(SWITCH_PAGE);
+                            buf.push(*cp);
+                            current_code_page = *cp;
+                        }
+                        buf.push(*tag);
+                    } else {
+                        let mut found = false;
+                        for (k, (cp, tag)) in NAME_TO_TAG.iter() {
+                            if k.ends_with(name_str) {
+                                if *cp != current_code_page {
+                                    buf.push(SWITCH_PAGE);
+                                    buf.push(*cp);
+                                    current_code_page = *cp;
+                                }
+                                buf.push(*tag);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found { tracing::warn!("Unknown empty tag in encoder: {}", name_str); }
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(e)) => {
+                    buf.push(STR_I);
+                    let txt = e.unescape()?;
+                    buf.extend_from_slice(txt.as_bytes());
+                    buf.push(0x00);
+                }
+                Ok(quick_xml::events::Event::End(_)) => { buf.push(END); }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(anyhow!("XML Encode Error: {:?}", e)),
+                _ => {}
+            }
+            buf_event.clear();
+        }
+        Ok(buf)
     }
 }

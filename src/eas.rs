@@ -4,12 +4,11 @@ use crate::sync;
 use crate::wbxml::Wbxml;
 use axum::http::HeaderMap;
 use axum::{extract::Extension, http::StatusCode, response::IntoResponse};
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// Parse Basic Authorization header (username:password).
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     if let Some(v) = headers.get("authorization") {
         if let Ok(s) = v.to_str() {
@@ -20,9 +19,7 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
                 if BASE64.decode_vec(b64.as_bytes(), &mut out).is_ok() {
                     if let Ok(creds) = String::from_utf8(out) {
                         if let Some(idx) = creds.find(':') {
-                            let user = creds[..idx].to_string();
-                            let pass = creds[idx+1..].to_string();
-                            return Some((user, pass));
+                            return Some((creds[..idx].to_string(), creds[idx+1..].to_string()));
                         }
                     }
                 }
@@ -32,28 +29,25 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     None
 }
 
-/// Handle ActiveSync HTTP requests (WBXML to XML), call perform_sync, and return XML response.
 pub async fn handle(
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // Decode WBXML body to XML
-    let payload = body.to_vec();
     let wbxml = Wbxml::new();
+    let payload = body.to_vec();
     let xml = match wbxml.decode(&payload) {
         Ok(s) => s,
         Err(e) => {
+            tracing::error!("WBXML Decode Error: {}", e);
             return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e)).into_response();
         }
     };
-
-    // Extract Basic auth (username/password)
+    
     let (username, password) = parse_basic_auth(&headers).unwrap_or((String::new(), String::new()));
 
-    // FolderSync: advertise one calendar folder (ServerId=1)
     if xml.contains("<FolderSync") {
-        let resp = r#"<?xml version="1.0" encoding="utf-8"?>
+        let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <FolderSync>
   <Status>1</Status>
   <SyncKey>0</SyncKey>
@@ -66,33 +60,57 @@ pub async fn handle(
     </Folder>
   </Folders>
 </FolderSync>"#;
-        return (StatusCode::OK, resp.to_string()).into_response();
+        return wbxml_response(&wbxml, resp_xml);
     }
-    // Provision: (not needed for calendar)
 
-    // Sync: full calendar sync or incremental
-    else if xml.contains("<Sync") {
+    if xml.contains("<Provision") {
+        let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Provision>
+    <Status>1</Status>
+    <Policies>
+        <Policy>
+            <PolicyType>MS-WAP-Provisioning-XML</PolicyType>
+            <Status>1</Status>
+            <PolicyKey>12345</PolicyKey>
+            <Data>&lt;wap-provisioningdoc/&gt;</Data>
+        </Policy>
+    </Policies>
+</Provision>"#;
+        return wbxml_response(&wbxml, resp_xml);
+    }
+
+    if xml.contains("<Sync") {
         let owner = if !username.is_empty() { username.as_str() } else { "demo" };
         let collection_id = "1";
-        // Extract incoming SyncKey from client
-        let incoming_key_tag = "<SyncKey>";
-        let incoming_key = if let Some(start_idx) = xml.find(incoming_key_tag) {
-            let end_idx = xml.find("</SyncKey>").unwrap_or(start_idx);
-            xml[start_idx + incoming_key_tag.len() .. end_idx].to_string()
-        } else {
-            "0".to_string()
-        };
-        // Perform sync logic
+        let incoming_key = if let Some(start) = xml.find("<SyncKey>") {
+            let end = xml.find("</SyncKey>").unwrap_or(start + 9);
+            xml[start + 9 .. end].to_string()
+        } else { "0".to_string() };
+
         match sync::perform_sync(state, owner, collection_id, &incoming_key, 100, &username, &password).await {
-            Ok(resp_xml) => return (StatusCode::OK, resp_xml).into_response(),
+            Ok(resp_xml) => return wbxml_response(&wbxml, &resp_xml),
             Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Sync error: {}", e),
-                ).into_response();
+                tracing::error!("Sync Error: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Sync error: {}", e)).into_response();
             }
         }
     }
-    // Other ActiveSync commands are not implemented in this calendar-only gateway
+
+    if xml.contains("<Ping") {
+         let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping><Status>1</Status></Ping>"#;
+         return wbxml_response(&wbxml, resp_xml);
+    }
+
     (StatusCode::BAD_REQUEST, "Unsupported ActiveSync command").into_response()
 }
+
+fn wbxml_response(wbxml: &Wbxml, xml: &str) -> impl IntoResponse {
+    match wbxml.encode(xml) {
+        Ok(b) => (
+            StatusCode::OK,
+            [("Content-Type", "application/vnd.ms-sync.wbxml")],
+            b
+        ).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("WBXML Encode Err: {}", e)).into_response()
+    }
+} 

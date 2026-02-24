@@ -10,29 +10,31 @@ services:
     volumes:
       - /armblock/stalwart/opt:/opt/stalwart
     ports:
-      - "8080:8080"   # Web UI and JMAP
-      # - "8133:8133" # (removed to avoid conflict with gateway)
+      - "8080:8080"
       - "25:25"
       - "465:465"
       - "587:587"
     networks:
-      - my-bridge-network
+      my-bridge-network:
+        ipv4_address: 172.28.0.10
 
   exchange_gateway:
     image: youruser/exchange_gateway:latest
     container_name: exchange_gateway
-    hostname: mail.example.com
+    hostname: exchange_gateway
     restart: unless-stopped
     environment:
       - TZ=Europe/Amsterdam
+      - RUST_LOG=info
     volumes:
       - /armblock/exchange_gateway/config.toml:/etc/exchange-gateway/config.toml:ro
     ports:
-      - "8133:8133"  # ActiveSync/EWS endpoint
+      - "8133:8133"
     depends_on:
       - stalwart
     networks:
-      - my-bridge-network
+      my-bridge-network:
+        ipv4_address: 172.28.0.11
 
 networks:
   my-bridge-network:

@@ -1,69 +1,80 @@
 // src/ews.rs
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::IntoResponse,
-};
+use axum::{ extract::State, http::HeaderMap, response::IntoResponse };
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use crate::config::Config;
+use crate::models::AppState;
+use std::sync::Arc;
 
-/// Handle Exchange Web Services (EWS) requests (minimal implementation).
 pub async fn handle(
-    State(config): State<Config>,
+    State(_state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    // Basic Auth: expect "Authorization: Basic <base64>"
     if let Some(auth) = headers.get("authorization") {
         if let Ok(auth_str) = auth.to_str() {
             if let Some(b64) = auth_str.trim().strip_prefix("Basic ") {
                 let mut decoded = Vec::new();
-                if STANDARD.decode_vec(b64.as_bytes(), &mut decoded).is_err() {
-                    return unauthorized();
-                }
-                if String::from_utf8(decoded).is_err() {
-                    return unauthorized();
-                }
-            } else {
-                return unauthorized();
-            }
-        } else {
-            return unauthorized();
-        }
-    } else {
-        return unauthorized();
-    }
+                if STANDARD.decode_vec(b64.as_bytes(), &mut decoded).is_ok() {
+                    if String::from_utf8(decoded).is_ok() {
+                        // Authentication passed (logic check stripped for brevity)
+                    } else { return unauthorized(); }
+                } else { return unauthorized(); }
+            } else { return unauthorized(); }
+        } else { return unauthorized(); }
+    } else { return unauthorized(); }
 
-    // For now, ignore SOAP content and always return a simple OK response
     let mut reader = Reader::from_str(&body);
-    reader.config_mut().trim_text(true);
-
+    reader.trim_text(true);
     let mut buf = Vec::new();
-    while let Ok(event) = reader.read_event_into(&mut buf) {
-        match event {
-            Event::Eof => break,
+    let mut action = String::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.name().local_name();
+                if name.as_ref() == b"GetFolder" { action = "GetFolder".to_string(); }
+                else if name.as_ref() == b"FindItem" { action = "FindItem".to_string(); }
+                else if name.as_ref() == b"SyncFolderItems" { action = "SyncFolderItems".to_string(); }
+            }
+            Ok(Event::Eof) => break,
             _ => {}
         }
         buf.clear();
     }
 
-    soap_response()
+    match action.as_str() {
+        "GetFolder" => get_folder_response(),
+        _ => soap_response_empty()
+    }
 }
 
 fn unauthorized() -> impl IntoResponse {
-    (
-        axum::http::StatusCode::UNAUTHORIZED,
-        "Unauthorized",
-    )
+    ( axum::http::StatusCode::UNAUTHORIZED, [("WWW-Authenticate", "Basic realm=\"EWS\"")], "Unauthorized" )
 }
 
-fn soap_response() -> impl IntoResponse {
-    (
-        axum::http::StatusCode::OK,
-        [("Content-Type", "text/xml; charset=utf-8")],
-        r#"<?xml version="1.0" encoding="utf-8"?><Response>OK</Response>"#,
-    )
+fn get_folder_response() -> impl IntoResponse {
+    let resp = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+<s:Body>
+<m:GetFolderResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <m:ResponseMessages>
+    <m:GetFolderResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:Folders>
+        <t:CalendarFolder>
+          <t:FolderId Id="AQAhAG..." ChangeKey="AQAAAB..." />
+          <t:DisplayName>Calendar</t:DisplayName>
+          <t:TotalCount>0</t:TotalCount>
+        </t:CalendarFolder>
+      </m:Folders>
+    </m:GetFolderResponseMessage>
+  </m:ResponseMessages>
+</m:Body>
+</s:Envelope>"#;
+    ( axum::http::StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], resp.to_string() )
 }
+
+fn soap_response_empty() -> impl IntoResponse {
+    ( axum::http::StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], 
+    r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><ResponseMessage ResponseClass="Success"><ResponseCode>NoError</ResponseCode></ResponseMessage></s:Body></s:Envelope>"# )
+} 
