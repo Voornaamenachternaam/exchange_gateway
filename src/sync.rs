@@ -2,19 +2,16 @@
 use crate::models::AppState;
 use crate::caldav::CaldavClient;
 use anyhow::{anyhow, Result};
-use chrono::Utc;
+use chrono::{Utc, TimeZone};
 use uuid::Uuid;
 use std::sync::Arc;
-
-use hmac::Hmac;
-use hmac::Mac;
+use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Generate a unique server ID (URL-safe base64 HMAC) for a resource href.
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     let key = secret.as_bytes();
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC init");
@@ -23,19 +20,130 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     URL_SAFE_NO_PAD.encode(result)
 }
 
-/// Escape special XML characters in event data
 fn xml_escape(input: &str) -> String {
     input.replace("&", "&amp;")
          .replace("<", "&lt;")
          .replace(">", "&gt;")
 }
 
-/// Perform a calendar sync: discover calendars, fetch events, and build ActiveSync Sync response.
+fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
+    let mut properties = Vec::new();
+    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
+    for line in unfolded.lines() {
+        if line.is_empty() { continue; }
+        if let Some(colon_idx) = line.find(':') {
+            let key = line[..colon_idx].to_string();
+            let value = line[colon_idx+1..].to_string();
+            properties.push((key, value));
+        }
+    }
+    properties
+}
+
+fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
+    if val.ends_with('Z') {
+        chrono::NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%SZ")
+            .map(|dt| Utc.from_utc_datetime(&dt)).ok()
+    } else if val.contains('T') {
+        chrono::NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S")
+            .map(|dt| Utc.from_utc_datetime(&dt)).ok()
+    } else {
+        chrono::NaiveDate::parse_from_str(val, "%Y%m%d")
+            .map(|d| d.and_hms_opt(0,0,0).unwrap())
+            .map(|dt| Utc.from_utc_datetime(&dt)).ok()
+    }
+}
+
+fn map_rrule_to_recurrence_xml(props: &[(String, String)], _dtstart: &chrono::DateTime<Utc>) -> Option<String> {
+    let mut rrule_str = String::new();
+    for (k, v) in props {
+        if k.starts_with("RRULE") { rrule_str = v.clone(); break; }
+    }
+    if rrule_str.is_empty() { return None; }
+
+    let parts: Vec<&str> = rrule_str.split(';').collect();
+    let mut freq: Option<u8> = None; 
+    let mut interval = 1u32;
+    let mut day_of_week = String::new(); 
+    let mut day_of_month = 1u32;
+    let mut month_of_year = 1u32; 
+    let mut week_of_month = 0u32; 
+    let mut until: Option<String> = None;
+    let mut occurrences: Option<u32> = None;
+
+    for part in parts {
+        if let Some(idx) = part.find('=') {
+            let k = &part[..idx];
+            let v = &part[idx+1..];
+            match k {
+                "FREQ" => {
+                    match v {
+                        "DAILY" => freq = Some(0),
+                        "WEEKLY" => freq = Some(1),
+                        "MONTHLY" => freq = Some(2),
+                        "YEARLY" => freq = Some(5),
+                        _ => {}
+                    }
+                },
+                "INTERVAL" => interval = v.parse().unwrap_or(1),
+                "BYDAY" => {
+                    let mut mask = 0u8;
+                    for d in v.split(',') {
+                        if d.len() > 2 {
+                            if let Ok(wk) = d[..d.len()-2].parse::<u32>() { week_of_month = wk; }
+                        }
+                        let day_code = &d[d.len()-2..];
+                        match day_code {
+                            "SU" => mask |= 1, "MO" => mask |= 2, "TU" => mask |= 4, "WE" => mask |= 8,
+                            "TH" => mask |= 16, "FR" => mask |= 32, "SA" => mask |= 64, _ => {}
+                        }
+                    }
+                    day_of_week = mask.to_string();
+                },
+                "BYMONTHDAY" => day_of_month = v.parse().unwrap_or(1),
+                "BYMONTH" => month_of_year = v.parse().unwrap_or(1),
+                "UNTIL" => {
+                    if let Some(dt) = parse_datetime(v) { until = Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()); }
+                },
+                "COUNT" => occurrences = v.parse().ok(),
+                _ => {}
+            }
+        }
+    }
+
+    let freq_val = freq?;
+    let mut xml = "<Calendar:Recurrence>".to_string();
+    xml.push_str(&format!("<Calendar:Type>{}</Calendar:Type>", freq_val));
+    xml.push_str(&format!("<Calendar:Interval>{}</Calendar:Interval>", interval));
+
+    if freq_val == 1 { // Weekly
+        if !day_of_week.is_empty() { xml.push_str(&format!("<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>", day_of_week)); }
+    }
+    
+    if freq_val == 2 || freq_val == 5 {
+        xml.push_str(&format!("<Calendar:DayOfMonth>{}</Calendar:DayOfMonth>", day_of_month));
+        if freq_val == 5 { xml.push_str(&format!("<Calendar:MonthOfYear>{}</Calendar:MonthOfYear>", month_of_year)); }
+    }
+    
+    if week_of_month > 0 {
+        if freq_val == 2 { xml = xml.replace("<Calendar:Type>2</Calendar:Type>", "<Calendar:Type>3</Calendar:Type>"); }
+        if freq_val == 5 { xml = xml.replace("<Calendar:Type>5</Calendar:Type>", "<Calendar:Type>6</Calendar:Type>"); }
+        xml.push_str(&format!("<Calendar:WeekOfMonth>{}</Calendar:WeekOfMonth>", week_of_month));
+        if !day_of_week.is_empty() { xml.push_str(&format!("<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>", day_of_week)); }
+    }
+
+    if let Some(u) = until { xml.push_str(&format!("<Calendar:Until>{}</Calendar:Until>", u)); } 
+    else if let Some(o) = occurrences { xml.push_str(&format!("<Calendar:Occurrences>{}</Calendar:Occurrences>", o)); }
+
+    xml.push_str("</Calendar:Recurrence>");
+    Some(xml)
+}
+
 pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,
     collection_id: &str,
-    incoming_sync_key: &str,
+    _incoming_sync_key: &str,
     _window_size: usize,
     username: &str,
     password: &str,
@@ -43,56 +151,37 @@ pub async fn perform_sync(
     let storage = &state.storage;
     let caldav = CaldavClient::new(&state.cfg);
 
-    // Discover the user's calendar collection (e.g. primary calendar)
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars.first()
-        .ok_or_else(|| anyhow!("no calendars found"))?
-        .clone();
+        .ok_or_else(|| anyhow!("no calendars found"))?.clone();
 
-    // Query events over a wide date range (1 year back/forth)
-    let start = (Utc::now() - chrono::Duration::weeks(52))
-        .format("%Y%m%dT%H%M%SZ").to_string();
-    let end = (Utc::now() + chrono::Duration::weeks(52))
-        .format("%Y%m%dT%H%M%SZ").to_string();
+    let start = (Utc::now() - chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
+    let end = (Utc::now() + chrono::Duration::weeks(52)).format("%Y%m%dT%H%M%SZ").to_string();
     let events_xml = caldav.query_events(&collection_href, &start, &end, username, password).await?;
 
-    // Parse CalDAV XML response for events
     use quick_xml::Reader;
     use quick_xml::events::Event;
     let mut reader = Reader::from_str(&events_xml);
     reader.trim_text(true);
     let mut buf = Vec::new();
+    
     #[derive(Clone)]
     struct EventItem { href: String, etag: String, ics: String }
     let mut events = Vec::new();
     let mut current = EventItem { href: String::new(), etag: String::new(), ics: String::new() };
+    
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
-                match e.name().as_ref() {
-                    b"D:href" => {
-                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.href = e.unescape().unwrap_or_default().to_string();
-                        }
-                    }
-                    b"D:getetag" => {
-                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.etag = e.unescape().unwrap_or_default().to_string();
-                        }
-                    }
-                    b"C:calendar-data" => {
-                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.ics = e.unescape().unwrap_or_default().to_string();
-                        }
-                    }
+                match e.name().local_name().as_ref() {
+                    b"href" => { if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { current.href = e.unescape().unwrap_or_default().to_string(); } }
+                    b"getetag" => { if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { current.etag = e.unescape().unwrap_or_default().to_string(); } }
+                    b"calendar-data" => { if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { current.ics = e.unescape().unwrap_or_default().to_string(); } }
                     _ => {}
                 }
             }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"D:response" => {
-                // Save the event record if we have an href
-                if !current.href.is_empty() {
-                    events.push(current.clone());
-                }
+            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
+                if !current.href.is_empty() { events.push(current.clone()); }
                 current = EventItem { href: String::new(), etag: String::new(), ics: String::new() };
             }
             Ok(Event::Eof) => break,
@@ -101,83 +190,64 @@ pub async fn perform_sync(
         buf.clear();
     }
 
-    // Retrieve existing items (server_ids) from previous sync
     let old_items = storage.list_changes_since(owner, 0).await?;
-
-    // Build ActiveSync Sync commands
     let mut commands = String::new();
     let mut seen_ids = Vec::new();
 
     for ev in events {
-        let href = ev.href;
-        if href.is_empty() { continue; }
+        let href = ev.href; if href.is_empty() { continue; }
         let resource_href = href.clone();
         let etag = ev.etag.trim_matches('"').to_string();
         let ics = ev.ics;
-
-        // Generate consistent server_id for this event
         let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
         seen_ids.push(server_id.clone());
 
-        // Parse ICS content for event details
-        let mut subject = String::new();
-        let mut dtstart = String::new();
-        let mut dtend = String::new();
+        let props = parse_ics_content(&ics);
+        let mut subject = "Event".to_string();
+        let mut dtstart = Utc::now();
+        let mut dtend = Utc::now() + chrono::Duration::hours(1);
         let mut location = String::new();
         let mut description = String::new();
-        let mut uid = String::new();
-        for line in ics.lines() {
-            if let Some(val) = line.strip_prefix("SUMMARY:") {
-                subject = val.to_string();
-            } else if line.starts_with("DTSTART:") {
-                dtstart = line.trim_start_matches("DTSTART:").to_string();
-            } else if line.starts_with("DTEND:") {
-                dtend = line.trim_start_matches("DTEND:").to_string();
-            } else if let Some(val) = line.strip_prefix("LOCATION:") {
-                location = val.to_string();
-            } else if let Some(val) = line.strip_prefix("DESCRIPTION:") {
-                description = val.to_string();
-            } else if let Some(val) = line.strip_prefix("UID:") {
-                uid = val.to_string();
-            }
+        let mut uid = Uuid::new_v4().to_string();
+        let mut is_all_day = false;
+
+        for (key, val) in &props {
+            if key.starts_with("SUMMARY") { subject = val.clone(); }
+            else if key.starts_with("DTSTART") { dtstart = parse_datetime(val).unwrap_or_else(Utc::now); if !val.contains('T') { is_all_day = true; } }
+            else if key.starts_with("DTEND") { dtend = parse_datetime(val).unwrap_or_else(|| Utc::now() + chrono::Duration::hours(1)); }
+            else if key.starts_with("LOCATION") { location = val.clone(); }
+            else if key.starts_with("DESCRIPTION") { description = val.clone(); }
+            else if key.starts_with("UID") { uid = val.clone(); }
         }
 
-        // Upsert mapping in worker-backed storage
         storage.upsert_item_map(owner, &collection_href, &resource_href, &server_id, &uid, &etag).await?;
-
-        // Determine if new or existing item
         let is_new = !old_items.iter().any(|(id, _)| id == &server_id);
-        if is_new {
-            commands.push_str(&format!("<Add><ServerId>{}</ServerId><ApplicationData>", server_id));
-        } else {
-            commands.push_str(&format!("<Change><ServerId>{}</ServerId><ApplicationData>", server_id));
-        }
+        
+        if is_new { commands.push_str("<Add><ServerId>"); } else { commands.push_str("<Change><ServerId>"); }
+        commands.push_str(&server_id);
+        commands.push_str("</ServerId><ApplicationData>");
 
-        // Fill ApplicationData with event fields
-        commands.push_str(&format!("<Subject>{}</Subject>", xml_escape(&subject)));
-        commands.push_str(&format!("<StartTime>{}</StartTime>", dtstart));
-        commands.push_str(&format!("<EndTime>{}</EndTime>", dtend));
-        if !location.is_empty() {
-            commands.push_str(&format!("<Location>{}</Location>", xml_escape(&location)));
-        }
-        if !description.is_empty() {
-            commands.push_str(&format!("<Body>{}</Body>", xml_escape(&description)));
-        }
-        if !uid.is_empty() {
-            commands.push_str(&format!("<UID>{}</UID>", xml_escape(&uid)));
-        }
-        // All-day event flag if dates have no 'T'
-        if !dtstart.contains('T') || !dtend.contains('T') {
-            commands.push_str("<AllDayEvent>1</AllDayEvent>");
-        }
-        if is_new {
-            commands.push_str("</ApplicationData></Add>");
-        } else {
-            commands.push_str("</ApplicationData></Change>");
-        }
+        commands.push_str(&format!("<Calendar:Subject>{}</Calendar:Subject>", xml_escape(&subject)));
+        commands.push_str(&format!("<Calendar:StartTime>{}</Calendar:StartTime>", dtstart.format("%Y-%m-%dT%H:%M:%SZ")));
+        commands.push_str(&format!("<Calendar:EndTime>{}</Calendar:EndTime>", dtend.format("%Y-%m-%dT%H:%M:%SZ")));
+        
+        if !location.is_empty() { commands.push_str(&format!("<Calendar:Location>{}</Calendar:Location>", xml_escape(&location))); }
+        
+        let body_len = description.len();
+        commands.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
+        commands.push_str(&format!("<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>", body_len));
+        commands.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>");
+        commands.push_str(&xml_escape(&description));
+        commands.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
+        
+        commands.push_str(&format!("<Calendar:UID>{}</Calendar:UID>", xml_escape(&uid)));
+        commands.push_str(if is_all_day { "<Calendar:AllDayEvent>1</Calendar:AllDayEvent>" } else { "<Calendar:AllDayEvent>0</Calendar:AllDayEvent>" });
+
+        if let Some(rec_xml) = map_rrule_to_recurrence_xml(&props, &dtstart) { commands.push_str(&rec_xml); }
+
+        if is_new { commands.push_str("</ApplicationData></Add>"); } else { commands.push_str("</ApplicationData></Change>"); }
     }
 
-    // Handle deletions: any old item not seen in new list
     for (old_id, _) in old_items {
         if !seen_ids.contains(&old_id) {
             commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", old_id));
@@ -185,14 +255,21 @@ pub async fn perform_sync(
         }
     }
 
-    // Generate new SyncKey and update storage
     let new_sync_key = Uuid::new_v4().to_string();
     storage.set_sync_key(owner, collection_id, &new_sync_key, Some("token")).await?;
 
-    // Construct Sync response XML
     let xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+<Collections><Collection>
+<Class>Calendar</Class>
+<SyncKey>{}</SyncKey>
+<CollectionId>{}</CollectionId>
+<Status>1</Status>
+<Commands>{}</Commands>
+</Collection></Collections>
+</Sync>"#,
         new_sync_key, collection_id, commands
     );
     Ok(xml)
-}
+} 
