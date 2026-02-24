@@ -20,4 +20,4 @@ COPY --from=builder /usr/src/exchange_gateway/target/release/exchange_gateway /u
 COPY config.toml /etc/exchange-gateway/config.toml
 EXPOSE 8443 8080 8133
 USER 1000:1000
-ENTRYPOINT ["/usr/local/bin/exchange_gateway", "--config", "/etc/exchange-gateway/config.toml "]
+ENTRYPOINT ["/usr/local/bin/exchange_gateway", "--config", "/etc/exchange-gateway/config.toml"]
