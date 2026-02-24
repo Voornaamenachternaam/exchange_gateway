@@ -12,8 +12,12 @@ jobs:
       contents: read
 
     env:
-      # Use the exact URL you provided; change if you want a different source.
+      # Primary URL (use the exact URL you want). Keep the value you used before if that is authoritative.
       TARGET_URL: 'https://web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
+      # An alternate fully-qualified host we observed earlier — keep as fallback.
+      ALTERNATE_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
+      # Name used for the downloaded artifact
+      ZIP_FILENAME: 'exchange_protocols.zip'
 
     steps:
       - name: Checkout repository
@@ -25,30 +29,101 @@ jobs:
           python-version: '3.13'
           check-latest: true
 
-      - name: Install system unzip (if missing) & curl
+      - name: Install system tools (unzip, curl, dnsutils)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y unzip curl
+          sudo apt-get install -y unzip curl dnsutils
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          # pypdf is robust & streaming-friendly for text extraction
           python -m pip install pypdf
 
-      - name: Download ZIP of PDFs
+      - name: Robustly download ZIP (tries multiple hosts, diagnostics on failure)
+        shell: bash
         run: |
           set -euo pipefail
-          echo "Downloading $TARGET_URL"
-          curl -L "$TARGET_URL" -o exchange_protocols.zip
-          echo "Contents of downloaded archive:"
-          unzip -l exchange_protocols.zip
+
+          PRIMARY_URL="${TARGET_URL}"
+          ALT_URL="${ALTERNATE_URL}"
+          OUT="${ZIP_FILENAME}"
+
+          echo "Attempting to download primary URL: $PRIMARY_URL"
+          # Try both URLs in order. For each, try curl with retries and --ipv4 for reliability.
+          urls=( "$PRIMARY_URL" "$ALT_URL" )
+
+          success=0
+          for url in "${urls[@]}"; do
+            if [ -z "$url" ] || [ "$url" = "https://web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip" -a "$url" = "$PRIMARY_URL" ]; then
+              # keep the user-specified URL; sometimes it's intentionally that host.
+              :
+            fi
+            echo "Trying URL: $url"
+            set +e
+            # keep verbose output for logs (save to file)
+            CURL_VERBOSE="curl_verbose_$(echo "$url" | tr '/:' '_').log"
+            # curl: -f => fail on HTTP error; -L => follow redirects; retries enabled
+            curl --fail --show-error --location --ipv4 --connect-timeout 20 --max-time 300 \
+              --retry 5 --retry-delay 5 --retry-connrefused \
+              -o "$OUT" "$url" 2> "$CURL_VERBOSE"
+            rc=$?
+            set -e
+            if [ $rc -eq 0 ]; then
+              echo "Download succeeded from: $url"
+              success=1
+              break
+            else
+              echo "Download failed from: $url (curl rc=$rc). Verbose log below:"
+              echo "----- begin curl verbose ($CURL_VERBOSE) -----"
+              sed -n '1,200p' "$CURL_VERBOSE" || true
+              echo "----- end curl verbose -----"
+              echo
+              # run quick DNS diagnostics for this host
+              host=$(printf "%s" "$url" | awk -F/ '{print $3}')
+              echo "DNS lookup for host: $host"
+              nslookup "$host" || echo "nslookup failed for $host"
+              echo "Attempting to continue to next URL if available..."
+            fi
+          done
+
+          if [ $success -ne 1 ]; then
+            echo "ERROR: All download attempts failed. See curl logs above and DNS outputs." >&2
+            # Create a small diagnostic file to help debugging locally
+            echo "download-failure" > download_failure.marker
+            ls -la || true
+            # print environment info
+            echo "Runner environment summary:" > runner_env.txt
+            uname -a >> runner_env.txt
+            echo "Python:" >> runner_env.txt
+            python --version >> runner_env.txt
+            echo "Network diagnostics:" >> runner_env.txt
+            echo "Resolving primary host:" >> runner_env.txt
+            host_primary=$(printf "%s" "$PRIMARY_URL" | awk -F/ '{print $3}') || true
+            ( nslookup "$host_primary" >> runner_env.txt 2>&1 ) || true
+            echo "Resolving alternate host:" >> runner_env.txt
+            host_alt=$(printf "%s" "$ALT_URL" | awk -F/ '{print $3}') || true
+            ( nslookup "$host_alt" >> runner_env.txt 2>&1 ) || true
+            # List any curl verbose files
+            echo "Curl logs (first 200 lines each):" >> runner_env.txt
+            for f in curl_verbose_*.log; do
+              echo "---- $f ----" >> runner_env.txt
+              sed -n '1,200p' "$f" >> runner_env.txt 2>&1 || true
+            done
+            # show files to upload as diagnostics
+            echo "Diagnostic files created:"
+            ls -la download_failure.marker runner_env.txt curl_verbose_*.log || true
+            # fail the step so the job stops (non-zero)
+            exit 6
+          fi
+
+          # show zip contents for confirmation
+          echo "Downloaded zip file:"
+          unzip -l "$OUT" || ( echo "unzip listing failed" && exit 7 )
 
       - name: Extract PDFs
         run: |
           set -euo pipefail
-          # extract only pdfs into the workspace root (flatten -j)
-          unzip -o -j exchange_protocols.zip "*.pdf"
+          unzip -o -j "$ZIP_FILENAME" "*.pdf"
           echo "PDF files extracted:"
           ls -la *.pdf || true
 
@@ -201,7 +276,6 @@ jobs:
               print("ERROR: artifact not found for validation", file=sys.stderr)
               sys.exit(2)
 
-          # Read through the gz and capture the last manifest line that has "type":"manifest" and status "complete"
           last_manifest = None
           try:
               with gzip.open(path, "rt", encoding="utf-8") as fh:
@@ -224,7 +298,6 @@ jobs:
               print("ERROR: final manifest status is not 'complete':", last_manifest.get("status"), file=sys.stderr)
               sys.exit(5)
 
-          # Per-file checks: ensure pages_written == pages_expected and no errors
           files = last_manifest.get("files", [])
           problematic = []
           for f in files:
