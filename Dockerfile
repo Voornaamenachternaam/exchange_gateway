@@ -13,7 +13,8 @@ COPY src ./src
 RUN rm -f target/release/exchange_gateway
 RUN cargo build --release
 
-FROM debian:stable-slim
+# Use Bullseye Slim to match the builder's glibc version perfectly
+FROM debian:bullseye-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -24,11 +25,6 @@ RUN chmod +x /usr/local/bin/exchange_gateway
 # Create config directory
 RUN mkdir -p /etc/exchange-gateway
 
-# Copy default config (will be overridden by volume mount)
-COPY config.toml /etc/exchange-gateway/config.toml
-
 EXPOSE 8133
 USER 1000:1000
-
-# Entrypoint points to the location used in main.rs
 ENTRYPOINT ["/usr/local/bin/exchange_gateway"]
