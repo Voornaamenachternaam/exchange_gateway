@@ -3,21 +3,12 @@ use serde::Deserialize;
 use std::fs;
 
 #[derive(Clone, Debug, Deserialize)]
-#[allow(dead_code)] // Fields may be present in config but not used in current logic
 pub struct Config {
     pub bind: String,
-    pub http_bind: String,
-    pub tls_cert: String,
-    pub tls_key: String,
     pub caldav_base: String,
-
-    // Cloudflare Worker endpoint (the worker you deployed)
     pub worker_url: String,
-    // Secret value that the Rust gateway will send to the worker in a header
     pub worker_secret: String,
-
     pub hmac_secret: String,
-    pub log_level: Option<String>,
 }
 
 impl Config {
