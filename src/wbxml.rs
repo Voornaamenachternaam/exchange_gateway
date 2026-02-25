@@ -2,7 +2,6 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
-// WBXML Global Tokens
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
 const STR_I: u8 = 0x03;
@@ -27,7 +26,7 @@ lazy_static::lazy_static! {
         m.insert((0, 0x18), "Commands");
         m.insert((0, 0x1F), "ApplicationData");
 
-        // Code Page 4: Calendar (Prefix 'Calendar')
+        // Code Page 4: Calendar
         m.insert((4, 0x05), "Calendar:Timezone");
         m.insert((4, 0x06), "Calendar:AllDayEvent");
         m.insert((4, 0x0B), "Calendar:Body");
@@ -40,7 +39,7 @@ lazy_static::lazy_static! {
         m.insert((4, 0x16), "Calendar:ExceptionStartTime");
         m.insert((4, 0x17), "Calendar:Location");
         m.insert((4, 0x1B), "Calendar:Recurrence");
-        m.insert((4, 0x1C), "Calendar:Type"); // Recurrence Type
+        m.insert((4, 0x1C), "Calendar:Type");
         m.insert((4, 0x1D), "Calendar:Until");
         m.insert((4, 0x1E), "Calendar:Occurrences");
         m.insert((4, 0x1F), "Calendar:Interval");
@@ -54,9 +53,9 @@ lazy_static::lazy_static! {
         m.insert((4, 0x27), "Calendar:StartTime");
         m.insert((4, 0x28), "Calendar:UID");
 
-        // Code Page 17: AirSyncBase (Prefix 'AirSyncBase')
+        // Code Page 17: AirSyncBase
         m.insert((17, 0x05), "AirSyncBase:BodyPreference");
-        m.insert((17, 0x06), "AirSyncBase:Type"); // Body Type
+        m.insert((17, 0x06), "AirSyncBase:Type");
         m.insert((17, 0x07), "AirSyncBase:TruncationSize");
         m.insert((17, 0x0A), "AirSyncBase:Body");
         m.insert((17, 0x0B), "AirSyncBase:Data");
@@ -149,8 +148,7 @@ impl Wbxml {
     }
 
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-        // Fixed: Use vec! macro to avoid clippy warning
-        let mut buf = vec![0x03, 0x01, 0x6A, 0x00]; // Version 1.3, Public ID, Charset UTF-8, String Table Length
+        let mut buf = vec![0x03, 0x01, 0x6A, 0x00]; 
 
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -171,7 +169,6 @@ impl Wbxml {
                         }
                         buf.push(tag | 0x40);
                     } else {
-                        // Fallback for simple names (legacy compatibility)
                         let mut found = false;
                         for (k, (cp, tag)) in NAME_TO_TAG.iter() {
                             if k.ends_with(name_str) { 
@@ -217,7 +214,7 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     buf.push(STR_I);
-                    let txt = e.decode()
+                    let txt = e.unescape_with(&reader.decoder(), None)
                         .map_err(|e| anyhow!("XML Decode Error: {}", e))?
                         .into_owned();
                     buf.extend_from_slice(txt.as_bytes());
