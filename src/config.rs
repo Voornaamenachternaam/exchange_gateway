@@ -13,8 +13,10 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let s = fs::read_to_string(path)?;
-        let cfg: Config = toml::from_str(&s)?;
+        let s = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
+        let cfg: Config = toml::from_str(&s)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
         Ok(cfg)
     }
 }
