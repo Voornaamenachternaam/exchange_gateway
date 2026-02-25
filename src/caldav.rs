@@ -46,4 +46,4 @@ impl CaldavClient {
             .basic_auth(username, Some(password)).header("Content-Type", "application/xml").header("Depth", "1").body(report).send().await?;
         Ok(resp.text().await?)
     }
-} 
+}
