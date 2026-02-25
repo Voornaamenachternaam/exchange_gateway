@@ -220,9 +220,9 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     buf.push(STR_I);
-                    // FIXED: Use unescape() for quick-xml 0.39
-                    let txt = e.unescape()
-                        .map_err(|e| anyhow!("XML Unescape Error: {}", e))?
+                    // FIXED: Use decode() for quick-xml 0.39
+                    let txt = e.decode()
+                        .map_err(|e| anyhow!("XML Decode Error: {}", e))?
                         .into_owned();
                     buf.extend_from_slice(txt.as_bytes());
                     buf.push(0x00);
