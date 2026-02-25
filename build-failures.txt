@@ -1,0 +1,87 @@
+FAILED: .
+       Compiling exchange_gateway v1.0.2 (/home/runner/work/exchange_gateway/exchange_gateway)
+    error[E0308]: mismatched types
+       --> src/eas.rs:63:16
+        |
+     63 |         return wbxml_response(&wbxml, resp_xml);
+        |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<Body>`, found opaque type
+    ...
+    107 | fn wbxml_response(wbxml: &Wbxml, xml: &str) -> impl IntoResponse {
+        |                                                ----------------- the found opaque type
+        |
+        = note:   expected struct `axum::http::Response<axum::body::Body>`
+                found opaque type `impl IntoResponse`
+    note: return type inferred to be `axum::http::Response<axum::body::Body>` here
+       --> src/eas.rs:43:20
+        |
+     43 |             return (StatusCode::BAD_REQUEST, format!("Invalid WBXML: {}", e)).into_response();
+        |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    
+    error[E0599]: no method named `trim_text` found for struct `quick_xml::Reader<R>` in the current scope
+      --> src/ews.rs:29:12
+       |
+    29 |     reader.trim_text(true);
+       |            ^^^^^^^^^ method not found in `quick_xml::Reader<&[u8]>`
+    
+    error[E0308]: mismatched types
+      --> src/ews.rs:47:24
+       |
+    47 |         "GetFolder" => get_folder_response(),
+       |                        ^^^^^^^^^^^^^^^^^^^^^ expected opaque type, found a different opaque type
+    ...
+    52 | fn unauthorized() -> impl IntoResponse {
+       |                      ----------------- the expected opaque type
+    ...
+    56 | fn get_folder_response() -> impl IntoResponse {
+       |                             ----------------- the found opaque type
+       |
+       = note: expected opaque type `impl IntoResponse`
+                  found opaque type `impl IntoResponse`
+       = note: distinct uses of `impl Trait` result in different opaque types
+    note: return type inferred to be `impl IntoResponse` here
+      --> src/ews.rs:22:37
+       |
+    22 |                     } else { return unauthorized(); }
+       |                                     ^^^^^^^^^^^^^^
+    
+    error[E0599]: no method named `trim_text` found for struct `quick_xml::Reader<R>` in the current scope
+       --> src/sync.rs:165:12
+        |
+    165 |     reader.trim_text(true);
+        |            ^^^^^^^^^ method not found in `quick_xml::Reader<&[u8]>`
+    
+    error[E0599]: no method named `unescape` found for struct `BytesText<'_>` in the current scope
+       --> src/sync.rs:177:114
+        |
+    177 | ...read_event_into(&mut buf) { current.href = e.unescape().unwrap_or_default().to_string(); } }
+        |                                                 ^^^^^^^^ method not found in `BytesText<'_>`
+    
+    error[E0599]: no method named `unescape` found for struct `BytesText<'_>` in the current scope
+       --> src/sync.rs:178:117
+        |
+    178 | ...read_event_into(&mut buf) { current.etag = e.unescape().unwrap_or_default().to_string(); } }
+        |                                                 ^^^^^^^^ method not found in `BytesText<'_>`
+    
+    error[E0599]: no method named `unescape` found for struct `BytesText<'_>` in the current scope
+       --> src/sync.rs:179:122
+        |
+    179 | ....read_event_into(&mut buf) { current.ics = e.unescape().unwrap_or_default().to_string(); } }
+        |                                                 ^^^^^^^^ method not found in `BytesText<'_>`
+    
+    error[E0599]: no method named `trim_text` found for struct `quick_xml::Reader<R>` in the current scope
+       --> src/wbxml.rs:159:16
+        |
+    159 |         reader.trim_text(true);
+        |                ^^^^^^^^^ method not found in `quick_xml::Reader<&[u8]>`
+    
+    error[E0599]: no method named `unescape` found for struct `BytesText<'_>` in the current scope
+       --> src/wbxml.rs:224:33
+        |
+    224 |                     let txt = e.unescape()?;
+        |                                 ^^^^^^^^ method not found in `BytesText<'_>`
+    
+    Some errors have detailed explanations: E0308, E0599.
+    For more information about an error, try `rustc --explain E0308`.
+    error: could not compile `exchange_gateway` (bin "exchange_gateway") due to 9 previous errors
+    warning: build failed, waiting for other jobs to finish...
+    error: could not compile `exchange_gateway` (bin "exchange_gateway" test) due to 9 previous errors
