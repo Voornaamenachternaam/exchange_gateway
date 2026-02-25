@@ -1,5 +1,5 @@
 // src/ews.rs
-use axum::{ extract::State, http::HeaderMap, response::IntoResponse };
+use axum::{ extract::State, http::HeaderMap, response::{IntoResponse, Response} };
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use base64::engine::general_purpose::STANDARD;
@@ -11,14 +11,14 @@ pub async fn handle(
     State(_state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: String,
-) -> impl IntoResponse {
+) -> Response {
     if let Some(auth) = headers.get("authorization") {
         if let Ok(auth_str) = auth.to_str() {
             if let Some(b64) = auth_str.trim().strip_prefix("Basic ") {
                 let mut decoded = Vec::new();
                 if STANDARD.decode_vec(b64.as_bytes(), &mut decoded).is_ok() {
                     if String::from_utf8(decoded).is_ok() {
-                        // Authentication passed (logic check stripped for brevity)
+                        // Authentication passed
                     } else { return unauthorized(); }
                 } else { return unauthorized(); }
             } else { return unauthorized(); }
@@ -26,7 +26,7 @@ pub async fn handle(
     } else { return unauthorized(); }
 
     let mut reader = Reader::from_str(&body);
-    reader.trim_text(true);
+    reader.config_mut().trim_text(true); // Fixed API
     let mut buf = Vec::new();
     let mut action = String::new();
     loop {
@@ -49,11 +49,15 @@ pub async fn handle(
     }
 }
 
-fn unauthorized() -> impl IntoResponse {
-    ( axum::http::StatusCode::UNAUTHORIZED, [("WWW-Authenticate", "Basic realm=\"EWS\"")], "Unauthorized" )
+fn unauthorized() -> Response {
+    (
+        axum::http::StatusCode::UNAUTHORIZED, 
+        [("WWW-Authenticate", "Basic realm=\"EWS\"")], 
+        "Unauthorized"
+    ).into_response()
 }
 
-fn get_folder_response() -> impl IntoResponse {
+fn get_folder_response() -> Response {
     let resp = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
 <s:Body>
 <m:GetFolderResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
@@ -71,10 +75,13 @@ fn get_folder_response() -> impl IntoResponse {
   </m:ResponseMessages>
 </m:Body>
 </s:Envelope>"#;
-    ( axum::http::StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], resp.to_string() )
+    ( axum::http::StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], resp.to_string() ).into_response()
 }
 
-fn soap_response_empty() -> impl IntoResponse {
-    ( axum::http::StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], 
-    r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><ResponseMessage ResponseClass="Success"><ResponseCode>NoError</ResponseCode></ResponseMessage></s:Body></s:Envelope>"# )
+fn soap_response_empty() -> Response {
+    ( 
+        axum::http::StatusCode::OK, 
+        [("Content-Type", "text/xml; charset=utf-8")], 
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><ResponseMessage ResponseClass="Success"><ResponseCode>NoError</ResponseCode></ResponseMessage></s:Body></s:Envelope>"# 
+    ).into_response()
 } 

@@ -149,14 +149,11 @@ impl Wbxml {
     }
 
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        buf.push(0x03); // Version 1.3
-        buf.push(0x01); // Public ID
-        buf.push(0x6A); // Charset UTF-8
-        buf.push(0x00); // String Table Length
+        // Fixed: Use vec! macro to avoid clippy warning
+        let mut buf = vec![0x03, 0x01, 0x6A, 0x00]; // Version 1.3, Public ID, Charset UTF-8, String Table Length
 
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.trim_text(true);
+        reader.config_mut().trim_text(true);
         let mut current_code_page = 0u8;
         let mut buf_event = Vec::new();
 
@@ -177,7 +174,6 @@ impl Wbxml {
                         // Fallback for simple names (legacy compatibility)
                         let mut found = false;
                         for (k, (cp, tag)) in NAME_TO_TAG.iter() {
-                             // Check if the local name matches (after prefix)
                             if k.ends_with(name_str) { 
                                 if *cp != current_code_page {
                                     buf.push(SWITCH_PAGE);
@@ -221,7 +217,9 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     buf.push(STR_I);
-                    let txt = e.unescape()?;
+                    let txt = e.decode()
+                        .map_err(|e| anyhow!("XML Decode Error: {}", e))?
+                        .into_owned();
                     buf.extend_from_slice(txt.as_bytes());
                     buf.push(0x00);
                 }
