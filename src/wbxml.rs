@@ -214,7 +214,8 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     buf.push(STR_I);
-                    let txt = e.unescape_with(&reader.decoder(), None)
+                    // FIXED: Use decode() for quick-xml 0.39
+                    let txt = e.decode()
                         .map_err(|e| anyhow!("XML Decode Error: {}", e))?
                         .into_owned();
                     buf.extend_from_slice(txt.as_bytes());
