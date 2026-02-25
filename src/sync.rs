@@ -89,8 +89,9 @@ fn map_rrule_to_recurrence_xml(props: &[(String, String)], _dtstart: &chrono::Da
                 "BYDAY" => {
                     let mut mask = 0u8;
                     for d in v.split(',') {
-                        if d.len() > 2
-                            && let Ok(wk) = d[..d.len()-2].parse::<u32>() { week_of_month = wk; }
+                        if d.len() > 2 {
+                            if let Ok(wk) = d[..d.len()-2].parse::<u32>() { week_of_month = wk; }
+                        }
                         let day_code = &d[d.len()-2..];
                         match day_code {
                             "SU" => mask |= 1, "MO" => mask |= 2, "TU" => mask |= 4, "WE" => mask |= 8,
@@ -175,18 +176,17 @@ pub async fn perform_sync(
                 match e.name().local_name().as_ref() {
                     b"href" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            // FIXED: Use decode() for quick-xml 0.39
-                            current.href = e.decode().map(|c| c.into_owned()).unwrap_or_default(); 
+                            current.href = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
                         }
                     }
                     b"getetag" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
-                            current.etag = e.decode().map(|c| c.into_owned()).unwrap_or_default(); 
+                            current.etag = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
                         }
                     }
                     b"calendar-data" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
-                            current.ics = e.decode().map(|c| c.into_owned()).unwrap_or_default(); 
+                            current.ics = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
                         }
                     }
                     _ => {}
