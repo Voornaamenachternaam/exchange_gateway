@@ -176,18 +176,18 @@ pub async fn perform_sync(
                 match e.name().local_name().as_ref() {
                     b"href" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            // FIXED: Use unescape() for quick-xml 0.39
-                            current.href = e.unescape().unwrap_or_default().to_string(); 
+                            // FIXED: Use decode() for quick-xml 0.39
+                            current.href = e.decode().map(|c| c.into_owned()).unwrap_or_default(); 
                         }
                     }
                     b"getetag" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
-                            current.etag = e.unescape().unwrap_or_default().to_string(); 
+                            current.etag = e.decode().map(|c| c.into_owned()).unwrap_or_default(); 
                         }
                     }
                     b"calendar-data" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
-                            current.ics = e.unescape().unwrap_or_default().to_string(); 
+                            current.ics = e.decode().map(|c| c.into_owned()).unwrap_or_default(); 
                         }
                     }
                     _ => {}
@@ -285,4 +285,4 @@ pub async fn perform_sync(
         new_sync_key, collection_id, commands
     );
     Ok(xml)
-} 
+}
