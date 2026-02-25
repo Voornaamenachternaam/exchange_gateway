@@ -156,7 +156,7 @@ impl Wbxml {
         buf.push(0x00); // String Table Length
 
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.trim_text(true);
+        reader.config_mut().trim_text(true); // Fixed API
         let mut current_code_page = 0u8;
         let mut buf_event = Vec::new();
 
@@ -177,7 +177,6 @@ impl Wbxml {
                         // Fallback for simple names (legacy compatibility)
                         let mut found = false;
                         for (k, (cp, tag)) in NAME_TO_TAG.iter() {
-                             // Check if the local name matches (after prefix)
                             if k.ends_with(name_str) { 
                                 if *cp != current_code_page {
                                     buf.push(SWITCH_PAGE);
@@ -221,7 +220,8 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     buf.push(STR_I);
-                    let txt = e.unescape()?;
+                    // Fixed API: unescape_with
+                    let txt = e.unescape_with(&reader.decoder(), None)?;
                     buf.extend_from_slice(txt.as_bytes());
                     buf.push(0x00);
                 }
@@ -234,4 +234,4 @@ impl Wbxml {
         }
         Ok(buf)
     }
-}
+} 
