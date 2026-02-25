@@ -23,12 +23,22 @@ use crate::storage::Storage;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize logging early, but use explicit print for critical startup errors
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let config = Config::load("/etc/exchange-gateway/config.toml")?;
+    // Load config from the absolute path used in Dockerfile/Compose
+    let config = match Config::load("/etc/exchange-gateway/config.toml") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("CRITICAL: Failed to load config: {}", e);
+            return Err(e);
+        }
+    };
     
+    tracing::info!("Configuration loaded successfully. Initializing storage...");
+
     let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
