@@ -156,7 +156,7 @@ impl Wbxml {
         buf.push(0x00); // String Table Length
 
         let mut reader = quick_xml::Reader::from_str(xml);
-        reader.config_mut().trim_text(true); // Fixed API
+        reader.config_mut().trim_text(true);
         let mut current_code_page = 0u8;
         let mut buf_event = Vec::new();
 
@@ -220,8 +220,10 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     buf.push(STR_I);
-                    // Fixed API: unescape_with
-                    let txt = e.unescape_with(&reader.decoder(), None)?;
+                    // FIXED: Use unescape() for quick-xml 0.39
+                    let txt = e.unescape()
+                        .map_err(|e| anyhow!("XML Unescape Error: {}", e))?
+                        .into_owned();
                     buf.extend_from_slice(txt.as_bytes());
                     buf.push(0x00);
                 }
