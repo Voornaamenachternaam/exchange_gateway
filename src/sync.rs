@@ -89,9 +89,8 @@ fn map_rrule_to_recurrence_xml(props: &[(String, String)], _dtstart: &chrono::Da
                 "BYDAY" => {
                     let mut mask = 0u8;
                     for d in v.split(',') {
-                        if d.len() > 2 {
-                            if let Ok(wk) = d[..d.len()-2].parse::<u32>() { week_of_month = wk; }
-                        }
+                        if d.len() > 2
+                            && let Ok(wk) = d[..d.len()-2].parse::<u32>() { week_of_month = wk; }
                         let day_code = &d[d.len()-2..];
                         match day_code {
                             "SU" => mask |= 1, "MO" => mask |= 2, "TU" => mask |= 4, "WE" => mask |= 8,
