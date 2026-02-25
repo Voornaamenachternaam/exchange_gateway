@@ -26,7 +26,7 @@ pub async fn handle(
     } else { return unauthorized(); }
 
     let mut reader = Reader::from_str(&body);
-    reader.config_mut().trim_text(true); // Fixed API
+    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut action = String::new();
     loop {
@@ -73,7 +73,7 @@ fn get_folder_response() -> Response {
       </m:Folders>
     </m:GetFolderResponseMessage>
   </m:ResponseMessages>
-</m:Body>
+</s:Body>
 </s:Envelope>"#;
     ( axum::http::StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], resp.to_string() ).into_response()
 }
@@ -84,4 +84,4 @@ fn soap_response_empty() -> Response {
         [("Content-Type", "text/xml; charset=utf-8")], 
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><ResponseMessage ResponseClass="Success"><ResponseCode>NoError</ResponseCode></ResponseMessage></s:Body></s:Envelope>"# 
     ).into_response()
-} 
+}
