@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::fs;
 
 #[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)] // Fields may be present in config but not used in current logic
 pub struct Config {
     pub bind: String,
     pub http_bind: String,
