@@ -3,7 +3,7 @@ use crate::models::AppState;
 use crate::sync;
 use crate::wbxml::Wbxml;
 use axum::http::HeaderMap;
-use axum::{extract::Extension, http::StatusCode, response::IntoResponse};
+use axum::{extract::Extension, http::StatusCode, response::{IntoResponse, Response}};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use bytes::Bytes;
@@ -33,7 +33,7 @@ pub async fn handle(
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
-) -> impl IntoResponse {
+) -> Response {
     let wbxml = Wbxml::new();
     let payload = body.to_vec();
     let xml = match wbxml.decode(&payload) {
@@ -104,7 +104,7 @@ pub async fn handle(
     (StatusCode::BAD_REQUEST, "Unsupported ActiveSync command").into_response()
 }
 
-fn wbxml_response(wbxml: &Wbxml, xml: &str) -> impl IntoResponse {
+fn wbxml_response(wbxml: &Wbxml, xml: &str) -> Response {
     match wbxml.encode(xml) {
         Ok(b) => (
             StatusCode::OK,
@@ -113,4 +113,4 @@ fn wbxml_response(wbxml: &Wbxml, xml: &str) -> impl IntoResponse {
         ).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("WBXML Encode Err: {}", e)).into_response()
     }
-} 
+}
