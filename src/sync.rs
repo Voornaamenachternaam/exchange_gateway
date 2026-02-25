@@ -162,21 +162,34 @@ pub async fn perform_sync(
     use quick_xml::Reader;
     use quick_xml::events::Event;
     let mut reader = Reader::from_str(&events_xml);
-    reader.trim_text(true);
-    let mut buf = Vec::new();
+    reader.config_mut().trim_text(true); // Fixed API
     
     #[derive(Clone)]
     struct EventItem { href: String, etag: String, ics: String }
     let mut events = Vec::new();
     let mut current = EventItem { href: String::new(), etag: String::new(), ics: String::new() };
-    
+    let mut buf = Vec::new(); // Define buf outside loop
+
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 match e.name().local_name().as_ref() {
-                    b"href" => { if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { current.href = e.unescape().unwrap_or_default().to_string(); } }
-                    b"getetag" => { if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { current.etag = e.unescape().unwrap_or_default().to_string(); } }
-                    b"calendar-data" => { if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { current.ics = e.unescape().unwrap_or_default().to_string(); } }
+                    b"href" => {
+                        // Fixed API: unescape_with
+                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+                            current.href = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
+                        }
+                    }
+                    b"getetag" => {
+                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
+                            current.etag = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
+                        }
+                    }
+                    b"calendar-data" => {
+                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
+                            current.ics = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -272,4 +285,4 @@ pub async fn perform_sync(
         new_sync_key, collection_id, commands
     );
     Ok(xml)
-                    } 
+}
