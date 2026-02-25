@@ -27,7 +27,8 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let config = Config::load("config.toml")?;
+    let config = Config::load("/etc/exchange-gateway/config.toml")?;
+    
     let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
