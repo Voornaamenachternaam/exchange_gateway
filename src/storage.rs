@@ -64,8 +64,6 @@ impl Storage {
         if !resp.status().is_success() {
             return Err(anyhow!("worker POST {} returned {}", url, resp.status()));
         }
-        // Consume response body to avoid warnings, but do not deserialize unused struct
-        let _ = resp.bytes().await?;
         Ok(())
     }
 

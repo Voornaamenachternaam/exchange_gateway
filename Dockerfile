@@ -16,8 +16,19 @@ RUN cargo build --release
 FROM debian:stable-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+
+# Copy binary and ensure it is executable
 COPY --from=builder /usr/src/exchange_gateway/target/release/exchange_gateway /usr/local/bin/exchange_gateway
+RUN chmod +x /usr/local/bin/exchange_gateway
+
+# Create config directory
+RUN mkdir -p /etc/exchange-gateway
+
+# Copy default config (will be overridden by volume mount)
 COPY config.toml /etc/exchange-gateway/config.toml
-EXPOSE 8443 8080 8133
+
+EXPOSE 8133
 USER 1000:1000
-ENTRYPOINT ["/usr/local/bin/exchange_gateway", "--config", "/etc/exchange-gateway/config.toml"]
+
+# Entrypoint points to the location used in main.rs
+ENTRYPOINT ["/usr/local/bin/exchange_gateway"]
