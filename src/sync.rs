@@ -176,17 +176,18 @@ pub async fn perform_sync(
                 match e.name().local_name().as_ref() {
                     b"href" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.href = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
+                            // FIXED: Use decode() for quick-xml 0.39
+                            current.href = e.decode().unwrap_or_default().to_string(); 
                         }
                     }
                     b"getetag" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
-                            current.etag = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
+                            current.etag = e.decode().unwrap_or_default().to_string(); 
                         }
                     }
                     b"calendar-data" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) { 
-                            current.ics = e.unescape_with(&reader.decoder(), None).unwrap_or_default().to_string(); 
+                            current.ics = e.decode().unwrap_or_default().to_string(); 
                         }
                     }
                     _ => {}
