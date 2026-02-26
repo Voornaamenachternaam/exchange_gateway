@@ -8,7 +8,6 @@ pub struct AppConfig {
     pub db_auth_token: String,
     pub timezone: String,
     pub smtp_url: String,
-    pub gateway_host: String,
 }
 
 impl AppConfig {
@@ -19,7 +18,6 @@ impl AppConfig {
             db_auth_token: env::var("CF_D1_AUTH_TOKEN").map_err(|_| "CF_D1_AUTH_TOKEN missing")?,
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
             smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
-            gateway_host: env::var("GATEWAY_HOST").map_err(|_| "GATEWAY_HOST missing")?,
         })
     }
 }
