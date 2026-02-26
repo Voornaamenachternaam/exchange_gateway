@@ -78,26 +78,9 @@ async fn handle_get_folder(session: &jmap_client::JmapSession) -> String {
 }
 
 async fn handle_sync_folder_items(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
-    let mut sync_state_in = String::new();
-    let mut buf = Vec::new();
-    let mut reader = Reader::from_str(xml);
+    // Note: We ignore the client's SyncState in this simplified implementation
+    // and rely purely on the server's JMAP state change detection.
     
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                 if std::str::from_utf8(e.local_name().as_ref()).unwrap_or("") == "SyncState" {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        // Fix: Use std::str::from_utf8(&t)
-                        let text_str = std::str::from_utf8(&t).unwrap_or("");
-                        sync_state_in = escape::unescape(text_str).unwrap_or_default().into_owned();
-                    }
-                }
-            }
-            Ok(Event::Eof) => break,
-            _ => {}
-        }
-    }
-
     let current_jmap_state = match jmap_client::get_calendar_state(&session.api_url, &session.access_token, &session.account_id).await {
         Ok(s) => s,
         Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),
@@ -179,7 +162,6 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
             Ok(Event::Text(t)) => {
-                // Fix: Use std::str::from_utf8(&t)
                 let text_str = std::str::from_utf8(&t).unwrap_or("");
                 let text = escape::unescape(text_str).unwrap_or_default();
                 match current_tag.as_str() {
