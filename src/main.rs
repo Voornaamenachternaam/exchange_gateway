@@ -8,11 +8,11 @@ mod utils;
 mod wbxml;
 
 use axum::{
-    extract::{State},
-    http::{header, HeaderMap, StatusCode, Uri},
+    Router,
+    extract::State,
+    http::{HeaderMap, StatusCode, Uri, header},
     response::IntoResponse,
     routing::{get, post},
-    Router,
 };
 use config::AppConfig;
 use std::net::SocketAddr;
@@ -23,7 +23,7 @@ use tracing_subscriber::prelude::*;
 #[tokio::main]
 async fn main() {
     let filter = tracing_subscriber::EnvFilter::new(
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,exchange_gateway=debug".into())
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,exchange_gateway=debug".into()),
     );
 
     tracing_subscriber::registry()
@@ -77,14 +77,22 @@ async fn handle_active_sync(
         .unwrap_or("");
 
     if !auth_header.starts_with("Basic ") {
-        return (StatusCode::UNAUTHORIZED, HeaderMap::new(), "Unauthorized".into());
+        return (
+            StatusCode::UNAUTHORIZED,
+            HeaderMap::new(),
+            "Unauthorized".into(),
+        );
     }
 
     let xml_request = match wbxml::decode(&body) {
         Ok(xml) => xml,
         Err(e) => {
             tracing::error!("WBXML decode error: {:?}", e);
-            return (StatusCode::BAD_REQUEST, HeaderMap::new(), "Bad WBXML".into());
+            return (
+                StatusCode::BAD_REQUEST,
+                HeaderMap::new(),
+                "Bad WBXML".into(),
+            );
         }
     };
 
@@ -93,13 +101,20 @@ async fn handle_active_sync(
     match wbxml::encode(&response_xml) {
         Ok(wbxml_data) => {
             let mut headers = HeaderMap::new();
-            headers.insert(header::CONTENT_TYPE, "application/vnd.ms-sync.wbxml".parse().unwrap());
+            headers.insert(
+                header::CONTENT_TYPE,
+                "application/vnd.ms-sync.wbxml".parse().unwrap(),
+            );
             headers.insert("MS-Server-ActiveSync", "15.0".parse().unwrap());
             (StatusCode::OK, headers, wbxml_data)
         }
         Err(e) => {
             tracing::error!("WBXML encode error: {:?}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new(), "Encoding Error".into())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                HeaderMap::new(),
+                "Encoding Error".into(),
+            )
         }
     }
 }
@@ -115,12 +130,22 @@ async fn handle_ews(
         .unwrap_or("");
 
     if !auth_header.starts_with("Basic ") {
-        return (StatusCode::UNAUTHORIZED, HeaderMap::new(), "Unauthorized".into());
+        return (
+            StatusCode::UNAUTHORIZED,
+            HeaderMap::new(),
+            "Unauthorized".into(),
+        );
     }
 
     let xml_request = match std::str::from_utf8(&body) {
         Ok(s) => s.to_string(),
-        Err(_) => return (StatusCode::BAD_REQUEST, HeaderMap::new(), "Invalid UTF-8".into()),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                HeaderMap::new(),
+                "Invalid UTF-8".into(),
+            );
+        }
     };
 
     let response_xml = ews::process_request(&config, &xml_request, &headers).await;
