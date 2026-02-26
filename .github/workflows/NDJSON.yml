@@ -1,4 +1,4 @@
-name: NDJSON
+name: Daily PDF to NDJSON Processor
 
 on:
   schedule:
@@ -12,7 +12,8 @@ jobs:
       contents: read
 
     env:
-      TARGET_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip '
+      # FIXED: Removed trailing space from URL
+      TARGET_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
       ZIP_FILENAME: 'exchange_protocols.zip'
 
     steps:
@@ -31,9 +32,25 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --upgrade pip pypdf zstandard
 
-      - name: Download ZIP
+      - name: Download ZIP (Robust)
+        shell: bash
         run: |
-          curl --fail --location --output "$ZIP_FILENAME" "$TARGET_URL"
+          set -euo pipefail
+          
+          # Sanitize URL: remove any leading/trailing whitespace just in case
+          CLEAN_URL=$(echo "$TARGET_URL" | xargs)
+          
+          echo "Downloading from: $CLEAN_URL"
+          
+          # Use curl with retries to handle transient network issues
+          curl --fail --location --retry 3 --retry-delay 5 --max-time 600 -o "$ZIP_FILENAME" "$CLEAN_URL"
+          
+          # Verify download
+          if [ ! -f "$ZIP_FILENAME" ]; then
+            echo "Error: ZIP file not downloaded."
+            exit 1
+          fi
+          
           unzip -l "$ZIP_FILENAME"
 
       - name: Extract PDFs
@@ -89,7 +106,7 @@ jobs:
                       reader = PdfReader(pdf_path)
                       pages_total = len(reader.pages)
                   except Exception as e:
-                      pages_total = 0 # Error handling
+                      pages_total = 0
                   
                   file_map[filename] = {
                       "id": next_id,
@@ -179,7 +196,7 @@ jobs:
         run: |
           echo "Validating page continuity..."
           python - <<'PY'
-          import json, gzip
+          import json
           
           # Validate the uncompressed file
           with open("Exchange_Protocols_pages.ndjson", "r", encoding="utf-8") as f:
