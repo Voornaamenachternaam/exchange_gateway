@@ -1,0 +1,431 @@
+name: Daily PDF to NDJSON Processor
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  process-pdfs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      # Primary URL (use the exact URL you want). Keep the value you used before if that is authoritative.
+      TARGET_URL: 'https://web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
+      # An alternate fully-qualified host we observed earlier — keep as fallback.
+      ALTERNATE_URL: 'https://officeprotocoldoc.z19.web.core.windows.net/files/Zip_Files/Exchange_Protocols.zip'
+      # Name used for the downloaded artifact
+      ZIP_FILENAME: 'exchange_protocols.zip'
+
+      # Optional behavior flags (strings; set to "true" to enable)
+      ZSTD_ENABLED: 'false'   # when true, also produce Exchange_Protocols_pages.ndjson.zst (requires zstandard pip package)
+      KEEP_FULL: 'false'      # when true, also produce legacy fully-expanded ndjson (Exchange_Protocols_pages.full.ndjson.gz)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+          check-latest: true
+
+      - name: Install system tools (unzip, curl, dnsutils)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y unzip curl dnsutils
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # pypdf required. zstandard installed as well (lightweight) to support optional .zst output.
+          python -m pip install pypdf zstandard
+
+      - name: Robustly download ZIP (tries multiple hosts, diagnostics on failure)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRIMARY_URL="${TARGET_URL}"
+          ALT_URL="${ALTERNATE_URL}"
+          OUT="${ZIP_FILENAME}"
+
+          echo "Attempting to download primary URL: $PRIMARY_URL"
+          urls=( "$PRIMARY_URL" "$ALT_URL" )
+
+          success=0
+          for url in "${urls[@]}"; do
+            if [ -z "$url" ]; then
+              continue
+            fi
+            echo "Trying URL: $url"
+            set +e
+            CURL_VERBOSE="curl_verbose_$(echo "$url" | tr '/:' '_').log"
+            curl --fail --show-error --location --ipv4 --connect-timeout 20 --max-time 300 \
+              --retry 5 --retry-delay 5 --retry-connrefused \
+              -o "$OUT" "$url" 2> "$CURL_VERBOSE"
+            rc=$?
+            set -e
+            if [ $rc -eq 0 ]; then
+              echo "Download succeeded from: $url"
+              success=1
+              break
+            else
+              echo "Download failed from: $url (curl rc=$rc). Verbose log below:"
+              echo "----- begin curl verbose ($CURL_VERBOSE) -----"
+              sed -n '1,200p' "$CURL_VERBOSE" || true
+              echo "----- end curl verbose -----"
+              echo
+              host=$(printf "%s" "$url" | awk -F/ '{print $3}')
+              echo "DNS lookup for host: $host"
+              nslookup "$host" || echo "nslookup failed for $host"
+              echo "Attempting to continue to next URL if available..."
+            fi
+          done
+
+          if [ $success -ne 1 ]; then
+            echo "ERROR: All download attempts failed. See curl logs above and DNS outputs." >&2
+            echo "download-failure" > download_failure.marker
+            ls -la || true
+            echo "Runner environment summary:" > runner_env.txt
+            uname -a >> runner_env.txt
+            echo "Python:" >> runner_env.txt
+            python --version >> runner_env.txt
+            echo "Network diagnostics:" >> runner_env.txt
+            host_primary=$(printf "%s" "$PRIMARY_URL" | awk -F/ '{print $3}') || true
+            ( nslookup "$host_primary" >> runner_env.txt 2>&1 ) || true
+            host_alt=$(printf "%s" "$ALT_URL" | awk -F/ '{print $3}') || true
+            ( nslookup "$host_alt" >> runner_env.txt 2>&1 ) || true
+            echo "Curl logs (first 200 lines each):" >> runner_env.txt
+            for f in curl_verbose_*.log; do
+              echo "---- $f ----" >> runner_env.txt
+              sed -n '1,200p' "$f" >> runner_env.txt 2>&1 || true
+            done
+            echo "Diagnostic files created:"
+            ls -la download_failure.marker runner_env.txt curl_verbose_*.log || true
+            exit 6
+          fi
+
+          echo "Downloaded zip file:"
+          unzip -l "$OUT" || ( echo "unzip listing failed" && exit 7 )
+
+      - name: Extract PDFs
+        run: |
+          set -euo pipefail
+          unzip -o -j "$ZIP_FILENAME" "*.pdf"
+          echo "PDF files extracted:"
+          ls -la *.pdf || true
+
+      - name: Convert PDFs → gzipped NDJSON (optimized, lossless)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > process_pdfs_to_ndjson_optimized.py <<'PY'
+          #!/usr/bin/env python3
+          import glob, json, gzip, hashlib, os, sys
+          from datetime import datetime
+          from pypdf import PdfReader
+
+          OUT_PATH = "Exchange_Protocols_pages.ndjson.gz"
+          pdf_files = sorted(glob.glob("*.pdf"))
+
+          if not pdf_files:
+              print("ERROR: no PDF files found in working directory", file=sys.stderr)
+              sys.exit(2)
+
+          file_id_map = {}
+          next_file_id = 1
+          total_pages_written = 0
+          files_summary = []
+
+          # First pass: compute sha256 and page counts deterministically
+          for pdf_path in pdf_files:
+              filename = os.path.basename(pdf_path)
+              sha256_hex = None
+              try:
+                  import hashlib as _hl
+                  h = _hl.sha256()
+                  with open(pdf_path, "rb") as f:
+                      for chunk in iter(lambda: f.read(65536), b""):
+                          h.update(chunk)
+                  sha256_hex = h.hexdigest()
+              except Exception as e:
+                  sha256_hex = None
+
+              pages_count = None
+              try:
+                  reader = PdfReader(pdf_path)
+                  pages_count = len(reader.pages)
+              except Exception:
+                  pages_count = None
+
+              file_id_map[filename] = {
+                  "id": next_file_id,
+                  "filename": filename,
+                  "pages_total": pages_count,
+                  "sha256": sha256_hex,
+                  "path": pdf_path
+              }
+              next_file_id += 1
+
+          # Write optimized NDJSON: header manifest, file records, page records, final manifest
+          with gzip.open(OUT_PATH, "wt", encoding="utf-8") as out:
+              header = {
+                  "type": "manifest",
+                  "status": "in_progress",
+                  "generated_at": datetime.utcnow().isoformat() + "Z",
+                  "file_count": len(pdf_files),
+                  "note": "Optimized layout: single 'file' records followed by 'page' records. Pages reference file_id."
+              }
+              out.write(json.dumps(header, separators=(',',':')) + "\n")
+              out.flush()
+
+              # emit file records (one per PDF)
+              for fname in sorted(file_id_map.keys()):
+                  m = file_id_map[fname]
+                  file_record = {
+                      "type": "file",
+                      "id": m["id"],
+                      "filename": m["filename"],
+                      "pages_total": m["pages_total"],
+                      "sha256": m["sha256"]
+                  }
+                  out.write(json.dumps(file_record, separators=(',',':')) + "\n")
+
+              # emit page records
+              for fname in sorted(file_id_map.keys()):
+                  meta = file_id_map[fname]
+                  pdf_path = meta["path"]
+                  filename = meta["filename"]
+                  sha256_hex = meta["sha256"]
+                  pages_total = meta["pages_total"]
+                  pages_written = 0
+                  file_errors = []
+
+                  try:
+                      reader = PdfReader(pdf_path)
+                  except Exception as e:
+                      file_errors.append(f"PdfReader open failed: {repr(e)}")
+                      files_summary.append({
+                          "filename": filename,
+                          "pages_expected": pages_total,
+                          "pages_written": 0,
+                          "sha256": sha256_hex,
+                          "errors": file_errors
+                      })
+                      continue
+
+                  for i, page in enumerate(reader.pages, start=1):
+                      try:
+                          text = page.extract_text() or ""
+                      except Exception as e:
+                          file_errors.append(f"extract_text error on page {i}: {repr(e)}")
+                          text = ""
+
+                      page_record = {
+                          "type": "page",
+                          "file_id": meta["id"],
+                          "page": i,
+                          "text": text
+                      }
+                      out.write(json.dumps(page_record, separators=(',',':')) + "\n")
+                      pages_written += 1
+                      total_pages_written += 1
+
+                      if pages_written % 100 == 0:
+                          out.flush()
+
+                  files_summary.append({
+                      "filename": filename,
+                      "pages_expected": pages_total,
+                      "pages_written": pages_written,
+                      "sha256": sha256_hex,
+                      "errors": file_errors
+                  })
+
+              final_manifest = {
+                  "type": "manifest",
+                  "status": "complete",
+                  "generated_at": datetime.utcnow().isoformat() + "Z",
+                  "file_count": len(pdf_files),
+                  "total_pages_written": total_pages_written,
+                  "files": files_summary
+              }
+              out.write(json.dumps(final_manifest, separators=(',',':')) + "\n")
+              out.flush()
+
+          if not os.path.exists(OUT_PATH):
+              print("ERROR: output file was not created", file=sys.stderr)
+              sys.exit(3)
+
+          missing = 0
+          for f in files_summary:
+              exp = f.get("pages_expected") or 0
+              written = f.get("pages_written") or 0
+              missing += max(0, exp - written)
+          if missing > 0:
+              print(f"ERROR: {missing} pages missing according to manifests. See final manifest inside {OUT_PATH}", file=sys.stderr)
+              sys.exit(4)
+
+          print(f"Success: wrote {total_pages_written} pages into {OUT_PATH}")
+          PY
+
+          python process_pdfs_to_ndjson_optimized.py
+
+      - name: Optional: produce .zst compressed artifact (zstd)
+        if: env.ZSTD_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Read the gz input and produce a zst file for stronger compression.
+          python - <<'PY'
+          import gzip, zstandard, sys
+          inpath = "Exchange_Protocols_pages.ndjson.gz"
+          outpath = "Exchange_Protocols_pages.ndjson.zst"
+          with gzip.open(inpath, "rb") as fin:
+              data = fin.read()
+          cctx = zstandard.ZstdCompressor(level=19)
+          with open(outpath, "wb") as fout:
+              fout.write(cctx.compress(data))
+          print("Wrote", outpath)
+          PY
+
+      - name: Optional: reconstruct legacy fully-expanded ndjson (keeps every per-page field repeated)
+        if: env.KEEP_FULL == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This reads the optimized ndjson.gz and reconstructs the original per-page format,
+          # writing Exchange_Protocols_pages.full.ndjson.gz
+          python - <<'PY'
+          import gzip, json, sys, os
+          infile = "Exchange_Protocols_pages.ndjson.gz"
+          outfile = "Exchange_Protocols_pages.full.ndjson.gz"
+          if not os.path.exists(infile):
+              print("ERROR: optimized ndjson not found", file=sys.stderr)
+              sys.exit(2)
+          files = {}
+          pages = []
+          # First pass: collect file records and page records in streaming fashion
+          with gzip.open(infile, "rt", encoding="utf-8") as fh:
+              for line in fh:
+                  try:
+                      obj = json.loads(line)
+                  except Exception:
+                      continue
+                  if not isinstance(obj, dict):
+                      continue
+                  t = obj.get("type")
+                  if t == "file":
+                      files[obj["id"]] = obj
+                  elif t == "page":
+                      pages.append(obj)
+          # Now write reconstructed ndjson: header manifest, then each page with expanded fields, then final manifest
+          header = {
+              "type": "manifest",
+              "status": "reconstructed",
+              "generated_at": None,
+              "note": "This file is reconstructed to legacy per-page expanded format."
+          }
+          import datetime
+          header["generated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+          with gzip.open(outfile, "wt", encoding="utf-8") as out:
+              out.write(json.dumps(header, separators=(',',':')) + "\n")
+              for p in pages:
+                  fid = p.pop("file_id")
+                  fmeta = files.get(fid, {})
+                  full = {
+                      "type": "page",
+                      "filename": fmeta.get("filename"),
+                      "page": p.get("page"),
+                      "pages_total": fmeta.get("pages_total"),
+                      "sha256": fmeta.get("sha256"),
+                      "text": p.get("text","")
+                  }
+                  out.write(json.dumps(full, separators=(',',':')) + "\n")
+              final = {
+                  "type": "manifest",
+                  "status": "complete",
+                  "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                  "page_count": len(pages)
+              }
+              out.write(json.dumps(final, separators=(',',':')) + "\n")
+          print("Wrote reconstructed legacy file:", outfile)
+          PY
+
+      - name: Validate NDJSON.gz final manifest (sanity) (optimized layout)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip, json, os, sys
+
+          path = "Exchange_Protocols_pages.ndjson.gz"
+          if not os.path.exists(path):
+              print("ERROR: artifact not found for validation", file=sys.stderr)
+              sys.exit(2)
+
+          last_manifest = None
+          try:
+              file_map = {}
+              with gzip.open(path, "rt", encoding="utf-8") as fh:
+                  for line in fh:
+                      try:
+                          obj = json.loads(line)
+                      except Exception:
+                          continue
+                      if not isinstance(obj, dict):
+                          continue
+                      t = obj.get("type")
+                      if t == "file":
+                          # build map if needed for extra checks (not strictly required)
+                          file_map[obj.get("id")] = obj
+                      if t == "manifest":
+                          last_manifest = obj
+          except Exception as e:
+              print("ERROR reading gz file for validation:", e, file=sys.stderr)
+              sys.exit(3)
+
+          if not last_manifest:
+              print("ERROR: No manifest found in artifact", file=sys.stderr)
+              sys.exit(4)
+
+          if last_manifest.get("status") != "complete":
+              print("ERROR: final manifest status is not 'complete':", last_manifest.get("status"), file=sys.stderr)
+              sys.exit(5)
+
+          files = last_manifest.get("files", [])
+          problematic = []
+          for f in files:
+              exp = f.get("pages_expected")
+              written = f.get("pages_written", 0)
+              errs = f.get("errors", [])
+              if exp is not None and written != exp:
+                  problematic.append(f"page-count-mismatch for {f.get('filename')}: expected {exp}, written {written}")
+              if errs:
+                  problematic.append(f"errors for {f.get('filename')}: {errs}")
+
+          if problematic:
+              print("ERROR: Validation failed. Problems detected:")
+              for p in problematic:
+                  print("  -", p)
+              sys.exit(6)
+
+          print("Validation OK: final manifest complete and all files/pages validated.")
+          sys.exit(0)
+          PY
+
+      - name: Upload NDJSON artifacts
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: exchange-protocols-ndjson
+          path: |
+            Exchange_Protocols_pages.ndjson.gz
+            Exchange_Protocols_pages.ndjson.zst
+            Exchange_Protocols_pages.full.ndjson.gz
+          # upload only existing files; uploader will ignore missing files
+          retention-days: 5
