@@ -276,7 +276,7 @@ jobs:
 
           python process_pdfs_to_ndjson_optimized.py
 
-      - name: Optional: produce .zst compressed artifact (zstd)
+      - name: optional produce .zst compressed artifact (zstd)
         if: env.ZSTD_ENABLED == 'true'
         shell: bash
         run: |
