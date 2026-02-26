@@ -294,7 +294,7 @@ jobs:
           print("Wrote", outpath)
           PY
 
-      - name: Optional: reconstruct legacy fully-expanded ndjson (keeps every per-page field repeated)
+      - name: optional reconstruct legacy fully-expanded ndjson (keeps every per-page field repeated)
         if: env.KEEP_FULL == 'true'
         shell: bash
         run: |
