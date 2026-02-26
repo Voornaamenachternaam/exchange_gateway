@@ -1,22 +1,25 @@
 // src/config.rs
-use serde::Deserialize;
-use std::fs;
+use std::env;
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct Config {
-    pub bind: String,
-    pub caldav_base: String,
-    pub worker_url: String,
-    pub worker_secret: String,
-    pub hmac_secret: String,
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    pub jmap_url: String,
+    pub db_api_url: String,
+    pub db_auth_token: String,
+    pub timezone: String,
+    pub smtp_url: String,
+    pub gateway_host: String,
 }
 
-impl Config {
-    pub fn load(path: &str) -> anyhow::Result<Self> {
-        let s = fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
-        let cfg: Config = toml::from_str(&s)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
-        Ok(cfg)
+impl AppConfig {
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self {
+            jmap_url: env::var("JMAP_URL").map_err(|_| "JMAP_URL missing")?,
+            db_api_url: env::var("CF_D1_API_URL").map_err(|_| "CF_D1_API_URL missing")?,
+            db_auth_token: env::var("CF_D1_AUTH_TOKEN").map_err(|_| "CF_D1_AUTH_TOKEN missing")?,
+            timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
+            smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
+            gateway_host: env::var("GATEWAY_HOST").map_err(|_| "GATEWAY_HOST missing")?,
+        })
     }
 }
