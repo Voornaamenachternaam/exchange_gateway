@@ -1,15 +1,5 @@
-# Configuration for exchange_gateway
 bind = "0.0.0.0:8133"
-http_bind = "0.0.0.0:8080"
-tls_cert = ""
-tls_key = ""
-
-# Connect to Stalwart via Docker internal network (HTTP)
 caldav_base = "http://172.28.0.10:8080/dav/"
-
-# Cloudflare Worker endpoint (Public HTTPS)
 worker_url = "https://exchange.mail.example.com/api"
 worker_secret = "YOUR_GATEWAY_SECRET"
-
 hmac_secret = "cb790e98fdc2d78ab9ca7b856a51114b136db2c20121461b91d7d22b2ec1323a"
-log_level = "info"
