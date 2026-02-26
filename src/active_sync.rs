@@ -6,6 +6,7 @@ use chrono_tz::Tz;
 use lettre::{SmtpTransport, Transport};
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::escape;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -170,7 +171,7 @@ async fn handle_provision() -> String {
     </Provision>"#.to_string()
 }
 
-async fn handle_send_mail(_session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
+async fn handle_send_mail(_session: &jmap_client::JmapSession, config: &AppConfig, _user: &str, xml: &str) -> String {
     let mut mime_content = String::new();
     let mut buf = Vec::new();
     let mut in_mime = false;
@@ -190,8 +191,8 @@ async fn handle_send_mail(_session: &jmap_client::JmapSession, config: &AppConfi
             }
             Ok(Event::Text(t)) => {
                 if in_mime {
-                    // quick-xml 0.39 unescape returns Cow<str>
-                    mime_content.push_str(&t.unescape().unwrap_or_default());
+                    // Fix: use escape::unescape free function
+                    mime_content.push_str(&escape::unescape(&t).unwrap_or_default());
                 }
             }
             Ok(Event::Eof) => break,
@@ -208,10 +209,6 @@ async fn handle_send_mail(_session: &jmap_client::JmapSession, config: &AppConfi
 
     let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
         // Build Email via lettre
-        // Note: We build a new email envelope, but use the raw body if possible, or reconstruct.
-        // Lettre Message::builder() requires setting headers individually.
-        // We will reconstruct to ensure transport validity.
-        
         let email_builder = lettre::Message::builder()
             .from(from.parse().unwrap())
             .to(to.parse().unwrap());
@@ -222,16 +219,14 @@ async fn handle_send_mail(_session: &jmap_client::JmapSession, config: &AppConfi
         
         let email = email_builder
             .subject(subject)
-            .body(mime_content) // Pass raw MIME as body
+            .body(mime_content) 
             .unwrap();
 
-        // Parse SMTP URL
+        // Parse SMTP URL from config
         let smtp_url = url::Url::parse(&config.smtp_url).unwrap();
         let host = smtp_url.host_str().unwrap();
         let port = smtp_url.port().unwrap_or(25);
 
-        // Use 'user' as username for auth, assume password not needed or config.smtp_url contains it
-        // For robustness, we just use builder_dangerous for internal trusted network
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
         
         match mailer.send(&email) {
@@ -281,6 +276,9 @@ async fn handle_folder_sync(session: &jmap_client::JmapSession, config: &AppConf
 async fn handle_sync(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str, req: SyncRequest) -> String {
     let coll = req.collections.collection;
     
+    // Clone the key to avoid move error
+    let old_sync_key = coll.sync_key.clone();
+
     if let Some(cmds) = coll.commands {
         process_client_commands(session, cmds, &config.timezone).await;
     }
@@ -292,24 +290,24 @@ async fn handle_sync(session: &jmap_client::JmapSession, config: &AppConfig, use
 
     let prev_state = db::get_sync_state(config, user, device_id, &coll.collection_id).await;
     
-    let (items_xml, new_sync_key) = if coll.sync_key == "0" || prev_state.is_none() {
+    let (items_xml, new_sync_key) = if old_sync_key == "0" || prev_state.is_none() {
         let events = jmap_client::get_calendar_events(&session.api_url, &session.access_token, &session.account_id).await.unwrap_or_default();
         render_items(&events, "Add", &config.timezone)
     } else {
         let prev_jmap_state = prev_state.unwrap();
         if prev_jmap_state == current_jmap_state {
-            (String::new(), coll.sync_key)
+            (String::new(), old_sync_key.clone())
         } else {
             let changes = jmap_client::get_calendar_changes(&session.api_url, &session.access_token, &session.account_id, &prev_jmap_state).await.unwrap_or_default();
             render_changes(&session.api_url, &session.access_token, &session.account_id, changes, &config.timezone).await
         }
     };
 
-    let final_sync_key = if new_sync_key != coll.sync_key {
+    let final_sync_key = if new_sync_key != old_sync_key {
         db::update_sync_state(config, user, device_id, &coll.collection_id, &new_sync_key, &current_jmap_state).await;
         new_sync_key
     } else {
-        coll.sync_key
+        new_sync_key
     };
 
     format!(
@@ -429,7 +427,7 @@ async fn handle_meeting_response(session: &jmap_client::JmapSession, _config: &A
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
             Ok(Event::Text(t)) => {
-                let text = t.unescape().unwrap_or_default();
+                let text = escape::unescape(&t).unwrap_or_default();
                 match current_tag.as_str() {
                     "RequestId" => uid = text.to_string(),
                     "UserResponse" => response_code = text.parse().unwrap_or(0),
