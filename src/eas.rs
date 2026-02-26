@@ -3,7 +3,8 @@ use crate::models::AppState;
 use crate::sync;
 use crate::wbxml::Wbxml;
 use axum::http::HeaderMap;
-use axum::{extract::Extension, http::StatusCode, response::{IntoResponse, Response}};
+use axum::extract::State;
+use axum::{http::StatusCode, response::{IntoResponse, Response}};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use bytes::Bytes;
@@ -27,7 +28,7 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
 }
 
 pub async fn handle(
-    Extension(state): Extension<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -43,9 +44,10 @@ pub async fn handle(
     
     let (username, password) = parse_basic_auth(&headers).unwrap_or((String::new(), String::new()));
 
+    // Handle FolderSync (initial folder hierarchy).
     if xml.contains("<FolderSync") {
         let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
-<FolderSync>
+<FolderSync xmlns="FolderHierarchy">
   <Status>1</Status>
   <SyncKey>0</SyncKey>
   <Folders>
@@ -60,6 +62,7 @@ pub async fn handle(
         return wbxml_response(&wbxml, resp_xml);
     }
 
+    // Handle device Provision requests.
     if xml.contains("<Provision") {
         let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <Provision>
@@ -76,9 +79,11 @@ pub async fn handle(
         return wbxml_response(&wbxml, resp_xml);
     }
 
+    // Handle Sync (calendar items).
     if xml.contains("<Sync") {
         let owner = if !username.is_empty() { username.as_str() } else { "demo" };
         let collection_id = "1";
+        // Extract incoming sync key from XML (default "0" if not present).
         let incoming_key = if let Some(start) = xml.find("<SyncKey>") {
             let end = xml.find("</SyncKey>").unwrap_or(start + 9);
             xml[start + 9 .. end].to_string()
@@ -93,9 +98,10 @@ pub async fn handle(
         }
     }
 
+    // Handle Ping (heartbeat).
     if xml.contains("<Ping") {
-         let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping><Status>1</Status></Ping>"#;
-         return wbxml_response(&wbxml, resp_xml);
+        let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping><Status>1</Status></Ping>"#;
+        return wbxml_response(&wbxml, resp_xml);
     }
 
     (StatusCode::BAD_REQUEST, "Unsupported ActiveSync command").into_response()
