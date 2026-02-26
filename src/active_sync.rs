@@ -1,9 +1,12 @@
 // src/active_sync.rs
-use crate::{config::AppConfig, db, jmap_client, utils, wbxml};
+use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
+use lettre::{Message, SmtpTransport, Transport};
+use lettre::transport::smtp::authentication::Credentials;
 use quick_xml::{events::Event, Reader};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,19 +102,20 @@ struct Attendee {
 }
 
 pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap) -> String {
-    let reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut command = String::new();
     let mut depth = 0;
+    let mut reader = Reader::from_str(xml);
 
-    for result in reader.into_iter() {
-        match result {
+    loop {
+        match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 depth += 1;
                 if depth == 2 {
-                    command = e.local_name().as_str().to_string();
+                    command = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string();
                 }
             }
+            Ok(Event::Eof) => break,
             _ => {}
         }
     }
@@ -131,10 +135,10 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     };
 
     match command.as_str() {
-        "FolderSync" => handle_folder_sync(&session, config, user, device_id).await,
+        "FolderSync" => handle_folder_sync(&session, config, &user, device_id).await,
         "Sync" => {
             match quick_xml::de::from_str::<SyncRequest>(xml) {
-                Ok(req) => handle_sync(&session, config, user, device_id, req).await,
+                Ok(req) => handle_sync(&session, config, &user, device_id, req).await,
                 Err(e) => {
                     tracing::error!("XML Parse Error: {:?}", e);
                     error_xml(400, "BadRequest")
@@ -143,7 +147,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         }
         "Ping" => handle_ping().await,
         "MeetingResponse" => handle_meeting_response(&session, config, xml).await,
-        "Settings" => handle_settings(&session, config, user, device_id).await,
+        "Settings" => handle_settings(&session, config, &user, device_id).await,
         "Provision" => handle_provision().await,
         "SendMail" => handle_send_mail(&session, config, &user, xml).await,
         _ => error_xml(400, "UnsupportedCommand"),
@@ -167,65 +171,72 @@ async fn handle_provision() -> String {
 }
 
 async fn handle_send_mail(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
-    // Use lettre to relay raw MIME via SMTP
     let mut mime_content = String::new();
-    let reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut in_mime = false;
+    let mut reader = Reader::from_str(xml);
 
-    for result in reader.into_iter() {
-        match result {
-            Ok(Event::Start(ref e)) if e.local_name().as_str() == "Mime" => in_mime = true,
-            Ok(Event::End(ref e)) if e.local_name().as_str() == "Mime" => in_mime = false,
-            Ok(Event::Text(ref t)) if in_mime => {
-                mime_content.push_str(&t.unescape().unwrap_or_default());
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                if std::str::from_utf8(e.local_name().as_ref()).unwrap_or("") == "Mime" {
+                    in_mime = true;
+                }
             }
+            Ok(Event::End(ref e)) => {
+                if std::str::from_utf8(e.local_name().as_ref()).unwrap_or("") == "Mime" {
+                    in_mime = false;
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if in_mime {
+                    mime_content.push_str(&quick_xml::escape::unescape(&t).unwrap_or_default());
+                }
+            }
+            Ok(Event::Eof) => break,
             _ => {}
         }
     }
 
-    // Basic SMTP Send via lettre
-    // Assuming SMTP_URL is smtp://user:pass@host:port or just host:port with auth
-    // For this implementation, we use the credentials from the JMAP session (user/pass) and the SMTP_URL host
+    // Parse To and From from MIME using Regex
+    let re_to = Regex::new(r"To:\s*(.*?)\r?\n").unwrap();
+    let re_from = Regex::new(r"From:\s*(.*?)\r?\n").unwrap();
     
-    // Parse SMTP URL
-    let smtp_url = &config.smtp_url;
-    
-    // Reconstructing Lettre logic (simplified)
-    // We send as the authenticated user.
-    
-    // Note: This requires the Stalwart SMTP to allow authentication or IP trust.
-    // Since we have user/pass, we can authenticate.
-    
-    use lettre::{message::Message, SmtpTransport, Transport};
-    use lettre::transport::smtp::authentication::Credentials;
-    
-    // We need to parse the MIME to get envelope recipients, but Lettre's MessageBuilder can handle raw parsers if feature is enabled.
-    // For raw MIME, `lettre` parser is required.
-    // If parsing fails, we fail gracefully.
-    
-    let status = if let Ok(msg) = Message::parse(mime_content.as_bytes()) {
-        let creds = Credentials::new(user.to_string(), session.access_token.clone()); // Password derived from session logic? No, we need original pass. 
-        // We only have user/pass from decode_basic_auth earlier, which is 'pass'.
-        // We don't have 'pass' here directly, we should pass it from handle_sync or re-decode.
-        // For now, we assume config.smtp_url contains credentials or IP is trusted.
+    let to_addr = re_to.captures(&mime_content).and_then(|c| c.get(1)).map(|m| m.as_str().trim().to_string());
+    let from_addr = re_from.captures(&mime_content).and_then(|c| c.get(1)).map(|m| m.as_str().trim().to_string());
+
+    let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
+        // Build Email via lettre
+        // Note: We build a new email envelope, but use the raw body if possible, or reconstruct.
+        // Lettre Message::builder() requires setting headers individually.
+        // We will reconstruct to ensure transport validity.
         
-        // Open connection
-        // SmtpTransport::builder_dangerous(smtp_host).port(smtp_port)...
-        // Using `reqwest` style URL parsing:
-        let url = url::Url::parse(smtp_url).unwrap(); // Safe panic in dev, should be handled in prod
+        let email_builder = lettre::Message::builder()
+            .from(from.parse().unwrap())
+            .to(to.parse().unwrap());
         
-        let host = url.host_str().unwrap();
-        let port = url.port().unwrap_or(25);
+        // Extract Subject
+        let re_subj = Regex::new(r"Subject:\s*(.*?)\r?\n").unwrap();
+        let subject = re_subj.captures(&mime_content).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()).unwrap_or_default();
         
+        let email = email_builder
+            .subject(subject)
+            .body(mime_content) // Pass raw MIME as body, simplified for this implementation
+            .unwrap();
+
+        // Parse SMTP URL
+        let smtp_url = url::Url::parse(&config.smtp_url).unwrap();
+        let host = smtp_url.host_str().unwrap();
+        let port = smtp_url.port().unwrap_or(25);
+
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
         
-        match mailer.send(&msg) {
+        match mailer.send(&email) {
             Ok(_) => "1",
             Err(e) => { tracing::error!("SMTP Error: {}", e); "2" }
         }
     } else {
-        "2" // Parse error
+        "2"
     };
 
     format!(r#"<SendMail xmlns="AirSync:"><Status>{}</Status></SendMail>"#, status)
@@ -235,7 +246,7 @@ async fn handle_ping() -> String {
     r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.to_string()
 }
 
-async fn handle_settings(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str) -> String {
+async fn handle_settings(_session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str) -> String {
     db::register_device(config, user, device_id).await;
     format!(r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#)
 }
@@ -377,7 +388,7 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         let start_utc = parse_local_to_utc(&data.start.unwrap_or_default(), tz);
         let end_utc = parse_local_to_utc(&data.end.unwrap_or_default(), tz);
 
-        let attendees = data.attendees.map(|a| a.items.into_iter().map(|att| jmap_client::Participant {
+        let attendees: Vec<jmap_client::Participant> = data.attendees.map(|a| a.items.into_iter().map(|att| jmap_client::Participant {
             email: att.email,
             name: att.name,
         }).collect()).unwrap_or_default();
@@ -391,7 +402,6 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
             description: data.body.map(|b| b.data),
             uid: data.uid,
             participants: if attendees.is_empty() { None } else { Some(attendees) },
-            recurrence_rule: None,
             is_all_day: false,
         };
         let _ = jmap_client::push_event(&session.api_url, &session.access_token, &session.account_id, event).await;
@@ -400,27 +410,30 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
 
 fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
-        return tz.from_local_datetime(&dt).single().unwrap_or_default().with_timezone(&Utc).to_rfc3339();
+        return tz.from_local_datetime(&dt).single().map(|dt| dt.with_timezone(&Utc).to_rfc3339()).unwrap_or_default();
     }
     local_str.to_string()
 }
 
-async fn handle_meeting_response(session: &jmap_client::JmapSession, config: &AppConfig, xml: &str) -> String {
+async fn handle_meeting_response(session: &jmap_client::JmapSession, _config: &AppConfig, xml: &str) -> String {
     let mut uid = String::new();
     let mut response_code = 0;
-    let reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
     let mut current_tag = String::new();
+    let mut reader = Reader::from_str(xml);
 
-    for result in reader.into_iter() {
-        match result {
-            Ok(Event::Start(ref e)) => current_tag = e.local_name().as_str().to_string(),
-            Ok(Event::Text(ref t)) => {
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
+            Ok(Event::Text(t)) => {
+                let text = quick_xml::escape::unescape(&t).unwrap_or_default();
                 match current_tag.as_str() {
-                    "RequestId" => uid = t.unescape().unwrap_or_default().to_string(),
-                    "UserResponse" => response_code = t.unescape().unwrap_or_default().parse().unwrap_or(0),
+                    "RequestId" => uid = text.to_string(),
+                    "UserResponse" => response_code = text.parse().unwrap_or(0),
                     _ => {}
                 }
             }
+            Ok(Event::Eof) => break,
             _ => {}
         }
     }
