@@ -18,18 +18,22 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         }
     };
 
-    let reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut action = String::new();
+    let mut reader = Reader::from_str(xml);
     
-    for result in reader.into_iter() {
-        if let Ok(Event::Start(ref e)) = result {
-            let local = e.local_name();
-            let name = local.as_str();
-            if name != "Envelope" && name != "Header" && name != "Body" {
-                action = name.to_string();
-                break;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let local = e.local_name();
+                let name = std::str::from_utf8(local.as_ref()).unwrap_or("");
+                if name != "Envelope" && name != "Header" && name != "Body" {
+                    action = name.to_string();
+                    break;
+                }
             }
+            Ok(Event::Eof) => break,
+            _ => {}
         }
     }
 
@@ -74,16 +78,20 @@ async fn handle_get_folder(session: &jmap_client::JmapSession) -> String {
 
 async fn handle_sync_folder_items(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
     let mut sync_state_in = String::new();
-    let reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut reader = Reader::from_str(xml);
     
-    for result in reader.into_iter() {
-        if let Ok(Event::Start(ref e)) = result {
-            if e.local_name().as_str() == "SyncState" {
-                let mut end_buf = Vec::new();
-                if let Ok(Event::Text(ref t)) = reader.read_event_into(&mut end_buf) {
-                    sync_state_in = t.unescape().unwrap_or_default().to_string();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                 if std::str::from_utf8(e.local_name().as_ref()).unwrap_or("") == "SyncState" {
+                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                        sync_state_in = quick_xml::escape::unescape(&t).unwrap_or_default().into_owned();
+                    }
                 }
             }
+            Ok(Event::Eof) => break,
+            _ => {}
         }
     }
 
@@ -160,36 +168,37 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
     let mut start_time = String::new();
     let mut end_time = String::new();
     
-    let reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut current_tag = String::new();
+    let mut reader = Reader::from_str(xml);
 
-    for result in reader.into_iter() {
-        match result {
-            Ok(Event::Start(ref e)) => {
-                current_tag = e.local_name().as_str().to_string();
-            }
-            Ok(Event::Text(ref t)) => {
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
+            Ok(Event::Text(t)) => {
+                let text = quick_xml::escape::unescape(&t).unwrap_or_default().into_owned();
                 match current_tag.as_str() {
-                    "Subject" => subject = t.unescape().unwrap_or_default().to_string(),
-                    "Body" => body_content = t.unescape().unwrap_or_default().to_string(), // Outlook often sends HTML body here, simplified to text
-                    "Start" => start_time = t.unescape().unwrap_or_default().to_string(),
-                    "End" => end_time = t.unescape().unwrap_or_default().to_string(),
+                    "Subject" => subject = text,
+                    "Body" => body_content = text,
+                    "Start" => start_time = text,
+                    "End" => end_time = text,
                     _ => {}
                 }
             }
+            Ok(Event::Eof) => break,
             _ => {}
         }
     }
     
-    // Convert Local Time to UTC (Outlook sends Local)
     let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
     let start_utc = chrono::NaiveDateTime::parse_from_str(&start_time, "%Y-%m-%dT%H:%M:%S")
-        .map(|dt| tz.from_local_datetime(&dt).single().unwrap_or_default().with_timezone(&Utc).to_rfc3339())
+        .map(|dt| tz.from_local_datetime(&dt).single().map(|dt| dt.with_timezone(&Utc).to_rfc3339()))
+        .unwrap_or(None)
         .unwrap_or_default();
     
     let end_utc = chrono::NaiveDateTime::parse_from_str(&end_time, "%Y-%m-%dT%H:%M:%S")
-        .map(|dt| tz.from_local_datetime(&dt).single().unwrap_or_default().with_timezone(&Utc).to_rfc3339())
+        .map(|dt| tz.from_local_datetime(&dt).single().map(|dt| dt.with_timezone(&Utc).to_rfc3339()))
+        .unwrap_or(None)
         .unwrap_or_default();
 
     let event = jmap_client::JmapEvent {
@@ -201,7 +210,6 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
         location: None,
         uid: None,
         participants: None,
-        recurrence_rule: None,
         is_all_day: false,
     };
 
@@ -253,7 +261,6 @@ async fn handle_find_item(_session: &jmap_client::JmapSession) -> String {
 }
 
 async fn handle_resolve_names(_session: &jmap_client::JmapSession) -> String {
-    // Minimal implementation to stop Outlook from complaining
     r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
