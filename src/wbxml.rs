@@ -1,6 +1,9 @@
 // src/wbxml.rs
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use quick_xml::{events::Event, Reader, Writer};
+use quick_xml::events::{BytesEnd, BytesStart, BytesText};
+use base64::{Engine as _, engine::general_purpose};
 
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
@@ -104,7 +107,7 @@ pub fn decode(input: &[u8]) -> Result<String, anyhow::Error> {
             if let Ok(s) = std::str::from_utf8(data) {
                 output.push_str(&quick_xml::escape::escape(s));
             } else {
-                output.push_str(&base64::encode(data));
+                output.push_str(&general_purpose::STANDARD.encode(data));
             }
             pos += len;
             continue;
@@ -134,14 +137,15 @@ pub fn decode(input: &[u8]) -> Result<String, anyhow::Error> {
 
 pub fn encode(xml: &str) -> Result<Vec<u8>, anyhow::Error> {
     let mut output = vec![0x03, 0x01, 0x6A, 0x00, 0x00, 0x00]; 
-    let reader = quick_xml::Reader::from_str(xml);
+    let mut reader = Reader::from_str(xml);
     let mut current_page = 0xff;
+    let mut buf = Vec::new();
     
-    for result in reader.into_iter() {
-        match result {
-            Ok(quick_xml::events::Event::Start(ref e)) | Ok(quick_xml::events::Event::Empty(ref e)) => {
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let local = e.local_name();
-                let local_str = local.as_str();
+                let local_str = std::str::from_utf8(local.as_ref()).unwrap_or("");
                 let parts: Vec<&str> = local_str.split(':').collect();
                 let (ns, tag_name) = if parts.len() == 2 { (parts[0], parts[1]) } else { ("", parts[0]) };
 
@@ -162,18 +166,19 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, anyhow::Error> {
                 }
 
                 let tag_id = if let Some((_, id)) = REV_TAG_MAP.get(&(ns, tag_name)) { *id } else { 0xFF };
-                let is_empty = matches!(result, Ok(quick_xml::events::Event::Empty(_)));
+                let is_empty = matches!(reader.read_event_into(&mut buf), Ok(Event::Empty(_)));
                 let byte = if is_empty { tag_id } else { tag_id | 0x40 };
                 output.push(byte);
             }
-            Ok(quick_xml::events::Event::End(_)) => {
+            Ok(Event::End(_)) => {
                 output.push(END);
             }
-            Ok(quick_xml::events::Event::Text(ref e)) => {
+            Ok(Event::Text(t)) => {
                 output.push(STR_I);
-                output.extend_from_slice(e.as_str().as_bytes());
+                output.extend_from_slice(t.as_ref());
                 output.push(0x00);
             }
+            Ok(Event::Eof) => break,
             _ => {}
         }
     }
