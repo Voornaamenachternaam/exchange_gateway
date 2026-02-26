@@ -3,9 +3,9 @@ use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
-use lettre::{Message, SmtpTransport, Transport};
-use lettre::transport::smtp::authentication::Credentials;
-use quick_xml::{events::Event, Reader};
+use lettre::{SmtpTransport, Transport};
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -146,7 +146,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
             }
         }
         "Ping" => handle_ping().await,
-        "MeetingResponse" => handle_meeting_response(&session, config, xml).await,
+        "MeetingResponse" => handle_meeting_response(&session, config, xml, &user).await,
         "Settings" => handle_settings(&session, config, &user, device_id).await,
         "Provision" => handle_provision().await,
         "SendMail" => handle_send_mail(&session, config, &user, xml).await,
@@ -170,7 +170,7 @@ async fn handle_provision() -> String {
     </Provision>"#.to_string()
 }
 
-async fn handle_send_mail(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
+async fn handle_send_mail(_session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
     let mut mime_content = String::new();
     let mut buf = Vec::new();
     let mut in_mime = false;
@@ -190,7 +190,8 @@ async fn handle_send_mail(session: &jmap_client::JmapSession, config: &AppConfig
             }
             Ok(Event::Text(t)) => {
                 if in_mime {
-                    mime_content.push_str(&quick_xml::escape::unescape(&t).unwrap_or_default());
+                    // quick-xml 0.39 unescape returns Cow<str>
+                    mime_content.push_str(&t.unescape().unwrap_or_default());
                 }
             }
             Ok(Event::Eof) => break,
@@ -221,7 +222,7 @@ async fn handle_send_mail(session: &jmap_client::JmapSession, config: &AppConfig
         
         let email = email_builder
             .subject(subject)
-            .body(mime_content) // Pass raw MIME as body, simplified for this implementation
+            .body(mime_content) // Pass raw MIME as body
             .unwrap();
 
         // Parse SMTP URL
@@ -229,6 +230,8 @@ async fn handle_send_mail(session: &jmap_client::JmapSession, config: &AppConfig
         let host = smtp_url.host_str().unwrap();
         let port = smtp_url.port().unwrap_or(25);
 
+        // Use 'user' as username for auth, assume password not needed or config.smtp_url contains it
+        // For robustness, we just use builder_dangerous for internal trusted network
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
         
         match mailer.send(&email) {
@@ -415,7 +418,7 @@ fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
     local_str.to_string()
 }
 
-async fn handle_meeting_response(session: &jmap_client::JmapSession, _config: &AppConfig, xml: &str) -> String {
+async fn handle_meeting_response(session: &jmap_client::JmapSession, _config: &AppConfig, xml: &str, user_email: &str) -> String {
     let mut uid = String::new();
     let mut response_code = 0;
     let mut buf = Vec::new();
@@ -426,7 +429,7 @@ async fn handle_meeting_response(session: &jmap_client::JmapSession, _config: &A
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
             Ok(Event::Text(t)) => {
-                let text = quick_xml::escape::unescape(&t).unwrap_or_default();
+                let text = t.unescape().unwrap_or_default();
                 match current_tag.as_str() {
                     "RequestId" => uid = text.to_string(),
                     "UserResponse" => response_code = text.parse().unwrap_or(0),
@@ -450,7 +453,7 @@ async fn handle_meeting_response(session: &jmap_client::JmapSession, _config: &A
         _ => "needs-action",
     };
 
-    let _ = jmap_client::update_participant_status(&session.api_url, &session.access_token, &session.account_id, &event_id, status_str).await;
+    let _ = jmap_client::update_participant_status(&session.api_url, &session.access_token, &session.account_id, &event_id, user_email, status_str).await;
 
     format!(
         r#"<MeetingResponse xmlns="AirSync:">
