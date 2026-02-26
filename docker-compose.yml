@@ -1,0 +1,23 @@
+  exchange_gateway:
+    build: ./exchange_gateway
+    container_name: exchange_gateway
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Amsterdam
+      - RUST_LOG=info
+      # Critical: No hardcoded values. All come from .env
+      - JMAP_URL=${JMAP_URL}
+      - CF_D1_API_URL=${CF_D1_API_URL}
+      - CF_D1_AUTH_TOKEN=${CF_D1_AUTH_TOKEN}
+      - GATEWAY_TZ=${GATEWAY_TZ}
+      - SMTP_URL=${SMTP_URL}
+      - GATEWAY_HOST=${GATEWAY_HOST}
+    ports:
+      - 8134:8134
+    networks:
+      my-bridge-network:
+        ipv4_address: 172.28.0.11
+
+networks:
+  my-bridge-network:
+    external: true
