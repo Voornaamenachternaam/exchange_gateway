@@ -108,7 +108,7 @@ jobs:
 
       - name: Generate artifact attestation
         if: ${{ steps.build.outputs.digest != '' }}
-        uses: actions/attest-build-provenance@v3.2.0
+        uses: actions/attest-build-provenance@v4.0.0
         with:
           subject-name: index.docker.io/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
