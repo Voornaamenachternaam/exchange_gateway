@@ -34,7 +34,7 @@ pub struct Participant {
     pub name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct JmapChanges {
     #[serde(rename = "oldState")]
     pub old_state: String,
@@ -231,8 +231,34 @@ pub async fn find_event_by_uid(url: &str, token: &str, account_id: &str, uid: &s
     Err(anyhow::anyhow!("Event not found"))
 }
 
-pub async fn update_participant_status(url: &str, token: &str, account_id: &str, event_id: &str, status: &str) -> Result<(), anyhow::Error> {
-    // Placeholder for robust update logic
+// Updated to accept user_email to properly address the participant in JMAP
+pub async fn update_participant_status(url: &str, token: &str, account_id: &str, event_id: &str, user_email: &str, status: &str) -> Result<(), anyhow::Error> {
+    let client = reqwest::Client::new();
+    
+    // JMAP requires updating the specific participant key in the map.
+    // Using /set with update patch.
+    let body = serde_json::json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+        "methodCalls": [
+            ["CalendarEvent/set", {
+                "accountId": account_id,
+                "update": {
+                    event_id: {
+                        format!("participants/{}", user_email): {
+                            "participationStatus": status
+                        }
+                    }
+                }
+            }, "c0"]
+        ]
+    });
+    
+    let _res = client.post(url)
+        .header("Authorization", format!("Basic {}", token))
+        .json(&body)
+        .send()
+        .await?;
+        
     Ok(())
 }
 
