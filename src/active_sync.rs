@@ -191,8 +191,9 @@ async fn handle_send_mail(_session: &jmap_client::JmapSession, config: &AppConfi
             }
             Ok(Event::Text(t)) => {
                 if in_mime {
-                    // Fix: use t.as_str() to get &str from BytesText
-                    mime_content.push_str(&escape::unescape(t.as_str()).unwrap_or_default());
+                    // Fix: Use std::str::from_utf8(&t) for quick-xml 0.39
+                    let text_str = std::str::from_utf8(&t).unwrap_or("");
+                    mime_content.push_str(&escape::unescape(text_str).unwrap_or_default());
                 }
             }
             Ok(Event::Eof) => break,
@@ -427,8 +428,9 @@ async fn handle_meeting_response(session: &jmap_client::JmapSession, _config: &A
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
             Ok(Event::Text(t)) => {
-                // Fix: use t.as_str()
-                let text = escape::unescape(t.as_str()).unwrap_or_default();
+                // Fix: Use std::str::from_utf8(&t)
+                let text_str = std::str::from_utf8(&t).unwrap_or("");
+                let text = escape::unescape(text_str).unwrap_or_default();
                 match current_tag.as_str() {
                     "RequestId" => uid = text.to_string(),
                     "UserResponse" => response_code = text.parse().unwrap_or(0),
