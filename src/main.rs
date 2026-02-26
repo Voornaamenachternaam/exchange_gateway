@@ -1,4 +1,3 @@
-// src/main.rs
 mod active_sync;
 mod config;
 mod db;
@@ -8,7 +7,7 @@ mod utils;
 mod wbxml;
 
 use axum::{
-    extract::{Request, State},
+    extract::{State},
     http::{header, HeaderMap, StatusCode, Uri},
     response::IntoResponse,
     routing::{get, post},
@@ -18,13 +17,16 @@ use config::AppConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() {
+    let filter = tracing_subscriber::EnvFilter::new(
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,exchange_gateway=debug".into())
+    );
+
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,exchange_gateway=debug".into()),
-        ))
+        .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -45,7 +47,7 @@ async fn main() {
         .with_state(config);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8134));
-    tracing::info!("Exchange Gateway v1.0.2.1 listening on {}", addr);
+    tracing::info!("Exchange Gateway v1.0.21 listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
