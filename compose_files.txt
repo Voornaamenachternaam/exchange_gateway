@@ -38,10 +38,9 @@ networks:
       - TZ=Europe/Amsterdam
       - RUST_LOG=info
     volumes:
-      # Ensure this file EXISTS on your host before running docker-compose up
       - /armblock/exchange_gateway/config.toml:/etc/exchange-gateway/config.toml:ro
     ports:
-      - "8134:8133"
+      - 8134:8133
     networks:
       my-bridge-network:
         ipv4_address: 172.28.0.11
