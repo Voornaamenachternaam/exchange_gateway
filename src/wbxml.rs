@@ -1,14 +1,12 @@
 // src/wbxml.rs
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use quick_xml::{events::Event, Reader, Writer};
-use quick_xml::events::{BytesEnd, BytesStart, BytesText};
+use quick_xml::{events::Event, Reader};
 use base64::{Engine as _, engine::general_purpose};
 
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
 const STR_I: u8 = 0x03;
-const STR_T: u8 = 0x83;
 const OPAQUE: u8 = 0xC3;
 
 const PAGE_AIRSYNC: u8 = 0x00;
