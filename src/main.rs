@@ -1,3 +1,4 @@
+// src/main.rs
 mod active_sync;
 mod config;
 mod db;
