@@ -3,9 +3,9 @@ use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
-use quick_xml::events::Event;
 use quick_xml::Reader;
 use quick_xml::escape;
+use quick_xml::events::Event;
 
 pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap) -> String {
     let auth = headers.get("Authorization").unwrap().to_str().unwrap();
@@ -22,7 +22,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     let mut buf = Vec::new();
     let mut action = String::new();
     let mut reader = Reader::from_str(xml);
-    
+
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
@@ -51,12 +51,19 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
 }
 
 async fn handle_get_folder(session: &jmap_client::JmapSession) -> String {
-    let cal_id = match jmap_client::get_default_calendar_id(&session.api_url, &session.access_token, &session.account_id).await {
+    let cal_id = match jmap_client::get_default_calendar_id(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(_) => "calendar-default".to_string(),
     };
 
-    format!(r#"<?xml version="1.0" encoding="utf-8"?>
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
     <m:GetFolderResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
@@ -74,30 +81,57 @@ async fn handle_get_folder(session: &jmap_client::JmapSession) -> String {
       </m:ResponseMessages>
     </m:GetFolderResponse>
   </s:Body>
-</s:Envelope>"#, cal_id)
+</s:Envelope>"#,
+        cal_id
+    )
 }
 
-async fn handle_sync_folder_items(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
+async fn handle_sync_folder_items(
+    session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    user: &str,
+    _xml: &str,
+) -> String {
     // Note: We ignore the client's SyncState in this simplified implementation
     // and rely purely on the server's JMAP state change detection.
-    
-    let current_jmap_state = match jmap_client::get_calendar_state(&session.api_url, &session.access_token, &session.account_id).await {
+
+    let current_jmap_state = match jmap_client::get_calendar_state(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),
     };
 
     let prev_state = db::get_ews_sync_state(config, user, "calendar-default").await;
-    
+
     let new_state = uuid::Uuid::new_v4().to_string();
     let changes = if prev_state.is_none() || prev_state.unwrap() != current_jmap_state {
-        let events = jmap_client::get_calendar_events(&session.api_url, &session.access_token, &session.account_id).await.unwrap_or_default();
-        db::update_ews_sync_state(config, user, "calendar-default", &new_state, &current_jmap_state).await;
+        let events = jmap_client::get_calendar_events(
+            &session.api_url,
+            &session.access_token,
+            &session.account_id,
+        )
+        .await
+        .unwrap_or_default();
+        db::update_ews_sync_state(
+            config,
+            user,
+            "calendar-default",
+            &new_state,
+            &current_jmap_state,
+        )
+        .await;
         format_changes(&events, &config.timezone)
     } else {
         "".to_string()
     };
 
-    format!(r#"<?xml version="1.0" encoding="utf-8"?>
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
     <m:SyncFolderItemsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
@@ -112,7 +146,9 @@ async fn handle_sync_folder_items(session: &jmap_client::JmapSession, config: &A
       </m:ResponseMessages>
     </m:SyncFolderItemsResponse>
   </s:Body>
-</s:Envelope>"#, new_state, changes)
+</s:Envelope>"#,
+        new_state, changes
+    )
 }
 
 fn format_changes(events: &[jmap_client::JmapEvent], tz_str: &str) -> String {
@@ -122,7 +158,7 @@ fn format_changes(events: &[jmap_client::JmapEvent], tz_str: &str) -> String {
     for event in events {
         let start_dt: DateTime<Utc> = event.start.parse().unwrap_or_default();
         let end_dt: DateTime<Utc> = event.end.parse().unwrap_or_default();
-        
+
         let start_local = start_dt.with_timezone(&tz);
         let end_local = end_dt.with_timezone(&tz);
 
@@ -137,10 +173,10 @@ fn format_changes(events: &[jmap_client::JmapEvent], tz_str: &str) -> String {
                     <t:Body BodyType="Text">{}</t:Body>
                 </t:CalendarItem>
             </t:Create>"#,
-            event.id.as_deref().unwrap_or(""), 
-            event.title, 
-            event.location.as_deref().unwrap_or(""), 
-            start_local.format("%Y-%m-%dT%H:%M:%S"), 
+            event.id.as_deref().unwrap_or(""),
+            event.title,
+            event.location.as_deref().unwrap_or(""),
+            start_local.format("%Y-%m-%dT%H:%M:%S"),
             end_local.format("%Y-%m-%dT%H:%M:%S"),
             event.description.as_deref().unwrap_or("")
         ));
@@ -148,19 +184,27 @@ fn format_changes(events: &[jmap_client::JmapEvent], tz_str: &str) -> String {
     xml
 }
 
-async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConfig, xml: &str) -> String {
+async fn handle_create_item(
+    session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    xml: &str,
+) -> String {
     let mut subject = String::new();
     let mut body_content = String::new();
     let mut start_time = String::new();
     let mut end_time = String::new();
-    
+
     let mut buf = Vec::new();
     let mut current_tag = String::new();
     let mut reader = Reader::from_str(xml);
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
+            Ok(Event::Start(ref e)) => {
+                current_tag = std::str::from_utf8(e.local_name().as_ref())
+                    .unwrap_or("")
+                    .to_string()
+            }
             Ok(Event::Text(t)) => {
                 let text_str = std::str::from_utf8(&t).unwrap_or("");
                 let text = escape::unescape(text_str).unwrap_or_default();
@@ -176,14 +220,14 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
             _ => {}
         }
     }
-    
+
     let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
     let start_utc = chrono::NaiveDateTime::parse_from_str(&start_time, "%Y-%m-%dT%H:%M:%S")
         .map(|dt| tz.from_local_datetime(&dt).single())
         .unwrap_or(None)
         .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
         .unwrap_or_default();
-    
+
     let end_utc = chrono::NaiveDateTime::parse_from_str(&end_time, "%Y-%m-%dT%H:%M:%S")
         .map(|dt| tz.from_local_datetime(&dt).single())
         .unwrap_or(None)
@@ -202,7 +246,14 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
         is_all_day: false,
     };
 
-    let new_id = match jmap_client::push_event(&session.api_url, &session.access_token, &session.account_id, event).await {
+    let new_id = match jmap_client::push_event(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+        event,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(e) => {
             tracing::error!("Failed to create item: {}", e);
@@ -210,7 +261,8 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
         }
     };
 
-    format!(r#"<?xml version="1.0" encoding="utf-8"?>
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
     <m:CreateItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
@@ -227,7 +279,9 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
       </m:ResponseMessages>
     </m:CreateItemResponse>
   </s:Body>
-</s:Envelope>"#, new_id)
+</s:Envelope>"#,
+        new_id
+    )
 }
 
 async fn handle_find_item(_session: &jmap_client::JmapSession) -> String {
@@ -246,7 +300,8 @@ async fn handle_find_item(_session: &jmap_client::JmapSession) -> String {
       </m:ResponseMessages>
     </m:FindItemResponse>
   </s:Body>
-</s:Envelope>"#.to_string()
+</s:Envelope>"#
+        .to_string()
 }
 
 async fn handle_resolve_names(_session: &jmap_client::JmapSession) -> String {
@@ -262,11 +317,13 @@ async fn handle_resolve_names(_session: &jmap_client::JmapSession) -> String {
       </m:ResponseMessages>
     </m:ResolveNamesResponse>
   </s:Body>
-</s:Envelope>"#.to_string()
+</s:Envelope>"#
+        .to_string()
 }
 
 fn soap_fault(code: &str, msg: &str) -> String {
-    format!(r#"<?xml version="1.0" encoding="utf-8"?>
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
     <s:Fault>
@@ -274,5 +331,7 @@ fn soap_fault(code: &str, msg: &str) -> String {
       <faultstring>{}: {}</faultstring>
     </s:Fault>
   </s:Body>
-</s:Envelope>"#, code, msg)
+</s:Envelope>"#,
+        code, msg
+    )
 }
