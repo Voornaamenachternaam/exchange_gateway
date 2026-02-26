@@ -86,7 +86,7 @@ async fn handle_sync_folder_items(session: &jmap_client::JmapSession, config: &A
             Ok(Event::Start(ref e)) => {
                  if std::str::from_utf8(e.local_name().as_ref()).unwrap_or("") == "SyncState" {
                     if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        sync_state_in = quick_xml::escape::unescape(&t).unwrap_or_default().into_owned();
+                        sync_state_in = t.unescape().unwrap_or_default().into_owned();
                     }
                 }
             }
@@ -176,12 +176,12 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
             Ok(Event::Text(t)) => {
-                let text = quick_xml::escape::unescape(&t).unwrap_or_default().into_owned();
+                let text = t.unescape().unwrap_or_default();
                 match current_tag.as_str() {
-                    "Subject" => subject = text,
-                    "Body" => body_content = text,
-                    "Start" => start_time = text,
-                    "End" => end_time = text,
+                    "Subject" => subject = text.to_string(),
+                    "Body" => body_content = text.to_string(),
+                    "Start" => start_time = text.to_string(),
+                    "End" => end_time = text.to_string(),
                     _ => {}
                 }
             }
@@ -192,13 +192,15 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
     
     let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
     let start_utc = chrono::NaiveDateTime::parse_from_str(&start_time, "%Y-%m-%dT%H:%M:%S")
-        .map(|dt| tz.from_local_datetime(&dt).single().map(|dt| dt.with_timezone(&Utc).to_rfc3339()))
+        .map(|dt| tz.from_local_datetime(&dt).single())
         .unwrap_or(None)
+        .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
         .unwrap_or_default();
     
     let end_utc = chrono::NaiveDateTime::parse_from_str(&end_time, "%Y-%m-%dT%H:%M:%S")
-        .map(|dt| tz.from_local_datetime(&dt).single().map(|dt| dt.with_timezone(&Utc).to_rfc3339()))
+        .map(|dt| tz.from_local_datetime(&dt).single())
         .unwrap_or(None)
+        .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
         .unwrap_or_default();
 
     let event = jmap_client::JmapEvent {
