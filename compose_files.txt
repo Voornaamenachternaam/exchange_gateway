@@ -1,25 +1,36 @@
-version: "3.8"
+# Compose used by the existing stalwart mailserver v0.15.5 container
 services:
   stalwart:
     image: stalwartlabs/stalwart:latest
     container_name: stalwart
-    hostname: mail.example.com
-    restart: unless-stopped
     environment:
       - TZ=Europe/Amsterdam
+    hostname: mail.example.com
+    restart: unless-stopped
     volumes:
       - /armblock/stalwart/opt:/opt/stalwart
     ports:
-      - "8080:8080"
-      - "25:25"
-      - "465:465"
-      - "587:587"
+      - 8080:8080
+      - 8133:8133
+      - 25:25
+      - 465:465
+      - 587:587
+      - 993:993
+      - 4190:4190
+    dns:
+      - redactedipv4dns
+      - redactedipv6dns
     networks:
       my-bridge-network:
         ipv4_address: 172.28.0.10
 
+networks:
+  my-bridge-network:
+    external: true
+
+
   exchange_gateway:
-    image: youruser/exchange_gateway:latest
+    image: redacted/exchange_gateway:latest
     container_name: exchange_gateway
     hostname: exchange_gateway
     restart: unless-stopped
@@ -29,12 +40,12 @@ services:
     volumes:
       - /armblock/exchange_gateway/config.toml:/etc/exchange-gateway/config.toml:ro
     ports:
-      - "8133:8133"
-    depends_on:
-      - stalwart
+      - 8134:8133
     networks:
       my-bridge-network:
         ipv4_address: 172.28.0.11
+
+
 
 networks:
   my-bridge-network:
