@@ -1,5 +1,6 @@
 // src/jmap_client.rs
 use serde::{Deserialize, Serialize};
+use base64::{Engine as _, engine::general_purpose};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JmapSession {
@@ -63,7 +64,7 @@ pub async fn get_session(url: &str, user: &str, pass: &str) -> Result<JmapSessio
 
     Ok(JmapSession {
         api_url: json["apiUrl"].as_str().unwrap_or(url).to_string(),
-        access_token: base64::encode(format!("{}:{}", user, pass)),
+        access_token: general_purpose::STANDARD.encode(format!("{}:{}", user, pass)),
         account_id,
         primary_accounts: std::collections::HashMap::new(),
     })
@@ -294,6 +295,5 @@ pub async fn push_event(url: &str, token: &str, account_id: &str, event: JmapEve
         .await?;
 
     let json: serde_json::Value = resp.json().await?;
-    // Return created ID
     Ok(json["methodResponses"][0][1]["created"]["client-id-123"]["id"].as_str().unwrap_or("new-id").to_string())
 }
