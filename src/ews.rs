@@ -87,8 +87,9 @@ async fn handle_sync_folder_items(session: &jmap_client::JmapSession, config: &A
             Ok(Event::Start(ref e)) => {
                  if std::str::from_utf8(e.local_name().as_ref()).unwrap_or("") == "SyncState" {
                     if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        // Fix: use t.as_str()
-                        sync_state_in = escape::unescape(t.as_str()).unwrap_or_default().into_owned();
+                        // Fix: Use std::str::from_utf8(&t)
+                        let text_str = std::str::from_utf8(&t).unwrap_or("");
+                        sync_state_in = escape::unescape(text_str).unwrap_or_default().into_owned();
                     }
                 }
             }
@@ -178,8 +179,9 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => current_tag = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("").to_string(),
             Ok(Event::Text(t)) => {
-                // Fix: use t.as_str()
-                let text = escape::unescape(t.as_str()).unwrap_or_default();
+                // Fix: Use std::str::from_utf8(&t)
+                let text_str = std::str::from_utf8(&t).unwrap_or("");
+                let text = escape::unescape(text_str).unwrap_or_default();
                 match current_tag.as_str() {
                     "Subject" => subject = text.to_string(),
                     "Body" => body_content = text.to_string(),
