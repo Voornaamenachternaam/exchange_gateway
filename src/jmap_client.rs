@@ -1,6 +1,6 @@
 // src/jmap_client.rs
-use serde::{Deserialize, Serialize};
 use base64::{Engine as _, engine::general_purpose};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JmapSession {
@@ -8,7 +8,7 @@ pub struct JmapSession {
     pub api_url: String,
     #[serde(rename = "primaryAccounts")]
     pub primary_accounts: std::collections::HashMap<String, String>,
-    
+
     pub access_token: String,
     pub account_id: String,
 }
@@ -46,17 +46,14 @@ pub struct JmapChanges {
 
 pub async fn get_session(url: &str, user: &str, pass: &str) -> Result<JmapSession, anyhow::Error> {
     let client = reqwest::Client::new();
-    let resp = client.get(url)
-        .basic_auth(user, Some(pass))
-        .send()
-        .await?;
+    let resp = client.get(url).basic_auth(user, Some(pass)).send().await?;
 
     if !resp.status().is_success() {
         return Err(anyhow::anyhow!("Auth failed: {}", resp.status()));
     }
 
     let json: serde_json::Value = resp.json().await?;
-    
+
     let account_id = json["primaryAccounts"]["urn:ietf:params:jmap:calendars"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("AccountId missing"))?
@@ -70,7 +67,11 @@ pub async fn get_session(url: &str, user: &str, pass: &str) -> Result<JmapSessio
     })
 }
 
-pub async fn get_default_calendar_id(url: &str, token: &str, account_id: &str) -> Result<String, anyhow::Error> {
+pub async fn get_default_calendar_id(
+    url: &str,
+    token: &str,
+    account_id: &str,
+) -> Result<String, anyhow::Error> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
@@ -81,25 +82,30 @@ pub async fn get_default_calendar_id(url: &str, token: &str, account_id: &str) -
             }, "c0"]
         ]
     });
-    
-    let resp = client.post(url)
+
+    let resp = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await?;
 
     let json: serde_json::Value = resp.json().await?;
-    
-    if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
-        if let Some(first) = list.first() {
-            return Ok(first["id"].as_str().unwrap_or("default").to_string());
-        }
+
+    if let Some(list) = json["methodResponses"][0][1]["list"].as_array()
+        && let Some(first) = list.first()
+    {
+        return Ok(first["id"].as_str().unwrap_or("default").to_string());
     }
-    
+
     Ok("default".to_string())
 }
 
-pub async fn get_calendar_state(url: &str, token: &str, account_id: &str) -> Result<String, anyhow::Error> {
+pub async fn get_calendar_state(
+    url: &str,
+    token: &str,
+    account_id: &str,
+) -> Result<String, anyhow::Error> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
@@ -111,18 +117,26 @@ pub async fn get_calendar_state(url: &str, token: &str, account_id: &str) -> Res
             }, "c0"]
         ]
     });
-    
-    let resp = client.post(url)
+
+    let resp = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await?;
 
     let json: serde_json::Value = resp.json().await?;
-    Ok(json["methodResponses"][0][1]["state"].as_str().unwrap_or("unknown").to_string())
+    Ok(json["methodResponses"][0][1]["state"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string())
 }
 
-pub async fn get_calendar_events(url: &str, token: &str, account_id: &str) -> Result<Vec<JmapEvent>, anyhow::Error> {
+pub async fn get_calendar_events(
+    url: &str,
+    token: &str,
+    account_id: &str,
+) -> Result<Vec<JmapEvent>, anyhow::Error> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
@@ -134,8 +148,9 @@ pub async fn get_calendar_events(url: &str, token: &str, account_id: &str) -> Re
             }, "c0"]
         ]
     });
-    
-    let resp = client.post(url)
+
+    let resp = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
@@ -143,7 +158,7 @@ pub async fn get_calendar_events(url: &str, token: &str, account_id: &str) -> Re
 
     let json: serde_json::Value = resp.json().await?;
     let mut events = Vec::new();
-    
+
     if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
         for item in list {
             events.push(JmapEvent {
@@ -162,7 +177,12 @@ pub async fn get_calendar_events(url: &str, token: &str, account_id: &str) -> Re
     Ok(events)
 }
 
-pub async fn get_events_by_ids(url: &str, token: &str, account_id: &str, ids: &[String]) -> Result<Vec<JmapEvent>, anyhow::Error> {
+pub async fn get_events_by_ids(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    ids: &[String],
+) -> Result<Vec<JmapEvent>, anyhow::Error> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
@@ -174,8 +194,9 @@ pub async fn get_events_by_ids(url: &str, token: &str, account_id: &str, ids: &[
             }, "c0"]
         ]
     });
-    
-    let resp = client.post(url)
+
+    let resp = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
@@ -183,7 +204,7 @@ pub async fn get_events_by_ids(url: &str, token: &str, account_id: &str, ids: &[
 
     let json: serde_json::Value = resp.json().await?;
     let mut events = Vec::new();
-    
+
     if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
         for item in list {
             events.push(JmapEvent {
@@ -202,7 +223,12 @@ pub async fn get_events_by_ids(url: &str, token: &str, account_id: &str, ids: &[
     Ok(events)
 }
 
-pub async fn find_event_by_uid(url: &str, token: &str, account_id: &str, uid: &str) -> Result<String, anyhow::Error> {
+pub async fn find_event_by_uid(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    uid: &str,
+) -> Result<String, anyhow::Error> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
@@ -213,28 +239,36 @@ pub async fn find_event_by_uid(url: &str, token: &str, account_id: &str, uid: &s
             }, "c0"]
         ]
     });
-    
-    let resp = client.post(url)
+
+    let resp = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await?;
 
     let json: serde_json::Value = resp.json().await?;
-    
-    if let Some(ids) = json["methodResponses"][0][1]["ids"].as_array() {
-        if let Some(id) = ids.first() {
-            return Ok(id.as_str().unwrap_or_default().to_string());
-        }
+
+    if let Some(ids) = json["methodResponses"][0][1]["ids"].as_array()
+        && let Some(id) = ids.first()
+    {
+        return Ok(id.as_str().unwrap_or_default().to_string());
     }
-    
+
     Err(anyhow::anyhow!("Event not found"))
 }
 
 // Updated to accept user_email to properly address the participant in JMAP
-pub async fn update_participant_status(url: &str, token: &str, account_id: &str, event_id: &str, user_email: &str, status: &str) -> Result<(), anyhow::Error> {
+pub async fn update_participant_status(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    event_id: &str,
+    user_email: &str,
+    status: &str,
+) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
-    
+
     // JMAP requires updating the specific participant key in the map.
     // Using /set with update patch.
     let body = serde_json::json!({
@@ -252,17 +286,23 @@ pub async fn update_participant_status(url: &str, token: &str, account_id: &str,
             }, "c0"]
         ]
     });
-    
-    let _res = client.post(url)
+
+    let _res = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await?;
-        
+
     Ok(())
 }
 
-pub async fn get_calendar_changes(url: &str, token: &str, account_id: &str, since: &str) -> Result<JmapChanges, anyhow::Error> {
+pub async fn get_calendar_changes(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    since: &str,
+) -> Result<JmapChanges, anyhow::Error> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
@@ -273,27 +313,47 @@ pub async fn get_calendar_changes(url: &str, token: &str, account_id: &str, sinc
             }, "c0"]
         ]
     });
-    
-    let resp = client.post(url)
+
+    let resp = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await?;
 
     let json: serde_json::Value = resp.json().await?;
-    
+
     let res = &json["methodResponses"][0][1];
     Ok(JmapChanges {
         old_state: since.to_string(),
         new_state: res["newState"].as_str().unwrap_or(since).to_string(),
-        updated: res["changed"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
-        destroyed: res["removed"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+        updated: res["changed"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        destroyed: res["removed"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
-pub async fn push_event(url: &str, token: &str, account_id: &str, event: JmapEvent) -> Result<String, anyhow::Error> {
+pub async fn push_event(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    event: JmapEvent,
+) -> Result<String, anyhow::Error> {
     let client = reqwest::Client::new();
-    
+
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
         "methodCalls": [
@@ -313,13 +373,19 @@ pub async fn push_event(url: &str, token: &str, account_id: &str, event: JmapEve
             }, "c0"]
         ]
     });
-    
-    let resp = client.post(url)
+
+    let resp = client
+        .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await?;
 
     let json: serde_json::Value = resp.json().await?;
-    Ok(json["methodResponses"][0][1]["created"]["client-id-123"]["id"].as_str().unwrap_or("new-id").to_string())
+    Ok(
+        json["methodResponses"][0][1]["created"]["client-id-123"]["id"]
+            .as_str()
+            .unwrap_or("new-id")
+            .to_string(),
+    )
 }
