@@ -123,10 +123,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         }
     }
 
-    let auth = match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
-        Some(a) => a,
-        None => return error_xml(401, "Unauthorized"),
-    };
+    let auth = headers.get("Authorization").unwrap().to_str().unwrap();
     let (user, pass) = utils::decode_basic_auth(auth);
     let device_id = headers
         .get("X-MS-DeviceId")
@@ -227,13 +224,8 @@ async fn handle_send_mail(
     let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
         // Build Email via lettre
         let email_builder = lettre::Message::builder()
-        let (from_parsed, to_parsed) = match (from.parse(), to.parse()) {
-            (Ok(f), Ok(t)) => (f, t),
-            _ => return "2",
-        };
-        let email_builder = lettre::Message::builder()
-            .from(from_parsed)
-            .to(to_parsed);
+            .from(from.parse().unwrap())
+            .to(to.parse().unwrap());
 
         // Extract Subject
         let re_subj = Regex::new(r"Subject:\s*(.*?)\r?\n").unwrap();
