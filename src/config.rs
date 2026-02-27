@@ -1,4 +1,3 @@
-// src/config.rs
 use std::env;
 
 #[derive(Debug, Clone)]
