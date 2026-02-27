@@ -10,7 +10,12 @@ use quick_xml::events::Event;
 pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap) -> String {
     let auth = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
-        None => return soap_fault("ErrorAccessDenied", "Missing or invalid Authorization header"),
+        None => {
+            return soap_fault(
+                "ErrorAccessDenied",
+                "Missing or invalid Authorization header",
+            );
+        }
     };
     let (user, pass) = utils::decode_basic_auth(auth);
 
