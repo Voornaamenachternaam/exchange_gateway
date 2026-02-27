@@ -3,41 +3,34 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
 
-    // 1. Database API Proxy
-    // Route: /api/query (Matches the CF_D1_API_URL in .env)
+    // 1. Database API Endpoint
+    // Matches CF_D1_API_URL in .env
     if (path.startsWith("/api/")) {
       return handleApiRequest(request, env);
     }
 
-    // 2. AutoDiscover V2 (JSON) - Modern Outlook
-    if (path.includes("autodiscover") && path.includes(".json")) {
-      return handleAutodiscoverJson(url, env);
-    }
-    
-    // 3. AutoDiscover V1 (XML) - Legacy/Android
+    // 2. Autodiscover (V1 XML & V2 JSON)
+    // The Tunnel config did NOT have this, so the Worker handles it.
     if (path.includes("autodiscover")) {
+      if (path.includes(".json")) {
+        return handleAutodiscoverJson(url, env);
+      }
       return handleAutodiscoverXml(request, env);
     }
 
-    // 4. Proxy to Tunnel (ActiveSync & EWS)
-    // Passes request to the tunnel service binding defined in the dashboard
-    if (env.GATEWAY_SERVICE) {
-      const newHeaders = new Headers(request.headers);
-      newHeaders.set("X-Forwarded-Proto", "https");
-      // Forward to the Tunnel Service Binding
-      return env.GATEWAY_SERVICE.fetch(new Request(request, { headers: newHeaders }));
-    }
-
-    return new Response("Service Unavailable", { status: 503 });
+    // 3. Fallback
+    // If we reach here, it's a path not defined in Worker Routes.
+    // It will fall through to the Tunnel (if configured in CF Routing) or 404.
+    return new Response("Not Found", { status: 404 });
   }
 };
 
 /**
- * Handles Database Requests from the Exchange Gateway Container
+ * Handles DB requests from the Container
  */
 async function handleApiRequest(request, env) {
   // 1. Validate Secret
-  // The container sends 'Authorization: Bearer <GATEWAY_SECRET>'
+  // Container sends: 'Authorization: Bearer <GATEWAY_SECRET>'
   const authHeader = request.headers.get("Authorization");
   const expectedSecret = `Bearer ${env.GATEWAY_SECRET}`;
 
@@ -45,8 +38,7 @@ async function handleApiRequest(request, env) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  // 2. Parse Request Body
-  // Expected JSON: { "query": "SQL_STRING", "params": ["param1", "param2"] }
+  // 2. Execute Query
   let body;
   try {
     body = await request.json();
@@ -60,50 +52,37 @@ async function handleApiRequest(request, env) {
     return new Response("Missing 'query' field", { status: 400 });
   }
 
-  // 3. Execute against D1 Binding
   try {
-    // Prepare the statement
     let stmt = env.EXCHANGE_DB.prepare(query);
-    
-    // Bind parameters if they exist
     if (params && Array.isArray(params)) {
       stmt = stmt.bind(...params);
     }
-
-    // Run the query
+    
     const result = await stmt.all();
     
-    // 4. Format response to match Cloudflare API format expected by Rust code
-    // Rust expects: { "result": [ { "results": [...] } ] }
+    // Cloudflare API format expected by Rust code
     return Response.json({
       result: [
         { results: result.results }
       ]
     });
-
   } catch (e) {
     console.error("D1 Error:", e);
-    return Response.json({ 
-      error: { message: e.message } 
-    }, { status: 500 });
+    return Response.json({ error: { message: e.message } }, { status: 500 });
   }
 }
 
 /**
- * AutoDiscover Handlers
+ * Autodiscover Handlers
  */
 async function handleAutodiscoverJson(url, env) {
   const domain = env.GATEWAY_HOST;
   if (!domain) return new Response("Config Error", { status: 500 });
   
-  const json = {
+  return new Response(JSON.stringify({
     "Protocol": "Exchange",
     "Url": `https://${domain}/EWS/Exchange.asmx`
-  };
-
-  return new Response(JSON.stringify(json), {
-    headers: { "Content-Type": "application/json" }
-  });
+  }), { headers: { "Content-Type": "application/json" }});
 }
 
 async function handleAutodiscoverXml(request, env) {
