@@ -4,9 +4,9 @@ DROP TABLE IF EXISTS device_info;
 
 CREATE TABLE sync_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_email TEXT NOT NULL,
-    device_id TEXT NOT NULL,
-    collection_id TEXT NOT NULL,
+    user_email TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL UNIQUE,
+    collection_id TEXT NOT NULL UNIQUE,
     sync_key TEXT NOT NULL UNIQUE,
     jmap_state TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -14,8 +14,8 @@ CREATE TABLE sync_state (
 
 CREATE TABLE ews_sync_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_email TEXT NOT NULL,
-    folder_id TEXT NOT NULL,
+    user_email TEXT NOT NULL UNIQUE,
+    folder_id TEXT NOT NULL UNIQUE,
     sync_state TEXT NOT NULL,
     jmap_state TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -23,7 +23,7 @@ CREATE TABLE ews_sync_state (
 
 CREATE TABLE device_info (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_email TEXT NOT NULL,
+    user_email TEXT NOT NULL UNIQUE,
     device_id TEXT NOT NULL UNIQUE,
     friendly_name TEXT,
     last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
