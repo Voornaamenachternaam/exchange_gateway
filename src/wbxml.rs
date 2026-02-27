@@ -26,403 +26,450 @@ const PAGE_COMPOSEMAIL: u8 = 0x15; // 21 – ComposeMail (SendMail)
 // All token values are taken verbatim from MS-ASWBXML v20250520 tables.
 // Only pages actually used by this gateway are populated; unknown tokens are
 // handled gracefully at runtime.
-static TAG_MAP: LazyLock<HashMap<(u8, u8), (&'static str, &'static str)>> =
-    LazyLock::new(|| {
-        let mut m: HashMap<(u8, u8), (&'static str, &'static str)> = HashMap::new();
+static TAG_MAP: LazyLock<HashMap<(u8, u8), (&'static str, &'static str)>> = LazyLock::new(|| {
+    let mut m: HashMap<(u8, u8), (&'static str, &'static str)> = HashMap::new();
 
-        // ── Page 0: AirSync (MS-ASWBXML §2.1.2.1.1) ─────────────────────────
-        m.insert((PAGE_AIRSYNC, 0x05), ("AirSync", "Sync"));
-        m.insert((PAGE_AIRSYNC, 0x06), ("AirSync", "Responses"));
-        m.insert((PAGE_AIRSYNC, 0x07), ("AirSync", "Add"));
-        m.insert((PAGE_AIRSYNC, 0x08), ("AirSync", "Change"));
-        m.insert((PAGE_AIRSYNC, 0x09), ("AirSync", "Delete"));
-        m.insert((PAGE_AIRSYNC, 0x0A), ("AirSync", "Fetch"));
-        m.insert((PAGE_AIRSYNC, 0x0B), ("AirSync", "SyncKey"));
-        m.insert((PAGE_AIRSYNC, 0x0C), ("AirSync", "ClientId"));
-        m.insert((PAGE_AIRSYNC, 0x0D), ("AirSync", "ServerId"));
-        m.insert((PAGE_AIRSYNC, 0x0E), ("AirSync", "Status"));
-        m.insert((PAGE_AIRSYNC, 0x0F), ("AirSync", "Collection"));
-        m.insert((PAGE_AIRSYNC, 0x10), ("AirSync", "Class"));
-        m.insert((PAGE_AIRSYNC, 0x12), ("AirSync", "CollectionId"));
-        m.insert((PAGE_AIRSYNC, 0x13), ("AirSync", "GetChanges"));
-        m.insert((PAGE_AIRSYNC, 0x14), ("AirSync", "MoreAvailable"));
-        m.insert((PAGE_AIRSYNC, 0x15), ("AirSync", "WindowSize"));
-        m.insert((PAGE_AIRSYNC, 0x16), ("AirSync", "Commands"));
-        m.insert((PAGE_AIRSYNC, 0x17), ("AirSync", "Options"));
-        m.insert((PAGE_AIRSYNC, 0x18), ("AirSync", "FilterType"));
-        m.insert((PAGE_AIRSYNC, 0x19), ("AirSync", "Truncation"));
-        m.insert((PAGE_AIRSYNC, 0x1B), ("AirSync", "Conflict"));
-        m.insert((PAGE_AIRSYNC, 0x1C), ("AirSync", "Collections"));
-        m.insert((PAGE_AIRSYNC, 0x1D), ("AirSync", "ApplicationData"));
-        m.insert((PAGE_AIRSYNC, 0x1E), ("AirSync", "DeletesAsMoves"));
-        m.insert((PAGE_AIRSYNC, 0x20), ("AirSync", "Supported"));
-        m.insert((PAGE_AIRSYNC, 0x21), ("AirSync", "SoftDelete"));
-        m.insert((PAGE_AIRSYNC, 0x22), ("AirSync", "MIMESupport"));
-        m.insert((PAGE_AIRSYNC, 0x23), ("AirSync", "MIMETruncation"));
-        m.insert((PAGE_AIRSYNC, 0x24), ("AirSync", "Wait"));
-        m.insert((PAGE_AIRSYNC, 0x25), ("AirSync", "Limit"));
-        m.insert((PAGE_AIRSYNC, 0x26), ("AirSync", "Partial"));
-        m.insert((PAGE_AIRSYNC, 0x27), ("AirSync", "ConversationMode"));
-        m.insert((PAGE_AIRSYNC, 0x28), ("AirSync", "MaxItems"));
-        m.insert((PAGE_AIRSYNC, 0x29), ("AirSync", "HeartbeatInterval"));
+    // ── Page 0: AirSync (MS-ASWBXML §2.1.2.1.1) ─────────────────────────
+    m.insert((PAGE_AIRSYNC, 0x05), ("AirSync", "Sync"));
+    m.insert((PAGE_AIRSYNC, 0x06), ("AirSync", "Responses"));
+    m.insert((PAGE_AIRSYNC, 0x07), ("AirSync", "Add"));
+    m.insert((PAGE_AIRSYNC, 0x08), ("AirSync", "Change"));
+    m.insert((PAGE_AIRSYNC, 0x09), ("AirSync", "Delete"));
+    m.insert((PAGE_AIRSYNC, 0x0A), ("AirSync", "Fetch"));
+    m.insert((PAGE_AIRSYNC, 0x0B), ("AirSync", "SyncKey"));
+    m.insert((PAGE_AIRSYNC, 0x0C), ("AirSync", "ClientId"));
+    m.insert((PAGE_AIRSYNC, 0x0D), ("AirSync", "ServerId"));
+    m.insert((PAGE_AIRSYNC, 0x0E), ("AirSync", "Status"));
+    m.insert((PAGE_AIRSYNC, 0x0F), ("AirSync", "Collection"));
+    m.insert((PAGE_AIRSYNC, 0x10), ("AirSync", "Class"));
+    m.insert((PAGE_AIRSYNC, 0x12), ("AirSync", "CollectionId"));
+    m.insert((PAGE_AIRSYNC, 0x13), ("AirSync", "GetChanges"));
+    m.insert((PAGE_AIRSYNC, 0x14), ("AirSync", "MoreAvailable"));
+    m.insert((PAGE_AIRSYNC, 0x15), ("AirSync", "WindowSize"));
+    m.insert((PAGE_AIRSYNC, 0x16), ("AirSync", "Commands"));
+    m.insert((PAGE_AIRSYNC, 0x17), ("AirSync", "Options"));
+    m.insert((PAGE_AIRSYNC, 0x18), ("AirSync", "FilterType"));
+    m.insert((PAGE_AIRSYNC, 0x19), ("AirSync", "Truncation"));
+    m.insert((PAGE_AIRSYNC, 0x1B), ("AirSync", "Conflict"));
+    m.insert((PAGE_AIRSYNC, 0x1C), ("AirSync", "Collections"));
+    m.insert((PAGE_AIRSYNC, 0x1D), ("AirSync", "ApplicationData"));
+    m.insert((PAGE_AIRSYNC, 0x1E), ("AirSync", "DeletesAsMoves"));
+    m.insert((PAGE_AIRSYNC, 0x20), ("AirSync", "Supported"));
+    m.insert((PAGE_AIRSYNC, 0x21), ("AirSync", "SoftDelete"));
+    m.insert((PAGE_AIRSYNC, 0x22), ("AirSync", "MIMESupport"));
+    m.insert((PAGE_AIRSYNC, 0x23), ("AirSync", "MIMETruncation"));
+    m.insert((PAGE_AIRSYNC, 0x24), ("AirSync", "Wait"));
+    m.insert((PAGE_AIRSYNC, 0x25), ("AirSync", "Limit"));
+    m.insert((PAGE_AIRSYNC, 0x26), ("AirSync", "Partial"));
+    m.insert((PAGE_AIRSYNC, 0x27), ("AirSync", "ConversationMode"));
+    m.insert((PAGE_AIRSYNC, 0x28), ("AirSync", "MaxItems"));
+    m.insert((PAGE_AIRSYNC, 0x29), ("AirSync", "HeartbeatInterval"));
 
-        // ── Page 4: Calendar (MS-ASWBXML §2.1.2.1.5) ────────────────────────
-        m.insert((PAGE_CALENDAR, 0x05), ("Calendar", "Timezone"));
-        m.insert((PAGE_CALENDAR, 0x06), ("Calendar", "AllDayEvent"));
-        m.insert((PAGE_CALENDAR, 0x07), ("Calendar", "Attendees"));
-        m.insert((PAGE_CALENDAR, 0x08), ("Calendar", "Attendee"));
-        m.insert((PAGE_CALENDAR, 0x09), ("Calendar", "Email"));
-        m.insert((PAGE_CALENDAR, 0x0A), ("Calendar", "Name"));
-        m.insert((PAGE_CALENDAR, 0x0B), ("Calendar", "Body")); // legacy 2.5
-        m.insert((PAGE_CALENDAR, 0x0C), ("Calendar", "BodyTruncated")); // legacy 2.5
-        m.insert((PAGE_CALENDAR, 0x0D), ("Calendar", "BusyStatus"));
-        m.insert((PAGE_CALENDAR, 0x0E), ("Calendar", "Categories"));
-        m.insert((PAGE_CALENDAR, 0x0F), ("Calendar", "Category"));
-        m.insert((PAGE_CALENDAR, 0x11), ("Calendar", "DtStamp"));
-        m.insert((PAGE_CALENDAR, 0x12), ("Calendar", "EndTime"));
-        m.insert((PAGE_CALENDAR, 0x13), ("Calendar", "Exception"));
-        m.insert((PAGE_CALENDAR, 0x14), ("Calendar", "Exceptions"));
-        m.insert((PAGE_CALENDAR, 0x15), ("Calendar", "Deleted"));
-        m.insert((PAGE_CALENDAR, 0x16), ("Calendar", "ExceptionStartTime"));
-        m.insert((PAGE_CALENDAR, 0x17), ("Calendar", "Location"));
-        m.insert((PAGE_CALENDAR, 0x18), ("Calendar", "MeetingStatus"));
-        m.insert((PAGE_CALENDAR, 0x19), ("Calendar", "OrganizerEmail"));
-        m.insert((PAGE_CALENDAR, 0x1A), ("Calendar", "OrganizerName"));
-        m.insert((PAGE_CALENDAR, 0x1B), ("Calendar", "Recurrence"));
-        m.insert((PAGE_CALENDAR, 0x1C), ("Calendar", "Type"));
-        m.insert((PAGE_CALENDAR, 0x1D), ("Calendar", "Until"));
-        m.insert((PAGE_CALENDAR, 0x1E), ("Calendar", "Occurrences"));
-        m.insert((PAGE_CALENDAR, 0x1F), ("Calendar", "Interval"));
-        m.insert((PAGE_CALENDAR, 0x20), ("Calendar", "DayOfWeek"));
-        m.insert((PAGE_CALENDAR, 0x21), ("Calendar", "DayOfMonth"));
-        m.insert((PAGE_CALENDAR, 0x22), ("Calendar", "WeekOfMonth"));
-        m.insert((PAGE_CALENDAR, 0x23), ("Calendar", "MonthOfYear"));
-        m.insert((PAGE_CALENDAR, 0x24), ("Calendar", "Reminder"));
-        m.insert((PAGE_CALENDAR, 0x25), ("Calendar", "Sensitivity"));
-        m.insert((PAGE_CALENDAR, 0x26), ("Calendar", "Subject"));
-        m.insert((PAGE_CALENDAR, 0x27), ("Calendar", "StartTime"));
-        m.insert((PAGE_CALENDAR, 0x28), ("Calendar", "UID"));
-        m.insert((PAGE_CALENDAR, 0x29), ("Calendar", "AttendeeStatus"));
-        m.insert((PAGE_CALENDAR, 0x2A), ("Calendar", "AttendeeType"));
-        m.insert((PAGE_CALENDAR, 0x33), ("Calendar", "DisallowNewTimeProposal"));
-        m.insert((PAGE_CALENDAR, 0x34), ("Calendar", "ResponseRequested"));
-        m.insert((PAGE_CALENDAR, 0x35), ("Calendar", "AppointmentReplyTime"));
-        m.insert((PAGE_CALENDAR, 0x36), ("Calendar", "ResponseType"));
-        m.insert((PAGE_CALENDAR, 0x37), ("Calendar", "CalendarType"));
-        m.insert((PAGE_CALENDAR, 0x38), ("Calendar", "IsLeapMonth"));
-        m.insert((PAGE_CALENDAR, 0x39), ("Calendar", "FirstDayOfWeek"));
-        m.insert((PAGE_CALENDAR, 0x3A), ("Calendar", "OnlineMeetingConfLink"));
-        m.insert((PAGE_CALENDAR, 0x3B), ("Calendar", "OnlineMeetingExternalLink"));
-        m.insert((PAGE_CALENDAR, 0x3C), ("Calendar", "ClientUid"));
+    // ── Page 4: Calendar (MS-ASWBXML §2.1.2.1.5) ────────────────────────
+    m.insert((PAGE_CALENDAR, 0x05), ("Calendar", "Timezone"));
+    m.insert((PAGE_CALENDAR, 0x06), ("Calendar", "AllDayEvent"));
+    m.insert((PAGE_CALENDAR, 0x07), ("Calendar", "Attendees"));
+    m.insert((PAGE_CALENDAR, 0x08), ("Calendar", "Attendee"));
+    m.insert((PAGE_CALENDAR, 0x09), ("Calendar", "Email"));
+    m.insert((PAGE_CALENDAR, 0x0A), ("Calendar", "Name"));
+    m.insert((PAGE_CALENDAR, 0x0B), ("Calendar", "Body")); // legacy 2.5
+    m.insert((PAGE_CALENDAR, 0x0C), ("Calendar", "BodyTruncated")); // legacy 2.5
+    m.insert((PAGE_CALENDAR, 0x0D), ("Calendar", "BusyStatus"));
+    m.insert((PAGE_CALENDAR, 0x0E), ("Calendar", "Categories"));
+    m.insert((PAGE_CALENDAR, 0x0F), ("Calendar", "Category"));
+    m.insert((PAGE_CALENDAR, 0x11), ("Calendar", "DtStamp"));
+    m.insert((PAGE_CALENDAR, 0x12), ("Calendar", "EndTime"));
+    m.insert((PAGE_CALENDAR, 0x13), ("Calendar", "Exception"));
+    m.insert((PAGE_CALENDAR, 0x14), ("Calendar", "Exceptions"));
+    m.insert((PAGE_CALENDAR, 0x15), ("Calendar", "Deleted"));
+    m.insert((PAGE_CALENDAR, 0x16), ("Calendar", "ExceptionStartTime"));
+    m.insert((PAGE_CALENDAR, 0x17), ("Calendar", "Location"));
+    m.insert((PAGE_CALENDAR, 0x18), ("Calendar", "MeetingStatus"));
+    m.insert((PAGE_CALENDAR, 0x19), ("Calendar", "OrganizerEmail"));
+    m.insert((PAGE_CALENDAR, 0x1A), ("Calendar", "OrganizerName"));
+    m.insert((PAGE_CALENDAR, 0x1B), ("Calendar", "Recurrence"));
+    m.insert((PAGE_CALENDAR, 0x1C), ("Calendar", "Type"));
+    m.insert((PAGE_CALENDAR, 0x1D), ("Calendar", "Until"));
+    m.insert((PAGE_CALENDAR, 0x1E), ("Calendar", "Occurrences"));
+    m.insert((PAGE_CALENDAR, 0x1F), ("Calendar", "Interval"));
+    m.insert((PAGE_CALENDAR, 0x20), ("Calendar", "DayOfWeek"));
+    m.insert((PAGE_CALENDAR, 0x21), ("Calendar", "DayOfMonth"));
+    m.insert((PAGE_CALENDAR, 0x22), ("Calendar", "WeekOfMonth"));
+    m.insert((PAGE_CALENDAR, 0x23), ("Calendar", "MonthOfYear"));
+    m.insert((PAGE_CALENDAR, 0x24), ("Calendar", "Reminder"));
+    m.insert((PAGE_CALENDAR, 0x25), ("Calendar", "Sensitivity"));
+    m.insert((PAGE_CALENDAR, 0x26), ("Calendar", "Subject"));
+    m.insert((PAGE_CALENDAR, 0x27), ("Calendar", "StartTime"));
+    m.insert((PAGE_CALENDAR, 0x28), ("Calendar", "UID"));
+    m.insert((PAGE_CALENDAR, 0x29), ("Calendar", "AttendeeStatus"));
+    m.insert((PAGE_CALENDAR, 0x2A), ("Calendar", "AttendeeType"));
+    m.insert(
+        (PAGE_CALENDAR, 0x33),
+        ("Calendar", "DisallowNewTimeProposal"),
+    );
+    m.insert((PAGE_CALENDAR, 0x34), ("Calendar", "ResponseRequested"));
+    m.insert((PAGE_CALENDAR, 0x35), ("Calendar", "AppointmentReplyTime"));
+    m.insert((PAGE_CALENDAR, 0x36), ("Calendar", "ResponseType"));
+    m.insert((PAGE_CALENDAR, 0x37), ("Calendar", "CalendarType"));
+    m.insert((PAGE_CALENDAR, 0x38), ("Calendar", "IsLeapMonth"));
+    m.insert((PAGE_CALENDAR, 0x39), ("Calendar", "FirstDayOfWeek"));
+    m.insert((PAGE_CALENDAR, 0x3A), ("Calendar", "OnlineMeetingConfLink"));
+    m.insert(
+        (PAGE_CALENDAR, 0x3B),
+        ("Calendar", "OnlineMeetingExternalLink"),
+    );
+    m.insert((PAGE_CALENDAR, 0x3C), ("Calendar", "ClientUid"));
 
-        // ── Page 7: FolderHierarchy (MS-ASWBXML §2.1.2.1.8) ─────────────────
-        m.insert((PAGE_FOLDERHIERARCHY, 0x05), ("FolderHierarchy", "Folders"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x06), ("FolderHierarchy", "Folder"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x07), ("FolderHierarchy", "DisplayName"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x08), ("FolderHierarchy", "ServerId"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x09), ("FolderHierarchy", "ParentId"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x0A), ("FolderHierarchy", "Type"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x0C), ("FolderHierarchy", "Status"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x0E), ("FolderHierarchy", "Changes"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x0F), ("FolderHierarchy", "Add"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x10), ("FolderHierarchy", "Delete"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x11), ("FolderHierarchy", "Update"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x12), ("FolderHierarchy", "SyncKey"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x13), ("FolderHierarchy", "FolderCreate"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x14), ("FolderHierarchy", "FolderDelete"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x15), ("FolderHierarchy", "FolderUpdate"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x16), ("FolderHierarchy", "FolderSync"));
-        m.insert((PAGE_FOLDERHIERARCHY, 0x17), ("FolderHierarchy", "Count"));
+    // ── Page 7: FolderHierarchy (MS-ASWBXML §2.1.2.1.8) ─────────────────
+    m.insert((PAGE_FOLDERHIERARCHY, 0x05), ("FolderHierarchy", "Folders"));
+    m.insert((PAGE_FOLDERHIERARCHY, 0x06), ("FolderHierarchy", "Folder"));
+    m.insert(
+        (PAGE_FOLDERHIERARCHY, 0x07),
+        ("FolderHierarchy", "DisplayName"),
+    );
+    m.insert(
+        (PAGE_FOLDERHIERARCHY, 0x08),
+        ("FolderHierarchy", "ServerId"),
+    );
+    m.insert(
+        (PAGE_FOLDERHIERARCHY, 0x09),
+        ("FolderHierarchy", "ParentId"),
+    );
+    m.insert((PAGE_FOLDERHIERARCHY, 0x0A), ("FolderHierarchy", "Type"));
+    m.insert((PAGE_FOLDERHIERARCHY, 0x0C), ("FolderHierarchy", "Status"));
+    m.insert((PAGE_FOLDERHIERARCHY, 0x0E), ("FolderHierarchy", "Changes"));
+    m.insert((PAGE_FOLDERHIERARCHY, 0x0F), ("FolderHierarchy", "Add"));
+    m.insert((PAGE_FOLDERHIERARCHY, 0x10), ("FolderHierarchy", "Delete"));
+    m.insert((PAGE_FOLDERHIERARCHY, 0x11), ("FolderHierarchy", "Update"));
+    m.insert((PAGE_FOLDERHIERARCHY, 0x12), ("FolderHierarchy", "SyncKey"));
+    m.insert(
+        (PAGE_FOLDERHIERARCHY, 0x13),
+        ("FolderHierarchy", "FolderCreate"),
+    );
+    m.insert(
+        (PAGE_FOLDERHIERARCHY, 0x14),
+        ("FolderHierarchy", "FolderDelete"),
+    );
+    m.insert(
+        (PAGE_FOLDERHIERARCHY, 0x15),
+        ("FolderHierarchy", "FolderUpdate"),
+    );
+    m.insert(
+        (PAGE_FOLDERHIERARCHY, 0x16),
+        ("FolderHierarchy", "FolderSync"),
+    );
+    m.insert((PAGE_FOLDERHIERARCHY, 0x17), ("FolderHierarchy", "Count"));
 
-        // ── Page 8: MeetingResponse (MS-ASWBXML §2.1.2.1.9) ─────────────────
-        m.insert((PAGE_MEETINGRESPONSE, 0x05), ("MeetingResponse", "CalendarId"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x06), ("MeetingResponse", "CollectionId"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x07), ("MeetingResponse", "MeetingResponse"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x08), ("MeetingResponse", "RequestId"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x09), ("MeetingResponse", "Request"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x0A), ("MeetingResponse", "Result"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x0B), ("MeetingResponse", "Status"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x0C), ("MeetingResponse", "UserResponse"));
-        m.insert((PAGE_MEETINGRESPONSE, 0x0E), ("MeetingResponse", "InstanceId"));
-        m.insert(
-            (PAGE_MEETINGRESPONSE, 0x10),
-            ("MeetingResponse", "ProposedStartTime"),
-        );
-        m.insert(
-            (PAGE_MEETINGRESPONSE, 0x11),
-            ("MeetingResponse", "ProposedEndTime"),
-        );
-        m.insert(
-            (PAGE_MEETINGRESPONSE, 0x12),
-            ("MeetingResponse", "SendResponse"),
-        );
+    // ── Page 8: MeetingResponse (MS-ASWBXML §2.1.2.1.9) ─────────────────
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x05),
+        ("MeetingResponse", "CalendarId"),
+    );
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x06),
+        ("MeetingResponse", "CollectionId"),
+    );
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x07),
+        ("MeetingResponse", "MeetingResponse"),
+    );
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x08),
+        ("MeetingResponse", "RequestId"),
+    );
+    m.insert((PAGE_MEETINGRESPONSE, 0x09), ("MeetingResponse", "Request"));
+    m.insert((PAGE_MEETINGRESPONSE, 0x0A), ("MeetingResponse", "Result"));
+    m.insert((PAGE_MEETINGRESPONSE, 0x0B), ("MeetingResponse", "Status"));
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x0C),
+        ("MeetingResponse", "UserResponse"),
+    );
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x0E),
+        ("MeetingResponse", "InstanceId"),
+    );
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x10),
+        ("MeetingResponse", "ProposedStartTime"),
+    );
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x11),
+        ("MeetingResponse", "ProposedEndTime"),
+    );
+    m.insert(
+        (PAGE_MEETINGRESPONSE, 0x12),
+        ("MeetingResponse", "SendResponse"),
+    );
 
-        // ── Page 13 (0x0D): Ping (MS-ASWBXML §2.1.2.1.14) ───────────────────
-        m.insert((PAGE_PING, 0x05), ("Ping", "Ping"));
-        m.insert((PAGE_PING, 0x07), ("Ping", "Status"));
-        m.insert((PAGE_PING, 0x08), ("Ping", "HeartbeatInterval"));
-        m.insert((PAGE_PING, 0x09), ("Ping", "Folders"));
-        m.insert((PAGE_PING, 0x0A), ("Ping", "Folder"));
-        m.insert((PAGE_PING, 0x0B), ("Ping", "Id"));
-        m.insert((PAGE_PING, 0x0C), ("Ping", "Class"));
-        m.insert((PAGE_PING, 0x0D), ("Ping", "MaxFolders"));
+    // ── Page 13 (0x0D): Ping (MS-ASWBXML §2.1.2.1.14) ───────────────────
+    m.insert((PAGE_PING, 0x05), ("Ping", "Ping"));
+    m.insert((PAGE_PING, 0x07), ("Ping", "Status"));
+    m.insert((PAGE_PING, 0x08), ("Ping", "HeartbeatInterval"));
+    m.insert((PAGE_PING, 0x09), ("Ping", "Folders"));
+    m.insert((PAGE_PING, 0x0A), ("Ping", "Folder"));
+    m.insert((PAGE_PING, 0x0B), ("Ping", "Id"));
+    m.insert((PAGE_PING, 0x0C), ("Ping", "Class"));
+    m.insert((PAGE_PING, 0x0D), ("Ping", "MaxFolders"));
 
-        // ── Page 14 (0x0E): Provision (MS-ASWBXML §2.1.2.1.15) ──────────────
-        m.insert((PAGE_PROVISION, 0x05), ("Provision", "Provision"));
-        m.insert((PAGE_PROVISION, 0x06), ("Provision", "Policies"));
-        m.insert((PAGE_PROVISION, 0x07), ("Provision", "Policy"));
-        m.insert((PAGE_PROVISION, 0x08), ("Provision", "PolicyType"));
-        m.insert((PAGE_PROVISION, 0x09), ("Provision", "PolicyKey"));
-        m.insert((PAGE_PROVISION, 0x0A), ("Provision", "Data"));
-        m.insert((PAGE_PROVISION, 0x0B), ("Provision", "Status"));
-        m.insert((PAGE_PROVISION, 0x0C), ("Provision", "RemoteWipe"));
-        m.insert((PAGE_PROVISION, 0x0D), ("Provision", "EASProvisionDoc"));
-        m.insert(
-            (PAGE_PROVISION, 0x0E),
-            ("Provision", "DevicePasswordEnabled"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x0F),
-            ("Provision", "AlphanumericDevicePasswordRequired"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x10),
-            ("Provision", "RequireStorageCardEncryption"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x11),
-            ("Provision", "PasswordRecoveryEnabled"),
-        );
-        m.insert((PAGE_PROVISION, 0x13), ("Provision", "AttachmentsEnabled"));
-        m.insert(
-            (PAGE_PROVISION, 0x14),
-            ("Provision", "MinDevicePasswordLength"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x15),
-            ("Provision", "MaxInactivityTimeDeviceLock"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x16),
-            ("Provision", "MaxDevicePasswordFailedAttempts"),
-        );
-        m.insert((PAGE_PROVISION, 0x17), ("Provision", "MaxAttachmentSize"));
-        m.insert(
-            (PAGE_PROVISION, 0x18),
-            ("Provision", "AllowSimpleDevicePassword"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x19),
-            ("Provision", "DevicePasswordExpiration"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x1A),
-            ("Provision", "DevicePasswordHistory"),
-        );
-        m.insert((PAGE_PROVISION, 0x1B), ("Provision", "AllowStorageCard"));
-        m.insert((PAGE_PROVISION, 0x1C), ("Provision", "AllowCamera"));
-        m.insert(
-            (PAGE_PROVISION, 0x1D),
-            ("Provision", "RequireDeviceEncryption"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x1E),
-            ("Provision", "AllowUnsignedApplications"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x1F),
-            ("Provision", "AllowUnsignedInstallationPackages"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x20),
-            ("Provision", "MinDevicePasswordComplexCharacters"),
-        );
-        m.insert((PAGE_PROVISION, 0x21), ("Provision", "AllowWiFi"));
-        m.insert((PAGE_PROVISION, 0x22), ("Provision", "AllowTextMessaging"));
-        m.insert((PAGE_PROVISION, 0x23), ("Provision", "AllowPOPIMAPEmail"));
-        m.insert((PAGE_PROVISION, 0x24), ("Provision", "AllowBluetooth"));
-        m.insert((PAGE_PROVISION, 0x25), ("Provision", "AllowIrDA"));
-        m.insert(
-            (PAGE_PROVISION, 0x26),
-            ("Provision", "RequireManualSyncWhenRoaming"),
-        );
-        m.insert((PAGE_PROVISION, 0x27), ("Provision", "AllowDesktopSync"));
-        m.insert(
-            (PAGE_PROVISION, 0x28),
-            ("Provision", "MaxCalendarAgeFilter"),
-        );
-        m.insert((PAGE_PROVISION, 0x29), ("Provision", "AllowHTMLEmail"));
-        m.insert((PAGE_PROVISION, 0x2A), ("Provision", "MaxEmailAgeFilter"));
-        m.insert(
-            (PAGE_PROVISION, 0x2B),
-            ("Provision", "MaxEmailBodyTruncationSize"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x2C),
-            ("Provision", "MaxEmailHTMLBodyTruncationSize"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x2D),
-            ("Provision", "RequireSignedSMIMEMessages"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x2E),
-            ("Provision", "RequireEncryptedSMIMEMessages"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x2F),
-            ("Provision", "RequireSignedSMIMEAlgorithm"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x30),
-            ("Provision", "RequireEncryptionSMIMEAlgorithm"),
-        );
-        m.insert(
-            (PAGE_PROVISION, 0x31),
-            ("Provision", "AllowSMIMEEncryptionAlgorithmNegotiation"),
-        );
-        m.insert((PAGE_PROVISION, 0x32), ("Provision", "AllowSMIMESoftCerts"));
-        m.insert((PAGE_PROVISION, 0x33), ("Provision", "AllowBrowser"));
-        m.insert((PAGE_PROVISION, 0x34), ("Provision", "AllowConsumerEmail"));
-        m.insert((PAGE_PROVISION, 0x35), ("Provision", "AllowRemoteDesktop"));
-        m.insert((PAGE_PROVISION, 0x36), ("Provision", "AllowInternetSharing"));
-        m.insert(
-            (PAGE_PROVISION, 0x37),
-            ("Provision", "UnapprovedInROMApplicationList"),
-        );
-        m.insert((PAGE_PROVISION, 0x38), ("Provision", "ApplicationName"));
-        m.insert(
-            (PAGE_PROVISION, 0x39),
-            ("Provision", "ApprovedApplicationList"),
-        );
-        m.insert((PAGE_PROVISION, 0x3A), ("Provision", "Hash"));
-        m.insert(
-            (PAGE_PROVISION, 0x3B),
-            ("Provision", "AccountOnlyRemoteWipe"),
-        );
+    // ── Page 14 (0x0E): Provision (MS-ASWBXML §2.1.2.1.15) ──────────────
+    m.insert((PAGE_PROVISION, 0x05), ("Provision", "Provision"));
+    m.insert((PAGE_PROVISION, 0x06), ("Provision", "Policies"));
+    m.insert((PAGE_PROVISION, 0x07), ("Provision", "Policy"));
+    m.insert((PAGE_PROVISION, 0x08), ("Provision", "PolicyType"));
+    m.insert((PAGE_PROVISION, 0x09), ("Provision", "PolicyKey"));
+    m.insert((PAGE_PROVISION, 0x0A), ("Provision", "Data"));
+    m.insert((PAGE_PROVISION, 0x0B), ("Provision", "Status"));
+    m.insert((PAGE_PROVISION, 0x0C), ("Provision", "RemoteWipe"));
+    m.insert((PAGE_PROVISION, 0x0D), ("Provision", "EASProvisionDoc"));
+    m.insert(
+        (PAGE_PROVISION, 0x0E),
+        ("Provision", "DevicePasswordEnabled"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x0F),
+        ("Provision", "AlphanumericDevicePasswordRequired"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x10),
+        ("Provision", "RequireStorageCardEncryption"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x11),
+        ("Provision", "PasswordRecoveryEnabled"),
+    );
+    m.insert((PAGE_PROVISION, 0x13), ("Provision", "AttachmentsEnabled"));
+    m.insert(
+        (PAGE_PROVISION, 0x14),
+        ("Provision", "MinDevicePasswordLength"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x15),
+        ("Provision", "MaxInactivityTimeDeviceLock"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x16),
+        ("Provision", "MaxDevicePasswordFailedAttempts"),
+    );
+    m.insert((PAGE_PROVISION, 0x17), ("Provision", "MaxAttachmentSize"));
+    m.insert(
+        (PAGE_PROVISION, 0x18),
+        ("Provision", "AllowSimpleDevicePassword"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x19),
+        ("Provision", "DevicePasswordExpiration"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x1A),
+        ("Provision", "DevicePasswordHistory"),
+    );
+    m.insert((PAGE_PROVISION, 0x1B), ("Provision", "AllowStorageCard"));
+    m.insert((PAGE_PROVISION, 0x1C), ("Provision", "AllowCamera"));
+    m.insert(
+        (PAGE_PROVISION, 0x1D),
+        ("Provision", "RequireDeviceEncryption"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x1E),
+        ("Provision", "AllowUnsignedApplications"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x1F),
+        ("Provision", "AllowUnsignedInstallationPackages"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x20),
+        ("Provision", "MinDevicePasswordComplexCharacters"),
+    );
+    m.insert((PAGE_PROVISION, 0x21), ("Provision", "AllowWiFi"));
+    m.insert((PAGE_PROVISION, 0x22), ("Provision", "AllowTextMessaging"));
+    m.insert((PAGE_PROVISION, 0x23), ("Provision", "AllowPOPIMAPEmail"));
+    m.insert((PAGE_PROVISION, 0x24), ("Provision", "AllowBluetooth"));
+    m.insert((PAGE_PROVISION, 0x25), ("Provision", "AllowIrDA"));
+    m.insert(
+        (PAGE_PROVISION, 0x26),
+        ("Provision", "RequireManualSyncWhenRoaming"),
+    );
+    m.insert((PAGE_PROVISION, 0x27), ("Provision", "AllowDesktopSync"));
+    m.insert(
+        (PAGE_PROVISION, 0x28),
+        ("Provision", "MaxCalendarAgeFilter"),
+    );
+    m.insert((PAGE_PROVISION, 0x29), ("Provision", "AllowHTMLEmail"));
+    m.insert((PAGE_PROVISION, 0x2A), ("Provision", "MaxEmailAgeFilter"));
+    m.insert(
+        (PAGE_PROVISION, 0x2B),
+        ("Provision", "MaxEmailBodyTruncationSize"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x2C),
+        ("Provision", "MaxEmailHTMLBodyTruncationSize"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x2D),
+        ("Provision", "RequireSignedSMIMEMessages"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x2E),
+        ("Provision", "RequireEncryptedSMIMEMessages"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x2F),
+        ("Provision", "RequireSignedSMIMEAlgorithm"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x30),
+        ("Provision", "RequireEncryptionSMIMEAlgorithm"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x31),
+        ("Provision", "AllowSMIMEEncryptionAlgorithmNegotiation"),
+    );
+    m.insert((PAGE_PROVISION, 0x32), ("Provision", "AllowSMIMESoftCerts"));
+    m.insert((PAGE_PROVISION, 0x33), ("Provision", "AllowBrowser"));
+    m.insert((PAGE_PROVISION, 0x34), ("Provision", "AllowConsumerEmail"));
+    m.insert((PAGE_PROVISION, 0x35), ("Provision", "AllowRemoteDesktop"));
+    m.insert(
+        (PAGE_PROVISION, 0x36),
+        ("Provision", "AllowInternetSharing"),
+    );
+    m.insert(
+        (PAGE_PROVISION, 0x37),
+        ("Provision", "UnapprovedInROMApplicationList"),
+    );
+    m.insert((PAGE_PROVISION, 0x38), ("Provision", "ApplicationName"));
+    m.insert(
+        (PAGE_PROVISION, 0x39),
+        ("Provision", "ApprovedApplicationList"),
+    );
+    m.insert((PAGE_PROVISION, 0x3A), ("Provision", "Hash"));
+    m.insert(
+        (PAGE_PROVISION, 0x3B),
+        ("Provision", "AccountOnlyRemoteWipe"),
+    );
 
-        // ── Page 17 (0x11): AirSyncBase (MS-ASWBXML §2.1.2.1.18) ────────────
-        m.insert((PAGE_AIRSYNCBASE, 0x05), ("AirSyncBase", "BodyPreference"));
-        m.insert((PAGE_AIRSYNCBASE, 0x06), ("AirSyncBase", "Type"));
-        m.insert((PAGE_AIRSYNCBASE, 0x07), ("AirSyncBase", "TruncationSize"));
-        m.insert((PAGE_AIRSYNCBASE, 0x08), ("AirSyncBase", "AllOrNone"));
-        m.insert((PAGE_AIRSYNCBASE, 0x0A), ("AirSyncBase", "Body"));
-        m.insert((PAGE_AIRSYNCBASE, 0x0B), ("AirSyncBase", "Data"));
-        m.insert(
-            (PAGE_AIRSYNCBASE, 0x0C),
-            ("AirSyncBase", "EstimatedDataSize"),
-        );
-        m.insert((PAGE_AIRSYNCBASE, 0x0D), ("AirSyncBase", "Truncated"));
-        m.insert((PAGE_AIRSYNCBASE, 0x0E), ("AirSyncBase", "Attachments"));
-        m.insert((PAGE_AIRSYNCBASE, 0x0F), ("AirSyncBase", "Attachment"));
-        m.insert((PAGE_AIRSYNCBASE, 0x10), ("AirSyncBase", "DisplayName"));
-        m.insert((PAGE_AIRSYNCBASE, 0x11), ("AirSyncBase", "FileReference"));
-        m.insert((PAGE_AIRSYNCBASE, 0x12), ("AirSyncBase", "Method"));
-        m.insert((PAGE_AIRSYNCBASE, 0x13), ("AirSyncBase", "ContentId"));
-        m.insert((PAGE_AIRSYNCBASE, 0x14), ("AirSyncBase", "ContentLocation"));
-        m.insert((PAGE_AIRSYNCBASE, 0x15), ("AirSyncBase", "IsInline"));
-        m.insert((PAGE_AIRSYNCBASE, 0x16), ("AirSyncBase", "NativeBodyType"));
-        m.insert((PAGE_AIRSYNCBASE, 0x17), ("AirSyncBase", "ContentType"));
-        m.insert((PAGE_AIRSYNCBASE, 0x18), ("AirSyncBase", "Preview"));
-        m.insert(
-            (PAGE_AIRSYNCBASE, 0x19),
-            ("AirSyncBase", "BodyPartPreference"),
-        );
-        m.insert((PAGE_AIRSYNCBASE, 0x1A), ("AirSyncBase", "BodyPart"));
-        m.insert((PAGE_AIRSYNCBASE, 0x1B), ("AirSyncBase", "Status"));
-        m.insert((PAGE_AIRSYNCBASE, 0x1C), ("AirSyncBase", "Add"));
-        m.insert((PAGE_AIRSYNCBASE, 0x1D), ("AirSyncBase", "Delete"));
-        m.insert((PAGE_AIRSYNCBASE, 0x1E), ("AirSyncBase", "ClientId"));
-        m.insert((PAGE_AIRSYNCBASE, 0x1F), ("AirSyncBase", "Content"));
-        m.insert((PAGE_AIRSYNCBASE, 0x20), ("AirSyncBase", "Location"));
-        m.insert((PAGE_AIRSYNCBASE, 0x21), ("AirSyncBase", "Annotation"));
-        m.insert((PAGE_AIRSYNCBASE, 0x22), ("AirSyncBase", "Street"));
-        m.insert((PAGE_AIRSYNCBASE, 0x23), ("AirSyncBase", "City"));
-        m.insert((PAGE_AIRSYNCBASE, 0x24), ("AirSyncBase", "State"));
-        m.insert((PAGE_AIRSYNCBASE, 0x25), ("AirSyncBase", "Country"));
-        m.insert((PAGE_AIRSYNCBASE, 0x26), ("AirSyncBase", "PostalCode"));
-        m.insert((PAGE_AIRSYNCBASE, 0x27), ("AirSyncBase", "Latitude"));
-        m.insert((PAGE_AIRSYNCBASE, 0x28), ("AirSyncBase", "Longitude"));
-        m.insert((PAGE_AIRSYNCBASE, 0x29), ("AirSyncBase", "Accuracy"));
-        m.insert((PAGE_AIRSYNCBASE, 0x2A), ("AirSyncBase", "Altitude"));
-        m.insert(
-            (PAGE_AIRSYNCBASE, 0x2B),
-            ("AirSyncBase", "AltitudeAccuracy"),
-        );
-        m.insert((PAGE_AIRSYNCBASE, 0x2C), ("AirSyncBase", "LocationUri"));
-        m.insert((PAGE_AIRSYNCBASE, 0x2D), ("AirSyncBase", "InstanceId"));
+    // ── Page 17 (0x11): AirSyncBase (MS-ASWBXML §2.1.2.1.18) ────────────
+    m.insert((PAGE_AIRSYNCBASE, 0x05), ("AirSyncBase", "BodyPreference"));
+    m.insert((PAGE_AIRSYNCBASE, 0x06), ("AirSyncBase", "Type"));
+    m.insert((PAGE_AIRSYNCBASE, 0x07), ("AirSyncBase", "TruncationSize"));
+    m.insert((PAGE_AIRSYNCBASE, 0x08), ("AirSyncBase", "AllOrNone"));
+    m.insert((PAGE_AIRSYNCBASE, 0x0A), ("AirSyncBase", "Body"));
+    m.insert((PAGE_AIRSYNCBASE, 0x0B), ("AirSyncBase", "Data"));
+    m.insert(
+        (PAGE_AIRSYNCBASE, 0x0C),
+        ("AirSyncBase", "EstimatedDataSize"),
+    );
+    m.insert((PAGE_AIRSYNCBASE, 0x0D), ("AirSyncBase", "Truncated"));
+    m.insert((PAGE_AIRSYNCBASE, 0x0E), ("AirSyncBase", "Attachments"));
+    m.insert((PAGE_AIRSYNCBASE, 0x0F), ("AirSyncBase", "Attachment"));
+    m.insert((PAGE_AIRSYNCBASE, 0x10), ("AirSyncBase", "DisplayName"));
+    m.insert((PAGE_AIRSYNCBASE, 0x11), ("AirSyncBase", "FileReference"));
+    m.insert((PAGE_AIRSYNCBASE, 0x12), ("AirSyncBase", "Method"));
+    m.insert((PAGE_AIRSYNCBASE, 0x13), ("AirSyncBase", "ContentId"));
+    m.insert((PAGE_AIRSYNCBASE, 0x14), ("AirSyncBase", "ContentLocation"));
+    m.insert((PAGE_AIRSYNCBASE, 0x15), ("AirSyncBase", "IsInline"));
+    m.insert((PAGE_AIRSYNCBASE, 0x16), ("AirSyncBase", "NativeBodyType"));
+    m.insert((PAGE_AIRSYNCBASE, 0x17), ("AirSyncBase", "ContentType"));
+    m.insert((PAGE_AIRSYNCBASE, 0x18), ("AirSyncBase", "Preview"));
+    m.insert(
+        (PAGE_AIRSYNCBASE, 0x19),
+        ("AirSyncBase", "BodyPartPreference"),
+    );
+    m.insert((PAGE_AIRSYNCBASE, 0x1A), ("AirSyncBase", "BodyPart"));
+    m.insert((PAGE_AIRSYNCBASE, 0x1B), ("AirSyncBase", "Status"));
+    m.insert((PAGE_AIRSYNCBASE, 0x1C), ("AirSyncBase", "Add"));
+    m.insert((PAGE_AIRSYNCBASE, 0x1D), ("AirSyncBase", "Delete"));
+    m.insert((PAGE_AIRSYNCBASE, 0x1E), ("AirSyncBase", "ClientId"));
+    m.insert((PAGE_AIRSYNCBASE, 0x1F), ("AirSyncBase", "Content"));
+    m.insert((PAGE_AIRSYNCBASE, 0x20), ("AirSyncBase", "Location"));
+    m.insert((PAGE_AIRSYNCBASE, 0x21), ("AirSyncBase", "Annotation"));
+    m.insert((PAGE_AIRSYNCBASE, 0x22), ("AirSyncBase", "Street"));
+    m.insert((PAGE_AIRSYNCBASE, 0x23), ("AirSyncBase", "City"));
+    m.insert((PAGE_AIRSYNCBASE, 0x24), ("AirSyncBase", "State"));
+    m.insert((PAGE_AIRSYNCBASE, 0x25), ("AirSyncBase", "Country"));
+    m.insert((PAGE_AIRSYNCBASE, 0x26), ("AirSyncBase", "PostalCode"));
+    m.insert((PAGE_AIRSYNCBASE, 0x27), ("AirSyncBase", "Latitude"));
+    m.insert((PAGE_AIRSYNCBASE, 0x28), ("AirSyncBase", "Longitude"));
+    m.insert((PAGE_AIRSYNCBASE, 0x29), ("AirSyncBase", "Accuracy"));
+    m.insert((PAGE_AIRSYNCBASE, 0x2A), ("AirSyncBase", "Altitude"));
+    m.insert(
+        (PAGE_AIRSYNCBASE, 0x2B),
+        ("AirSyncBase", "AltitudeAccuracy"),
+    );
+    m.insert((PAGE_AIRSYNCBASE, 0x2C), ("AirSyncBase", "LocationUri"));
+    m.insert((PAGE_AIRSYNCBASE, 0x2D), ("AirSyncBase", "InstanceId"));
 
-        // ── Page 18 (0x12): Settings (MS-ASWBXML §2.1.2.1.19) ───────────────
-        m.insert((PAGE_SETTINGS, 0x05), ("Settings", "Settings"));
-        m.insert((PAGE_SETTINGS, 0x06), ("Settings", "Status"));
-        m.insert((PAGE_SETTINGS, 0x07), ("Settings", "Get"));
-        m.insert((PAGE_SETTINGS, 0x08), ("Settings", "Set"));
-        m.insert((PAGE_SETTINGS, 0x09), ("Settings", "Oof"));
-        m.insert((PAGE_SETTINGS, 0x0A), ("Settings", "OofState"));
-        m.insert((PAGE_SETTINGS, 0x0B), ("Settings", "StartTime"));
-        m.insert((PAGE_SETTINGS, 0x0C), ("Settings", "EndTime"));
-        m.insert((PAGE_SETTINGS, 0x0D), ("Settings", "OofMessage"));
-        m.insert((PAGE_SETTINGS, 0x0E), ("Settings", "AppliesToInternal"));
-        m.insert(
-            (PAGE_SETTINGS, 0x0F),
-            ("Settings", "AppliesToExternalKnown"),
-        );
-        m.insert(
-            (PAGE_SETTINGS, 0x10),
-            ("Settings", "AppliesToExternalUnknown"),
-        );
-        m.insert((PAGE_SETTINGS, 0x11), ("Settings", "Enabled"));
-        m.insert((PAGE_SETTINGS, 0x12), ("Settings", "ReplyMessage"));
-        m.insert((PAGE_SETTINGS, 0x13), ("Settings", "BodyType"));
-        m.insert((PAGE_SETTINGS, 0x14), ("Settings", "DevicePassword"));
-        m.insert((PAGE_SETTINGS, 0x15), ("Settings", "Password"));
-        m.insert((PAGE_SETTINGS, 0x16), ("Settings", "DeviceInformation"));
-        m.insert((PAGE_SETTINGS, 0x17), ("Settings", "Model"));
-        m.insert((PAGE_SETTINGS, 0x18), ("Settings", "IMEI"));
-        m.insert((PAGE_SETTINGS, 0x19), ("Settings", "FriendlyName"));
-        m.insert((PAGE_SETTINGS, 0x1A), ("Settings", "OS"));
-        m.insert((PAGE_SETTINGS, 0x1B), ("Settings", "OSLanguage"));
-        m.insert((PAGE_SETTINGS, 0x1C), ("Settings", "PhoneNumber"));
-        m.insert((PAGE_SETTINGS, 0x1D), ("Settings", "UserInformation"));
-        m.insert((PAGE_SETTINGS, 0x1E), ("Settings", "EmailAddresses"));
-        m.insert((PAGE_SETTINGS, 0x1F), ("Settings", "SMTPAddress"));
-        m.insert((PAGE_SETTINGS, 0x20), ("Settings", "UserAgent"));
-        m.insert((PAGE_SETTINGS, 0x21), ("Settings", "EnableOutboundSMS"));
-        m.insert((PAGE_SETTINGS, 0x22), ("Settings", "MobileOperator"));
-        m.insert((PAGE_SETTINGS, 0x23), ("Settings", "PrimarySmtpAddress"));
-        m.insert((PAGE_SETTINGS, 0x24), ("Settings", "Accounts"));
-        m.insert((PAGE_SETTINGS, 0x25), ("Settings", "Account"));
-        m.insert((PAGE_SETTINGS, 0x26), ("Settings", "AccountId"));
-        m.insert((PAGE_SETTINGS, 0x27), ("Settings", "AccountName"));
-        m.insert((PAGE_SETTINGS, 0x28), ("Settings", "UserDisplayName"));
-        m.insert((PAGE_SETTINGS, 0x29), ("Settings", "SendDisabled"));
-        m.insert(
-            (PAGE_SETTINGS, 0x2B),
-            ("Settings", "RightsManagementInformation"),
-        );
+    // ── Page 18 (0x12): Settings (MS-ASWBXML §2.1.2.1.19) ───────────────
+    m.insert((PAGE_SETTINGS, 0x05), ("Settings", "Settings"));
+    m.insert((PAGE_SETTINGS, 0x06), ("Settings", "Status"));
+    m.insert((PAGE_SETTINGS, 0x07), ("Settings", "Get"));
+    m.insert((PAGE_SETTINGS, 0x08), ("Settings", "Set"));
+    m.insert((PAGE_SETTINGS, 0x09), ("Settings", "Oof"));
+    m.insert((PAGE_SETTINGS, 0x0A), ("Settings", "OofState"));
+    m.insert((PAGE_SETTINGS, 0x0B), ("Settings", "StartTime"));
+    m.insert((PAGE_SETTINGS, 0x0C), ("Settings", "EndTime"));
+    m.insert((PAGE_SETTINGS, 0x0D), ("Settings", "OofMessage"));
+    m.insert((PAGE_SETTINGS, 0x0E), ("Settings", "AppliesToInternal"));
+    m.insert(
+        (PAGE_SETTINGS, 0x0F),
+        ("Settings", "AppliesToExternalKnown"),
+    );
+    m.insert(
+        (PAGE_SETTINGS, 0x10),
+        ("Settings", "AppliesToExternalUnknown"),
+    );
+    m.insert((PAGE_SETTINGS, 0x11), ("Settings", "Enabled"));
+    m.insert((PAGE_SETTINGS, 0x12), ("Settings", "ReplyMessage"));
+    m.insert((PAGE_SETTINGS, 0x13), ("Settings", "BodyType"));
+    m.insert((PAGE_SETTINGS, 0x14), ("Settings", "DevicePassword"));
+    m.insert((PAGE_SETTINGS, 0x15), ("Settings", "Password"));
+    m.insert((PAGE_SETTINGS, 0x16), ("Settings", "DeviceInformation"));
+    m.insert((PAGE_SETTINGS, 0x17), ("Settings", "Model"));
+    m.insert((PAGE_SETTINGS, 0x18), ("Settings", "IMEI"));
+    m.insert((PAGE_SETTINGS, 0x19), ("Settings", "FriendlyName"));
+    m.insert((PAGE_SETTINGS, 0x1A), ("Settings", "OS"));
+    m.insert((PAGE_SETTINGS, 0x1B), ("Settings", "OSLanguage"));
+    m.insert((PAGE_SETTINGS, 0x1C), ("Settings", "PhoneNumber"));
+    m.insert((PAGE_SETTINGS, 0x1D), ("Settings", "UserInformation"));
+    m.insert((PAGE_SETTINGS, 0x1E), ("Settings", "EmailAddresses"));
+    m.insert((PAGE_SETTINGS, 0x1F), ("Settings", "SMTPAddress"));
+    m.insert((PAGE_SETTINGS, 0x20), ("Settings", "UserAgent"));
+    m.insert((PAGE_SETTINGS, 0x21), ("Settings", "EnableOutboundSMS"));
+    m.insert((PAGE_SETTINGS, 0x22), ("Settings", "MobileOperator"));
+    m.insert((PAGE_SETTINGS, 0x23), ("Settings", "PrimarySmtpAddress"));
+    m.insert((PAGE_SETTINGS, 0x24), ("Settings", "Accounts"));
+    m.insert((PAGE_SETTINGS, 0x25), ("Settings", "Account"));
+    m.insert((PAGE_SETTINGS, 0x26), ("Settings", "AccountId"));
+    m.insert((PAGE_SETTINGS, 0x27), ("Settings", "AccountName"));
+    m.insert((PAGE_SETTINGS, 0x28), ("Settings", "UserDisplayName"));
+    m.insert((PAGE_SETTINGS, 0x29), ("Settings", "SendDisabled"));
+    m.insert(
+        (PAGE_SETTINGS, 0x2B),
+        ("Settings", "RightsManagementInformation"),
+    );
 
-        // ── Page 21 (0x15): ComposeMail (MS-ASWBXML §2.1.2.1.22) ────────────
-        m.insert((PAGE_COMPOSEMAIL, 0x05), ("ComposeMail", "SendMail"));
-        m.insert((PAGE_COMPOSEMAIL, 0x06), ("ComposeMail", "SmartForward"));
-        m.insert((PAGE_COMPOSEMAIL, 0x07), ("ComposeMail", "SmartReply"));
-        m.insert((PAGE_COMPOSEMAIL, 0x08), ("ComposeMail", "SaveInSentItems"));
-        m.insert((PAGE_COMPOSEMAIL, 0x09), ("ComposeMail", "ReplaceMime"));
-        m.insert((PAGE_COMPOSEMAIL, 0x0B), ("ComposeMail", "Source"));
-        m.insert((PAGE_COMPOSEMAIL, 0x0C), ("ComposeMail", "FolderId"));
-        m.insert((PAGE_COMPOSEMAIL, 0x0D), ("ComposeMail", "ItemId"));
-        m.insert((PAGE_COMPOSEMAIL, 0x0E), ("ComposeMail", "LongId"));
-        m.insert((PAGE_COMPOSEMAIL, 0x0F), ("ComposeMail", "InstanceId"));
-        m.insert((PAGE_COMPOSEMAIL, 0x10), ("ComposeMail", "Mime"));
-        m.insert((PAGE_COMPOSEMAIL, 0x11), ("ComposeMail", "ClientId"));
-        m.insert((PAGE_COMPOSEMAIL, 0x12), ("ComposeMail", "Status"));
-        m.insert((PAGE_COMPOSEMAIL, 0x13), ("ComposeMail", "AccountId"));
-        m.insert((PAGE_COMPOSEMAIL, 0x15), ("ComposeMail", "Forwardees"));
-        m.insert((PAGE_COMPOSEMAIL, 0x16), ("ComposeMail", "Forwardee"));
-        m.insert((PAGE_COMPOSEMAIL, 0x17), ("ComposeMail", "Name"));
-        m.insert((PAGE_COMPOSEMAIL, 0x18), ("ComposeMail", "Email"));
+    // ── Page 21 (0x15): ComposeMail (MS-ASWBXML §2.1.2.1.22) ────────────
+    m.insert((PAGE_COMPOSEMAIL, 0x05), ("ComposeMail", "SendMail"));
+    m.insert((PAGE_COMPOSEMAIL, 0x06), ("ComposeMail", "SmartForward"));
+    m.insert((PAGE_COMPOSEMAIL, 0x07), ("ComposeMail", "SmartReply"));
+    m.insert((PAGE_COMPOSEMAIL, 0x08), ("ComposeMail", "SaveInSentItems"));
+    m.insert((PAGE_COMPOSEMAIL, 0x09), ("ComposeMail", "ReplaceMime"));
+    m.insert((PAGE_COMPOSEMAIL, 0x0B), ("ComposeMail", "Source"));
+    m.insert((PAGE_COMPOSEMAIL, 0x0C), ("ComposeMail", "FolderId"));
+    m.insert((PAGE_COMPOSEMAIL, 0x0D), ("ComposeMail", "ItemId"));
+    m.insert((PAGE_COMPOSEMAIL, 0x0E), ("ComposeMail", "LongId"));
+    m.insert((PAGE_COMPOSEMAIL, 0x0F), ("ComposeMail", "InstanceId"));
+    m.insert((PAGE_COMPOSEMAIL, 0x10), ("ComposeMail", "Mime"));
+    m.insert((PAGE_COMPOSEMAIL, 0x11), ("ComposeMail", "ClientId"));
+    m.insert((PAGE_COMPOSEMAIL, 0x12), ("ComposeMail", "Status"));
+    m.insert((PAGE_COMPOSEMAIL, 0x13), ("ComposeMail", "AccountId"));
+    m.insert((PAGE_COMPOSEMAIL, 0x15), ("ComposeMail", "Forwardees"));
+    m.insert((PAGE_COMPOSEMAIL, 0x16), ("ComposeMail", "Forwardee"));
+    m.insert((PAGE_COMPOSEMAIL, 0x17), ("ComposeMail", "Name"));
+    m.insert((PAGE_COMPOSEMAIL, 0x18), ("ComposeMail", "Email"));
 
-        m
-    });
+    m
+});
 
 // ── Reverse map: (ns_prefix, xml_element_name) → (page, token_byte) ──────────
 //
@@ -645,8 +692,8 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, anyhow::Error> {
             Ok(Event::Text(ref t)) => {
                 let raw = std::str::from_utf8(t.as_ref()).unwrap_or("");
                 // unescape converts XML entities (&amp; → &, &lt; → <, …)
-                let unescaped = quick_xml::escape::unescape(raw)
-                    .unwrap_or(std::borrow::Cow::Borrowed(raw));
+                let unescaped =
+                    quick_xml::escape::unescape(raw).unwrap_or(std::borrow::Cow::Borrowed(raw));
                 let bytes = unescaped.as_bytes();
                 if !bytes.is_empty() {
                     output.push(STR_I);
