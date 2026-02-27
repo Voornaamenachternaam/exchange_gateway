@@ -3,14 +3,10 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
 
-    // 1. Database API Endpoint
-    // Matches CF_D1_API_URL in .env
     if (path.startsWith("/api/")) {
       return handleApiRequest(request, env);
     }
 
-    // 2. Autodiscover (V1 XML & V2 JSON)
-    // The Tunnel config did NOT have this, so the Worker handles it.
     if (path.includes("autodiscover")) {
       if (path.includes(".json")) {
         return handleAutodiscoverJson(url, env);
@@ -18,19 +14,11 @@ export default {
       return handleAutodiscoverXml(request, env);
     }
 
-    // 3. Fallback
-    // If we reach here, it's a path not defined in Worker Routes.
-    // It will fall through to the Tunnel (if configured in CF Routing) or 404.
     return new Response("Not Found", { status: 404 });
   }
 };
 
-/**
- * Handles DB requests from the Container
- */
 async function handleApiRequest(request, env) {
-  // 1. Validate Secret
-  // Container sends: 'Authorization: Bearer <GATEWAY_SECRET>'
   const authHeader = request.headers.get("Authorization");
   const expectedSecret = `Bearer ${env.GATEWAY_SECRET}`;
 
@@ -38,7 +26,6 @@ async function handleApiRequest(request, env) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  // 2. Execute Query
   let body;
   try {
     body = await request.json();
@@ -60,7 +47,6 @@ async function handleApiRequest(request, env) {
     
     const result = await stmt.all();
     
-    // Cloudflare API format expected by Rust code
     return Response.json({
       result: [
         { results: result.results }
@@ -72,9 +58,6 @@ async function handleApiRequest(request, env) {
   }
 }
 
-/**
- * Autodiscover Handlers
- */
 async function handleAutodiscoverJson(url, env) {
   const domain = env.GATEWAY_HOST;
   if (!domain) return new Response("Config Error", { status: 500 });
