@@ -153,7 +153,7 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, anyhow::Error> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                let local = e.local_name();
+                let local = e.name();
                 let local_str = std::str::from_utf8(local.as_ref()).unwrap_or("");
                 let parts: Vec<&str> = local_str.split(':').collect();
                 let (ns, tag_name) = if parts.len() == 2 {
