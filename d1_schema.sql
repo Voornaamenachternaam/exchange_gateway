@@ -9,7 +9,8 @@ CREATE TABLE sync_state (
     collection_id TEXT NOT NULL,
     sync_key TEXT NOT NULL UNIQUE,
     jmap_state TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_email, device_id, collection_id)
 );
 
 CREATE TABLE ews_sync_state (
@@ -18,15 +19,17 @@ CREATE TABLE ews_sync_state (
     folder_id TEXT NOT NULL,
     sync_state TEXT NOT NULL,
     jmap_state TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_email, folder_id)
 );
 
 CREATE TABLE device_info (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email TEXT NOT NULL,
-    device_id TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL,
     friendly_name TEXT,
-    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(device_id)
 );
 
 CREATE INDEX idx_sync_lookup ON sync_state(user_email, device_id, collection_id);
