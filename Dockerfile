@@ -10,4 +10,4 @@ RUN apt-get update && apt-get install -y ca-certificates tzdata && rm -rf /var/l
 COPY --from=builder /app/target/release/exchange_gateway /usr/local/bin/exchange_gateway
 ENV RUST_LOG="info"
 EXPOSE 8134
-CMD ["exchange_gateway"]
+CMD ["/usr/local/bin/exchange_gateway"]
