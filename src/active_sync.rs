@@ -691,7 +691,6 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
             }
         }
     }
-    }
 }
 
 fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
