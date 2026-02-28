@@ -7,7 +7,6 @@ use quick_xml::Reader;
 use quick_xml::escape;
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // EWS SOAP Namespace Constants
 const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
@@ -240,7 +239,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     tracing::info!("EWS Action: {}", action);
 
     match action.as_str() {
-        "GetFolder" => handle_get_folder(&session, xml).await,
+        "GetFolder" => handle_get_folder(&session, _xml).await,
         "FindFolder" => handle_find_folder(&session).await,
         "SyncFolderItems" => handle_sync_folder_items(&session, config, &user, xml).await,
         "CreateItem" => handle_create_item(&session, config, xml).await,
@@ -264,8 +263,8 @@ fn extract_action_name(xml: &str) -> String {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                let local = e.local_name();
-                let name = std::str::from_utf8(local.as_ref()).unwrap_or("");
+                let local_name = e.local_name();
+                let name = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 
                 if name == "Body" {
                     in_body = true;
@@ -283,7 +282,8 @@ fn extract_action_name(xml: &str) -> String {
                 }
             }
             Ok(Event::End(ref e)) => {
-                let name = std::str::from_utf8(e.local_name().as_ref()).unwrap_or("");
+                let local_name = e.local_name();
+                let name = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 if name == "Body" {
                     in_body = false;
                 }
@@ -300,7 +300,7 @@ fn extract_action_name(xml: &str) -> String {
 
 // --- Handlers ---
 
-async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> String {
+async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> String {
     // Parse to find requested folder type, defaulting to Calendar
     let cal_id = match jmap_client::get_default_calendar_id(
         &session.api_url,
@@ -811,7 +811,7 @@ fn parse_body_content<T: for<'de> Deserialize<'de>>(xml: &str) -> Result<T, quic
 fn parse_ews_time(time_str: &str, tz: Tz) -> String {
     // EWS typically sends YYYY-MM-DDTHH:MM:SSZ
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%dT%H:%M:%SZ") {
-        return DateTime::<Utc>::from_utc(dt, Utc).to_rfc3339();
+        return Utc.from_utc_datetime(&dt).to_rfc3339();
     }
     // Try without Z (local time)
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%dT%H:%M:%S") {
