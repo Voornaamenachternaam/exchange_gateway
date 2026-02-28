@@ -667,28 +667,30 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
 
     if let Some(deletes) = cmds.delete {
         if !deletes.is_empty() {
-        let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
-        
-        let body = serde_json::json!({
-            "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-            "methodCalls": [
-                ["CalendarEvent/set", {
-                    "accountId": session.account_id,
-                    "destroy": ids
-                }, "c0"]
-            ]
-        });
+            let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
+            
+            let body = serde_json::json!({
+                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+                "methodCalls": [
+                    ["CalendarEvent/set", {
+                        "accountId": session.account_id,
+                        "destroy": ids
+                    }, "c0"]
+                ]
+            });
 
-        let res = client
-            .post(&session.api_url)
-            .header("Authorization", format!("Basic {}", session.access_token))
-            .json(&body)
-            .send()
-            .await;
+            let res = client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await;
 
-        if let Err(e) = res {
-            tracing::error!("ActiveSync Delete failed: {}", e);
+            if let Err(e) = res {
+                tracing::error!("ActiveSync Delete failed: {}", e);
+            }
         }
+    }
     }
 }
 
