@@ -510,6 +510,80 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         )
         .await;
     }
+    
+    for change_cmd in cmds.change.unwrap_or_default() {
+        let id = change_cmd.server_id;
+        let data = change_cmd.application_data;
+        
+        let mut patch = serde_json::Map::new();
+        
+        if let Some(s) = data.subject {
+            patch.insert("title".to_string(), serde_json::json!(s));
+        }
+        if let Some(l) = data.location {
+            patch.insert("location".to_string(), serde_json::json!(l));
+        }
+        if let Some(s) = data.start {
+             patch.insert("start".to_string(), serde_json::json!(parse_local_to_utc(&s, tz)));
+        }
+        if let Some(e) = data.end {
+             patch.insert("end".to_string(), serde_json::json!(parse_local_to_utc(&e, tz)));
+        }
+        if let Some(b) = data.body {
+            patch.insert("description".to_string(), serde_json::json!(b.data));
+        }
+        
+        if !patch.is_empty() {
+             let body = serde_json::json!({
+                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+                "methodCalls": [
+                    ["CalendarEvent/set", {
+                        "accountId": session.account_id,
+                        "update": {
+                            id: patch
+                        }
+                    }, "c0"]
+                ]
+            });
+
+            let res = client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await;
+            
+            if let Err(e) = res {
+                tracing::error!("ActiveSync Update failed: {}", e);
+            }
+        }
+    }
+
+    if let Some(deletes) = cmds.delete
+        && !deletes.is_empty() {
+            let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
+            
+            let body = serde_json::json!({
+                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+                "methodCalls": [
+                    ["CalendarEvent/set", {
+                        "accountId": session.account_id,
+                        "destroy": ids
+                    }, "c0"]
+                ]
+            });
+
+            let res = client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await;
+
+            if let Err(e) = res {
+                tracing::error!("ActiveSync Delete failed: {}", e);
+            }
+        }
 }
 
 fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
