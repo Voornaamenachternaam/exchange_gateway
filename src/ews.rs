@@ -27,7 +27,7 @@ struct SoapBody<T> {
 
 // --- Request Structs ---
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct GetFolder {
     #[serde(rename = "FolderIds", default)]
     folder_ids: FolderIds,
@@ -303,8 +303,17 @@ fn extract_action_name(xml: &str) -> String {
 
 // --- Handlers ---
 
-async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> String {
-    // Parse to find requested folder type, defaulting to Calendar
+async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> String {
+    // Parse request to ensure it is well-formed. We currently ignore the specific FolderId requested
+    // and always return the default Calendar, as this is a Calendar-specific gateway.
+    let _req: GetFolder = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("GetFolder parse error (ignoring): {:?}", e);
+            GetFolder::default()
+        }
+    };
+
     let cal_id = match jmap_client::get_default_calendar_id(
         &session.api_url,
         &session.access_token,
