@@ -379,7 +379,7 @@ async fn handle_sync_folder_items(
 
     // Retrieve the JMAP state associated with the last SyncState (UUID) we issued
     let prev_jmap_state = db::get_ews_sync_state(config, user, &folder_id).await;
-    
+
     // Get current server state
     let current_jmap_state = match jmap_client::get_calendar_state(
         &session.api_url,
@@ -427,7 +427,9 @@ async fn handle_sync_folder_items(
                         </m:SyncFolderItemsResponseMessage>
                     </m:ResponseMessages>
                 </m:SyncFolderItemsResponse>"#,
-                NS_M, NS_T, req.sync_state.unwrap_or_default()
+                NS_M,
+                NS_T,
+                req.sync_state.unwrap_or_default()
             ));
         }
 
@@ -442,7 +444,7 @@ async fn handle_sync_folder_items(
         {
             Ok(changes) => {
                 let mut xml = String::new();
-                
+
                 // Handle Deletes
                 for id in &changes.destroyed {
                     xml.push_str(&format!(
@@ -457,19 +459,18 @@ async fn handle_sync_folder_items(
                 // Since we lack the local DB state to distinguish, we treat all as <Update>.
                 // If an item is new, Outlook might reject the Update or auto-promote.
                 // Ideally, we fetch details for these IDs.
-                if !changes.updated.is_empty() {
-                    if let Ok(events) = jmap_client::get_events_by_ids(
+                if !changes.updated.is_empty()
+                    && let Ok(events) = jmap_client::get_events_by_ids(
                         &session.api_url,
                         &session.access_token,
                         &session.account_id,
                         &changes.updated,
                     )
                     .await
-                    {
-                        // We render as "Update". If it's a new item, Outlook may log a client error
-                        // but this is the safest path to avoid duplicates from 'Create'.
-                        xml.push_str(&render_items(&events, "Update", &config.timezone));
-                    }
+                {
+                    // We render as "Update". If it's a new item, Outlook may log a client error
+                    // but this is the safest path to avoid duplicates from 'Create'.
+                    xml.push_str(&render_items(&events, "Update", &config.timezone));
                 }
                 (xml, true)
             }
