@@ -625,7 +625,7 @@ async fn handle_create_item(
                     </m:CreateItemResponseMessage>
                 </m:ResponseMessages>
             </m:CreateItemResponse>"#,
-            NS_M, NS_T, new_id
+            NS_M, NS_T, escape_xml(&new_id)
         ));
     }
 
