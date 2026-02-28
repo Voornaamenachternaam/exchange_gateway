@@ -250,7 +250,10 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         "ResolveNames" => handle_resolve_names(&session).await,
         "GetRoomLists" => handle_get_room_lists().await,
         "GetRooms" => handle_get_rooms().await,
-        _ => soap_fault("ErrorInvalidRequest", &format!("Unsupported EWS Action: {}", action)),
+        _ => soap_fault(
+            "ErrorInvalidRequest",
+            &format!("Unsupported EWS Action: {}", action),
+        ),
     }
 }
 
@@ -265,18 +268,18 @@ fn extract_action_name(xml: &str) -> String {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let local_name = e.local_name();
                 let name = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
-                
+
                 if name == "Body" {
                     in_body = true;
                     depth += 1;
                     continue;
                 }
-                
+
                 if in_body && depth == 1 {
                     // This is the Action element inside Body
                     return name.to_string();
                 }
-                
+
                 if in_body {
                     depth += 1;
                 }
@@ -363,7 +366,11 @@ async fn handle_sync_folder_items(
         }
     };
 
-    let folder_id = req.sync_folder_id.folder_id.map(|f| f.id).unwrap_or_else(|| "calendar-default".to_string());
+    let folder_id = req
+        .sync_folder_id
+        .folder_id
+        .map(|f| f.id)
+        .unwrap_or_else(|| "calendar-default".to_string());
 
     let current_jmap_state = match jmap_client::get_calendar_state(
         &session.api_url,
@@ -419,7 +426,11 @@ async fn handle_sync_folder_items(
     ))
 }
 
-fn format_changes(events: &[jmap_client::JmapEvent], tz_str: &str, _prev_state: &Option<String>) -> String {
+fn format_changes(
+    events: &[jmap_client::JmapEvent],
+    tz_str: &str,
+    _prev_state: &Option<String>,
+) -> String {
     let mut xml = String::new();
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
 
@@ -443,12 +454,12 @@ fn format_changes(events: &[jmap_client::JmapEvent], tz_str: &str, _prev_state: 
                     <t:Body BodyType="Text">{}</t:Body>
                 </t:CalendarItem>
             </t:Create>"#,
-            escape_xml(&event.id.as_deref().unwrap_or("")),
+            escape_xml(event.id.as_deref().unwrap_or("")),
             escape_xml(&event.title),
-            escape_xml(&event.location.as_deref().unwrap_or("")),
+            escape_xml(event.location.as_deref().unwrap_or("")),
             start_local.format("%Y-%m-%dT%H:%M:%S"),
             end_local.format("%Y-%m-%dT%H:%M:%S"),
-            escape_xml(&event.description.as_deref().unwrap_or(""))
+            escape_xml(event.description.as_deref().unwrap_or(""))
         ));
     }
     xml
@@ -469,7 +480,7 @@ async fn handle_create_item(
 
     if let Some(item) = req.items.calendar_item {
         let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
-        
+
         let start_utc = parse_ews_time(&item.start.unwrap_or_default(), tz);
         let end_utc = parse_ews_time(&item.end.unwrap_or_default(), tz);
 
@@ -494,7 +505,11 @@ async fn handle_create_item(
             description: item.body.map(|b| b.content),
             location: item.location,
             uid: None,
-            participants: if attendees.is_empty() { None } else { Some(attendees) },
+            participants: if attendees.is_empty() {
+                None
+            } else {
+                Some(attendees)
+            },
             is_all_day: false,
         };
 
@@ -570,7 +585,10 @@ async fn handle_update_item(
                 }
                 "calendar:Start" => {
                     if let Some(v) = val_item.start {
-                        patch.insert("start".to_string(), serde_json::json!(parse_ews_time(&v, tz)));
+                        patch.insert(
+                            "start".to_string(),
+                            serde_json::json!(parse_ews_time(&v, tz)),
+                        );
                     }
                 }
                 "calendar:End" => {
@@ -579,7 +597,7 @@ async fn handle_update_item(
                     }
                 }
                 "item:Body" => {
-                     if let Some(b) = val_item.body {
+                    if let Some(b) = val_item.body {
                         patch.insert("description".to_string(), serde_json::json!(b.content));
                     }
                 }
@@ -639,7 +657,7 @@ async fn handle_delete_item(
     };
 
     let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
-    
+
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
@@ -717,10 +735,10 @@ async fn handle_get_item(
             </t:CalendarItem>"#,
             event.id.as_deref().unwrap_or(""),
             escape_xml(&event.title),
-            escape_xml(&event.location.as_deref().unwrap_or("")),
+            escape_xml(event.location.as_deref().unwrap_or("")),
             start_local.format("%Y-%m-%dT%H:%M:%S"),
             end_local.format("%Y-%m-%dT%H:%M:%S"),
-            escape_xml(&event.description.as_deref().unwrap_or(""))
+            escape_xml(event.description.as_deref().unwrap_or(""))
         ));
     }
 
@@ -801,7 +819,7 @@ fn parse_body_content<T: for<'de> Deserialize<'de>>(xml: &str) -> Result<T, quic
     // to extract the inner XML of the Body element, then deserialize that.
     // For robustness here, we assume the standard SOAP structure and deserialize the root
     // which has been defined in structs to ignore the Envelope/Body wrappers via rename logic.
-    
+
     // However, quick-xml needs to know about the Envelope/Body tags to reach the content.
     // We will parse the whole thing as Envelope<Body<T>>.
     let envelope: SoapEnvelope<T> = quick_xml::de::from_str(xml)?;
