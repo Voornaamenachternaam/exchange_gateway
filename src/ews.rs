@@ -337,7 +337,7 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> Str
                 </m:GetFolderResponseMessage>
             </m:ResponseMessages>
         </m:GetFolderResponse>"#,
-        NS_M, NS_T, cal_id
+        NS_M, NS_T, escape_xml(&cal_id)
     ))
 }
 
