@@ -337,7 +337,9 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> Str
                 </m:GetFolderResponseMessage>
             </m:ResponseMessages>
         </m:GetFolderResponse>"#,
-        NS_M, NS_T, escape_xml(&cal_id)
+        NS_M,
+        NS_T,
+        escape_xml(&cal_id)
     ))
 }
 
@@ -625,7 +627,9 @@ async fn handle_create_item(
                     </m:CreateItemResponseMessage>
                 </m:ResponseMessages>
             </m:CreateItemResponse>"#,
-            NS_M, NS_T, escape_xml(&new_id)
+            NS_M,
+            NS_T,
+            escape_xml(&new_id)
         ));
     }
 
@@ -729,11 +733,11 @@ async fn handle_update_item(
                 }
             };
 
-            if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object() {
-                if !not_updated.is_empty() {
-                    tracing::error!("JMAP notUpdated errors: {:?}", not_updated);
-                    return soap_fault("ErrorItemNotFound", "Update rejected by server");
-                }
+            if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
+                && !not_updated.is_empty()
+            {
+                tracing::error!("JMAP notUpdated errors: {:?}", not_updated);
+                return soap_fault("ErrorItemNotFound", "Update rejected by server");
             }
         }
     }
