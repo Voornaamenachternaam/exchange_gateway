@@ -817,7 +817,7 @@ async fn handle_get_item(
                 <t:End>{}</t:End>
                 <t:Body BodyType="Text">{}</t:Body>
             </t:CalendarItem>"#,
-            event.id.as_deref().unwrap_or(""),
+            escape_xml(event.id.as_deref().unwrap_or("")),
             escape_xml(&event.title),
             escape_xml(event.location.as_deref().unwrap_or("")),
             start_local.format("%Y-%m-%dT%H:%M:%S"),
