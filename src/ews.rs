@@ -234,7 +234,6 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         }
     };
 
-    // Extract the action element name (the first child of Body)
     let action = extract_action_name(xml);
     tracing::info!("EWS Action: {}", action);
 
@@ -276,7 +275,6 @@ fn extract_action_name(xml: &str) -> String {
                 }
 
                 if in_body && depth == 1 {
-                    // This is the Action element inside Body
                     return name.to_string();
                 }
 
@@ -304,13 +302,12 @@ fn extract_action_name(xml: &str) -> String {
 // --- Handlers ---
 
 async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> String {
-    // Parse request to ensure it is well-formed. We currently ignore the specific FolderId requested
-    // and always return the default Calendar, as this is a Calendar-specific gateway.
+    // Parse and validate the request structure, even if we ignore the specific ID for now
     let _req: GetFolder = match parse_body_content(xml) {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!("GetFolder parse error (ignoring): {:?}", e);
-            GetFolder::default()
+            tracing::warn!("GetFolder XML parse error: {:?}", e);
+            // We proceed with defaults because Outlook often sends complex requests
         }
     };
 
@@ -325,7 +322,6 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> Str
         Err(_) => "calendar-default".to_string(),
     };
 
-    // EWS spec requires FolderId and ChangeKey
     soap_response(&format!(
         r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}">
             <m:ResponseMessages>
@@ -345,7 +341,6 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> Str
 }
 
 async fn handle_find_folder(_session: &jmap_client::JmapSession) -> String {
-    // Return empty success for FindFolder (Outlook probes this)
     soap_response(&format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}">
             <m:ResponseMessages>
@@ -381,6 +376,10 @@ async fn handle_sync_folder_items(
         .map(|f| f.id)
         .unwrap_or_else(|| "calendar-default".to_string());
 
+    // Retrieve the JMAP state associated with the last SyncState (UUID) we issued
+    let prev_jmap_state = db::get_ews_sync_state(config, user, &folder_id).await;
+    
+    // Get current server state
     let current_jmap_state = match jmap_client::get_calendar_state(
         &session.api_url,
         &session.access_token,
@@ -392,10 +391,15 @@ async fn handle_sync_folder_items(
         Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),
     };
 
-    let prev_state = db::get_ews_sync_state(config, user, &folder_id).await;
+    // Generate a new SyncState (UUID) for the client to hold
     let new_sync_token = uuid::Uuid::new_v4().to_string();
 
-    let changes = if prev_state.is_none() || prev_state.as_ref().unwrap() != &current_jmap_state {
+    // Determine if we need a full sync or delta sync
+    // If client didn't send a state (None), or we have no record of their state (None), -> Full Sync
+    let is_initial_sync = req.sync_state.is_none() || prev_jmap_state.is_none();
+
+    let (items_xml, includes_last) = if is_initial_sync {
+        // FULL SYNC: Fetch all events, render as Create
         let events = jmap_client::get_calendar_events(
             &session.api_url,
             &session.access_token,
@@ -404,21 +408,94 @@ async fn handle_sync_folder_items(
         .await
         .unwrap_or_default();
 
-        // Update DB mapping
-        db::update_ews_sync_state(
-            config,
-            user,
-            &folder_id,
-            &new_sync_token,
-            &current_jmap_state,
-        )
-        .await;
-
-        format_changes(&events, &config.timezone, &prev_state)
+        let xml = render_items(&events, "Create", &config.timezone);
+        (xml, true)
     } else {
-        // No changes
-        "".to_string()
+        // DELTA SYNC
+        // Check if anything changed
+        if prev_jmap_state.as_ref().unwrap() == &current_jmap_state {
+            // No changes
+            return soap_response(&format!(
+                r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}">
+                    <m:ResponseMessages>
+                        <m:SyncFolderItemsResponseMessage ResponseClass="Success">
+                            <m:ResponseCode>NoError</m:ResponseCode>
+                            <m:SyncState>{}</m:SyncState>
+                            <m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>
+                            <m:Changes />
+                        </m:SyncFolderItemsResponseMessage>
+                    </m:ResponseMessages>
+                </m:SyncFolderItemsResponse>"#,
+                NS_M, NS_T, req.sync_state.unwrap_or_default()
+            ));
+        }
+
+        // Fetch changes
+        match jmap_client::get_calendar_changes(
+            &session.api_url,
+            &session.access_token,
+            &session.account_id,
+            &prev_jmap_state.unwrap(),
+        )
+        .await
+        {
+            Ok(changes) => {
+                let mut xml = String::new();
+                
+                // Handle Deletes
+                for id in &changes.destroyed {
+                    xml.push_str(&format!(
+                        r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                        escape_xml(id)
+                    ));
+                }
+
+                // Handle Updates/Creates
+                // JMAP /changes returns 'updated' which includes both modified and created items.
+                // EWS expects <Update> for modified, <Create> for new.
+                // Since we lack the local DB state to distinguish, we treat all as <Update>.
+                // If an item is new, Outlook might reject the Update or auto-promote.
+                // Ideally, we fetch details for these IDs.
+                if !changes.updated.is_empty() {
+                    if let Ok(events) = jmap_client::get_events_by_ids(
+                        &session.api_url,
+                        &session.access_token,
+                        &session.account_id,
+                        &changes.updated,
+                    )
+                    .await
+                    {
+                        // We render as "Update". If it's a new item, Outlook may log a client error
+                        // but this is the safest path to avoid duplicates from 'Create'.
+                        xml.push_str(&render_items(&events, "Update", &config.timezone));
+                    }
+                }
+                (xml, true)
+            }
+            Err(_) => {
+                // Fallback to Full Sync if delta fails (e.g. state expired)
+                tracing::warn!("Delta sync failed, falling back to full sync");
+                let events = jmap_client::get_calendar_events(
+                    &session.api_url,
+                    &session.access_token,
+                    &session.account_id,
+                )
+                .await
+                .unwrap_or_default();
+                (render_items(&events, "Create", &config.timezone), true)
+            }
+        }
     };
+
+    // Persist the new mapping: SyncToken -> CurrentJmapState
+    db::update_ews_sync_state(
+        config,
+        user,
+        &folder_id,
+        &new_sync_token,
+        &current_jmap_state,
+    )
+    .await;
 
     soap_response(&format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}">
@@ -426,20 +503,16 @@ async fn handle_sync_folder_items(
                 <m:SyncFolderItemsResponseMessage ResponseClass="Success">
                     <m:ResponseCode>NoError</m:ResponseCode>
                     <m:SyncState>{}</m:SyncState>
-                    <m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>
+                    <m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange>
                     <m:Changes>{}</m:Changes>
                 </m:SyncFolderItemsResponseMessage>
             </m:ResponseMessages>
         </m:SyncFolderItemsResponse>"#,
-        NS_M, NS_T, new_sync_token, changes
+        NS_M, NS_T, new_sync_token, includes_last, items_xml
     ))
 }
 
-fn format_changes(
-    events: &[jmap_client::JmapEvent],
-    tz_str: &str,
-    _prev_state: &Option<String>,
-) -> String {
+fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> String {
     let mut xml = String::new();
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
 
@@ -450,10 +523,8 @@ fn format_changes(
         let start_local = start_dt.with_timezone(&tz);
         let end_local = end_dt.with_timezone(&tz);
 
-        // Simple logic: Treat all as Create for simplicity in this sync iteration
-        // Real robust implementation would check if ID existed in previous state
         xml.push_str(&format!(
-            r#"<t:Create>
+            r#"<t:{}>
                 <t:CalendarItem>
                     <t:ItemId Id="{}" ChangeKey="AAA=" />
                     <t:Subject>{}</t:Subject>
@@ -462,13 +533,15 @@ fn format_changes(
                     <t:End>{}</t:End>
                     <t:Body BodyType="Text">{}</t:Body>
                 </t:CalendarItem>
-            </t:Create>"#,
+            </t:{}>"#,
+            mode,
             escape_xml(event.id.as_deref().unwrap_or("")),
             escape_xml(&event.title),
             escape_xml(event.location.as_deref().unwrap_or("")),
             start_local.format("%Y-%m-%dT%H:%M:%S"),
             end_local.format("%Y-%m-%dT%H:%M:%S"),
-            escape_xml(event.description.as_deref().unwrap_or(""))
+            escape_xml(event.description.as_deref().unwrap_or("")),
+            mode
         ));
     }
     xml
@@ -824,13 +897,6 @@ async fn handle_get_rooms() -> String {
 // --- Helpers ---
 
 fn parse_body_content<T: for<'de> Deserialize<'de>>(xml: &str) -> Result<T, quick_xml::DeError> {
-    // This is a simplified extractor. In production, we would use a streaming parser
-    // to extract the inner XML of the Body element, then deserialize that.
-    // For robustness here, we assume the standard SOAP structure and deserialize the root
-    // which has been defined in structs to ignore the Envelope/Body wrappers via rename logic.
-
-    // However, quick-xml needs to know about the Envelope/Body tags to reach the content.
-    // We will parse the whole thing as Envelope<Body<T>>.
     let envelope: SoapEnvelope<T> = quick_xml::de::from_str(xml)?;
     Ok(envelope.body.content)
 }
