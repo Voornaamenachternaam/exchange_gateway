@@ -308,6 +308,7 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> Str
         Err(e) => {
             tracing::warn!("GetFolder XML parse error: {:?}", e);
             // We proceed with defaults because Outlook often sends complex requests
+            GetFolder::default()
         }
     };
 
