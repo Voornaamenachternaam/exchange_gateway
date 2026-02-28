@@ -429,7 +429,7 @@ async fn handle_sync_folder_items(
                 </m:SyncFolderItemsResponse>"#,
                 NS_M,
                 NS_T,
-                req.sync_state.unwrap_or_default()
+                escape_xml(&req.sync_state.unwrap_or_default())
             ));
         }
 
