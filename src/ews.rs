@@ -242,16 +242,114 @@ async fn handle_create_item(
         .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
         .unwrap_or_default();
 
-    let event = jmap_client::JmapEvent {
-        id: None,
-        title: subject,
-        start: start_utc,
-        end: end_utc,
-        description: Some(body_content),
-        location: None,
-        uid: None,
-        participants: None,
-        is_all_day: false,
+        for set_field in change.updates.set_fields {
+            let field = set_field.field_uri.field_uri;
+            let val_item = set_field.calendar_item;
+
+            match field.as_str() {
+                "item:Subject" => {
+                    if let Some(v) = val_item.subject {
+                        patch.insert("title".to_string(), serde_json::json!(v));
+                    }
+                }
+                "calendar:Location" => {
+                    if let Some(v) = val_item.location {
+                        patch.insert("location".to_string(), serde_json::json!(v));
+                    }
+                }
+                "calendar:Start" => {
+                    if let Some(v) = val_item.start {
+                        patch.insert(
+                            "start".to_string(),
+                            serde_json::json!(parse_ews_time(&v, tz)),
+                        );
+                    }
+                }
+                "calendar:End" => {
+                    if let Some(v) = val_item.end {
+                        patch.insert("end".to_string(), serde_json::json!(parse_ews_time(&v, tz)));
+                    }
+                }
+                "item:Body" => {
+                    if let Some(b) = val_item.body {
+                        patch.insert("description".to_string(), serde_json::json!(b.content));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !patch.is_empty() {
+            let body = serde_json::json!({
+                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+                "methodCalls": [
+                    ["CalendarEvent/set", {
+                        "accountId": session.account_id,
+                        "update": {
+                            id: patch
+                        }
+                    }, "c0"]
+                ]
+            });
+
+            let resp = match client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("Update failed: {}", e);
+                    return soap_fault("ErrorInternalServerError", "Update request failed");
+                }
+            };
+
+            if !resp.status().is_success() {
+                tracing::error!("JMAP update returned HTTP {}", resp.status());
+                return soap_fault("ErrorInternalServerError", "JMAP server error");
+            }
+
+            let json: serde_json::Value = match resp.json().await {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::error!("Failed to parse JMAP update response: {}", e);
+                    return soap_fault("ErrorInternalServerError", "Invalid JMAP response");
+                }
+            };
+
+            if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
+                && !not_updated.is_empty() {
+                    tracing::error!("JMAP notUpdated errors: {:?}", not_updated);
+                    return soap_fault("ErrorItemNotFound", "Update rejected by server");
+                }
+        }
+    }
+
+    soap_response(&format!(
+        r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}">
+            <m:ResponseMessages>
+                <m:UpdateItemResponseMessage ResponseClass="Success">
+                    <m:ResponseCode>NoError</m:ResponseCode>
+                </m:UpdateItemResponseMessage>
+            </m:ResponseMessages>
+        </m:UpdateItemResponse>"#,
+        NS_M, NS_T
+    ))
+}
+
+async fn handle_delete_item(
+    session: &jmap_client::JmapSession,
+    _config: &AppConfig,
+    xml: &str,
+) -> String {
+    let req: DeleteItem = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to parse DeleteItem: {:?}", e);
+            return soap_fault("ErrorInvalidRequest", "Bad XML");
+        }
     };
 
     let new_id = match jmap_client::push_event(
