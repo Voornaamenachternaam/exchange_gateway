@@ -1,6 +1,7 @@
 // src/wbxml.rs
 use bytes::Buf;
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::events::Event;
+use quick_xml::escape;
 use quick_xml::Reader;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -62,7 +63,7 @@ fn get_code_pages() -> &'static Vec<HashMap<u8, TagInfo>> {
         let mut page = HashMap::new();
         page.insert(0x05, TagInfo { name: "Sync", token: 0x05 });
         page.insert(0x06, TagInfo { name: "Responses", token: 0x06 });
-        page.insert(0x07, TagInfo { name: "Add", token: 0x07 }); // Also shared by context for FolderSync/MeetingResponse in some implementations
+        page.insert(0x07, TagInfo { name: "Add", token: 0x07 }); 
         page.insert(0x08, TagInfo { name: "Change", token: 0x08 });
         page.insert(0x09, TagInfo { name: "Delete", token: 0x09 });
         page.insert(0x0A, TagInfo { name: "Fetch", token: 0x0A });
@@ -70,7 +71,7 @@ fn get_code_pages() -> &'static Vec<HashMap<u8, TagInfo>> {
         page.insert(0x0C, TagInfo { name: "ClientId", token: 0x0C });
         page.insert(0x0D, TagInfo { name: "ServerId", token: 0x0D });
         page.insert(0x0E, TagInfo { name: "Status", token: 0x0E });
-        page.insert(0x0F, TagInfo { name: "Collection", token: 0x0F }); // Note: Some specs differ, using 0x10
+        page.insert(0x0F, TagInfo { name: "Collection", token: 0x0F }); 
         page.insert(0x10, TagInfo { name: "Class", token: 0x10 });
         page.insert(0x11, TagInfo { name: "Version", token: 0x11 });
         page.insert(0x12, TagInfo { name: "Collections", token: 0x12 });
@@ -242,24 +243,9 @@ fn get_tag_to_token_map() -> &'static HashMap<String, (u8, u8)> {
         let mut map = HashMap::new();
         for (page_idx, page) in get_code_pages().iter().enumerate() {
             for (_, info) in page {
-                // Note: If tag names are duplicated across pages (e.g., "Status"),
-                // the last one wins in this map. 
-                // encode() logic handles prefix resolution first.
                 map.insert(info.name.to_string(), (page_idx as u8, info.token));
             }
         }
-        // Add specific aliases or root command tags that might be missing/ambiguous in standard pages
-        map.insert("FolderSync".to_string(), (0, 0x07)); // Often encoded as Add token in root context
-        map.insert("MeetingResponse".to_string(), (0, 0x07)); // Often encoded as Add token in root context
-        map.insert("SendMail".to_string(), (0, 0x05)); // Often encoded as Sync token in root context (Cmd)
-        map.insert("MoveItems".to_string(), (0, 0x07));
-        map.insert("FolderCreate".to_string(), (0, 0x07));
-        map.insert("FolderDelete".to_string(), (0, 0x07));
-        map.insert("FolderUpdate".to_string(), (0, 0x07));
-        // Error mapping for robustness with active_sync.rs output
-        map.insert("Error".to_string(), (0, 0x07)); 
-        map.insert("Code".to_string(), (0, 0x20));
-        map.insert("Message".to_string(), (0, 0x21));
         map
     })
 }
@@ -306,7 +292,6 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, WbXmlError> {
             Ok(Event::Empty(ref e)) => {
                 let (prefix_opt, local_name) = extract_name_parts(e.name());
                 handle_element_start(&mut buf, &mut current_page, &mut tag_stack, prefix_opt, local_name.clone())?;
-                // Immediately close
                 buf.push(END);
                 tag_stack.pop();
             }
@@ -317,11 +302,14 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, WbXmlError> {
                 }
             }
             Ok(Event::Text(ref e)) => {
-                let text = e.unescape()?;
+                // Fix for quick-xml 0.39: unescape is a free function
+                let text_str = std::str::from_utf8(e.as_ref()).map_err(|_| WbXmlError::MalformedString)?;
+                let text = escape::unescape(text_str).map_err(|_| WbXmlError::MalformedString)?;
+                
                 if !text.is_empty() {
                     buf.push(STR_I);
                     buf.extend_from_slice(text.as_bytes());
-                    buf.push(0x00); // Null terminator
+                    buf.push(0x00);
                 }
             }
             Ok(Event::Eof) => break,
@@ -340,38 +328,28 @@ fn handle_element_start(
     local_name: String,
 ) -> Result<(), WbXmlError> {
     let (page, token) = {
-        // 1. Try to resolve by prefix/namespace
         if let Some(prefix) = prefix_opt {
             if let Some(&target_page) = get_ns_to_page_map().get(prefix) {
                 if let Some(&(_, token)) = get_tag_to_token_map().get(&local_name) {
-                    // Validate token existence on target page?
-                    // In strict mode, yes. Here we trust the map.
                     (target_page, token)
                 } else {
-                    // Fallback: Tag not found in map
                     return Err(WbXmlError::UnknownTag(0, target_page));
                 }
             } else {
-                // Prefix unknown, fallback to global lookup
                 lookup_tag(&local_name, *current_page)?
             }
         } else {
-            // 2. No prefix, lookup in global map
             lookup_tag(&local_name, *current_page)?
         }
     };
 
-    // Switch page if needed
     if page != *current_page {
         buf.push(SWITCH_PAGE);
         buf.push(page);
         *current_page = page;
     }
 
-    // Write tag with content flag (0x40)
     buf.push(token | 0x40);
-
-    // Push to stack
     tag_stack.push(local_name);
 
     Ok(())
@@ -389,7 +367,6 @@ fn lookup_tag(local_name: &str, current_page: u8) -> Result<(u8, u8), WbXmlError
 pub fn decode(bytes: &[u8]) -> Result<String, WbXmlError> {
     let mut cursor = Cursor::new(bytes);
     
-    // Read Header
     let version = cursor.get_u8();
     let _public_id = cursor.get_u8();
     let charset = cursor.get_u8();
@@ -399,7 +376,6 @@ pub fn decode(bytes: &[u8]) -> Result<String, WbXmlError> {
         return Err(WbXmlError::StringTableUnsupported);
     }
     
-    // Validate header
     if version != WBXML_VERSION || charset != WBXML_CHARSET_UTF8 {
         return Err(WbXmlError::InvalidHeader);
     }
@@ -442,7 +418,6 @@ pub fn decode(bytes: &[u8]) -> Result<String, WbXmlError> {
                 return Err(WbXmlError::StringTableUnsupported);
             }
             _ => {
-                // Tag token
                 let has_content = (token & 0x40) != 0;
                 let tag_id = token & 0x3F;
 
