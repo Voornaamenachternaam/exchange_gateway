@@ -665,8 +665,9 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         }
     }
 
-    if !cmds.delete.unwrap_or_default().is_empty() {
-        let ids: Vec<String> = cmds.delete.unwrap_or_default().into_iter().map(|d| d.server_id).collect();
+    if let Some(deletes) = cmds.delete {
+        if !deletes.is_empty() {
+        let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
         
         let body = serde_json::json!({
             "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
