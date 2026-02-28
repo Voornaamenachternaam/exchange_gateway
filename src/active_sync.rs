@@ -138,7 +138,6 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     let mut depth = 0;
     let mut reader = Reader::from_str(xml);
 
-    // Robust extraction of the root command element
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
@@ -165,7 +164,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         Some(a) => a,
         None => return error_xml(401, "Unauthorized"),
     };
-    
+
     let (user, pass) = utils::decode_basic_auth(auth);
     let device_id = headers
         .get("X-MS-DeviceId")
@@ -222,7 +221,8 @@ async fn handle_item_operations() -> String {
     r#"<ItemOperations xmlns="ItemOperations:">
         <Status>1</Status>
         <Response />
-    </ItemOperations>"#.to_string()
+    </ItemOperations>"#
+        .to_string()
 }
 
 async fn handle_search() -> String {
@@ -234,7 +234,8 @@ async fn handle_search() -> String {
                 <Result />
             </Store>
         </Response>
-    </Search>"#.to_string()
+    </Search>"#
+        .to_string()
 }
 
 async fn handle_send_mail(
@@ -271,7 +272,6 @@ async fn handle_send_mail(
         }
     }
 
-    // Robust Regex for MIME headers (handles standard headers and folding)
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     let re_from = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     let re_subj = Regex::new(r"(?m)^Subject:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
@@ -280,7 +280,7 @@ async fn handle_send_mail(
         .captures(&mime_content)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
-        
+
     let from_addr = re_from
         .captures(&mime_content)
         .and_then(|c| c.get(1))
@@ -296,12 +296,13 @@ async fn handle_send_mail(
         let body_start = mime_content.find("\r\n\r\n").unwrap_or(0);
         let (_, body_content) = mime_content.split_at(body_start);
         let clean_body = body_content.trim_start_matches("\r\n\r\n");
-        
+
         let email = lettre::Message::builder()
             .from(from.parse().unwrap())
             .to(to.parse().unwrap())
             .subject(subject)
-            .body(clean_body.to_string()).unwrap();
+            .body(clean_body.to_string())
+            .unwrap();
 
         let smtp_url = url::Url::parse(&config.smtp_url).unwrap();
         let host = smtp_url.host_str().unwrap();
@@ -343,7 +344,8 @@ async fn handle_settings(
         <DeviceInformation>
             <Status>1</Status>
         </DeviceInformation>
-    </Settings>"#.to_string()
+    </Settings>"#
+        .to_string()
 }
 
 async fn handle_folder_sync(
@@ -425,7 +427,7 @@ async fn handle_sync(
         render_items(&events, "Add", &config.timezone)
     } else {
         let prev_jmap_state = prev_state.unwrap();
-        
+
         if prev_jmap_state == current_jmap_state {
             (String::new(), old_sync_key.clone())
         } else {
@@ -474,8 +476,8 @@ async fn handle_sync(
                 </Collection>
             </Collections>
         </Sync>"#,
-        escape_xml(&final_sync_key), 
-        escape_xml(&coll.collection_id), 
+        escape_xml(&final_sync_key),
+        escape_xml(&coll.collection_id),
         items_xml
     )
 }
@@ -491,8 +493,8 @@ fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> 
 
         let start_local = start_dt.with_timezone(&tz);
         let end_local = end_dt.with_timezone(&tz);
-        
-        let body_type = 2; 
+
+        let body_type = 2;
         let body_content = escape_xml(event.description.as_deref().unwrap_or(""));
         let body_size = body_content.len();
 
@@ -557,7 +559,10 @@ async fn render_changes(
     let new_key = uuid::Uuid::new_v4().to_string();
 
     for id in &changes.destroyed {
-        xml.push_str(&format!(r#"<Delete><ServerId>{}</ServerId></Delete>"#, escape_xml(id)));
+        xml.push_str(&format!(
+            r#"<Delete><ServerId>{}</ServerId></Delete>"#,
+            escape_xml(id)
+        ));
     }
 
     if !changes.updated.is_empty()
@@ -571,6 +576,7 @@ async fn render_changes(
 }
 
 async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Commands, tz_str: &str) {
+    let client = reqwest::Client::new();
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
 
     for add_cmd in cmds.add.unwrap_or_default() {
@@ -615,13 +621,13 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         )
         .await;
     }
-    
+
     for change_cmd in cmds.change.unwrap_or_default() {
         let id = change_cmd.server_id;
         let data = change_cmd.application_data;
-        
+
         let mut patch = serde_json::Map::new();
-        
+
         if let Some(s) = data.subject {
             patch.insert("title".to_string(), serde_json::json!(s));
         }
@@ -629,34 +635,72 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
             patch.insert("location".to_string(), serde_json::json!(l));
         }
         if let Some(s) = data.start {
-             patch.insert("start".to_string(), serde_json::json!(parse_local_to_utc(&s, tz)));
+            patch.insert(
+                "start".to_string(),
+                serde_json::json!(parse_local_to_utc(&s, tz)),
+            );
         }
         if let Some(e) = data.end {
-             patch.insert("end".to_string(), serde_json::json!(parse_local_to_utc(&e, tz)));
+            patch.insert(
+                "end".to_string(),
+                serde_json::json!(parse_local_to_utc(&e, tz)),
+            );
         }
         if let Some(b) = data.body {
             patch.insert("description".to_string(), serde_json::json!(b.data));
         }
-        
+
         if !patch.is_empty() {
-             let _ = jmap_client::update_event(
-                &session.api_url,
-                &session.access_token,
-                &session.account_id,
-                &id,
-                patch
-            ).await;
+            let body = serde_json::json!({
+                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+                "methodCalls": [
+                    ["CalendarEvent/set", {
+                        "accountId": session.account_id,
+                        "update": {
+                            id: patch
+                        }
+                    }, "c0"]
+                ]
+            });
+
+            let res = client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await;
+
+            if let Err(e) = res {
+                tracing::error!("ActiveSync Update failed: {}", e);
+            }
         }
     }
 
-    for del_cmd in cmds.delete.unwrap_or_default() {
-        let _ = jmap_client::delete_event(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            &del_cmd.server_id,
-        )
-        .await;
+    if let Some(deletes) = cmds.delete
+        && !deletes.is_empty()
+    {
+        let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
+
+        let body = serde_json::json!({
+            "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+            "methodCalls": [
+                ["CalendarEvent/set", {
+                    "accountId": session.account_id,
+                    "destroy": ids
+                }, "c0"]
+            ]
+        });
+
+        let res = client
+            .post(&session.api_url)
+            .header("Authorization", format!("Basic {}", session.access_token))
+            .json(&body)
+            .send()
+            .await;
+
+        if let Err(e) = res {
+            tracing::error!("ActiveSync Delete failed: {}", e);
+        }
     }
 }
 
