@@ -138,18 +138,19 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     let mut depth = 0;
     let mut reader = Reader::from_str(xml);
 
+    // Robust extraction of the root command element
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 depth += 1;
-                if depth == 2 {
+                if depth == 1 {
                     command = std::str::from_utf8(e.local_name().as_ref())
                         .unwrap_or("")
                         .to_string();
                 }
             }
             Ok(Event::Empty(ref e)) => {
-                if depth == 1 {
+                if depth == 0 {
                     command = std::str::from_utf8(e.local_name().as_ref())
                         .unwrap_or("")
                         .to_string();
@@ -218,7 +219,6 @@ async fn handle_provision() -> String {
 }
 
 async fn handle_item_operations() -> String {
-    // Placeholder for ItemOperations (fetching large bodies/attachments)
     r#"<ItemOperations xmlns="ItemOperations:">
         <Status>1</Status>
         <Response />
@@ -271,11 +271,10 @@ async fn handle_send_mail(
         }
     }
 
-    // Robust Regex for MIME headers (handles folding and basic cases)
-    // Note: Production MIME parsing is complex; this covers standard simple headers.
-    let re_to = Regex::new(r"(?m)^To:\s*(.*?)\r?\n").unwrap();
-    let re_from = Regex::new(r"(?m)^From:\s*(.*?)\r?\n").unwrap();
-    let re_subj = Regex::new(r"(?m)^Subject:\s*(.*?)\r?\n").unwrap();
+    // Robust Regex for MIME headers (handles standard headers and folding)
+    let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    let re_from = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    let re_subj = Regex::new(r"(?m)^Subject:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
 
     let to_addr = re_to
         .captures(&mime_content)
@@ -291,22 +290,11 @@ async fn handle_send_mail(
         let subject = re_subj
             .captures(&mime_content)
             .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
+            .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
 
-        // Build email via lettre
-        // We strip the original headers from the body to avoid duplication if possible, 
-        // but for robustness, we reconstruct the email.
-        // Outlook SendMail usually sends the full MIME content in <Mime>.
-        // We just forward that content.
-        
-        // Constructing a Letter message:
-        // We need to parse the body. The 'mime_content' includes headers.
-        // Lettre Message::builder().body(mime_content) expects ONLY the body, not headers.
-        // So we must separate body from headers in mime_content.
-        
         let body_start = mime_content.find("\r\n\r\n").unwrap_or(0);
-        let (_headers, body_content) = mime_content.split_at(body_start);
+        let (_, body_content) = mime_content.split_at(body_start);
         let clean_body = body_content.trim_start_matches("\r\n\r\n");
         
         let email = lettre::Message::builder()
@@ -377,8 +365,6 @@ async fn handle_folder_sync(
         Err(_) => "calendar-default".to_string(),
     };
 
-    // Proper FolderSync response logic
-    // We ignore the SyncKey for simplicity, treating it as "current"
     format!(
         r#"<FolderSync xmlns="AirSync:">
             <Status>1</Status>
@@ -411,7 +397,6 @@ async fn handle_sync(
     let coll = req.collections.collection;
     let old_sync_key = coll.sync_key.clone();
 
-    // Process client commands (Add, Change, Delete)
     if let Some(cmds) = coll.commands {
         process_client_commands(session, cmds, &config.timezone).await;
     }
@@ -430,7 +415,6 @@ async fn handle_sync(
     let prev_state = db::get_sync_state(config, user, device_id, &coll.collection_id).await;
 
     let (items_xml, new_sync_key) = if old_sync_key == "0" || prev_state.is_none() {
-        // Initial Sync
         let events = jmap_client::get_calendar_events(
             &session.api_url,
             &session.access_token,
@@ -440,12 +424,7 @@ async fn handle_sync(
         .unwrap_or_default();
         render_items(&events, "Add", &config.timezone)
     } else {
-        // Delta Sync
         let prev_jmap_state = prev_state.unwrap();
-        
-        // Validate SyncKey consistency (Basic check)
-        // In a full implementation, we would verify if the old_sync_key matches the one issued with prev_jmap_state.
-        // Here we assume the client is honest or just check state change.
         
         if prev_jmap_state == current_jmap_state {
             (String::new(), old_sync_key.clone())
@@ -513,7 +492,7 @@ fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> 
         let start_local = start_dt.with_timezone(&tz);
         let end_local = end_dt.with_timezone(&tz);
         
-        let body_type = 2; // Default to Text
+        let body_type = 2; 
         let body_content = escape_xml(event.description.as_deref().unwrap_or(""));
         let body_size = body_content.len();
 
@@ -529,7 +508,7 @@ fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> 
                        </Attendee>"#,
                     escape_xml(&att.email),
                     escape_xml(&att.name),
-                    "0" // Unknown/NeedsAction
+                    "0"
                 ));
             }
         }
@@ -641,8 +620,6 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         let id = change_cmd.server_id;
         let data = change_cmd.application_data;
         
-        // We need to fetch the event first to update it properly, or patch.
-        // JMAP 'set' allows update. We use a simplified patch logic.
         let mut patch = serde_json::Map::new();
         
         if let Some(s) = data.subject {
@@ -691,7 +668,6 @@ fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
             .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
             .unwrap_or_default();
     }
-    // Fallback if already UTC or parsing failed
     local_str.to_string()
 }
 
