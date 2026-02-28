@@ -9,6 +9,8 @@ use quick_xml::escape;
 use quick_xml::events::Event;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use reqwest;
+use serde_json;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SyncRequest {
@@ -138,7 +140,6 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     let mut depth = 0;
     let mut reader = Reader::from_str(xml);
 
-    // Robust extraction of the root command element
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
@@ -271,7 +272,6 @@ async fn handle_send_mail(
         }
     }
 
-    // Robust Regex for MIME headers (handles standard headers and folding)
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     let re_from = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     let re_subj = Regex::new(r"(?m)^Subject:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
@@ -571,6 +571,7 @@ async fn render_changes(
 }
 
 async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Commands, tz_str: &str) {
+    let client = reqwest::Client::new();
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
 
     for add_cmd in cmds.add.unwrap_or_default() {
@@ -639,24 +640,54 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         }
         
         if !patch.is_empty() {
-             let _ = jmap_client::update_event(
-                &session.api_url,
-                &session.access_token,
-                &session.account_id,
-                &id,
-                patch
-            ).await;
+             let body = serde_json::json!({
+                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+                "methodCalls": [
+                    ["CalendarEvent/set", {
+                        "accountId": session.account_id,
+                        "update": {
+                            id: patch
+                        }
+                    }, "c0"]
+                ]
+            });
+
+            let res = client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await;
+            
+            if let Err(e) = res {
+                tracing::error!("ActiveSync Update failed: {}", e);
+            }
         }
     }
 
-    for del_cmd in cmds.delete.unwrap_or_default() {
-        let _ = jmap_client::delete_event(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            &del_cmd.server_id,
-        )
-        .await;
+    if !cmds.delete.unwrap_or_default().is_empty() {
+        let ids: Vec<String> = cmds.delete.unwrap_or_default().into_iter().map(|d| d.server_id).collect();
+        
+        let body = serde_json::json!({
+            "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+            "methodCalls": [
+                ["CalendarEvent/set", {
+                    "accountId": session.account_id,
+                    "destroy": ids
+                }, "c0"]
+            ]
+        });
+
+        let res = client
+            .post(&session.api_url)
+            .header("Authorization", format!("Basic {}", session.access_token))
+            .json(&body)
+            .send()
+            .await;
+
+        if let Err(e) = res {
+            tracing::error!("ActiveSync Delete failed: {}", e);
+        }
     }
 }
 
