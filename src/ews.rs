@@ -702,15 +702,38 @@ async fn handle_update_item(
                 ]
             });
 
-            let res = client
+            let resp = match client
                 .post(&session.api_url)
                 .header("Authorization", format!("Basic {}", session.access_token))
                 .json(&body)
                 .send()
-                .await;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("Update failed: {}", e);
+                    return soap_fault("ErrorInternalServerError", "Update request failed");
+                }
+            };
 
-            if let Err(e) = res {
-                tracing::error!("Update failed: {}", e);
+            if !resp.status().is_success() {
+                tracing::error!("JMAP update returned HTTP {}", resp.status());
+                return soap_fault("ErrorInternalServerError", "JMAP server error");
+            }
+
+            let json: serde_json::Value = match resp.json().await {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::error!("Failed to parse JMAP update response: {}", e);
+                    return soap_fault("ErrorInternalServerError", "Invalid JMAP response");
+                }
+            };
+
+            if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object() {
+                if !not_updated.is_empty() {
+                    tracing::error!("JMAP notUpdated errors: {:?}", not_updated);
+                    return soap_fault("ErrorItemNotFound", "Update rejected by server");
+                }
             }
         }
     }
