@@ -593,6 +593,7 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
                     .map(|att| jmap_client::Participant {
                         email: att.email,
                         name: att.name,
+                        status: None, // Fix for E0063
                     })
                     .collect()
             })
