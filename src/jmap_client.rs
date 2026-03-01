@@ -47,8 +47,8 @@ pub struct Participant {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JmapEvent {
-    #[serde(rename = "id", default)]
-    id: String,
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     #[serde(rename = "title")]
     pub title: String,
     #[serde(rename = "start")]
@@ -62,8 +62,8 @@ pub struct JmapEvent {
     #[serde(rename = "uid", skip_serializing_if = "Option::is_none")]
     pub uid: Option<String>,
     // Stalwart expects participants as a Map<String, ParticipantInfo>
-    // but we use a Vec for ease of use in other parts of the code.
-    // We convert to Map in push_event and from_jmap_json.
+    // but we use a Vec for easier manipulation in active_sync.rs
+    // We convert between these formats in push_event and from_jmap_json
     #[serde(rename = "participants", skip_serializing_if = "Option::is_none")]
     pub participants: Option<Vec<Participant>>,
     #[serde(rename = "isAllDay", default)]
@@ -91,18 +91,17 @@ pub async fn get_session(url: &str, user: &str, pass: &str) -> Result<JmapSessio
 
     let res = client
         .get(&session_url)
-        .header("Authorization", format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass))))
+        .header("Authorization", format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass)))
         .send()
         .await?;
 
     if !res.status().is_success() {
-        return Err(JmapError::Method(format!("Auth failed: {}", res.status())));
+        return Err(JmapError::Method(format!("Auth failed with status {}: {}", res.status(), res.text().await.unwrap_or_default())));
     }
 
     let json: Value = res.json().await?;
     
     let api_url = json["apiUrl"].as_str().unwrap_or(url).to_string();
-    
     let account_id = json["primaryAccounts"]["urn:ietf:params:jmap:calendars"]
         .as_str()
         .map(String::from)
@@ -177,7 +176,6 @@ pub async fn get_calendar_state(url: &str, token: &str, account_id: &str) -> Res
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
     let state = json["methodResponses"][0][1]["state"].as_str().ok_or(JmapError::MissingState)?;
@@ -203,12 +201,17 @@ pub async fn get_calendar_events(url: &str, token: &str, account_id: &str) -> Re
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
+    
+    if let Some(err) = json["methodResponses"][0][1].as_object() {
+        if let Some(desc) = err.get("description").and_then(|v| v.as_str()) {
+            return Err(JmapError::Method(desc));
+        }
+    }
     
     let ids: Vec<String> = json["methodResponses"][0][1]["ids"]
         .as_array()
-        .map(|v| v.as_str().map(String::from))
+        .map(|v| v.as_str().map(String::from).unwrap_or_default())
         .unwrap_or_default();
 
     if ids.is_empty() {
@@ -237,15 +240,17 @@ pub async fn get_events_by_ids(url: &str, token: &str, account_id: &str, ids: &[
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
     let list = json["methodResponses"][0][1]["list"].as_array().unwrap_or_default();
     
     let mut events = Vec::new();
     for item in list {
-        if let Ok(event) = JmapEvent::from_jmap_json(item) {
-            events.push(event);
+        match JmapEvent::from_jmap_json(item.clone()) {
+            Ok(event) => events.push(event),
+            Err(e) => {
+                tracing::error!("Failed to parse JMAP event: {}", e);
+            }
         }
     }
     
@@ -271,12 +276,11 @@ pub async fn get_calendar_changes(url: &str, token: &str, account_id: &str, stat
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
     if let Some(err) = json["methodResponses"][0][1].as_object() {
-        if err.get("type").and_then(|v| v.as_str()) == Some("error") {
-            return Err(JmapError::Method(err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string()));
+        if let Some(desc) = err.get("description").and_then(|v| v.as_str()) {
+            return Err(JmapError::Method(desc));
         }
     }
     
@@ -288,11 +292,12 @@ pub async fn get_calendar_changes(url: &str, token: &str, account_id: &str, stat
 pub async fn push_event(url: &str, token: &str, account_id: &str, mut event: JmapEvent) -> Result<String, JmapError> {
     let client = Client::new();
     
+    // Generate a UID if not provided
     if event.uid.is_none() {
         event.uid = Some(Uuid::new_v4().to_string());
     }
     
-    // Convert to JSCalendar format (Stalwart compatible)
+    // Convert to JSCalendar format
     let mut event_data = json!({
         "title": event.title,
         "start": event.start,
@@ -304,29 +309,29 @@ pub async fn push_event(url: &str, token: &str, account_id: &str, mut event: Jma
     if let Some(loc) = &event.location {
         event_data["location"] = json!({ "description": loc });
     }
-    
+
     if let Some(desc) = &event.description {
         event_data["description"] = json!({ "description": desc });
     }
 
-    // Handle participants
+    // Handle participants - converting from Vec to Map for Stalwart
     if let Some(parts) = &event.participants {
         if !parts.is_empty() {
             let mut participants_map = json!({});
             for p in parts {
                 let mut p_map = json!({
                     "email": p.email,
-                    "name": p.name,
+                    "name": p.name
                 });
                 if let Some(status) = &p.status {
-                    p_map["status"] = status;
+                    p_map["status"] = json!(status);
                 }
                 participants_map[&p.email] = p_map;
             }
             event_data["participants"] = participants_map;
         }
     }
-
+    
     let body = json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
         "methodCalls": [
@@ -345,46 +350,102 @@ pub async fn push_event(url: &str, token: &str, account_id: &str, mut event: Jma
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
+    // Check for errors
     if let Some(err) = json["methodResponses"][0][1].as_object() {
-        if err.get("type").and_then(|v| v.as_str()) == Some("error") {
-            return Err(JmapError::Method(err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string()));
+        if let Some(err_type) = err.get("type").and_then(|v| v.as_str()) {
+            if err_type == "error" {
+                let desc = err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string());
+                return Err(JmapError::Method(desc));
+            }
         }
     }
     
-    let created_id = json["methodResponses"][0][1]["created"]["new-event"]
+    // Return the created ID
+    let created_id = json["methodResponses"][0][1]["created"]["new-event"]["id"]
         .as_str()
-        .ok_or(JmapError::Method("Failed to get created ID".to_string()))?;
+        .ok_or(JmapError::Method("Failed to get created ID".to_string()))?
+        .to_string();
     
-    Ok(created_id.to_string())
+    Ok(created_id)
 }
 
 impl JmapEvent {
-    fn from_jmap_json(value: serde_json::Value) -> Result<Self, JmapError> {
-        let map = value.as_object().ok_or(JmapError::Json(serde::from_value(value)))?;
+    /// Deserializes a `JmapEvent` from a `serde_json::Value`.
+    /// Handles the specific JSCalendar implementation details used by Stalwart,
+    /// particularly regarding the `participants` field.
+    /// In Stalwart's JMAP implementation, `participants` is a Map of objects keyed by email.
+    /// Standard JSCalendar uses a list of objects.
+    /// This function supports both formats for robustness.
+    pub fn from_jmap_json(value: Value) -> Result<Self, JmapError> {
+        let map = value.as_object().ok_or(JmapError::JsonParseError("Expected an object".to_string()))?;
+        
+        // Parse 'id'. In JMAP responses for creating a new event, `id` will not be present.
+        // For existing events it will be present.
+        let id = map.get("id").and_then(|v| v.as_str().map(String::from));
+        let title = map.get("title").and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        let start = map.get("start").and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        let end = map.get("end").and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        let location = map.get("location").and_then(|v| v.as_str().map(String::from));
+        let description = map.get("description").and_then(|v| v.as_str().map(String::from));
+        let uid = map.get("uid").and_then(|v| v.as_str().map(String::from));
+        
+        // Parse participants.
+        // Stalwart uses a map of objects keyed by email.
+        // Standard JSCalendar uses a list of objects.
+        // This code handles both.
+        let participants = match map.get("participants") {
+            Some(p_val) if p_val.is_object() => {
+                // Stalwart format: Map<String, ParticipantInfo>
+                Some(
+                    p_val.as_object()
+                        .unwrap()
+                        .values()
+                        .filter_map(|p_obj| {
+                            Some(Participant {
+                                email: p_obj.get("email").and_then(|v| v.as_str().unwrap_or_default().to_string()),
+                                name: p_obj.get("name").and_then(|v| v.as_str().unwrap_or_default().to_string()),
+                                status: p_obj.get("status").and_then(|v| v.as_str().map(String::from)),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                )
+            }
+            Some(p_val) if p_val.is_array() => {
+                // Standard JSCalendar format: List<Participant>
+                // Assuming a simplified structure here, might need adjustment based on exact JSCalendar spec
+                // For now, we assume it's a list of objects with email, name, status
+                Some(
+                    p_val.as_array()
+                        .unwrap()
+                        .into_iter()
+                        .filter_map(|p_obj| {
+                             Some(Participant {
+                                email: p_obj.get("email").and_then(|v| v.as_str().unwrap_or_default().to_string()),
+                                name: p_obj.get("name").and_then(|v| v.as_str().unwrap_or_default().to_string()),
+                                status: p_obj.get("status").and_then(|v| v.as_str().map(String::from)),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                )
+            }
+            _ => None
+        };
+        
+        // Use `is_all_day` from the parsed JSON if present, otherwise default to `false`
+        let is_all_day = map.get("isAllDay").and_then(|v| v.as_bool()).unwrap_or(false);
         
         Ok(Self {
-            id: map.get("id").and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
-            title: map.get("title").and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
-            start: map.get("start").and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
-            end: map.get("end").and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
-            location: map.get("location").and_then(|v| v.as_object().and_then(|o| o.get("description").and_then(|d| d.as_str().map(String::from))),
-            description: map.get("description").and_then(|v| v.as_object().and_then(|o| o.get("description").and_then(|d| d.as_str().map(String::from))),
-            uid: map.get("uid").and_then(|v| v.as_str().map(String::from),
-            // Convert participants map back to Vec for internal use
-            participants: map.get("participants").and_then(|v| v.as_object().map(|o| {
-                o.iter().filter_map(|_, p| {
-                    let p_obj = p.as_object()?;
-                    Some(Participant {
-                        email: p_obj.get("email")?.as_str()?.to_string(),
-                        name: p_obj.get("name")?.as_str()?.to_string(),
-                        status: p_obj.get("status").and_then(|s| s.as_str().map(String::from)),
-                    })
-                }).collect::<Vec<_>>()
-            }),
-            is_all_day: map.get("isAllDay").and_then(|v| v.as_bool()).unwrap_or(false),
+            id,
+            title,
+            start,
+            end,
+            location,
+            description,
+            uid,
+            participants,
+            is_all_day,
         })
     }
 }
@@ -394,7 +455,7 @@ pub async fn update_event(
     token: &str,
     account_id: &str,
     event_id: &str,
-    updates: HashMap<String, serde_json::Value>,
+    updates: HashMap<String, serde_json::Value>
 ) -> Result<(), JmapError> {
     let client = Client::new();
     
@@ -416,12 +477,12 @@ pub async fn update_event(
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
     if let Some(err) = json["methodResponses"][0][1].as_object() {
         if err.get("type").and_then(|v| v.as_str()) == Some("error") {
-            return Err(JmapError::UpdateFailed(err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string()));
+            let desc = err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string());
+            return Err(JmapError::UpdateFailed(desc));
         }
     }
     
@@ -452,19 +513,24 @@ pub async fn delete_event(
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
     if let Some(err) = json["methodResponses"][0][1].as_object() {
-        if err.get("type").and_then(|v| v.as_str()) == Some("error") {
-            return Err(JmapError::DeleteFailed(err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string()));
+        if err.get("type").and_then(|v| v as_str()) == Some("error") {
+            let desc = err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string());
+            return Err(JmapError::DeleteFailed(desc));
         }
     }
     
     Ok(())
 }
 
-pub async fn find_event_by_uid(url: &str, token: &str, account_id: &str, uid: &str) -> Result<String, JmapError> {
+pub async fn find_event_by_uid(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    uid: &str,
+) -> Result<String, JmapError> {
     let client = Client::new();
     
     let body = json!({
@@ -485,7 +551,6 @@ pub async fn find_event_by_uid(url: &str, token: &str, account_id: &str, uid: &s
         .json(&body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
     if let Some(ids) = json["methodResponses"][0][1]["ids"].as_array() {
@@ -507,7 +572,15 @@ pub async fn update_participant_status(
 ) -> Result<(), JmapError> {
     let client = Client::new();
     
-    // Get current participants map
+    // Construct patch for participant
+    let participant_patch = json!({
+        "email": user_email,
+        "name": user_email.split('@').next().unwrap_or("Unknown"),
+        "status": status
+    });
+    
+    // We need to update the participant within the participants map
+    // First, get the event to fetch the current participants
     let get_body = json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
         "methodCalls": [
@@ -525,27 +598,17 @@ pub async fn update_participant_status(
         .json(&get_body)
         .send()
         .await?
-    
     let get_json: Value = res.json().await?
     
-    let mut participants = get_json["methodResponses"][0][1]["list"][0]["participants"]
+    let mut current_participants = get_json["methodResponses"][0][1]["list"][0]["participants"]
         .as_object()
         .cloned()
         .unwrap_or_else(|| json!({}));
     
-    // Update participant status
-    if let Some(participant) = participants.get_mut(user_email) {
-        participant["status"] = json!(status);
-    } else {
-        // Add participant if not exists
-        participants.insert(user_email.to_string(), json!({
-            "email": user_email,
-            "name": user_email.split('@').next().unwrap_or_default(),
-            "status": status
-        }));
-    }
+    // Update or add the participant
+    current_participants[user_email] = participant_patch;
     
-    // Update event with new participants map
+    // Update the event with the new participants map
     let update_body = json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
         "methodCalls": [
@@ -553,7 +616,7 @@ pub async fn update_participant_status(
                 "accountId": account_id,
                 "update": {
                     event_id: {
-                        "participants": participants
+                        "participants": current_participants
                     }
                 }
             }, "c0"]
@@ -566,12 +629,12 @@ pub async fn update_participant_status(
         .json(&update_body)
         .send()
         .await?
-    
     let json: Value = res.json().await?
     
     if let Some(err) = json["methodResponses"][0][1].as_object() {
         if err.get("type").and_then(|v| v.as_str()) == Some("error") {
-            return Err(JmapError::UpdateFailed(err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string()));
+            let desc = err.get("description").and_then(|v| v.as_str().unwrap_or_default().to_string());
+            return Err(JmapError::UpdateFailed(desc));
         }
     }
     
