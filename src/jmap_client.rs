@@ -90,7 +90,7 @@ pub async fn get_default_calendar_id(
         .send()
         .await?;
 
-    let json: serde_json::Value = res.json().await?;
+    let json: serde_json::Value = resp.json().await?;
     
     let list = json["methodResponses"][0][1]["list"].as_array().ok_or(JmapError::CalendarNotFound)?;
     
