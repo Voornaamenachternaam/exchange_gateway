@@ -268,7 +268,7 @@ pub async fn push_event(url: &str, token: &str, account_id: &str, mut event: Jma
 
     let res = client
         .post(url)
-        .header("Authorization", token)
+        .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await?;
