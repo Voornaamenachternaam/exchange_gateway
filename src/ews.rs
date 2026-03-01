@@ -578,6 +578,7 @@ async fn handle_create_item(
                     .map(|att| jmap_client::Participant {
                         email: att.mailbox.email,
                         name: att.mailbox.name.unwrap_or_default(),
+                        status: None, // Fix applied here
                     })
                     .collect()
             })
