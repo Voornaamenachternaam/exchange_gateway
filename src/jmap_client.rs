@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 use uuid::Uuid;
+use base64::Engine; // Fix for E0599
 
 #[derive(Debug, Error)]
 pub enum JmapError {
@@ -60,7 +61,7 @@ pub struct JmapEvent {
     pub is_all_day: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)] // Fix for E0277
 pub struct JmapChanges {
     #[serde(rename = "newState")]
     pub new_state: String,
