@@ -234,6 +234,17 @@ pub async fn push_event(
     Err("Create Failed".into())
 }
 
+fn check_jmap_set_errors(json: &serde_json::Value) -> Result<(), String> {
+    let resp = &json["methodResponses"][0];
+    if resp[0].as_str() == Some("error") {
+        let desc = resp[1]["description"]
+            .as_str()
+            .unwrap_or("Unknown JMAP error");
+        return Err(format!("JMAP error: {}", desc));
+    }
+    Ok(())
+}
+
 pub async fn patch_event(
     url: &str,
     token: &str,
@@ -244,13 +255,25 @@ pub async fn patch_event(
     let client = Client::new();
     let update_map = json!({ id: patch });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": update_map }, "c0"]] });
-    let _ = client
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    check_jmap_set_errors(&json)?;
+    if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
+        && !not_updated.is_empty()
+    {
+        let desc = not_updated
+            .values()
+            .next()
+            .and_then(|v| v["description"].as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Update failed: {}", desc));
+    }
     Ok(())
 }
 
@@ -262,13 +285,25 @@ pub async fn destroy_events(
 ) -> Result<(), String> {
     let client = Client::new();
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "destroy": ids }, "c0"]] });
-    let _ = client
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    check_jmap_set_errors(&json)?;
+    if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object()
+        && !not_destroyed.is_empty()
+    {
+        let desc = not_destroyed
+            .values()
+            .next()
+            .and_then(|v| v["description"].as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Destroy failed: {}", desc));
+    }
     Ok(())
 }
 
@@ -353,13 +388,25 @@ pub async fn update_participant_status(
     let client = Client::new();
     let patch = json!({ format!("participants/{}/status", user_email): status });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": { event_id: patch } }, "c0"]] });
-    let _ = client
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    check_jmap_set_errors(&json)?;
+    if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
+        && !not_updated.is_empty()
+    {
+        let desc = not_updated
+            .values()
+            .next()
+            .and_then(|v| v["description"].as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Update failed: {}", desc));
+    }
     Ok(())
 }
 
