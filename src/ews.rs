@@ -106,9 +106,8 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let mut attachments_xml = String::new();
-    for attachment_id in req.attachment_ids {
-        // Fix: Access the inner String ID correctly
-        let id_str = &attachment_id.id.id;
+    for attachment_id in req.attachment_ids.items {
+        let id_str = &attachment_id.id;
         match jmap_client::get_blob(
             &session.api_url,
             &session.access_token,
@@ -603,12 +602,12 @@ struct ResolveNamesRequest {
 #[derive(Debug, Deserialize)]
 struct GetAttachmentRequest {
     #[serde(rename = "AttachmentIds")]
-    attachment_ids: Vec<AttachmentIdWrap>,
+    attachment_ids: EwsAttachmentIds,
 }
 #[derive(Debug, Deserialize)]
-struct AttachmentIdWrap {
+struct EwsAttachmentIds {
     #[serde(rename = "AttachmentId")]
-    id: EwsAttachmentId,
+    items: Vec<EwsAttachmentId>,
 }
 #[derive(Debug, Deserialize)]
 struct EwsAttachmentId {
