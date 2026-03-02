@@ -402,4 +402,4 @@ async fn handle_folder_sync(session: &jmap_client::JmapSession, config: &AppConf
     db::register_device(config, user, device_id).await;
     let cal_id = jmap_client::get_default_calendar_id(&session.api_url, &session.access_token, &session.account_id).await.unwrap_or("default".into());
     format!(r#"<FolderSync xmlns="AirSync:"><Status>1</Status><Collections><Collection><SyncKey>0</SyncKey><Changes><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></Collection></Collections></FolderSync>"#, escape_xml(&cal_id))
-} 
+}
