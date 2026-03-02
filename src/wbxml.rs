@@ -152,7 +152,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
             if let Some(tag) = pending_tag.take() {
                 xml.push('>');
-                stack.push(tag.clone());
+                stack.push(tag);
             }
             let text = String::from_utf8_lossy(&str_buf);
             xml.push_str(
@@ -185,7 +185,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
             if let Some(tag) = pending_tag.take() {
                 xml.push('>');
-                stack.push(tag.clone());
+                stack.push(tag);
             }
             let text = String::from_utf8_lossy(content);
             xml.push_str(&text.replace('&', "&amp;").replace('<', "&lt;"));
@@ -207,6 +207,16 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             } else {
                 xml.push_str(&format!("<{}/>", tag_def.name));
             }
+        } else if has_content {
+            // Unknown tag with content: push a sentinel so the matching
+            // TAG_END consumes it instead of incorrectly closing a parent.
+            let placeholder = format!("Unknown_{}_{:02X}", current_page, token_id);
+            if pending_tag.is_some() {
+                xml.push('>');
+                stack.push(pending_tag.take().unwrap());
+            }
+            pending_tag = Some(placeholder.clone());
+            xml.push_str(&format!("<{}", placeholder));
         }
     }
     Ok(xml)
