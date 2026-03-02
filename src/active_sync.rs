@@ -224,7 +224,8 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
 
 async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOpsReq) -> String {
     let mut results = String::new();
-    for fetch in req.item_operations.fetch.into_iter().chain(req.item_operations.fetch_alt.into_iter()) {
+    // Fix: Use only 'fetch' field as Serde collects all <Fetch> tags into the Vec
+    for fetch in req.item_operations.fetch.into_iter() {
         if let Some(store) = fetch.store {
             let id_opt = store.server_id.or(store.file_reference);
             if let Some(id) = id_opt {
@@ -368,15 +369,17 @@ fn error_xml(code: i32, msg: &str) -> String { format!("<Error><Code>{}</Code><M
 #[derive(Debug, Deserialize)] struct ChangeCommand { #[serde(rename = "ServerId")] server_id: String, #[serde(rename = "ApplicationData")] application_data: ApplicationData }
 #[derive(Debug, Deserialize)] struct DeleteCommand { #[serde(rename = "ServerId")] server_id: String }
 #[derive(Debug, Deserialize)] struct ItemOpsReq { #[serde(rename = "ItemOperations")] item_operations: ItemOpsBody }
-#[derive(Debug, Deserialize)] struct ItemOpsBody { #[serde(rename = "Fetch")] fetch: Vec<ItemOpsFetch>, #[serde(rename = "Fetch", alias = "Fetch")] fetch_alt: Vec<ItemOpsFetch> }
+// Fix: Removed duplicate field. Serde collects all <Fetch> tags into the Vec 'fetch'.
+#[derive(Debug, Deserialize)] struct ItemOpsBody { #[serde(rename = "Fetch")] fetch: Vec<ItemOpsFetch> }
 #[derive(Debug, Deserialize)] struct ItemOpsFetch { #[serde(rename = "Store")] store: Option<ItemOpsStore> }
 #[derive(Debug, Deserialize)] struct ItemOpsStore { #[serde(rename = "ServerId", default)] server_id: Option<String>, #[serde(rename = "FileReference", default)] file_reference: Option<String> }
 
 async fn handle_provision() -> String { r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into() }
-async fn handle_settings(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str) -> String { db::register_device(config, user, device_id).await; r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into() }
+// Fix: unused variable warning
+async fn handle_settings(_session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str) -> String { db::register_device(config, user, device_id).await; r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into() }
 async fn handle_ping() -> String { r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into() }
 async fn handle_folder_sync(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str) -> String {
     db::register_device(config, user, device_id).await;
     let cal_id = jmap_client::get_default_calendar_id(&session.api_url, &session.access_token, &session.account_id).await.unwrap_or("default".into());
     format!(r#"<FolderSync xmlns="AirSync:"><Status>1</Status><Collections><Collection><SyncKey>0</SyncKey><Changes><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></Collection></Collections></FolderSync>"#, escape_xml(&cal_id))
-}
+} 
