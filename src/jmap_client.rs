@@ -192,7 +192,8 @@ pub async fn get_events_by_ids(
         .map_err(|e| e.to_string())?;
     let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
     let events: Vec<JmapEvent> =
-        serde_json::from_value(json["methodResponses"][0][1]["list"].clone()).unwrap_or_default();
+        serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
+            .map_err(|e| format!("Event deserialization failed: {}", e))?;
     Ok(events)
 }
 
