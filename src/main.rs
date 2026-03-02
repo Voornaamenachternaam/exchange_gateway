@@ -24,7 +24,11 @@ use crate::config::AppConfig;
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive("info,exchange_gateway=debug".parse().unwrap())
+                .from_env_lossy(),
+        )
         .init();
 
     let config = Arc::new(AppConfig::from_env().expect("Failed to load configuration"));
