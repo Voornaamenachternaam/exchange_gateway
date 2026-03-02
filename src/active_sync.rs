@@ -224,7 +224,6 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
 
 async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOpsReq) -> String {
     let mut results = String::new();
-    // Fix: Use only 'fetch' field as Serde collects all <Fetch> tags into the Vec
     for fetch in req.item_operations.fetch.into_iter() {
         if let Some(store) = fetch.store {
             let id_opt = store.server_id.or(store.file_reference);
@@ -285,10 +284,21 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
     let recurrence_xml = if let Some(rrule) = &event.recurrence_rule { parse_rrule_to_eas(rrule) } else { String::new() };
     let body_content = escape_xml(event.description.as_deref().unwrap_or(""));
     
-    format!(r#"<{}><ServerId>{}</ServerId><ApplicationData><Calendar:Subject>{}</Calendar:Subject><Calendar:Location>{}</Calendar:Location><Calendar:StartTime>{}</Calendar:StartTime><Calendar:EndTime>{}</Calendar:EndTime><Calendar:UID>{}</Calendar:UID><Calendar:AllDayEvent>{}</Calendar:AllDayEvent>{}{}<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body>{}</ApplicationData></{}>"#,
-        mode, escape_xml(event.id.as_deref().unwrap_or("")), escape_xml(&event.title), escape_xml(event.location.as_deref().unwrap_or("")),
-        start_local.format("%Y-%m-%dT%H:%M:%S"), end_local.format("%Y-%m-%dT%H:%M:%S"),
-        escape_xml(event.uid.as_deref().unwrap_or("")), if event.is_all_day { "1" } else { "0" }, recurrence_xml, attendees_xml, body_content, mode)
+    // Fix: Verified placeholders match arguments (12 placeholders, 12 args)
+    format!(r#"<{}><ServerId>{}</ServerId><ApplicationData><Calendar:Subject>{}</Calendar:Subject><Calendar:Location>{}</Calendar:Location><Calendar:StartTime>{}</Calendar:StartTime><Calendar:EndTime>{}</Calendar:EndTime><Calendar:UID>{}</Calendar:UID><Calendar:AllDayEvent>{}</Calendar:AllDayEvent>{}{}<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></{}>"#,
+        mode, 
+        escape_xml(event.id.as_deref().unwrap_or("")), 
+        escape_xml(&event.title), 
+        escape_xml(event.location.as_deref().unwrap_or("")),
+        start_local.format("%Y-%m-%dT%H:%M:%S"), 
+        end_local.format("%Y-%m-%dT%H:%M:%S"),
+        escape_xml(event.uid.as_deref().unwrap_or("")), 
+        if event.is_all_day { "1" } else { "0" }, 
+        recurrence_xml, 
+        attendees_xml, 
+        body_content, 
+        mode
+    )
 }
 
 fn parse_rrule_to_eas(rrule: &str) -> String {
@@ -369,17 +379,15 @@ fn error_xml(code: i32, msg: &str) -> String { format!("<Error><Code>{}</Code><M
 #[derive(Debug, Deserialize)] struct ChangeCommand { #[serde(rename = "ServerId")] server_id: String, #[serde(rename = "ApplicationData")] application_data: ApplicationData }
 #[derive(Debug, Deserialize)] struct DeleteCommand { #[serde(rename = "ServerId")] server_id: String }
 #[derive(Debug, Deserialize)] struct ItemOpsReq { #[serde(rename = "ItemOperations")] item_operations: ItemOpsBody }
-// Fix: Removed duplicate field. Serde collects all <Fetch> tags into the Vec 'fetch'.
 #[derive(Debug, Deserialize)] struct ItemOpsBody { #[serde(rename = "Fetch")] fetch: Vec<ItemOpsFetch> }
 #[derive(Debug, Deserialize)] struct ItemOpsFetch { #[serde(rename = "Store")] store: Option<ItemOpsStore> }
 #[derive(Debug, Deserialize)] struct ItemOpsStore { #[serde(rename = "ServerId", default)] server_id: Option<String>, #[serde(rename = "FileReference", default)] file_reference: Option<String> }
 
 async fn handle_provision() -> String { r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into() }
-// Fix: unused variable warning
 async fn handle_settings(_session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str) -> String { db::register_device(config, user, device_id).await; r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into() }
 async fn handle_ping() -> String { r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into() }
 async fn handle_folder_sync(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, device_id: &str) -> String {
     db::register_device(config, user, device_id).await;
     let cal_id = jmap_client::get_default_calendar_id(&session.api_url, &session.access_token, &session.account_id).await.unwrap_or("default".into());
     format!(r#"<FolderSync xmlns="AirSync:"><Status>1</Status><Collections><Collection><SyncKey>0</SyncKey><Changes><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></Collection></Collections></FolderSync>"#, escape_xml(&cal_id))
-}
+} 
