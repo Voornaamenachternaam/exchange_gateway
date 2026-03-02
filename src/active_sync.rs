@@ -542,8 +542,9 @@ fn parse_rrule_to_eas(rrule: &str) -> String {
                     "SU" => "1",
                     _ => "",
                 })
-                .collect::<Vec<&str>>()
-                .join(",");
+                .filter_map(|s| s.parse::<i32>().ok())
+                .fold(0i32, |acc, v| acc | v)
+                .to_string();
         }
     }
     let day_xml = if day_of_week.is_empty() {
