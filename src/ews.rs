@@ -148,14 +148,24 @@ async fn handle_get_item(
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
+    let ids: Vec<String> = req.item_ids.items.iter().map(|i| i.id.clone()).collect();
+    let events = jmap_client::get_events_by_ids(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+        &ids,
+    )
+    .await
+    .unwrap_or_default();
     let mut response_messages = String::new();
-    for item_id in req.item_ids.items {
-        match jmap_client::get_event_by_id(&session.api_url, &session.access_token, &session.account_id, &item_id.id).await {
-            Ok(event) => response_messages.push_str(&format!(
+    for item_id in &req.item_ids.items {
+        if let Some(event) = events.iter().find(|e| e.id.as_deref() == Some(&item_id.id)) {
+            response_messages.push_str(&format!(
                 r#"<m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage>"#,
-                render_ews_calendar_item(&event, &config.timezone)
-            )),
-            Err(_) => response_messages.push_str(r#"<m:GetItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:Items/></m:GetItemResponseMessage>"#)
+                render_ews_calendar_item(event, &config.timezone)
+            ));
+        } else {
+            response_messages.push_str(r#"<m:GetItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:Items/></m:GetItemResponseMessage>"#);
         }
     }
     soap_response(&format!(
