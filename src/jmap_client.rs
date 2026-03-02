@@ -215,9 +215,13 @@ pub async fn push_event(
         .map_err(|e| e.to_string())?;
     let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
     if let Some(created) = json["methodResponses"][0][1]["created"].as_object()
-        && let Some((id, _)) = created.into_iter().next()
+        && let Some((_, val)) = created.into_iter().next()
     {
-        return Ok(id.clone());
+        return val["id"]
+            .as_str()
+            .map(String::from)
+            .ok_or("Create Failed: missing server id".into());
+    }
     }
     Err("Create Failed".into())
 }
