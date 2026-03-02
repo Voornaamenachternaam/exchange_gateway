@@ -7,12 +7,12 @@ mod utils;
 mod wbxml;
 
 use axum::{
+    Router,
     body::Bytes,
     extract::State,
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
-    Router,
 };
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -63,7 +63,9 @@ async fn handle_active_sync(
     } else {
         match std::str::from_utf8(&body) {
             Ok(s) => (s.to_string(), false),
-            Err(_) => return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response(),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response();
+            }
         }
     };
 
@@ -73,16 +75,17 @@ async fn handle_active_sync(
         match wbxml::encode(&response_xml) {
             Ok(wbxml_data) => (
                 StatusCode::OK,
-                [(
-                    header::CONTENT_TYPE,
-                    "application/vnd.ms-sync.wbxml",
-                )],
+                [(header::CONTENT_TYPE, "application/vnd.ms-sync.wbxml")],
                 wbxml_data,
             )
                 .into_response(),
             Err(e) => {
                 tracing::error!("WBXML Encode Error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "WBXML Encode Error".to_string()).into_response()
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "WBXML Encode Error".to_string(),
+                )
+                    .into_response()
             }
         }
     } else {
@@ -103,7 +106,13 @@ async fn handle_ews(
     let xml_body = match std::str::from_utf8(&body) {
         Ok(s) => s,
         // Fix: Match the tuple structure of the success branch (Status, Header, Body)
-        Err(_) => return (StatusCode::BAD_REQUEST, [(header::CONTENT_TYPE, "text/plain")], "Invalid UTF-8".to_string()),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                [(header::CONTENT_TYPE, "text/plain")],
+                "Invalid UTF-8".to_string(),
+            );
+        }
     };
 
     let response_xml = ews::process_request(&config, xml_body, &headers).await;
