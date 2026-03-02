@@ -382,7 +382,7 @@ pub async fn update_participant_status(
     status: &str,
 ) -> Result<(), String> {
     let client = Client::new();
-    let patch = json!({ format!("participants/{}/status", user_email): status });
+    let patch = json!({ format!("participants/{}/participationStatus", user_email): status });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": { event_id: patch } }, "c0"]] });
     let res = client
         .post(url)
