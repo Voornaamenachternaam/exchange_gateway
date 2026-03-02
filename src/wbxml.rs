@@ -194,11 +194,15 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
-                let name = String::from_utf8_lossy(e.local_name().as_ref());
+                // Fix: Bind local_name to variable to extend lifetime
+                let local_name = e.local_name();
+                let name = String::from_utf8_lossy(local_name.as_ref());
                 encode_tag(&mut output, &name, &mut current_page, true);
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
-                let name = String::from_utf8_lossy(e.local_name().as_ref());
+                // Fix: Bind local_name to variable to extend lifetime
+                let local_name = e.local_name();
+                let name = String::from_utf8_lossy(local_name.as_ref());
                 encode_tag(&mut output, &name, &mut current_page, false);
             }
             Ok(quick_xml::events::Event::End(_)) => { output.push(TAG_END); }
@@ -228,4 +232,4 @@ fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_conte
         if has_content { final_token |= 0x40; }
         output.push(final_token);
     }
-} 
+}
