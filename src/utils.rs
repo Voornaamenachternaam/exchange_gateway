@@ -1,6 +1,6 @@
 pub fn decode_basic_auth(auth: &str) -> (String, String) {
     let parts: Vec<&str> = auth.split_whitespace().collect();
-    if parts.len() != 2 || parts[0] != "Basic" {
+    if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("Basic") {
         return (String::new(), String::new());
     }
 
