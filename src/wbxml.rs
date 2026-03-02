@@ -98,10 +98,10 @@ lazy_static! {
         m
     };
 
-    static ref NAME_MAP: HashMap<&'static str, (u8, u8)> = {
-        let mut m = HashMap::new();
+    static ref NAME_MAP: HashMap<&'static str, Vec<(u8, u8)>> = {
+        let mut m: HashMap<&'static str, Vec<(u8, u8)>> = HashMap::new();
         for ((page, token), tag) in TAG_MAP.iter() {
-            m.insert(tag.name, (*page, *token));
+            m.entry(tag.name).or_default().push((*page, *token));
         }
         m
     };
@@ -265,7 +265,13 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
 }
 
 fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_content: bool) -> bool {
-    if let Some((page, token)) = NAME_MAP.get(name) {
+    if let Some(entries) = NAME_MAP.get(name) {
+        // Prefer the entry on the current page to avoid unnecessary page switches
+        // and to correctly resolve ambiguous tag names (e.g., "Type", "Store").
+        let (page, token) = entries
+            .iter()
+            .find(|(p, _)| *p == *current_page)
+            .unwrap_or(&entries[0]);
         if *page != *current_page {
             output.push(TAG_SWITCH_PAGE);
             output.push(*page);
