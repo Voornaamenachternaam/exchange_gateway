@@ -104,13 +104,22 @@ pub async fn get_default_calendar_id(
         .await
         .map_err(|e| e.to_string())?;
     let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-    if let Some(list) = json["methodResponses"][0][1]["list"].as_array()
-        && let Some(first) = list.first()
-    {
-        return first["id"]
-            .as_str()
-            .map(String::from)
-            .ok_or("Missing ID".into());
+    if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
+        // First, look for the calendar marked as default
+        for cal in list {
+            if cal["isDefault"].as_bool().unwrap_or(false) {
+                if let Some(id) = cal["id"].as_str() {
+                    return Ok(id.to_string());
+                }
+            }
+        }
+        // Fall back to the first calendar if none is marked as default
+        if let Some(first) = list.first() {
+            return first["id"]
+                .as_str()
+                .map(String::from)
+                .ok_or("Missing ID".into());
+        }
     }
     Err("No Calendars".into())
 }
