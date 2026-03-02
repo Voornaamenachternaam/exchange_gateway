@@ -64,7 +64,7 @@ lazy_static! {
         add!(CP_CALENDAR, 0x1E, "UID", true);
         add!(CP_CALENDAR, 0x20, "Reminder", true);
 
-        // AirSyncBase (7)
+        // AirSyncBase (17)
         add!(CP_AIRSYNCBASE, 0x05, "BodyPreference", true);
         add!(CP_AIRSYNCBASE, 0x06, "Type", true);
         add!(CP_AIRSYNCBASE, 0x07, "TruncationSize", true);
