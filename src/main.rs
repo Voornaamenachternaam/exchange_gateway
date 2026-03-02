@@ -53,6 +53,15 @@ async fn handle_active_sync(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if !auth_header.starts_with("Basic ") {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()).into_response();
+    }
+
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
@@ -109,6 +118,19 @@ async fn handle_ews(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if !auth_header.starts_with("Basic ") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::CONTENT_TYPE, "text/plain")],
+            "Unauthorized".to_string(),
+        );
+    }
+
     let xml_body = match std::str::from_utf8(&body) {
         Ok(s) => s,
         // Fix: Match the tuple structure of the success branch (Status, Header, Body)
