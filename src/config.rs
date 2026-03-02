@@ -7,7 +7,7 @@ pub struct AppConfig {
     pub db_auth_token: String,
     pub timezone: String,
     pub smtp_url: String,
-    pub _public_url: String,
+    pub public_url: String,
 }
 
 impl AppConfig {
@@ -18,7 +18,7 @@ impl AppConfig {
             db_auth_token: env::var("GATEWAY_SECRET").map_err(|_| "GATEWAY_SECRET missing")?,
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
             smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
-            _public_url: env::var("GATEWAY_HOST").map_err(|_| "GATEWAY_HOST missing")?,
+            public_url: env::var("GATEWAY_HOST").map_err(|_| "GATEWAY_HOST missing")?,
         })
     }
 }
