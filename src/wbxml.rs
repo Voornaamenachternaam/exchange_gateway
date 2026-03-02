@@ -65,9 +65,12 @@ lazy_static! {
         add!(CP_CALENDAR, 0x20, "Reminder", true);
 
         // AirSyncBase (7)
-        add!(CP_AIRSYNCBASE, 0x05, "Body", true);
-        add!(CP_AIRSYNCBASE, 0x07, "Type", true);
-        add!(CP_AIRSYNCBASE, 0x0A, "EstimatedDataSize", true);
+        add!(CP_AIRSYNCBASE, 0x05, "BodyPreference", true);
+        add!(CP_AIRSYNCBASE, 0x06, "Type", true);
+        add!(CP_AIRSYNCBASE, 0x07, "TruncationSize", true);
+        add!(CP_AIRSYNCBASE, 0x08, "AllOrNone", true);
+        add!(CP_AIRSYNCBASE, 0x0A, "Body", true);
+        add!(CP_AIRSYNCBASE, 0x0B, "EstimatedDataSize", true);
         add!(CP_AIRSYNCBASE, 0x0C, "Data", true);
 
         // Settings (9)
