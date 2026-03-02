@@ -151,24 +151,19 @@ pub async fn get_calendar_events(
     account_id: &str,
 ) -> Result<Vec<JmapEvent>, String> {
     let client = Client::new();
-    let body_ids = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": null }, "c0"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
     let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
-        .json(&body_ids)
+        .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
     let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-    let ids: Vec<String> = json["methodResponses"][0][1]["list"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v["id"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    get_events_by_ids(url, token, account_id, &ids).await
+    let events: Vec<JmapEvent> =
+        serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
+            .map_err(|e| format!("Event deserialization failed: {}", e))?;
+    Ok(events)
 }
 
 pub async fn get_events_by_ids(
