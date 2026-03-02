@@ -123,7 +123,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
             handle_item_operations(&session, req).await
         }
         "MeetingResponse" => handle_meeting_response(&session, xml, &user).await,
-        "SendMail" => handle_send_mail(config, xml).await,
+        "SendMail" => handle_send_mail(config, xml, &user).await,
         "Settings" => handle_settings(&session, config, &user, device_id).await,
         "Provision" => handle_provision().await,
         "Search" => handle_search(&session, xml).await,
@@ -135,7 +135,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     }
 }
 
-async fn handle_send_mail(config: &AppConfig, xml: &str) -> String {
+async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &str) -> String {
     let mut mime_content = String::new();
     let mut buf = Vec::new();
     let mut in_mime = false;
@@ -181,6 +181,23 @@ async fn handle_send_mail(config: &AppConfig, xml: &str) -> String {
         .captures(&mime_content)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
+
+    // Verify the From address matches the authenticated user to prevent spoofing
+    if let Some(ref from) = from_addr {
+        let from_email = if let Some(start) = from.find('<') {
+            from[start + 1..].trim_end_matches('>').trim()
+        } else {
+            from.trim()
+        };
+        if !from_email.eq_ignore_ascii_case(authenticated_user) {
+            tracing::warn!(
+                "SendMail: From address '{}' does not match authenticated user '{}'",
+                from_email,
+                authenticated_user
+            );
+            return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+        }
+    }
 
     let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
         let subject = re_subj
