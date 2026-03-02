@@ -237,6 +237,62 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                 return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
             }
         };
+
+        let smtp_host = match smtp_url.host_str() {
+            Some(h) => h,
+            None => {
+                tracing::error!("SMTP URL has no host");
+                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+            }
+        };
+
+        // Prefer secure transport builders (TLS cert validation enabled).
+        let mut builder = match SmtpTransport::relay(smtp_host) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to create SMTP relay transport: {}", e);
+                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+            }
+        };
+
+        builder = builder.port(smtp_url.port().unwrap_or(587));
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        let user = smtp_url.username();
+        if !user.is_empty() {
+            if let Some(pass) = smtp_url.password() {
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.to_string(),
+                    pass.to_string(),
+                ));
+            }
+        }
+
+        // If using implicit TLS (smtps://), wrap TLS explicitly.
+        if smtp_url.scheme().eq_ignore_ascii_case("smtps") {
+            let tls = match lettre::transport::smtp::client::TlsParameters::new(smtp_host.to_string()) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to configure SMTPS TLS parameters: {}", e);
+                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                }
+            };
+            builder = builder.tls(lettre::transport::smtp::client::Tls::Wrapper(tls));
+        }
+
+        let mailer = builder.build();
+
+        match mailer.send(&email) {
+            Ok(_) => "1",
+            Err(e) => {
+                tracing::error!("SMTP Error: {}", e);
+                "2"
+            }
+        }
+                tracing::error!("Invalid SMTP URL: {}", e);
+                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+            }
+        };
         let smtp_host = match smtp_url.host_str() {
             Some(h) => h,
             None => {
