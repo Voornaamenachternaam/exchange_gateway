@@ -6,6 +6,8 @@ mod jmap_client;
 mod utils;
 mod wbxml;
 
+use std::sync::Arc;
+
 use axum::{
     Router,
     body::Bytes,
@@ -25,7 +27,7 @@ async fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let config = AppConfig::from_env().expect("Failed to load configuration");
+    let config = Arc::new(AppConfig::from_env().expect("Failed to load configuration"));
     info!("Exchange Gateway v{} started", env!("CARGO_PKG_VERSION"));
 
     let app = Router::new()
@@ -43,7 +45,7 @@ async fn main() {
 }
 
 async fn handle_active_sync(
-    State(config): State<AppConfig>,
+    State(config): State<Arc<AppConfig>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
@@ -99,7 +101,7 @@ async fn handle_active_sync(
 }
 
 async fn handle_ews(
-    State(config): State<AppConfig>,
+    State(config): State<Arc<AppConfig>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
