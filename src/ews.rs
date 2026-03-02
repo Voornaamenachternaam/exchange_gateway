@@ -144,16 +144,19 @@ async fn handle_get_item(
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
-    let mut items_xml = String::new();
+    let mut response_messages = String::new();
     for item_id in req.item_ids.items {
         match jmap_client::get_event_by_id(&session.api_url, &session.access_token, &session.account_id, &item_id.id).await {
-            Ok(event) => items_xml.push_str(&render_ews_calendar_item(&event, &config.timezone)),
-            Err(_) => items_xml.push_str(r#"<m:GetItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode></m:GetItemResponseMessage>"#)
+            Ok(event) => response_messages.push_str(&format!(
+                r#"<m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage>"#,
+                render_ews_calendar_item(&event, &config.timezone)
+            )),
+            Err(_) => response_messages.push_str(r#"<m:GetItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:Items/></m:GetItemResponseMessage>"#)
         }
     }
     soap_response(&format!(
-        r#"<m:GetItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>"#,
-        NS_M, NS_T, items_xml
+        r#"<m:GetItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:GetItemResponse>"#,
+        NS_M, NS_T, response_messages
     ))
 }
 
