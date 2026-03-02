@@ -442,13 +442,17 @@ async fn handle_delete_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
-    let _ = jmap_client::destroy_events(
+    if let Err(e) = jmap_client::destroy_events(
         &session.api_url,
         &session.access_token,
         &session.account_id,
         ids,
     )
-    .await;
+    .await
+    {
+        tracing::error!("destroy_events failed: {}", e);
+        return soap_fault("ErrorInternalServerError", "Delete Failed");
+    }
     soap_response(&format!(
         r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
         NS_M, NS_T
