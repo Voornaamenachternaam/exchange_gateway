@@ -204,10 +204,9 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
             Ok(quick_xml::events::Event::End(_)) => { output.push(TAG_END); }
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 output.push(TAG_STR_I);
-                // Fix: Use quick_xml::escape::unescape correctly for the version
-                // e is &BytesText. AsRef<[u8]> is implemented.
-                // unescape returns Result<Cow<str>, _>
-                let t = quick_xml::escape::unescape(e.as_ref()).unwrap_or_default();
+                // Fix: unescape expects &str, e.as_ref() gives &[u8]. Convert first.
+                let text_str = std::str::from_utf8(e.as_ref()).unwrap_or("");
+                let t = quick_xml::escape::unescape(text_str).unwrap_or_default();
                 output.extend(t.as_bytes());
                 output.push(0x00);
             }
@@ -229,4 +228,4 @@ fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_conte
         if has_content { final_token |= 0x40; }
         output.push(final_token);
     }
-}
+} 
