@@ -214,8 +214,23 @@ async fn handle_send_mail(config: &AppConfig, xml: &str) -> String {
         };
 
         let smtp_url = url::Url::parse(&config.smtp_url).unwrap();
-        let mailer = SmtpTransport::builder_dangerous(smtp_url.host_str().unwrap())
+        let smtp_url = match url::Url::parse(&config.smtp_url) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!("Invalid SMTP URL: {}", e);
+                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+            }
+        };
+        let smtp_host = match smtp_url.host_str() {
+            Some(h) => h,
+            None => {
+                tracing::error!("SMTP URL has no host");
+                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+            }
+        };
+        let mailer = SmtpTransport::builder_dangerous(smtp_host)
             .port(smtp_url.port().unwrap_or(25))
+            .build();
             .build();
         match mailer.send(&email) {
             Ok(_) => "1",
