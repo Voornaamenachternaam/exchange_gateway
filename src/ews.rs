@@ -249,14 +249,18 @@ async fn handle_update_item(
             }
         }
         if !patch.is_empty() {
-            let _ = jmap_client::patch_event(
+            if let Err(e) = jmap_client::patch_event(
                 &session.api_url,
                 &session.access_token,
                 &session.account_id,
                 &id,
                 patch,
             )
-            .await;
+            .await
+            {
+                tracing::error!("patch_event failed for {}: {}", id, e);
+                return soap_fault("ErrorInternalServerError", "Update Failed");
+            }
         }
     }
     soap_response(&format!(
