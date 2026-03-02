@@ -217,23 +217,40 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     let mut output = vec![0x03, 0x01, 0x6A, 0x00];
     let mut current_page = 0;
+    let mut skip_depth: usize = 0;
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
+                if skip_depth > 0 {
+                    skip_depth += 1;
+                    continue;
+                }
                 let local_name = e.local_name();
                 let name = String::from_utf8_lossy(local_name.as_ref());
-                encode_tag(&mut output, &name, &mut current_page, true);
+                if !encode_tag(&mut output, &name, &mut current_page, true) {
+                    skip_depth = 1;
+                }
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if skip_depth > 0 {
+                    continue;
+                }
                 let local_name = e.local_name();
                 let name = String::from_utf8_lossy(local_name.as_ref());
                 encode_tag(&mut output, &name, &mut current_page, false);
             }
             Ok(quick_xml::events::Event::End(_)) => {
+                if skip_depth > 0 {
+                    skip_depth -= 1;
+                    continue;
+                }
                 output.push(TAG_END);
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
+                if skip_depth > 0 {
+                    continue;
+                }
                 output.push(TAG_STR_I);
                 let text_str = std::str::from_utf8(e.as_ref()).unwrap_or("");
                 let t = quick_xml::escape::unescape(text_str).unwrap_or_default();
@@ -247,7 +264,7 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_content: bool) {
+fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_content: bool) -> bool {
     if let Some((page, token)) = NAME_MAP.get(name) {
         if *page != *current_page {
             output.push(TAG_SWITCH_PAGE);
@@ -259,5 +276,8 @@ fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_conte
             final_token |= 0x40;
         }
         output.push(final_token);
+        true
+    } else {
+        false
     }
 }
