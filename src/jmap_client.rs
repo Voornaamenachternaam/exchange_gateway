@@ -83,7 +83,7 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         .ok_or("Missing Calendar Account ID")?
         .to_string();
     Ok(JmapSession {
-        api_url: jmap_url.to_string(),
+        api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
         access_token: token,
         account_id,
     })
