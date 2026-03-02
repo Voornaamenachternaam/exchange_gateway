@@ -80,6 +80,11 @@ async fn handle_active_sync(
                 wbxml_data,
             )
                 .into_response(),
+            // Fix: Handle the Err case explicitly
+            Err(e) => {
+                tracing::error!("WBXML Encode Error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "WBXML Encode Error".to_string()).into_response()
+            }
         }
     } else {
         (
@@ -96,9 +101,10 @@ async fn handle_ews(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    // Fix: Remove .into_response() from the error branch to match the tuple return type of the success branch
     let xml_body = match std::str::from_utf8(&body) {
         Ok(s) => s,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response(),
+        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()),
     };
 
     let response_xml = ews::process_request(&config, xml_body, &headers).await;
