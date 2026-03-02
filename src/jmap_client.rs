@@ -373,6 +373,15 @@ pub async fn find_event_by_uid(
         .ok_or("Not Found".into())
 }
 
+fn is_valid_email_for_path(email: &str) -> bool {
+    !email.is_empty()
+        && !email.contains('/')
+        && !email.contains('\\')
+        && !email.contains('\0')
+        && email.contains('@')
+        && email.len() <= 254
+}
+
 pub async fn update_participant_status(
     url: &str,
     token: &str,
@@ -381,6 +390,9 @@ pub async fn update_participant_status(
     user_email: &str,
     status: &str,
 ) -> Result<(), String> {
+    if !is_valid_email_for_path(user_email) {
+        return Err(format!("Invalid email for participant path: {}", user_email));
+    }
     let client = Client::new();
     let patch = json!({ format!("participants/{}/participationStatus", user_email): status });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": { event_id: patch } }, "c0"]] });
