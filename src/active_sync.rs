@@ -213,7 +213,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str) -> String {
             }
         };
 
-        let smtp_url = url::Url::parse(&config.smtp_url).unwrap();
         let smtp_url = match url::Url::parse(&config.smtp_url) {
             Ok(u) => u,
             Err(e) => {
@@ -230,7 +229,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str) -> String {
         };
         let mailer = SmtpTransport::builder_dangerous(smtp_host)
             .port(smtp_url.port().unwrap_or(25))
-            .build();
             .build();
         match mailer.send(&email) {
             Ok(_) => "1",
