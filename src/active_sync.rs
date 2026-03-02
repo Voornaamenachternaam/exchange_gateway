@@ -286,6 +286,23 @@ async fn handle_send_mail(
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
+    // Verify the From address matches the authenticated user to prevent spoofing
+    if let Some(ref from) = from_addr {
+        let from_email = if let Some(start) = from.find('<') {
+            from[start + 1..].trim_end_matches('>').trim()
+        } else {
+            from.trim()
+        };
+        if !from_email.eq_ignore_ascii_case(authenticated_user) {
+            tracing::warn!(
+                "SendMail: From address '{}' does not match authenticated user '{}'",
+                from_email,
+                authenticated_user
+            );
+            return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+        }
+    }
+
     let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
         let subject = re_subj
             .captures(&mime_content)
@@ -297,18 +314,75 @@ async fn handle_send_mail(
         let (_, body_content) = mime_content.split_at(body_start);
         let clean_body = body_content.trim_start_matches("\r\n\r\n");
 
-        let email = lettre::Message::builder()
-            .from(from.parse().unwrap())
-            .to(to.parse().unwrap())
-            .subject(subject)
-            .body(clean_body.to_string())
-            .unwrap();
+        let email = match (from.parse(), to.parse()) {
+            (Ok(f), Ok(t)) => match Message::builder()
+                .from(f)
+                .to(t)
+                .subject(subject)
+                .body(clean_body.to_string())
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!("Email build error: {}", e);
+                    return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+                }
+            },
+            _ => {
+                tracing::warn!("SendMail: invalid From/To address");
+                return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+            }
+        };
 
-        let smtp_url = url::Url::parse(&config.smtp_url).unwrap();
-        let host = smtp_url.host_str().unwrap();
-        let port = smtp_url.port().unwrap_or(25);
+        let smtp_url = match url::Url::parse(&config.smtp_url) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!("Invalid SMTP URL: {}", e);
+                return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+            }
+        };
 
-        let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
+        let smtp_host = match smtp_url.host_str() {
+            Some(h) => h,
+            None => {
+                tracing::error!("SMTP URL has no host");
+                return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+            }
+        };
+
+        // Prefer secure transport builders (TLS cert validation enabled).
+        let mut builder = match SmtpTransport::relay(smtp_host) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to create SMTP relay transport: {}", e);
+                return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+            }
+        };
+
+        builder = builder.port(smtp_url.port().unwrap_or(587));
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        let user = smtp_url.username();
+        if !user.is_empty()
+            && let Some(pass) = smtp_url.password() {
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.to_string(),
+                    pass.to_string(),
+                ));
+            }
+
+        // If using implicit TLS (smtps://), wrap TLS explicitly.
+        if smtp_url.scheme().eq_ignore_ascii_case("smtps") {
+            let tls = match lettre::transport::smtp::client::TlsParameters::new(smtp_host.to_string()) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to configure SMTPS TLS parameters: {}", e);
+                    return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+                }
+            };
+            builder = builder.tls(lettre::transport::smtp::client::Tls::Wrapper(tls));
+        }
+
+        let mailer = builder.build();
 
         match mailer.send(&email) {
             Ok(_) => "1",
@@ -494,56 +568,43 @@ fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> 
         let start_local = start_dt.with_timezone(&tz);
         let end_local = end_dt.with_timezone(&tz);
 
-        let body_type = 2;
-        let body_content = escape_xml(event.description.as_deref().unwrap_or(""));
-        let body_size = body_content.len();
-
-        let mut attendees_xml = String::new();
-        if let Some(attendees) = &event.participants {
-            for att in attendees {
-                attendees_xml.push_str(&format!(
-                    r#"<Attendee>
-                        <Email>{}</Email>
-                        <Name>{}</Name>
-                        <AttendeeStatus>{}</AttendeeStatus>
-                        <AttendeeType>1</AttendeeType>
-                       </Attendee>"#,
-                    escape_xml(&att.email),
-                    escape_xml(&att.name),
-                    "0"
-                ));
-            }
+fn parse_rrule_to_eas(rrule: &str) -> String {
+    let parts: Vec<&str> = rrule.split(';').collect();
+    let mut freq = "0";
+    let mut interval = "1";
+    let mut day_of_week = String::new();
+    for part in parts {
+        // Fix: Use strip_prefix
+        if let Some(val) = part.strip_prefix("FREQ=") {
+            freq = match val {
+                "DAILY" => "0",
+                "WEEKLY" => "1",
+                "MONTHLY" => "2",
+                "YEARLY" => "3",
+                _ => "0",
+            };
         }
-
-        xml.push_str(&format!(
-            r#"<{}><ServerId>{}</ServerId><ApplicationData>
-                <Calendar:Subject>{}</Calendar:Subject>
-                <Calendar:Location>{}</Calendar:Location>
-                <Calendar:Start>{}</Calendar:Start>
-                <Calendar:End>{}</Calendar:End>
-                <Calendar:UID>{}</Calendar:UID>
-                <Calendar:AllDayEvent>{}</Calendar:AllDayEvent>
-                <AirSyncBase:Body>
-                    <AirSyncBase:Type>{}</AirSyncBase:Type>
-                    <AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>
-                    <AirSyncBase:Data>{}</AirSyncBase:Data>
-                </AirSyncBase:Body>
-                <Calendar:Attendees>{}</Calendar:Attendees>
-            </ApplicationData></{}>"#,
-            mode,
-            escape_xml(event.id.as_deref().unwrap_or("")),
-            escape_xml(&event.title),
-            escape_xml(event.location.as_deref().unwrap_or("")),
-            start_local.format("%Y-%m-%dT%H:%M:%S"),
-            end_local.format("%Y-%m-%dT%H:%M:%S"),
-            escape_xml(event.uid.as_deref().unwrap_or("")),
-            if event.is_all_day { "1" } else { "0" },
-            body_type,
-            body_size,
-            body_content,
-            attendees_xml,
-            mode
-        ));
+        if let Some(val) = part.strip_prefix("INTERVAL=")
+            && val.parse::<u32>().is_ok() {
+                interval = val;
+            }
+        if let Some(val) = part.strip_prefix("BYDAY=") {
+            day_of_week = val
+                .split(',')
+                .map(|d| match d.trim() {
+                    "MO" => "2",
+                    "TU" => "4",
+                    "WE" => "8",
+                    "TH" => "16",
+                    "FR" => "32",
+                    "SA" => "64",
+                    "SU" => "1",
+                    _ => "",
+                })
+                .filter_map(|s| s.parse::<i32>().ok())
+                .fold(0i32, |acc, v| acc | v)
+                .to_string();
+        }
     }
     (xml, new_key)
 }

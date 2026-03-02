@@ -76,12 +76,8 @@ async fn handle_active_sync(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-    if !auth_header.starts_with("Basic ") {
-        return (
-            StatusCode::UNAUTHORIZED,
-            HeaderMap::new(),
-            "Unauthorized".into(),
-        );
+    if !auth_header.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("basic ")) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()).into_response();
     }
 
     let xml_request = match wbxml::decode(&body) {
@@ -129,7 +125,7 @@ async fn handle_ews(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-    if !auth_header.starts_with("Basic ") {
+    if !auth_header.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("basic ")) {
         return (
             StatusCode::UNAUTHORIZED,
             HeaderMap::new(),
