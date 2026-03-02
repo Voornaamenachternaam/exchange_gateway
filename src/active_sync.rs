@@ -194,10 +194,24 @@ async fn handle_send_mail(config: &AppConfig, xml: &str) -> String {
             .1
             .trim_start_matches("\r\n\r\n");
 
-        let email = Message::builder()
-            .from(from.parse().unwrap())
-            .to(to.parse().unwrap())
-            .subject(subject)
+        let email = match (from.parse(), to.parse()) {
+            (Ok(f), Ok(t)) => match Message::builder()
+                .from(f)
+                .to(t)
+                .subject(subject)
+                .body(clean_body.to_string())
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!("Email build error: {}", e);
+                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                }
+            },
+            _ => {
+                tracing::warn!("SendMail: invalid From/To address");
+                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+            }
+        };
             .body(clean_body.to_string())
             .unwrap();
 
