@@ -111,7 +111,10 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         "Sync" => {
             let req: SyncRequest = match quick_xml::de::from_str(xml) {
                 Ok(r) => r,
-                Err(e) => return error_xml(400, &format!("Sync Parse Error: {:?}", e)),
+                Err(e) => {
+                    tracing::error!("Sync XML Parse Error: {:?}", e);
+                    return error_xml(400, "BadRequest");
+                }
             };
             handle_sync(&session, config, &user, device_id, req).await
         }
