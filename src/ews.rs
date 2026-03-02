@@ -120,10 +120,15 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
                 let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
                 attachments_xml.push_str(&format!(r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment>"#, escape_xml(id_str), b64));
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!("get_blob failed for attachment {}: {}", id_str, e);
                 attachments_xml.push_str(&format!(
-                    r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content/></t:FileAttachment>"#,
+                    r#"<t:FileAttachment><t:AttachmentId Id="{}"/></t:FileAttachment>"#,
                     escape_xml(id_str)
+                ));
+                return soap_response(&format!(
+                    r#"<m:GetAttachmentResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetAttachmentResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:MessageText>Attachment not found</m:MessageText><m:Attachments>{}</m:Attachments></m:GetAttachmentResponseMessage></m:ResponseMessages></m:GetAttachmentResponse>"#,
+                    NS_M, NS_T, attachments_xml
                 ));
             }
         }
