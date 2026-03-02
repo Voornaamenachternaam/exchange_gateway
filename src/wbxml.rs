@@ -8,11 +8,11 @@ const TAG_OPAQUE: u8 = 0xC3;
 
 const CP_AIRSYNC: u8 = 0;
 const CP_CALENDAR: u8 = 4;
-const CP_AIRSYNCBASE: u8 = 7;
-const CP_SETTINGS: u8 = 9;
-const CP_ITEMOPERATIONS: u8 = 10;
-const CP_SEARCH: u8 = 11;
-const CP_PROVISION: u8 = 12;
+const CP_AIRSYNCBASE: u8 = 17;
+const CP_SETTINGS: u8 = 18;
+const CP_ITEMOPERATIONS: u8 = 20;
+const CP_SEARCH: u8 = 15;
+const CP_PROVISION: u8 = 14;
 const CP_PING: u8 = 13;
 
 #[derive(Debug, Clone)]
