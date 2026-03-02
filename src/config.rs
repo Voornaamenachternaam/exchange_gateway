@@ -21,4 +21,4 @@ impl AppConfig {
             _public_url: env::var("GATEWAY_HOST").map_err(|_| "GATEWAY_HOST missing")?,
         })
     }
-} 
+}
