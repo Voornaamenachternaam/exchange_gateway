@@ -11,7 +11,7 @@ pub fn decode_basic_auth(auth: &str) -> (String, String) {
     };
 
     let decoded_str = String::from_utf8_lossy(&decoded);
-    let mut creds = decoded_str.split(':');
+    let mut creds = decoded_str.splitn(2, ':');
     (
         creds.next().unwrap_or_default().to_string(),
         creds.next().unwrap_or_default().to_string(),
