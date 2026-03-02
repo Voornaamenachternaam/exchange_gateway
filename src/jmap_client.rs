@@ -27,7 +27,8 @@ pub struct Participant { pub email: String, pub name: String, pub status: Option
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Principal { pub name: String, pub email: String }
 
-#[derive(Debug, Serialize, Deserialize)]
+// Fix: Added Default derive
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct JmapChanges {
     #[serde(rename = "accountId")] pub account_id: String,
     #[serde(rename = "oldState")] pub old_state: String,
@@ -156,4 +157,4 @@ pub async fn get_blob(url: &str, token: &str, account_id: &str, blob_id: &str) -
     let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
     if let Some(b64) = json["methodResponses"][0][1]["list"][0]["data:asBase64"].as_str() { return base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).map_err(|e| e.to_string()); }
     Err("Blob not found".into())
-} 
+}
