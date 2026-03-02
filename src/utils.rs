@@ -4,7 +4,8 @@ pub fn decode_basic_auth(auth: &str) -> (String, String) {
         return (String::new(), String::new());
     }
 
-    let decoded = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[1]) {
+    let decoded = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[1])
+    {
         Ok(d) => d,
         Err(_) => return (String::new(), String::new()),
     };

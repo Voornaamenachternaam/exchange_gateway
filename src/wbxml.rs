@@ -45,7 +45,7 @@ lazy_static! {
         add!(CP_AIRSYNC, 0x16, "SendMail", true);
         add!(CP_AIRSYNC, 0x18, "Options", true);
         add!(CP_AIRSYNC, 0x24, "ApplicationData", true);
-        
+
         // Calendar (4)
         add!(CP_CALENDAR, 0x05, "Timezone", true);
         add!(CP_CALENDAR, 0x06, "AllDayEvent", true);
@@ -63,17 +63,17 @@ lazy_static! {
         add!(CP_CALENDAR, 0x1D, "Subject", true);
         add!(CP_CALENDAR, 0x1E, "UID", true);
         add!(CP_CALENDAR, 0x20, "Reminder", true);
-        
+
         // AirSyncBase (7)
         add!(CP_AIRSYNCBASE, 0x05, "Body", true);
         add!(CP_AIRSYNCBASE, 0x07, "Type", true);
         add!(CP_AIRSYNCBASE, 0x0A, "EstimatedDataSize", true);
         add!(CP_AIRSYNCBASE, 0x0C, "Data", true);
-        
+
         // Settings (9)
         add!(CP_SETTINGS, 0x05, "Settings", true);
         add!(CP_SETTINGS, 0x13, "DeviceInformation", true);
-        
+
         // ItemOperations (10)
         add!(CP_ITEMOPERATIONS, 0x05, "ItemOperations", true);
         add!(CP_ITEMOPERATIONS, 0x06, "Fetch", true);
@@ -88,7 +88,7 @@ lazy_static! {
         // Provision (12)
         add!(CP_PROVISION, 0x05, "Provision", true);
         add!(CP_PROVISION, 0x09, "PolicyKey", true);
-        
+
         // Ping (13)
         add!(CP_PING, 0x05, "Ping", true);
 
@@ -105,19 +105,25 @@ lazy_static! {
 }
 
 pub fn decode(data: &[u8]) -> Result<String, String> {
-    if data.len() < 4 { return Err("Data too short".into()); }
-    let mut pos = 4; 
+    if data.len() < 4 {
+        return Err("Data too short".into());
+    }
+    let mut pos = 4;
     let mut current_page = 0;
     let mut xml = String::new();
     let mut stack: Vec<String> = Vec::new();
     let mut pending_tag: Option<String> = None;
 
     while pos < data.len() {
-        let token = data[pos]; pos += 1;
+        let token = data[pos];
+        pos += 1;
 
         if token == TAG_SWITCH_PAGE {
-            if pos >= data.len() { return Err("Unexpected end".into()); }
-            current_page = data[pos]; pos += 1;
+            if pos >= data.len() {
+                return Err("Unexpected end".into());
+            }
+            current_page = data[pos];
+            pos += 1;
             continue;
         }
 
@@ -133,31 +139,49 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
         if token == TAG_STR_I {
             let mut str_buf = Vec::new();
-            while pos < data.len() && data[pos] != 0 { str_buf.push(data[pos]); pos += 1; }
-            if pos < data.len() { pos += 1; }
-            
+            while pos < data.len() && data[pos] != 0 {
+                str_buf.push(data[pos]);
+                pos += 1;
+            }
+            if pos < data.len() {
+                pos += 1;
+            }
+
             if let Some(tag) = pending_tag.take() {
-                xml.push_str(">");
+                xml.push('>');
                 stack.push(tag.clone());
             }
             let text = String::from_utf8_lossy(&str_buf);
-            xml.push_str(&text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"));
+            xml.push_str(
+                &text
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;"),
+            );
             continue;
         }
-        
+
         if token == TAG_OPAQUE {
             let mut len = 0;
             loop {
-                if pos >= data.len() { return Err("Unexpected end opaque".into()); }
-                let byte = data[pos]; pos += 1;
+                if pos >= data.len() {
+                    return Err("Unexpected end opaque".into());
+                }
+                let byte = data[pos];
+                pos += 1;
                 len = (len << 7) | ((byte & 0x7F) as usize);
-                if (byte & 0x80) == 0 { break; }
+                if (byte & 0x80) == 0 {
+                    break;
+                }
             }
-            if pos + len > data.len() { return Err("Opaque overflow".into()); }
-            let content = &data[pos..pos+len]; pos += len;
+            if pos + len > data.len() {
+                return Err("Opaque overflow".into());
+            }
+            let content = &data[pos..pos + len];
+            pos += len;
 
             if let Some(tag) = pending_tag.take() {
-                xml.push_str(">");
+                xml.push('>');
                 stack.push(tag.clone());
             }
             let text = String::from_utf8_lossy(content);
@@ -170,7 +194,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
         if let Some(tag_def) = TAG_MAP.get(&(current_page, token_id)) {
             if pending_tag.is_some() {
-                xml.push_str(">");
+                xml.push('>');
                 stack.push(pending_tag.take().unwrap());
             }
 
@@ -188,9 +212,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut buf = Vec::new();
-    let mut output = vec![0x03, 0x01, 0x6A, 0x00]; 
+    let mut output = vec![0x03, 0x01, 0x6A, 0x00];
     let mut current_page = 0;
-    
+
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
@@ -205,7 +229,9 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 let name = String::from_utf8_lossy(local_name.as_ref());
                 encode_tag(&mut output, &name, &mut current_page, false);
             }
-            Ok(quick_xml::events::Event::End(_)) => { output.push(TAG_END); }
+            Ok(quick_xml::events::Event::End(_)) => {
+                output.push(TAG_END);
+            }
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 output.push(TAG_STR_I);
                 // Fix: unescape expects &str, e.as_ref() gives &[u8]. Convert first.
@@ -229,7 +255,9 @@ fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_conte
             *current_page = *page;
         }
         let mut final_token = *token;
-        if has_content { final_token |= 0x40; }
+        if has_content {
+            final_token |= 0x40;
+        }
         output.push(final_token);
     }
 }
