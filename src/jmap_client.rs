@@ -26,7 +26,12 @@ pub struct JmapEvent {
     pub description: Option<String>,
     #[serde(rename = "uid", skip_serializing_if = "Option::is_none")]
     pub uid: Option<String>,
-    #[serde(rename = "participants", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "participants",
+        skip_serializing_if = "Option::is_none",
+        with = "participants_serde",
+        default
+    )]
     pub participants: Option<Vec<Participant>>,
     #[serde(rename = "isAllDay")]
     pub is_all_day: bool,
@@ -36,11 +41,55 @@ pub struct JmapEvent {
     pub updated: Option<String>, // Added for ChangeKey
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Participant {
+    #[serde(skip)]
     pub email: String,
     pub name: String,
+    #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+}
+
+/// Custom serde module to convert between `Vec<Participant>` and the JSCalendar
+/// participants map format `{ "email": { "name": "...", ... }, ... }`.
+mod participants_serde {
+    use super::Participant;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(
+        value: &Option<Vec<Participant>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(participants) => {
+                let map: HashMap<&str, &Participant> = participants
+                    .iter()
+                    .map(|p| (p.email.as_str(), p))
+                    .collect();
+                map.serialize(serializer)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<Participant>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<HashMap<String, Participant>> = Option::deserialize(deserializer)?;
+        Ok(opt.map(|map| {
+            map.into_iter()
+                .map(|(email, mut p)| {
+                    p.email = email;
+                    p
+                })
+                .collect()
+        }))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
