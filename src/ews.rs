@@ -305,13 +305,19 @@ async fn handle_sync_folder_items(
     let is_initial = req.sync_state.is_none() || prev_state.is_none();
 
     let (changes_xml, includes_last) = if is_initial {
-        let events = jmap_client::get_calendar_events(
+        let events = match jmap_client::get_calendar_events(
             &session.api_url,
             &session.access_token,
             &session.account_id,
         )
         .await
-        .unwrap_or_default();
+        {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("get_calendar_events failed during initial sync: {}", e);
+                return soap_fault("ErrorInternalServerError", "Sync Failed");
+            }
+        };
         let mut xml = String::new();
         for ev in events {
             xml.push_str(&format!(
@@ -329,14 +335,20 @@ async fn handle_sync_folder_items(
                 escape_xml(&req.sync_state.unwrap_or_default())
             ));
         }
-        let changes = jmap_client::get_calendar_changes(
+        let changes = match jmap_client::get_calendar_changes(
             &session.api_url,
             &session.access_token,
             &session.account_id,
             &prev_state.unwrap(),
         )
         .await
-        .unwrap_or_default();
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("get_calendar_changes failed: {}", e);
+                return soap_fault("ErrorInternalServerError", "Sync Failed");
+            }
+        };
         let mut xml = String::new();
         for id in changes.destroyed {
             xml.push_str(&format!(
