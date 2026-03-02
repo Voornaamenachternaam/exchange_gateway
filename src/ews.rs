@@ -4,7 +4,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Sha256, Digest};
 use uuid::Uuid;
 
@@ -49,7 +49,8 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
     let req: ResolveNamesRequest = match parse_body_content(xml) { Ok(r) => r, Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML") };
     let results = jmap_client::search_principals(&session.api_url, &session.access_token, &session.account_id, &req.unresolved_entry).await.unwrap_or_default();
     let mut resolutions = String::new();
-    for p in results { resolutions.push_str(&format!(r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Resolution>"#, escape_xml(&p.name), escape_xml(&p.email))); }
+    // Fix: Borrow results to iterate, then use results.len()
+    for p in &results { resolutions.push_str(&format!(r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Resolution>"#, escape_xml(&p.name), escape_xml(&p.email))); }
     soap_response(&format!(r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#, NS_M, NS_T, results.len(), resolutions))
 }
 
@@ -57,9 +58,11 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
     let req: GetAttachmentRequest = match parse_body_content(xml) { Ok(r) => r, Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML") };
     let mut attachments_xml = String::new();
     for attachment_id in req.attachment_ids {
-        match jmap_client::get_blob(&session.api_url, &session.access_token, &session.account_id, &attachment_id.id).await {
-            Ok(data) => { let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data); attachments_xml.push_str(&format!(r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment>"#, escape_xml(&attachment_id.id), b64)); },
-            Err(_) => { attachments_xml.push_str(&format!(r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content/></t:FileAttachment>"#, escape_xml(&attachment_id.id))); }
+        // Fix: Access the inner String ID correctly
+        let id_str = &attachment_id.id.id;
+        match jmap_client::get_blob(&session.api_url, &session.access_token, &session.account_id, id_str).await {
+            Ok(data) => { let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data); attachments_xml.push_str(&format!(r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment>"#, escape_xml(id_str), b64)); },
+            Err(_) => { attachments_xml.push_str(&format!(r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content/></t:FileAttachment>"#, escape_xml(id_str))); }
         }
     }
     soap_response(&format!(r#"<m:GetAttachmentResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetAttachmentResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Attachments>{}</m:Attachments></m:GetAttachmentResponseMessage></m:ResponseMessages></m:GetAttachmentResponse>"#, NS_M, NS_T, attachments_xml))
@@ -82,7 +85,6 @@ fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Str
     let start_local: DateTime<Tz> = event.start.parse::<DateTime<Utc>>().unwrap_or_default().with_timezone(&tz);
     let end_local: DateTime<Tz> = event.end.parse::<DateTime<Utc>>().unwrap_or_default().with_timezone(&tz);
     
-    // Robust ChangeKey: Hash of ID + Updated Timestamp (fallback to Start)
     let mut hasher = Sha256::new(); 
     hasher.update(event.id.as_deref().unwrap_or("")); 
     hasher.update(event.updated.as_deref().unwrap_or(&event.start)); 
@@ -120,7 +122,8 @@ async fn handle_update_item(session: &jmap_client::JmapSession, config: &AppConf
 
 async fn handle_sync_folder_items(session: &jmap_client::JmapSession, config: &AppConfig, user: &str, xml: &str) -> String {
     let req: SyncFolderItemsRequest = match parse_body_content(xml) { Ok(r) => r, Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML") };
-    let folder_id = req.sync_folder_id.folder_id.map(|f| f.id).unwrap_or("default");
+    // Fix: Use to_string() for default
+    let folder_id = req.sync_folder_id.folder_id.map(|f| f.id).unwrap_or_else(|| "default".to_string());
     let prev_state = db::get_ews_sync_state(config, user, &folder_id).await;
     let current_state = match jmap_client::get_calendar_state(&session.api_url, &session.access_token, &session.account_id).await { Ok(s) => s, Err(_) => return soap_fault("ErrorInternalServerError", "State Error") };
     let new_sync_token = Uuid::new_v4().to_string();
@@ -161,7 +164,6 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
     soap_fault("ErrorInvalidRequest", "No Item")
 }
 
-// Fix: unused variable warning
 async fn handle_delete_item(session: &jmap_client::JmapSession, _config: &AppConfig, xml: &str) -> String {
     let req: DeleteItemRequest = match parse_body_content(xml) { Ok(r) => r, Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML") };
     let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
@@ -169,7 +171,6 @@ async fn handle_delete_item(session: &jmap_client::JmapSession, _config: &AppCon
     soap_response(&format!(r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#, NS_M, NS_T))
 }
 
-// Fix: unused variable warning
 async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> String {
     let cal_id = jmap_client::get_default_calendar_id(&session.api_url, &session.access_token, &session.account_id).await.unwrap_or("default".into());
     soap_response(&format!(r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"#, NS_M, NS_T, escape_xml(&cal_id)))
