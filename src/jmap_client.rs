@@ -222,7 +222,6 @@ pub async fn push_event(
             .map(String::from)
             .ok_or("Create Failed: missing server id".into());
     }
-    }
     Err("Create Failed".into())
 }
 
