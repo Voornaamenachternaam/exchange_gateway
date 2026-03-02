@@ -601,7 +601,9 @@ fn parse_rrule_to_eas(rrule: &str) -> String {
             };
         }
         if let Some(val) = part.strip_prefix("INTERVAL=") {
-            interval = val;
+            if val.parse::<u32>().is_ok() {
+                interval = val;
+            }
         }
         if let Some(val) = part.strip_prefix("BYDAY=") {
             day_of_week = val
