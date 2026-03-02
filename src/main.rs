@@ -58,7 +58,7 @@ async fn handle_active_sync(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-    if auth_header.len() < 6 || !auth_header[..6].eq_ignore_ascii_case("basic ") {
+    if !auth_header.get(..6).map_or(false, |s| s.eq_ignore_ascii_case("basic ")) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()).into_response();
     }
 
@@ -123,7 +123,7 @@ async fn handle_ews(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-    if auth_header.len() < 6 || !auth_header[..6].eq_ignore_ascii_case("basic ") {
+    if !auth_header.get(..6).map_or(false, |s| s.eq_ignore_ascii_case("basic ")) {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::CONTENT_TYPE, "text/plain")],
