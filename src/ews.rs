@@ -161,14 +161,16 @@ async fn handle_create_item(session: &jmap_client::JmapSession, config: &AppConf
     soap_fault("ErrorInvalidRequest", "No Item")
 }
 
-async fn handle_delete_item(session: &jmap_client::JmapSession, config: &AppConfig, xml: &str) -> String {
+// Fix: unused variable warning
+async fn handle_delete_item(session: &jmap_client::JmapSession, _config: &AppConfig, xml: &str) -> String {
     let req: DeleteItemRequest = match parse_body_content(xml) { Ok(r) => r, Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML") };
     let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
     let _ = jmap_client::destroy_events(&session.api_url, &session.access_token, &session.account_id, ids).await;
     soap_response(&format!(r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#, NS_M, NS_T))
 }
 
-async fn handle_get_folder(session: &jmap_client::JmapSession, xml: &str) -> String {
+// Fix: unused variable warning
+async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> String {
     let cal_id = jmap_client::get_default_calendar_id(&session.api_url, &session.access_token, &session.account_id).await.unwrap_or("default".into());
     soap_response(&format!(r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"#, NS_M, NS_T, escape_xml(&cal_id)))
 }
@@ -230,4 +232,4 @@ fn escape_xml(s: &str) -> String { s.replace('&', "&amp;").replace('<', "&lt;").
 #[derive(Debug, Deserialize)] struct FolderId { #[serde(rename = "@Id")] id: String }
 #[derive(Debug, Deserialize)] struct CreateItemRequest { #[serde(rename = "Items")] items: EwsItems }
 #[derive(Debug, Deserialize)] struct EwsItems { #[serde(rename = "CalendarItem")] calendar_item: Option<EwsCalendarItem> }
-#[derive(Debug, Deserialize)] struct DeleteItemRequest { #[serde(rename = "ItemIds")] item_ids: EwsItemIds }
+#[derive(Debug, Deserialize)] struct DeleteItemRequest { #[serde(rename = "ItemIds")] item_ids: EwsItemIds } 
