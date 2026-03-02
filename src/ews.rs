@@ -376,6 +376,19 @@ async fn handle_create_item(
     };
     if let Some(item) = req.items.calendar_item {
         let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
+        let attendees: Vec<jmap_client::Participant> = item
+            .required_attendees
+            .map(|a| {
+                a.attendees
+                    .into_iter()
+                    .map(|att| jmap_client::Participant {
+                        email: att.mailbox.email,
+                        name: att.mailbox.name.unwrap_or_default(),
+                        status: None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let event = jmap_client::JmapEvent {
             id: None,
             title: item.subject.unwrap_or_default(),
@@ -385,7 +398,11 @@ async fn handle_create_item(
             description: item.body.map(|b| b.content),
             uid: Some(Uuid::new_v4().to_string()),
             is_all_day: false,
-            participants: None,
+            participants: if attendees.is_empty() {
+                None
+            } else {
+                Some(attendees)
+            },
             recurrence_rule: None,
             updated: None,
         };
@@ -659,6 +676,25 @@ struct EwsCalendarItem {
     end: Option<String>,
     #[serde(rename = "Location", default)]
     location: Option<String>,
+    #[serde(rename = "RequiredAttendees", default)]
+    required_attendees: Option<EwsRequiredAttendees>,
+}
+#[derive(Debug, Deserialize)]
+struct EwsRequiredAttendees {
+    #[serde(rename = "Attendee", default)]
+    attendees: Vec<EwsAttendee>,
+}
+#[derive(Debug, Deserialize)]
+struct EwsAttendee {
+    #[serde(rename = "Mailbox")]
+    mailbox: EwsMailbox,
+}
+#[derive(Debug, Deserialize)]
+struct EwsMailbox {
+    #[serde(rename = "EmailAddress", default)]
+    email: String,
+    #[serde(rename = "Name", default)]
+    name: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 struct EwsBody {
