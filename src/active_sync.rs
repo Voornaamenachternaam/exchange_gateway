@@ -212,8 +212,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str) -> String {
                 return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
             }
         };
-            .body(clean_body.to_string())
-            .unwrap();
 
         let smtp_url = url::Url::parse(&config.smtp_url).unwrap();
         let mailer = SmtpTransport::builder_dangerous(smtp_url.host_str().unwrap())
