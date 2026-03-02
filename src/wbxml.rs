@@ -70,8 +70,8 @@ lazy_static! {
         add!(CP_AIRSYNCBASE, 0x07, "TruncationSize", true);
         add!(CP_AIRSYNCBASE, 0x08, "AllOrNone", true);
         add!(CP_AIRSYNCBASE, 0x0A, "Body", true);
-        add!(CP_AIRSYNCBASE, 0x0B, "EstimatedDataSize", true);
-        add!(CP_AIRSYNCBASE, 0x0C, "Data", true);
+        add!(CP_AIRSYNCBASE, 0x0B, "Data", true);
+        add!(CP_AIRSYNCBASE, 0x0C, "EstimatedDataSize", true);
 
         // Settings (9)
         add!(CP_SETTINGS, 0x05, "Settings", true);
