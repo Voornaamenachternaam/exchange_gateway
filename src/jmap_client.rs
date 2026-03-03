@@ -264,12 +264,21 @@ pub async fn get_event_by_id(session: &JmapSession, id: &str) -> Result<JmapEven
     events.into_iter().next().ok_or("Event not found".into())
 }
 
-pub async fn push_event(session: &JmapSession, event: JmapEvent) -> Result<String, String> {
+pub async fn push_event(
+    session: &JmapSession,
+    event: JmapEvent,
+    calendar_id: &str,
+) -> Result<String, String> {
     let mut event = event;
     if event.uid.is_none() {
         event.uid = Some(Uuid::new_v4().to_string());
     }
-    let create_map = json!({ Uuid::new_v4().to_string(): event });
+    let mut event_json =
+        serde_json::to_value(&event).map_err(|e| format!("Serialize failed: {}", e))?;
+    if let Some(obj) = event_json.as_object_mut() {
+        obj.insert("calendarIds".to_string(), json!({ calendar_id: true }));
+    }
+    let create_map = json!({ Uuid::new_v4().to_string(): event_json });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "create": create_map }, "c0"]] });
     let res = session
         .client

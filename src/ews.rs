@@ -400,6 +400,9 @@ async fn handle_create_item(
     };
     if let Some(item) = req.items.calendar_item {
         let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
+        let cal_id = jmap_client::get_default_calendar_id(session)
+            .await
+            .unwrap_or("default".into());
         let attendees: Vec<jmap_client::Participant> = item
             .required_attendees
             .map(|a| {
@@ -430,7 +433,7 @@ async fn handle_create_item(
             recurrence_rule: None,
             updated: None,
         };
-        match jmap_client::push_event(session, event).await {
+        match jmap_client::push_event(session, event, &cal_id).await {
             Ok(id) => {
                 return soap_response(&format!(
                     r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,

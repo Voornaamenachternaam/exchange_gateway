@@ -679,6 +679,9 @@ async fn process_client_commands(
     _user: &str,
 ) {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
+    let cal_id = jmap_client::get_default_calendar_id(session)
+        .await
+        .unwrap_or("default".into());
     for add_cmd in cmds.add.unwrap_or_default() {
         let data = add_cmd.application_data;
         let start_utc = parse_local_to_utc(&data.start.unwrap_or_default(), tz);
@@ -713,7 +716,7 @@ async fn process_client_commands(
             recurrence_rule: data.recurrence.map(build_rrule),
             updated: None,
         };
-        let _ = jmap_client::push_event(session, event).await;
+        let _ = jmap_client::push_event(session, event, &cal_id).await;
     }
     for change_cmd in cmds.change.unwrap_or_default() {
         let id = change_cmd.server_id;
