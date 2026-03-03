@@ -127,14 +127,14 @@ async fn handle_active_sync(
 
     let response_xml = active_sync::process_request(&config, &xml_body, &headers).await;
 
+    let activesync_headers = [
+        ("content-type", if is_wbxml { "application/vnd.ms-sync.wbxml" } else { "application/xml; charset=utf-8" }),
+        ("MS-Server-ActiveSync", "15.0"),
+    ];
+
     if is_wbxml {
         match wbxml::encode(&response_xml) {
-            Ok(wbxml_data) => (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/vnd.ms-sync.wbxml")],
-                wbxml_data,
-            )
-                .into_response(),
+            Ok(wbxml_data) => (StatusCode::OK, activesync_headers, wbxml_data).into_response(),
             Err(e) => {
                 tracing::error!("WBXML Encode Error: {}", e);
                 (
@@ -145,12 +145,7 @@ async fn handle_active_sync(
             }
         }
     } else {
-        (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
-            response_xml,
-        )
-            .into_response()
+        (StatusCode::OK, activesync_headers, response_xml).into_response()
     }
 }
 
