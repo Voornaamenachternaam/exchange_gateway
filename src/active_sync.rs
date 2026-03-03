@@ -210,15 +210,22 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     // Compare the from address against the authenticated user. The auth username
     // may be a full email (user@domain) or just the local part (user). Accept
     // the message if the full email matches, or if the auth username has no '@'
-    // and matches the local part of the from address.
+    // and matches the local part of the from address AND the domain matches the
+    // configured mail domain (to prevent domain spoofing).
     let from_matches = if authenticated_user.contains('@') {
         from_email.eq_ignore_ascii_case(authenticated_user)
     } else {
-        from_email
+        let local_matches = from_email
             .split('@')
             .next()
             .unwrap_or("")
-            .eq_ignore_ascii_case(authenticated_user)
+            .eq_ignore_ascii_case(authenticated_user);
+        let domain_matches = from_email
+            .split('@')
+            .nth(1)
+            .unwrap_or("")
+            .eq_ignore_ascii_case(&config.mail_domain);
+        local_matches && domain_matches
     };
     if !from_matches {
         tracing::warn!(
