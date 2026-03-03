@@ -416,7 +416,6 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
 
 fn is_valid_email_for_path(email: &str) -> bool {
     !email.is_empty()
-        && !email.contains('/')
         && !email.contains('\\')
         && !email.contains('\0')
         && email.contains('@')
@@ -432,7 +431,7 @@ pub async fn update_participant_status(
     if !is_valid_email_for_path(user_email) {
         return Err(format!("Invalid email for participant path: {}", user_email));
     }
-    let patch = json!({ format!("participants/{}/participationStatus", user_email.replace('~', "~0")): status });
+    let patch = json!({ format!("participants/{}/participationStatus", user_email.replace('~', "~0").replace('/', "~1")): status });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": { event_id: patch } }, "c0"]] });
     let res = session
         .client
