@@ -30,7 +30,13 @@ async fn main() {
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let config = Arc::new(AppConfig::from_env().expect("Failed to load configuration"));
+    let config = Arc::new(match AppConfig::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Configuration Error: {}", e);
+            std::process::exit(1);
+        }
+    });
     info!("Exchange Gateway v{} started", env!("CARGO_PKG_VERSION"));
 
     let app = Router::new()
