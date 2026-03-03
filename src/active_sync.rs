@@ -181,9 +181,11 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     let re_subj = Regex::new(r"(?m)^Subject:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
 
     let to_addr = re_to
-        .captures(&mime_content)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().trim().to_string());
+    lazy_static! {
+        static ref RE_TO: Regex = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+        static ref RE_FROM: Regex = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+        static ref RE_SUBJ: Regex = Regex::new(r"(?m)^Subject:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    }
     let from_addr = re_from
         .captures(&mime_content)
         .and_then(|c| c.get(1))
