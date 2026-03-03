@@ -33,7 +33,7 @@ pub struct JmapEvent {
         default
     )]
     pub participants: Option<Vec<Participant>>,
-    #[serde(rename = "isAllDay")]
+    #[serde(rename = "isAllDay", default)]
     pub is_all_day: bool,
     #[serde(rename = "recurrenceRule", skip_serializing_if = "Option::is_none")]
     pub recurrence_rule: Option<String>,
