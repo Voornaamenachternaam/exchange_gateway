@@ -426,7 +426,7 @@ async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOps
         }
     }
     format!(
-        r#"<ItemOperations xmlns="ItemOperations:"><Status>1</Status>{}</ItemOperations>"#,
+        r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status>{}</ItemOperations>"#,
         results
     )
 }
