@@ -595,10 +595,10 @@ fn encode_tag(
         // for disambiguation. Otherwise prefer the entry on the current page to
         // avoid unnecessary page switches.
         let (page, token) = if let Some(tp) = target_page {
-            entries
-                .iter()
-                .find(|(p, _)| *p == tp)
-                .unwrap_or(&entries[0])
+            match entries.iter().find(|(p, _)| *p == tp) {
+                Some(entry) => entry,
+                None => return false,
+            }
         } else {
             entries
                 .iter()
