@@ -235,12 +235,30 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
     if data.len() < 4 {
         return Err("Data too short".into());
     }
-    if data[0] != 0x03 || data[2] != 0x6A {
+    if data[0] != 0x03 {
         return Err("Invalid WBXML header".into());
     }
 
+    // Parse public ID as mb_u_int32 (per WBXML spec, section 5.4)
+    let mut pos = 1;
+    loop {
+        if pos >= data.len() {
+            return Err("Unexpected end reading public ID".into());
+        }
+        let byte = data[pos];
+        pos += 1;
+        if (byte & 0x80) == 0 {
+            break;
+        }
+    }
+
+    // Validate charset byte (must be UTF-8 = 0x6A)
+    if pos >= data.len() || data[pos] != 0x6A {
+        return Err("Invalid WBXML header".into());
+    }
+    pos += 1;
+
     // Read string table length (mb_u_int32)
-    let mut pos = 3;
     let mut strtbl_len: usize = 0;
     loop {
         if pos >= data.len() {
