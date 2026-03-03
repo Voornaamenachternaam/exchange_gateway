@@ -484,11 +484,13 @@ async fn handle_sync(
     let (items_xml, new_sync_key) = match prev_state {
         Some(prev_jmap_state) if old_sync_key != "0" => {
             if prev_jmap_state == current_jmap_state {
+                // Keep schema consistent with the normal response path by always including <Commands>.
                 return format!(
-                    r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#,
                     utils::escape_xml(&old_sync_key),
                     utils::escape_xml(&collection_id)
                 );
+            }
             }
             let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
             {
