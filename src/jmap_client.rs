@@ -435,12 +435,54 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
         .ok_or("Not Found".into())
 }
 
+/// Validate that an email address is safe for use as a JMAP patch path segment.
+///
+/// JMAP `CalendarEvent/set` update patches use RFC 6901 JSON Pointer paths
+/// like `participants/<email>/participationStatus`. The email is the literal
+/// map key on the server, so `~` and `/` in the email are escaped (`~0`, `~1`)
+/// when building the pointer. This function rejects emails that are clearly
+/// malformed or contain control characters that could cause unexpected
+/// server behaviour.
 fn is_valid_email_for_path(email: &str) -> bool {
-    !email.is_empty()
-        && !email.contains('\\')
-        && !email.contains('\0')
-        && email.contains('@')
-        && email.len() <= 254
+    if email.is_empty() || email.len() > 254 {
+        return false;
+    }
+
+    // Must have exactly one '@' separating local and domain parts
+    let parts: Vec<&str> = email.splitn(3, '@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let (local, domain) = (parts[0], parts[1]);
+
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+
+    // Reject control characters (including NUL) and backslash
+    if email.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\') {
+        return false;
+    }
+
+    // Reject local part starting/ending with '.' or containing '..'
+    if local.starts_with('.') || local.ends_with('.') || local.contains("..") {
+        return false;
+    }
+
+    // Domain must not start/end with '-' or '.' and must not contain '..'
+    if domain.starts_with('.') || domain.starts_with('-')
+        || domain.ends_with('.') || domain.ends_with('-')
+        || domain.contains("..")
+    {
+        return false;
+    }
+
+    // Domain must contain at least one dot (TLD required)
+    if !domain.contains('.') {
+        return false;
+    }
+
+    true
 }
 
 pub async fn update_participant_status(
