@@ -42,13 +42,9 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
 }
 
 async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession) -> String {
-    let cal_id = jmap_client::get_default_calendar_id(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-    )
-    .await
-    .unwrap_or("default".into());
+    let cal_id = jmap_client::get_default_calendar_id(session)
+        .await
+        .unwrap_or("default".into());
     soap_response(&format!(
         r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Changes><t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create></m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
         NS_M,
@@ -58,13 +54,9 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession) -> Str
 }
 
 async fn handle_find_folder(session: &jmap_client::JmapSession) -> String {
-    let cal_id = jmap_client::get_default_calendar_id(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-    )
-    .await
-    .unwrap_or("default".into());
+    let cal_id = jmap_client::get_default_calendar_id(session)
+        .await
+        .unwrap_or("default".into());
     soap_response(&format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true"><t:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
         NS_M,
@@ -78,14 +70,9 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
-    let results = jmap_client::search_principals(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-        &req.unresolved_entry,
-    )
-    .await
-    .unwrap_or_default();
+    let results = jmap_client::search_principals(session, &req.unresolved_entry)
+        .await
+        .unwrap_or_default();
     let mut resolutions = String::new();
     // Fix: Borrow results to iterate, then use results.len()
     for p in &results {
@@ -108,14 +95,7 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
     let mut attachments_xml = String::new();
     for attachment_id in req.attachment_ids.items {
         let id_str = &attachment_id.id;
-        match jmap_client::get_blob(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            id_str,
-        )
-        .await
-        {
+        match jmap_client::get_blob(session, id_str).await {
             Ok(data) => {
                 let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
                 attachments_xml.push_str(&format!(r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment>"#, escape_xml(id_str), b64));
@@ -149,14 +129,9 @@ async fn handle_get_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let ids: Vec<String> = req.item_ids.items.iter().map(|i| i.id.clone()).collect();
-    let events = jmap_client::get_events_by_ids(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-        &ids,
-    )
-    .await
-    .unwrap_or_default();
+    let events = jmap_client::get_events_by_ids(session, &ids)
+        .await
+        .unwrap_or_default();
     let mut response_messages = String::new();
     for item_id in &req.item_ids.items {
         if let Some(event) = events.iter().find(|e| e.id.as_deref() == Some(&item_id.id)) {
@@ -264,15 +239,7 @@ async fn handle_update_item(
             }
         }
         if !patch.is_empty() {
-            if let Err(e) = jmap_client::patch_event(
-                &session.api_url,
-                &session.access_token,
-                &session.account_id,
-                &id,
-                patch,
-            )
-            .await
-            {
+            if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
                 tracing::error!("patch_event failed for {}: {}", id, e);
                 return soap_fault("ErrorInternalServerError", "Update Failed");
             }
@@ -301,13 +268,7 @@ async fn handle_sync_folder_items(
         .map(|f| f.id)
         .unwrap_or_else(|| "default".to_string());
     let prev_state = db::get_ews_sync_state(config, user, &folder_id).await;
-    let current_state = match jmap_client::get_calendar_state(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-    )
-    .await
-    {
+    let current_state = match jmap_client::get_calendar_state(session).await {
         Ok(s) => s,
         Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),
     };
@@ -315,13 +276,7 @@ async fn handle_sync_folder_items(
     let is_initial = req.sync_state.is_none() || prev_state.is_none();
 
     let (changes_xml, includes_last) = if is_initial {
-        let events = match jmap_client::get_calendar_events(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-        )
-        .await
-        {
+        let events = match jmap_client::get_calendar_events(session).await {
             Ok(e) => e,
             Err(e) => {
                 tracing::error!("get_calendar_events failed during initial sync: {}", e);
@@ -345,14 +300,7 @@ async fn handle_sync_folder_items(
                 escape_xml(&req.sync_state.unwrap_or_default())
             ));
         }
-        let changes = match jmap_client::get_calendar_changes(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            &prev_state.unwrap(),
-        )
-        .await
-        {
+        let changes = match jmap_client::get_calendar_changes(session, &prev_state.unwrap()).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("get_calendar_changes failed: {}", e);
@@ -367,13 +315,8 @@ async fn handle_sync_folder_items(
             ));
         }
         if !changes.updated.is_empty()
-            && let Ok(events) = jmap_client::get_events_by_ids(
-                &session.api_url,
-                &session.access_token,
-                &session.account_id,
-                &changes.updated,
-            )
-            .await
+            && let Ok(events) =
+                jmap_client::get_events_by_ids(session, &changes.updated).await
         {
             for ev in events {
                 xml.push_str(&format!(
@@ -436,14 +379,7 @@ async fn handle_create_item(
             recurrence_rule: None,
             updated: None,
         };
-        match jmap_client::push_event(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            event,
-        )
-        .await
-        {
+        match jmap_client::push_event(session, event).await {
             Ok(id) => {
                 return soap_response(&format!(
                     r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
@@ -469,14 +405,7 @@ async fn handle_delete_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
-    if let Err(e) = jmap_client::destroy_events(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-        ids,
-    )
-    .await
-    {
+    if let Err(e) = jmap_client::destroy_events(session, ids).await {
         tracing::error!("destroy_events failed: {}", e);
         return soap_fault("ErrorInternalServerError", "Delete Failed");
     }
@@ -487,13 +416,9 @@ async fn handle_delete_item(
 }
 
 async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> String {
-    let cal_id = jmap_client::get_default_calendar_id(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-    )
-    .await
-    .unwrap_or("default".into());
+    let cal_id = jmap_client::get_default_calendar_id(session)
+        .await
+        .unwrap_or("default".into());
     soap_response(&format!(
         r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"#,
         NS_M,

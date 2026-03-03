@@ -335,14 +335,7 @@ async fn handle_meeting_response(
         return error_xml(400, "Missing UID");
     }
 
-    let event_id = match jmap_client::find_event_by_uid(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-        &uid,
-    )
-    .await
-    {
+    let event_id = match jmap_client::find_event_by_uid(session, &uid).await {
         Ok(id) => id,
         Err(_) => return error_xml(400, "EventNotFound"),
     };
@@ -352,15 +345,8 @@ async fn handle_meeting_response(
         3 => "declined",
         _ => "needs-action",
     };
-    let _ = jmap_client::update_participant_status(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-        &event_id,
-        user_email,
-        status_str,
-    )
-    .await;
+    let _ = jmap_client::update_participant_status(session, &event_id, user_email, status_str)
+        .await;
 
     format!(
         r#"<MeetingResponse xmlns="AirSync:"><Result><Status>1</Status><CalendarId>{}</CalendarId></Result></MeetingResponse>"#,
@@ -390,14 +376,9 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
             _ => {}
         }
     }
-    let results = jmap_client::search_principals(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-        &query,
-    )
-    .await
-    .unwrap_or_default();
+    let results = jmap_client::search_principals(session, &query)
+        .await
+        .unwrap_or_default();
     let mut results_xml = String::new();
     for p in results {
         results_xml.push_str(&format!(r#"<Result><Properties><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress></Properties></Result>"#, escape_xml(&p.name), escape_xml(&p.email)));
@@ -414,14 +395,7 @@ async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOps
         if let Some(store) = fetch.store {
             let id_opt = store.server_id.or(store.file_reference);
             if let Some(id) = id_opt {
-                if let Ok(event) = jmap_client::get_event_by_id(
-                    &session.api_url,
-                    &session.access_token,
-                    &session.account_id,
-                    &id,
-                )
-                .await
-                {
+                if let Ok(event) = jmap_client::get_event_by_id(session, &id).await {
                     results.push_str(&format!(r#"<Response><Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch></Response>"#, escape_xml(&id), escape_xml(event.description.as_deref().unwrap_or(""))));
                 } else {
                     results.push_str("<Response><Fetch><Status>6</Status></Fetch></Response>");
@@ -450,13 +424,7 @@ async fn handle_sync(
         process_client_commands(session, cmds, &config.timezone, user).await;
     }
 
-    let current_jmap_state = match jmap_client::get_calendar_state(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-    )
-    .await
-    {
+    let current_jmap_state = match jmap_client::get_calendar_state(session).await {
         Ok(s) => s,
         Err(_) => return error_xml(500, "JMAPStateError"),
     };
@@ -472,13 +440,7 @@ async fn handle_sync(
                     escape_xml(&collection_id)
                 );
             }
-            let changes = match jmap_client::get_calendar_changes(
-                &session.api_url,
-                &session.access_token,
-                &session.account_id,
-                &prev_jmap_state,
-            )
-            .await
+            let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
             {
                 Ok(c) => c,
                 Err(e) => {
@@ -490,13 +452,7 @@ async fn handle_sync(
         }
         _ => {
             // Either prev_state is None, or old_sync_key is "0" (client reset)
-            let events = match jmap_client::get_calendar_events(
-                &session.api_url,
-                &session.access_token,
-                &session.account_id,
-            )
-            .await
-            {
+            let events = match jmap_client::get_calendar_events(session).await {
                 Ok(e) => e,
                 Err(e) => {
                     tracing::error!("Failed to fetch calendar events: {}", e);
@@ -668,13 +624,7 @@ async fn process_client_commands(
             recurrence_rule: data.recurrence.map(build_rrule),
             updated: None,
         };
-        let _ = jmap_client::push_event(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            event,
-        )
-        .await;
+        let _ = jmap_client::push_event(session, event).await;
     }
     for change_cmd in cmds.change.unwrap_or_default() {
         let id = change_cmd.server_id;
@@ -699,27 +649,14 @@ async fn process_client_commands(
             patch.insert("description".into(), serde_json::json!(b.data));
         }
         if !patch.is_empty() {
-            let _ = jmap_client::patch_event(
-                &session.api_url,
-                &session.access_token,
-                &session.account_id,
-                &id,
-                patch,
-            )
-            .await;
+            let _ = jmap_client::patch_event(session, &id, patch).await;
         }
     }
     if let Some(deletes) = cmds.delete
         && !deletes.is_empty()
     {
         let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
-        let _ = jmap_client::destroy_events(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            ids,
-        )
-        .await;
+        let _ = jmap_client::destroy_events(session, ids).await;
     }
 }
 
@@ -801,13 +738,7 @@ async fn render_changes(
         }
     }
     if !changes.updated.is_empty()
-        && let Ok(events) = jmap_client::get_events_by_ids(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            &changes.updated,
-        )
-        .await
+        && let Ok(events) = jmap_client::get_events_by_ids(session, &changes.updated).await
     {
         for event in events {
             xml.push_str(&render_event_xml(event, "Change", tz_str));
@@ -922,13 +853,9 @@ async fn handle_folder_sync(
     device_id: &str,
 ) -> String {
     db::register_device(config, user, device_id).await;
-    let cal_id = jmap_client::get_default_calendar_id(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
-    )
-    .await
-    .unwrap_or("default".into());
+    let cal_id = jmap_client::get_default_calendar_id(session)
+        .await
+        .unwrap_or("default".into());
     format!(
         r#"<FolderSync xmlns="AirSync:"><Status>1</Status><Collections><Collection><SyncKey>0</SyncKey><Changes><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></Collection></Collections></FolderSync>"#,
         escape_xml(&cal_id)

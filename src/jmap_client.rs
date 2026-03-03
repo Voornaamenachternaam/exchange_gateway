@@ -8,6 +8,7 @@ pub struct JmapSession {
     pub api_url: String,
     pub access_token: String,
     pub account_id: String,
+    pub client: Client,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -136,19 +137,16 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
         access_token: token,
         account_id,
+        client,
     })
 }
 
-pub async fn get_default_calendar_id(
-    url: &str,
-    token: &str,
-    account_id: &str,
-) -> Result<String, String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["Calendar/get", { "accountId": account_id, "ids": null }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+pub async fn get_default_calendar_id(session: &JmapSession) -> Result<String, String> {
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["Calendar/get", { "accountId": session.account_id, "ids": null }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -174,16 +172,12 @@ pub async fn get_default_calendar_id(
     Err("No Calendars".into())
 }
 
-pub async fn get_calendar_state(
-    url: &str,
-    token: &str,
-    account_id: &str,
-) -> Result<String, String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": [] }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+pub async fn get_calendar_state(session: &JmapSession) -> Result<String, String> {
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": [] }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -195,16 +189,12 @@ pub async fn get_calendar_state(
         .ok_or("Missing state".into())
 }
 
-pub async fn get_calendar_events(
-    url: &str,
-    token: &str,
-    account_id: &str,
-) -> Result<Vec<JmapEvent>, String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+pub async fn get_calendar_events(session: &JmapSession) -> Result<Vec<JmapEvent>, String> {
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -217,20 +207,17 @@ pub async fn get_calendar_events(
 }
 
 pub async fn get_events_by_ids(
-    url: &str,
-    token: &str,
-    account_id: &str,
+    session: &JmapSession,
     ids: &[String],
 ) -> Result<Vec<JmapEvent>, String> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
-    let client = Client::new();
-    // Added 'updated' to properties
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": ids, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": ids, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -242,28 +229,18 @@ pub async fn get_events_by_ids(
     Ok(events)
 }
 
-pub async fn get_event_by_id(
-    url: &str,
-    token: &str,
-    account_id: &str,
-    id: &str,
-) -> Result<JmapEvent, String> {
-    let events = get_events_by_ids(url, token, account_id, &[id.to_string()]).await?;
+pub async fn get_event_by_id(session: &JmapSession, id: &str) -> Result<JmapEvent, String> {
+    let events = get_events_by_ids(session, &[id.to_string()]).await?;
     events.into_iter().next().ok_or("Event not found".into())
 }
 
-pub async fn push_event(
-    url: &str,
-    token: &str,
-    account_id: &str,
-    event: JmapEvent,
-) -> Result<String, String> {
-    let client = Client::new();
+pub async fn push_event(session: &JmapSession, event: JmapEvent) -> Result<String, String> {
     let create_map = json!({ Uuid::new_v4().to_string(): event });
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "create": create_map }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "create": create_map }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -292,18 +269,16 @@ fn check_jmap_set_errors(json: &serde_json::Value) -> Result<(), String> {
 }
 
 pub async fn patch_event(
-    url: &str,
-    token: &str,
-    account_id: &str,
+    session: &JmapSession,
     id: &str,
     patch: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let client = Client::new();
     let update_map = json!({ id: patch });
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": update_map }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": update_map }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -323,17 +298,12 @@ pub async fn patch_event(
     Ok(())
 }
 
-pub async fn destroy_events(
-    url: &str,
-    token: &str,
-    account_id: &str,
-    ids: Vec<String>,
-) -> Result<(), String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "destroy": ids }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+pub async fn destroy_events(session: &JmapSession, ids: Vec<String>) -> Result<(), String> {
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "destroy": ids }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -354,16 +324,14 @@ pub async fn destroy_events(
 }
 
 pub async fn get_calendar_changes(
-    url: &str,
-    token: &str,
-    account_id: &str,
+    session: &JmapSession,
     since: &str,
 ) -> Result<JmapChanges, String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/changes", { "accountId": account_id, "sinceState": since }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/changes", { "accountId": session.account_id, "sinceState": since }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -374,16 +342,14 @@ pub async fn get_calendar_changes(
 }
 
 pub async fn search_principals(
-    url: &str,
-    token: &str,
-    account_id: &str,
+    session: &JmapSession,
     query: &str,
 ) -> Result<Vec<Principal>, String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"], "methodCalls": [["Principal/query", { "accountId": account_id, "filter": { "operator": "OR", "conditions": [{ "email": query }, { "name": query }] } }, "c0"], ["Principal/get", { "accountId": account_id, "#ids": { "resultOf": "c0", "name": "Principal/query", "path": "/ids" } }, "c1"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"], "methodCalls": [["Principal/query", { "accountId": session.account_id, "filter": { "operator": "OR", "conditions": [{ "email": query }, { "name": query }] } }, "c0"], ["Principal/get", { "accountId": session.account_id, "#ids": { "resultOf": "c0", "name": "Principal/query", "path": "/ids" } }, "c1"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -401,17 +367,12 @@ pub async fn search_principals(
     Ok(results)
 }
 
-pub async fn find_event_by_uid(
-    url: &str,
-    token: &str,
-    account_id: &str,
-    uid: &str,
-) -> Result<String, String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/query", { "accountId": account_id, "filter": { "uid": uid } }, "c0"], ["CalendarEvent/get", { "accountId": account_id, "#ids": { "resultOf": "c0", "name": "CalendarEvent/query", "path": "/ids" } }, "c1"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<String, String> {
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/query", { "accountId": session.account_id, "filter": { "uid": uid } }, "c0"], ["CalendarEvent/get", { "accountId": session.account_id, "#ids": { "resultOf": "c0", "name": "CalendarEvent/query", "path": "/ids" } }, "c1"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -433,9 +394,7 @@ fn is_valid_email_for_path(email: &str) -> bool {
 }
 
 pub async fn update_participant_status(
-    url: &str,
-    token: &str,
-    account_id: &str,
+    session: &JmapSession,
     event_id: &str,
     user_email: &str,
     status: &str,
@@ -443,12 +402,12 @@ pub async fn update_participant_status(
     if !is_valid_email_for_path(user_email) {
         return Err(format!("Invalid email for participant path: {}", user_email));
     }
-    let client = Client::new();
     let patch = json!({ format!("participants/{}/participationStatus", user_email): status });
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": { event_id: patch } }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": { event_id: patch } }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
@@ -468,17 +427,12 @@ pub async fn update_participant_status(
     Ok(())
 }
 
-pub async fn get_blob(
-    url: &str,
-    token: &str,
-    account_id: &str,
-    blob_id: &str,
-) -> Result<Vec<u8>, String> {
-    let client = Client::new();
-    let body = json!({ "using": ["urn:ietf:params:jmap:core"], "methodCalls": [["Blob/get", { "accountId": account_id, "ids": [blob_id] }, "c0"]] });
-    let res = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
+pub async fn get_blob(session: &JmapSession, blob_id: &str) -> Result<Vec<u8>, String> {
+    let body = json!({ "using": ["urn:ietf:params:jmap:core"], "methodCalls": [["Blob/get", { "accountId": session.account_id, "ids": [blob_id] }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
         .await
