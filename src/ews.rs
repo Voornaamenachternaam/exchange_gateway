@@ -299,8 +299,8 @@ async fn handle_sync_folder_items(
             ));
         }
         (xml, true)
-    } else {
-        if prev_state.as_ref().unwrap() == &current_state {
+    } else if let Some(prev_jmap_state) = prev_state {
+        if prev_jmap_state == current_state {
             return soap_response(&format!(
                 r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes /></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
                 NS_M,
@@ -308,7 +308,7 @@ async fn handle_sync_folder_items(
                 utils::escape_xml(&req.sync_state.unwrap_or_default())
             ));
         }
-        let changes = match jmap_client::get_calendar_changes(session, &prev_state.unwrap()).await {
+        let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await {
             Ok(c) => c,
             Err(e) => {
                 // sinceState may be expired/invalid; clear stored state so the
@@ -359,6 +359,9 @@ async fn handle_sync_folder_items(
             }
         }
         (xml, true)
+    } else {
+        // Unreachable: is_initial is true when prev_state is None
+        return soap_fault("ErrorInternalServerError", "Unexpected state");
     };
     db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await;
     soap_response(&format!(
