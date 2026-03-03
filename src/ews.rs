@@ -256,6 +256,473 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     }
 }
 
+async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession) -> String {
+    let cal_id = jmap_client::get_default_calendar_id(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+    )
+    .await
+    .unwrap_or("default".into());
+    soap_response(&format!(
+        r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Changes><t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create></m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
+        NS_M,
+        NS_T,
+        escape_xml(&cal_id)
+    ))
+}
+
+async fn handle_find_folder(session: &jmap_client::JmapSession) -> String {
+    let cal_id = jmap_client::get_default_calendar_id(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+    )
+    .await
+    .unwrap_or("default".into());
+    soap_response(&format!(
+        r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true"><t:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
+        NS_M,
+        NS_T,
+        escape_xml(&cal_id)
+    ))
+}
+
+async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> String {
+    let req: ResolveNamesRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
+    let results = jmap_client::search_principals(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+        &req.unresolved_entry,
+    )
+    .await
+    .unwrap_or_default();
+    let mut resolutions = String::new();
+    // Fix: Borrow results to iterate, then use results.len()
+    for p in &results {
+        resolutions.push_str(&format!(r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Resolution>"#, escape_xml(&p.name), escape_xml(&p.email)));
+    }
+    soap_response(&format!(
+        r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
+        NS_M,
+        NS_T,
+        results.len(),
+        resolutions
+    ))
+}
+
+async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) -> String {
+    let req: GetAttachmentRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
+    let mut attachments_xml = String::new();
+    for attachment_id in req.attachment_ids.items {
+        let id_str = &attachment_id.id;
+        match jmap_client::get_blob(
+            &session.api_url,
+            &session.access_token,
+            &session.account_id,
+            id_str,
+        )
+        .await
+        {
+            Ok(data) => {
+                let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
+                attachments_xml.push_str(&format!(r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment>"#, escape_xml(id_str), b64));
+            }
+            Err(e) => {
+                tracing::warn!("get_blob failed for attachment {}: {}", id_str, e);
+                attachments_xml.push_str(&format!(
+                    r#"<t:FileAttachment><t:AttachmentId Id="{}"/></t:FileAttachment>"#,
+                    escape_xml(id_str)
+                ));
+                return soap_response(&format!(
+                    r#"<m:GetAttachmentResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetAttachmentResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:MessageText>Attachment not found</m:MessageText><m:Attachments>{}</m:Attachments></m:GetAttachmentResponseMessage></m:ResponseMessages></m:GetAttachmentResponse>"#,
+                    NS_M, NS_T, attachments_xml
+                ));
+            }
+        }
+    }
+    soap_response(&format!(
+        r#"<m:GetAttachmentResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetAttachmentResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Attachments>{}</m:Attachments></m:GetAttachmentResponseMessage></m:ResponseMessages></m:GetAttachmentResponse>"#,
+        NS_M, NS_T, attachments_xml
+    ))
+}
+
+async fn handle_get_item(
+    session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    xml: &str,
+) -> String {
+    let req: GetItemRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
+    let ids: Vec<String> = req.item_ids.items.iter().map(|i| i.id.clone()).collect();
+    let events = jmap_client::get_events_by_ids(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+        &ids,
+    )
+    .await
+    .unwrap_or_default();
+    let mut response_messages = String::new();
+    for item_id in &req.item_ids.items {
+        if let Some(event) = events.iter().find(|e| e.id.as_deref() == Some(&item_id.id)) {
+            response_messages.push_str(&format!(
+                r#"<m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage>"#,
+                render_ews_calendar_item(event, &config.timezone)
+            ));
+        } else {
+            response_messages.push_str(r#"<m:GetItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:Items/></m:GetItemResponseMessage>"#);
+        }
+    }
+    soap_response(&format!(
+        r#"<m:GetItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:GetItemResponse>"#,
+        NS_M, NS_T, response_messages
+    ))
+}
+
+fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> String {
+    let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
+    let start_local: DateTime<Tz> = event
+        .start
+        .parse::<DateTime<Utc>>()
+        .unwrap_or_default()
+        .with_timezone(&tz);
+    let end_local: DateTime<Tz> = event
+        .end
+        .parse::<DateTime<Utc>>()
+        .unwrap_or_default()
+        .with_timezone(&tz);
+
+    let mut hasher = Sha256::new();
+    hasher.update(event.id.as_deref().unwrap_or(""));
+    hasher.update(event.updated.as_deref().unwrap_or(&event.start));
+    let change_key = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        hasher.finalize(),
+    );
+
+    let mut attendees_xml = String::new();
+    if let Some(parts) = &event.participants {
+        attendees_xml.push_str("<t:RequiredAttendees>");
+        for p in parts {
+            attendees_xml.push_str(&format!(r#"<t:Attendee><t:Mailbox><t:EmailAddress>{}</t:EmailAddress><t:Name>{}</t:Name></t:Mailbox></t:Attendee>"#, escape_xml(&p.email), escape_xml(&p.name)));
+        }
+        attendees_xml.push_str("</t:RequiredAttendees>");
+    }
+    format!(
+        r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:Body BodyType="Text">{}</t:Body><t:Start>{}</t:Start><t:End>{}</t:End><t:Location>{}</t:Location><t:IsAllDayEvent>{}</t:IsAllDayEvent>{}</t:CalendarItem>"#,
+        escape_xml(event.id.as_deref().unwrap_or("")),
+        escape_xml(&change_key),
+        escape_xml(&event.title),
+        escape_xml(event.description.as_deref().unwrap_or("")),
+        start_local.format("%Y-%m-%dT%H:%M:%S"),
+        end_local.format("%Y-%m-%dT%H:%M:%S"),
+        escape_xml(event.location.as_deref().unwrap_or("")),
+        event.is_all_day,
+        attendees_xml
+    )
+}
+
+async fn handle_update_item(
+    session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    xml: &str,
+) -> String {
+    let req: UpdateItemRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
+    for change in req.item_changes.items {
+        let id = change.item_id.id;
+        let mut patch = serde_json::Map::new();
+        let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
+        for update in change.updates.set_fields {
+            match update.field_uri.field_uri.as_str() {
+                "item:Subject" | "calendar:Subject" => {
+                    if let Some(s) = update.calendar_item.subject {
+                        patch.insert("title".into(), serde_json::json!(s));
+                    }
+                }
+                "item:Body" => {
+                    if let Some(b) = update.calendar_item.body {
+                        patch.insert("description".into(), serde_json::json!(b.content));
+                    }
+                }
+                "calendar:Location" => {
+                    if let Some(l) = update.calendar_item.location {
+                        patch.insert("location".into(), serde_json::json!(l));
+                    }
+                }
+                "calendar:Start" => {
+                    if let Some(s) = update.calendar_item.start {
+                        patch.insert(
+                            "start".into(),
+                            serde_json::json!(parse_local_to_utc(&s, tz)),
+                        );
+                    }
+                }
+                "calendar:End" => {
+                    if let Some(e) = update.calendar_item.end {
+                        patch.insert("end".into(), serde_json::json!(parse_local_to_utc(&e, tz)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !patch.is_empty()
+            && let Err(e) = jmap_client::patch_event(
+                &session.api_url,
+                &session.access_token,
+                &session.account_id,
+                &id,
+                patch,
+            )
+            .await
+            {
+                tracing::error!("patch_event failed for {}: {}", id, e);
+                return soap_fault("ErrorInternalServerError", "Update Failed");
+            }
+    }
+    soap_response(&format!(
+        r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
+        NS_M, NS_T
+    ))
+}
+
+async fn handle_sync_folder_items(
+    session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    user: &str,
+    xml: &str,
+) -> String {
+    let req: SyncFolderItemsRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
+    // Fix: Use to_string() for default
+    let folder_id = req
+        .sync_folder_id
+        .folder_id
+        .map(|f| f.id)
+        .unwrap_or_else(|| "default".to_string());
+    let prev_state = db::get_ews_sync_state(config, user, &folder_id).await;
+    let current_state = match jmap_client::get_calendar_state(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),
+    };
+    let new_sync_token = Uuid::new_v4().to_string();
+    let is_initial = req.sync_state.is_none() || prev_state.is_none();
+
+    let (changes_xml, includes_last) = if is_initial {
+        let events = match jmap_client::get_calendar_events(
+            &session.api_url,
+            &session.access_token,
+            &session.account_id,
+        )
+        .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("get_calendar_events failed during initial sync: {}", e);
+                return soap_fault("ErrorInternalServerError", "Sync Failed");
+            }
+        };
+        let mut xml = String::new();
+        for ev in events {
+            xml.push_str(&format!(
+                r#"<t:Create>{}</t:Create>"#,
+                render_ews_calendar_item(&ev, &config.timezone)
+            ));
+        }
+        (xml, true)
+    } else {
+        if prev_state.as_ref().unwrap() == &current_state {
+            return soap_response(&format!(
+                r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes /></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
+                NS_M,
+                NS_T,
+                escape_xml(&req.sync_state.unwrap_or_default())
+            ));
+        }
+        let changes = match jmap_client::get_calendar_changes(
+            &session.api_url,
+            &session.access_token,
+            &session.account_id,
+            &prev_state.unwrap(),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("get_calendar_changes failed: {}", e);
+                return soap_fault("ErrorInternalServerError", "Sync Failed");
+            }
+        };
+        let mut xml = String::new();
+        for id in changes.destroyed {
+            xml.push_str(&format!(
+                r#"<t:Delete><t:ItemId Id="{}"/></t:Delete>"#,
+                escape_xml(&id)
+            ));
+        }
+        if !changes.updated.is_empty()
+            && let Ok(events) = jmap_client::get_events_by_ids(
+                &session.api_url,
+                &session.access_token,
+                &session.account_id,
+                &changes.updated,
+            )
+            .await
+        {
+            for ev in events {
+                xml.push_str(&format!(
+                    r#"<t:Update>{}</t:Update>"#,
+                    render_ews_calendar_item(&ev, &config.timezone)
+                ));
+            }
+        }
+        (xml, true)
+    };
+    db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await;
+    soap_response(&format!(
+        r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
+        NS_M,
+        NS_T,
+        escape_xml(&new_sync_token),
+        includes_last,
+        changes_xml
+    ))
+}
+
+async fn handle_create_item(
+    session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    xml: &str,
+) -> String {
+    let req: CreateItemRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
+    if let Some(item) = req.items.calendar_item {
+        let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
+        let attendees: Vec<jmap_client::Participant> = item
+            .required_attendees
+            .map(|a| {
+                a.attendees
+                    .into_iter()
+                    .map(|att| jmap_client::Participant {
+                        email: att.mailbox.email,
+                        name: att.mailbox.name.unwrap_or_default(),
+                        status: None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let event = jmap_client::JmapEvent {
+            id: None,
+            title: item.subject.unwrap_or_default(),
+            start: parse_local_to_utc(&item.start.unwrap_or_default(), tz),
+            end: parse_local_to_utc(&item.end.unwrap_or_default(), tz),
+            location: item.location,
+            description: item.body.map(|b| b.content),
+            uid: Some(Uuid::new_v4().to_string()),
+            is_all_day: false,
+            participants: if attendees.is_empty() {
+                None
+            } else {
+                Some(attendees)
+            },
+            recurrence_rule: None,
+            updated: None,
+        };
+        match jmap_client::push_event(
+            &session.api_url,
+            &session.access_token,
+            &session.account_id,
+            event,
+        )
+        .await
+        {
+            Ok(id) => {
+                return soap_response(&format!(
+                    r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
+                    NS_M,
+                    NS_T,
+                    escape_xml(&id),
+                    escape_xml(&Uuid::new_v4().to_string())
+                ));
+            }
+            Err(_) => return soap_fault("ErrorInternalServerError", "JMAP Create Failed"),
+        }
+    }
+    soap_fault("ErrorInvalidRequest", "No Item")
+}
+
+async fn handle_delete_item(
+    session: &jmap_client::JmapSession,
+    _config: &AppConfig,
+    xml: &str,
+) -> String {
+    let req: DeleteItemRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
+    let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
+    if let Err(e) = jmap_client::destroy_events(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+        ids,
+    )
+    .await
+    {
+        tracing::error!("destroy_events failed: {}", e);
+        return soap_fault("ErrorInternalServerError", "Delete Failed");
+    }
+    soap_response(&format!(
+        r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
+        NS_M, NS_T
+    ))
+}
+
+async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> String {
+    let cal_id = jmap_client::get_default_calendar_id(
+        &session.api_url,
+        &session.access_token,
+        &session.account_id,
+    )
+    .await
+    .unwrap_or("default".into());
+    soap_response(&format!(
+        r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"#,
+        NS_M,
+        NS_T,
+        escape_xml(&cal_id)
+    ))
+}
+
+async fn handle_find_item() -> String {
+    soap_response(&format!(
+        r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
+        NS_M, NS_T
+    ))
+}
+
 fn extract_action_name(xml: &str) -> String {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
