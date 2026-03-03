@@ -469,7 +469,13 @@ async fn handle_sync(
                     return error_xml(500, "CalendarChangesError");
                 }
             };
-            render_changes(session, changes, &config.timezone).await
+            match render_changes(session, changes, &config.timezone).await {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::error!("Failed to render calendar changes: {}", e);
+                    return error_xml(500, "CalendarChangesError");
+                }
+            }
         }
         _ => {
             // Either prev_state is None, or old_sync_key is "0" (client reset)
@@ -736,7 +742,7 @@ async fn render_changes(
     session: &jmap_client::JmapSession,
     changes: jmap_client::JmapChanges,
     tz_str: &str,
-) -> (String, String) {
+) -> Result<(String, String), String> {
     let mut xml = String::new();
     let new_key = Uuid::new_v4().to_string();
     for id in &changes.destroyed {
@@ -745,22 +751,19 @@ async fn render_changes(
             utils::escape_xml(id)
         ));
     }
-    if !changes.created.is_empty()
-        && let Ok(events) = jmap_client::get_events_by_ids(session, &changes.created)
-        .await
-    {
+    if !changes.created.is_empty() {
+        let events = jmap_client::get_events_by_ids(session, &changes.created).await?;
         for event in events {
             xml.push_str(&render_event_xml(event, "Add", tz_str));
         }
     }
-    if !changes.updated.is_empty()
-        && let Ok(events) = jmap_client::get_events_by_ids(session, &changes.updated).await
-    {
+    if !changes.updated.is_empty() {
+        let events = jmap_client::get_events_by_ids(session, &changes.updated).await?;
         for event in events {
             xml.push_str(&render_event_xml(event, "Change", tz_str));
         }
     }
-    (xml, new_key)
+    Ok((xml, new_key))
 }
 
 fn error_xml(code: i32, msg: &str) -> String {
