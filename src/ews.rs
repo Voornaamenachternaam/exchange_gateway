@@ -49,7 +49,7 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession) -> Str
         r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Changes><t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create></m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
         NS_M,
         NS_T,
-        escape_xml(&cal_id)
+        utils::escape_xml(&cal_id)
     ))
 }
 
@@ -61,7 +61,7 @@ async fn handle_find_folder(session: &jmap_client::JmapSession) -> String {
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true"><t:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
         NS_M,
         NS_T,
-        escape_xml(&cal_id)
+        utils::escape_xml(&cal_id)
     ))
 }
 
@@ -76,7 +76,7 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
     let mut resolutions = String::new();
     // Fix: Borrow results to iterate, then use results.len()
     for p in &results {
-        resolutions.push_str(&format!(r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Resolution>"#, escape_xml(&p.name), escape_xml(&p.email)));
+        resolutions.push_str(&format!(r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Resolution>"#, utils::escape_xml(&p.name), utils::escape_xml(&p.email)));
     }
     soap_response(&format!(
         r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
@@ -100,14 +100,14 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
                 let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
                 response_messages.push_str(&format!(
                     r#"<m:GetAttachmentResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Attachments><t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment></m:Attachments></m:GetAttachmentResponseMessage>"#,
-                    escape_xml(id_str), b64
+                    utils::escape_xml(id_str), b64
                 ));
             }
             Err(e) => {
                 tracing::warn!("get_blob failed for attachment {}: {}", id_str, e);
                 response_messages.push_str(&format!(
                     r#"<m:GetAttachmentResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:MessageText>Attachment not found</m:MessageText><m:Attachments><t:FileAttachment><t:AttachmentId Id="{}"/></t:FileAttachment></m:Attachments></m:GetAttachmentResponseMessage>"#,
-                    escape_xml(id_str)
+                    utils::escape_xml(id_str)
                 ));
             }
         }
@@ -177,19 +177,19 @@ fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Str
     if let Some(parts) = &event.participants {
         attendees_xml.push_str("<t:RequiredAttendees>");
         for p in parts {
-            attendees_xml.push_str(&format!(r#"<t:Attendee><t:Mailbox><t:EmailAddress>{}</t:EmailAddress><t:Name>{}</t:Name></t:Mailbox></t:Attendee>"#, escape_xml(&p.email), escape_xml(&p.name)));
+            attendees_xml.push_str(&format!(r#"<t:Attendee><t:Mailbox><t:EmailAddress>{}</t:EmailAddress><t:Name>{}</t:Name></t:Mailbox></t:Attendee>"#, utils::escape_xml(&p.email), utils::escape_xml(&p.name)));
         }
         attendees_xml.push_str("</t:RequiredAttendees>");
     }
     format!(
         r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:Body BodyType="Text">{}</t:Body><t:Start>{}</t:Start><t:End>{}</t:End><t:Location>{}</t:Location><t:IsAllDayEvent>{}</t:IsAllDayEvent>{}</t:CalendarItem>"#,
-        escape_xml(event.id.as_deref().unwrap_or("")),
-        escape_xml(&change_key),
-        escape_xml(&event.title),
-        escape_xml(event.description.as_deref().unwrap_or("")),
+        utils::escape_xml(event.id.as_deref().unwrap_or("")),
+        utils::escape_xml(&change_key),
+        utils::escape_xml(&event.title),
+        utils::escape_xml(event.description.as_deref().unwrap_or("")),
         start_local.format("%Y-%m-%dT%H:%M:%S"),
         end_local.format("%Y-%m-%dT%H:%M:%S"),
-        escape_xml(event.location.as_deref().unwrap_or("")),
+        utils::escape_xml(event.location.as_deref().unwrap_or("")),
         event.is_all_day,
         attendees_xml
     )
@@ -300,7 +300,7 @@ async fn handle_sync_folder_items(
                 r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes /></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
                 NS_M,
                 NS_T,
-                escape_xml(&req.sync_state.unwrap_or_default())
+                utils::escape_xml(&req.sync_state.unwrap_or_default())
             ));
         }
         let changes = match jmap_client::get_calendar_changes(session, &prev_state.unwrap()).await {
@@ -318,7 +318,7 @@ async fn handle_sync_folder_items(
         for id in changes.destroyed {
             xml.push_str(&format!(
                 r#"<t:Delete><t:ItemId Id="{}"/></t:Delete>"#,
-                escape_xml(&id)
+                utils::escape_xml(&id)
             ));
         }
         if !changes.created.is_empty() {
@@ -360,7 +360,7 @@ async fn handle_sync_folder_items(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
         NS_M,
         NS_T,
-        escape_xml(&new_sync_token),
+        utils::escape_xml(&new_sync_token),
         includes_last,
         changes_xml
     ))
@@ -413,8 +413,8 @@ async fn handle_create_item(
                     r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
                     NS_M,
                     NS_T,
-                    escape_xml(&id),
-                    escape_xml(&Uuid::new_v4().to_string())
+                    utils::escape_xml(&id),
+                    utils::escape_xml(&Uuid::new_v4().to_string())
                 ));
             }
             Err(_) => return soap_fault("ErrorInternalServerError", "JMAP Create Failed"),
@@ -451,7 +451,7 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> St
         r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"#,
         NS_M,
         NS_T,
-        escape_xml(&cal_id)
+        utils::escape_xml(&cal_id)
     ))
 }
 
@@ -560,7 +560,7 @@ fn soap_response(content: &str) -> String {
 fn soap_fault(code: &str, msg: &str) -> String {
     soap_response(&format!(
         r#"<soap:Fault><faultcode>{}</faultcode><faultstring>{}</faultstring></soap:Fault>"#,
-        escape_xml(code), escape_xml(msg)
+        utils::escape_xml(code), utils::escape_xml(msg)
     ))
 }
 fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
@@ -576,14 +576,6 @@ fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
     }
     local_str.to_string()
 }
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
 #[derive(Debug, Deserialize)]
 struct ResolveNamesRequest {
     #[serde(rename = "UnresolvedEntry")]

@@ -370,7 +370,7 @@ async fn handle_meeting_response(
 
     format!(
         r#"<MeetingResponse xmlns="AirSync:"><Result><Status>1</Status><CalendarId>{}</CalendarId></Result></MeetingResponse>"#,
-        escape_xml(&event_id)
+        utils::escape_xml(&event_id)
     )
 }
 
@@ -402,7 +402,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
     let results: Vec<_> = results.into_iter().take(10).collect();
     let mut results_xml = String::new();
     for p in results {
-        results_xml.push_str(&format!(r#"<Result><Properties><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress></Properties></Result>"#, escape_xml(&p.name), escape_xml(&p.email)));
+        results_xml.push_str(&format!(r#"<Result><Properties><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress></Properties></Result>"#, utils::escape_xml(&p.name), utils::escape_xml(&p.email)));
     }
     format!(
         r#"<Search xmlns="Search:"><Status>1</Status><Response><Store><Status>1</Status><Result>{}</Result></Store></Response></Search>"#,
@@ -417,7 +417,7 @@ async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOps
             let id_opt = store.server_id.or(store.file_reference);
             if let Some(id) = id_opt {
                 if let Ok(event) = jmap_client::get_event_by_id(session, &id).await {
-                    fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch>"#, escape_xml(&id), escape_xml(event.description.as_deref().unwrap_or(""))));
+                    fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch>"#, utils::escape_xml(&id), utils::escape_xml(event.description.as_deref().unwrap_or(""))));
                 } else {
                     fetches.push_str("<Fetch><Status>6</Status></Fetch>");
                 }
@@ -457,8 +457,8 @@ async fn handle_sync(
             if prev_jmap_state == current_jmap_state {
                 return format!(
                     r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-                    escape_xml(&old_sync_key),
-                    escape_xml(&collection_id)
+                    utils::escape_xml(&old_sync_key),
+                    utils::escape_xml(&collection_id)
                 );
             }
             let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
@@ -503,8 +503,8 @@ async fn handle_sync(
 
     format!(
         r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
-        escape_xml(&new_sync_key),
-        escape_xml(&collection_id),
+        utils::escape_xml(&new_sync_key),
+        utils::escape_xml(&collection_id),
         items_xml
     )
 }
@@ -526,7 +526,7 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
     if let Some(attendees) = &event.participants {
         attendees_xml.push_str("<Calendar:Attendees>");
         for att in attendees {
-            attendees_xml.push_str(&format!(r#"<Calendar:Attendee><Calendar:Email>{}</Calendar:Email><Calendar:Name>{}</Calendar:Name></Calendar:Attendee>"#, escape_xml(&att.email), escape_xml(&att.name)));
+            attendees_xml.push_str(&format!(r#"<Calendar:Attendee><Calendar:Email>{}</Calendar:Email><Calendar:Name>{}</Calendar:Name></Calendar:Attendee>"#, utils::escape_xml(&att.email), utils::escape_xml(&att.name)));
         }
         attendees_xml.push_str("</Calendar:Attendees>");
     }
@@ -535,17 +535,17 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
     } else {
         String::new()
     };
-    let body_content = escape_xml(event.description.as_deref().unwrap_or(""));
+    let body_content = utils::escape_xml(event.description.as_deref().unwrap_or(""));
 
     format!(
         r#"<{}><ServerId>{}</ServerId><ApplicationData><Calendar:Subject>{}</Calendar:Subject><Calendar:Location>{}</Calendar:Location><Calendar:StartTime>{}</Calendar:StartTime><Calendar:EndTime>{}</Calendar:EndTime><Calendar:UID>{}</Calendar:UID><Calendar:AllDayEvent>{}</Calendar:AllDayEvent>{}{}<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></{}>"#,
         mode,
-        escape_xml(event.id.as_deref().unwrap_or("")),
-        escape_xml(&event.title),
-        escape_xml(event.location.as_deref().unwrap_or("")),
+        utils::escape_xml(event.id.as_deref().unwrap_or("")),
+        utils::escape_xml(&event.title),
+        utils::escape_xml(event.location.as_deref().unwrap_or("")),
         start_local.format("%Y-%m-%dT%H:%M:%S"),
         end_local.format("%Y-%m-%dT%H:%M:%S"),
-        escape_xml(event.uid.as_deref().unwrap_or("")),
+        utils::escape_xml(event.uid.as_deref().unwrap_or("")),
         if event.is_all_day { "1" } else { "0" },
         recurrence_xml,
         attendees_xml,
@@ -742,7 +742,7 @@ async fn render_changes(
     for id in &changes.destroyed {
         xml.push_str(&format!(
             "<Delete><ServerId>{}</ServerId></Delete>",
-            escape_xml(id)
+            utils::escape_xml(id)
         ));
     }
     if !changes.created.is_empty()
@@ -763,13 +763,6 @@ async fn render_changes(
     (xml, new_key)
 }
 
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
 fn error_xml(code: i32, msg: &str) -> String {
     format!(
         "<Error><Code>{}</Code><Message>{}</Message></Error>",
@@ -869,6 +862,6 @@ async fn handle_folder_sync(
         .unwrap_or("default".into());
     format!(
         r#"<FolderSync xmlns="AirSync:"><Status>1</Status><Collections><Collection><SyncKey>0</SyncKey><Changes><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></Collection></Collections></FolderSync>"#,
-        escape_xml(&cal_id)
+        utils::escape_xml(&cal_id)
     )
 }

@@ -1,3 +1,11 @@
+pub fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 pub fn decode_basic_auth(auth: &str) -> (String, String) {
     let parts: Vec<&str> = auth.split_whitespace().collect();
     if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("Basic") {
