@@ -3,7 +3,7 @@ use axum::http::HeaderMap;
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use lettre::message::Message;
-use lettre::{SmtpTransport, Transport};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use quick_xml::Reader;
 use quick_xml::escape;
 use quick_xml::events::Event;
@@ -259,7 +259,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
 
         let mut builder = if scheme == "smtps" {
             // Implicit TLS (port 465): use relay() which enforces TLS, then wrap.
-            let b = match SmtpTransport::relay(smtp_host) {
+            let b = match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!("Failed to create SMTP relay transport: {}", e);
@@ -278,9 +278,9 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
             // unencrypted connections, restoring compatibility with smtp:// URLs.
             let b = if scheme == "smtp" {
-                SmtpTransport::builder_dangerous(smtp_host)
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
             } else {
-                match SmtpTransport::starttls_relay(smtp_host) {
+                match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
@@ -304,7 +304,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
 
         let mailer = builder.build();
 
-        match mailer.send(&email) {
+        match mailer.send(email).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
