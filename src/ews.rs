@@ -306,32 +306,12 @@ async fn handle_sync_folder_items(
         let changes = match jmap_client::get_calendar_changes(session, &prev_state.unwrap()).await {
             Ok(c) => c,
             Err(e) => {
-                // sinceState may be expired/invalid; fall back to full sync
-                tracing::warn!("get_calendar_changes failed, falling back to full sync: {}", e);
-                let events = match jmap_client::get_calendar_events(session).await {
-                    Ok(e) => e,
-                    Err(e2) => {
-                        tracing::error!("full sync fallback also failed: {}", e2);
-                        return soap_fault("ErrorInternalServerError", "Sync Failed");
-                    }
-                };
-                let mut fallback_xml = String::new();
-                for ev in events {
-                    fallback_xml.push_str(&format!(
-                        r#"<t:Create>{}</t:Create>"#,
-                        render_ews_calendar_item(&ev, &config.timezone)
-                    ));
-                }
-                return {
-                    db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await;
-                    soap_response(&format!(
-                        r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
-                        NS_M,
-                        NS_T,
-                        escape_xml(&new_sync_token),
-                        fallback_xml
-                    ))
-                };
+                // sinceState may be expired/invalid; clear stored state so the
+                // client's next request triggers a proper initial (full) sync
+                // that includes both creates and deletions.
+                tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
+                db::delete_ews_sync_state(config, user, &folder_id).await;
+                return soap_fault("ErrorInvalidSyncStateData", "Sync state expired, please re-sync");
             }
         };
         let mut xml = String::new();

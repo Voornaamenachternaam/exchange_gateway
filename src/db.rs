@@ -82,6 +82,20 @@ pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) ->
         .map(String::from)
 }
 
+pub async fn delete_ews_sync_state(config: &AppConfig, user: &str, folder: &str) {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "query": "DELETE FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
+        "params": [user, folder]
+    });
+    let _ = client
+        .post(&config.db_api_url)
+        .bearer_auth(&config.db_auth_token)
+        .json(&body)
+        .send()
+        .await;
+}
+
 pub async fn update_ews_sync_state(
     config: &AppConfig,
     user: &str,
