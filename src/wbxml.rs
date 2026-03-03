@@ -379,8 +379,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 xml.push('>');
                 stack.push(tag);
             }
-            let text = String::from_utf8_lossy(content);
-            xml.push_str(&text.replace('&', "&amp;").replace('<', "&lt;"));
+            return Err("OPAQUE token is not supported for XML decoding".into());
             continue;
         }
 
