@@ -1,6 +1,21 @@
 use crate::config::AppConfig;
 use serde_json::json;
 
+/// Extract a field from the first row of a DB API response.
+/// Supports both the Worker wrapper format `{ "result": [ { "results": [...] } ] }`
+/// and the legacy direct-array format `[ { "results": [...] } ]`.
+fn extract_first_field(json: &serde_json::Value, field: &str) -> Option<String> {
+    // New format: { "result": [ { "results": [ { field: "..." } ] } ] }
+    if let Some(val) = json["result"][0]["results"][0][field].as_str() {
+        return Some(val.to_owned());
+    }
+    // Legacy format: [ { "results": [ { field: "..." } ] } ]
+    if let Some(val) = json[0]["results"][0][field].as_str() {
+        return Some(val.to_owned());
+    }
+    None
+}
+
 pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
     let client = reqwest::Client::new();
     let body = json!({
@@ -35,10 +50,13 @@ pub async fn get_sync_state(
         .ok()?;
     let json: serde_json::Value = res.json().await.ok()?;
 
-    // Path matches Worker wrapper: { "result": [ { "results": [...] } ] }
-    json["result"][0]["results"][0]["jmap_state"]
-        .as_str()
-        .map(String::from)
+    let state = extract_first_field(&json, "jmap_state");
+    if state.is_none() && !json.is_null() {
+        tracing::warn!(
+            "get_sync_state: unexpected DB response format for user={user}, device={device_id}, coll={coll}: {json}"
+        );
+    }
+    state
 }
 
 pub async fn update_sync_state(
@@ -77,9 +95,13 @@ pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) ->
         .ok()?;
     let json: serde_json::Value = res.json().await.ok()?;
 
-    json["result"][0]["results"][0]["jmap_state"]
-        .as_str()
-        .map(String::from)
+    let state = extract_first_field(&json, "jmap_state");
+    if state.is_none() && !json.is_null() {
+        tracing::warn!(
+            "get_ews_sync_state: unexpected DB response format for user={user}, folder={folder}: {json}"
+        );
+    }
+    state
 }
 
 pub async fn delete_ews_sync_state(config: &AppConfig, user: &str, folder: &str) {
