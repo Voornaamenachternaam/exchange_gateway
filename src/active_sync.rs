@@ -410,7 +410,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
 
 async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOpsReq) -> String {
     let mut results = String::new();
-    for fetch in req.item_operations.fetch.into_iter() {
+    for fetch in req.fetch.into_iter() {
         if let Some(store) = fetch.store {
             let id_opt = store.server_id.or(store.file_reference);
             if let Some(id) = id_opt {
@@ -824,11 +824,6 @@ struct DeleteCommand {
 }
 #[derive(Debug, Deserialize)]
 struct ItemOpsReq {
-    #[serde(rename = "ItemOperations")]
-    item_operations: ItemOpsBody,
-}
-#[derive(Debug, Deserialize)]
-struct ItemOpsBody {
     #[serde(rename = "Fetch")]
     fetch: Vec<ItemOpsFetch>,
 }
