@@ -397,7 +397,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 xml.push('>');
                 stack.push(tag);
             }
-            return Err("OPAQUE token is not supported for XML decoding".into());
+            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, content);
+            xml.push_str(&encoded);
             continue;
         }
 
