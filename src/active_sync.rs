@@ -236,7 +236,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         );
         return SEND_MAIL_ERROR.to_string();
     }
-    let from_addr = Some(from_addr);
+    let from_addr = Some(from_email);
 
     let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
         let subject = re_subj
