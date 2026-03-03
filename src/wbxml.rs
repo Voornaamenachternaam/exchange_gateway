@@ -8,6 +8,27 @@ const TAG_OPAQUE: u8 = 0xC3;
 
 const MAX_DECODE_DEPTH: usize = 256;
 
+/// Validate that `name` is a legal XML element name (simplified XML 1.0 Name production).
+/// Rejects empty strings and strings containing characters that could break XML structure.
+fn is_valid_xml_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => return false,
+        Some(c) if !(c.is_ascii_alphabetic() || c == '_' || c == ':' || !c.is_ascii()) => {
+            return false;
+        }
+        _ => {}
+    }
+    chars.all(|c| {
+        c.is_ascii_alphanumeric()
+            || c == '_'
+            || c == ':'
+            || c == '-'
+            || c == '.'
+            || !c.is_ascii()
+    })
+}
+
 const CP_AIRSYNC: u8 = 0;
 const CP_CALENDAR: u8 = 4;
 const CP_AIRSYNCBASE: u8 = 17;
@@ -354,6 +375,13 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             let has_content = token == 0x44;
             let offset = read_mb_u_int32(data, &mut pos)?;
             let tag_name = read_strtbl_string(strtbl, offset)?;
+
+            if !is_valid_xml_name(&tag_name) {
+                return Err(format!(
+                    "Invalid LITERAL tag name in string table: {:?}",
+                    tag_name
+                ));
+            }
 
             if pending_tag.is_some() {
                 xml.push('>');
