@@ -200,14 +200,73 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
     if data.len() < 4 {
         return Err("Data too short".into());
     }
-    if data[0] != 0x03 || data[2] != 0x6A || data[3] != 0x00 {
+    if data[0] != 0x03 || data[2] != 0x6A {
         return Err("Invalid WBXML header".into());
     }
-    let mut pos = 4;
+
+    // Read string table length (mb_u_int32)
+    let mut pos = 3;
+    let mut strtbl_len: usize = 0;
+    loop {
+        if pos >= data.len() {
+            return Err("Unexpected end reading string table length".into());
+        }
+        let byte = data[pos];
+        pos += 1;
+        strtbl_len = strtbl_len
+            .checked_shl(7)
+            .and_then(|v| v.checked_add((byte & 0x7F) as usize))
+            .ok_or_else(|| "String table length overflow".to_string())?;
+        if (byte & 0x80) == 0 {
+            break;
+        }
+    }
+
+    // Read string table
+    let strtbl_start = pos;
+    let strtbl_end = strtbl_start.checked_add(strtbl_len)
+        .ok_or_else(|| "String table end overflow".to_string())?;
+    if strtbl_end > data.len() {
+        return Err("String table exceeds data length".into());
+    }
+    let strtbl = &data[strtbl_start..strtbl_end];
+    pos = strtbl_end;
+
     let mut current_page = 0;
     let mut xml = String::new();
     let mut stack: Vec<String> = Vec::new();
     let mut pending_tag: Option<String> = None;
+
+    fn read_mb_u_int32(data: &[u8], pos: &mut usize) -> Result<usize, String> {
+        let mut val: usize = 0;
+        loop {
+            if *pos >= data.len() {
+                return Err("Unexpected end reading mb_u_int32".into());
+            }
+            let byte = data[*pos];
+            *pos += 1;
+            val = val
+                .checked_shl(7)
+                .and_then(|v| v.checked_add((byte & 0x7F) as usize))
+                .ok_or_else(|| "mb_u_int32 overflow".to_string())?;
+            if (byte & 0x80) == 0 {
+                break;
+            }
+        }
+        Ok(val)
+    }
+
+    fn read_strtbl_string(strtbl: &[u8], offset: usize) -> Result<String, String> {
+        if offset >= strtbl.len() {
+            return Err("String table offset out of bounds".into());
+        }
+        let mut end = offset;
+        while end < strtbl.len() && strtbl[end] != 0 {
+            end += 1;
+        }
+        let s = String::from_utf8_lossy(&strtbl[offset..end]).to_string();
+        Ok(s)
+    }
 
     while pos < data.len() {
         let token = data[pos];
@@ -290,6 +349,32 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             continue;
         }
 
+        // Handle LITERAL (0x04) and LITERAL_C (0x44) tokens
+        if token == 0x04 || token == 0x44 {
+            let has_content = token == 0x44;
+            let offset = read_mb_u_int32(data, &mut pos)?;
+            let tag_name = read_strtbl_string(strtbl, offset)?;
+
+            if pending_tag.is_some() {
+                xml.push('>');
+                stack.push(pending_tag.take().unwrap());
+            }
+
+            if has_content {
+                if stack.len() >= MAX_DECODE_DEPTH {
+                    return Err(format!(
+                        "WBXML nesting depth exceeds maximum of {}",
+                        MAX_DECODE_DEPTH
+                    ));
+                }
+                pending_tag = Some(tag_name.clone());
+                xml.push_str(&format!("<{}", tag_name));
+            } else {
+                xml.push_str(&format!("<{}/>", tag_name));
+            }
+            continue;
+        }
+
         let has_content = (token & 0x40) != 0;
         let token_id = token & 0x3F;
 
@@ -333,10 +418,69 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 }
 
 pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
+    // WBXML header:
+    // 0x03 = WBXML version 1.3
+    // 0x01 = Public ID (unknown/opaque, matches prior behavior)
+    // 0x6A = Charset UTF-8
+    // <strtbl_len: mb_u_int32>
+    // <string table bytes>
+    // <WBXML body>
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut buf = Vec::new();
-    let mut output = vec![0x03, 0x01, 0x6A, 0x00];
-    let mut current_page = 0;
+
+    // Build WBXML body separately so we can prefix the final output with a string table.
+    let mut body: Vec<u8> = Vec::new();
+    let mut current_page: u8 = 0;
+
+    // String table for LITERAL tags (used when a tag isn't present in NAME_MAP).
+    let mut strtbl: Vec<u8> = Vec::new();
+    let mut strtbl_index: HashMap<String, usize> = HashMap::new();
+
+    fn write_mb_u_int32(out: &mut Vec<u8>, mut v: usize) {
+        // WBXML mb_u_int32: 7-bit groups, big-endian, high bit indicates continuation.
+        let mut bytes = [0u8; 10];
+        let mut n = 0usize;
+        loop {
+            bytes[n] = (v & 0x7F) as u8;
+            n += 1;
+            v >>= 7;
+            if v == 0 {
+                break;
+            }
+        }
+        for i in (0..n).rev() {
+            let mut b = bytes[i];
+            if i != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+        }
+    }
+
+    fn strtbl_offset(name: &str, idx: &mut HashMap<String, usize>, table: &mut Vec<u8>) -> usize {
+        if let Some(&off) = idx.get(name) {
+            return off;
+        }
+        let off = table.len();
+        table.extend_from_slice(name.as_bytes());
+        table.push(0x00);
+        idx.insert(name.to_string(), off);
+        off
+    }
+
+    fn encode_literal_tag(
+        out: &mut Vec<u8>,
+        name: &str,
+        has_content: bool,
+        idx: &mut HashMap<String, usize>,
+        table: &mut Vec<u8>,
+    ) {
+        // WBXML LITERAL (0x04) / LITERAL_C (0x44): followed by string table index (mb_u_int32)
+        let token = if has_content { 0x44 } else { 0x04 };
+        out.push(token);
+        let off = strtbl_offset(name, idx, table);
+        write_mb_u_int32(out, off);
+    }
 
     loop {
         buf.clear();
@@ -344,34 +488,39 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 let local_name = e.local_name();
                 let name = String::from_utf8_lossy(local_name.as_ref());
-                if !encode_tag(&mut output, &name, &mut current_page, true) {
-                    return Err(format!("Unknown WBXML tag: {}", name));
+                if !encode_tag(&mut body, &name, &mut current_page, true) {
+                    encode_literal_tag(&mut body, &name, true, &mut strtbl_index, &mut strtbl);
                 }
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
                 let local_name = e.local_name();
                 let name = String::from_utf8_lossy(local_name.as_ref());
-                if !encode_tag(&mut output, &name, &mut current_page, false) {
-                    return Err(format!("Unknown WBXML tag: {}", name));
+                if !encode_tag(&mut body, &name, &mut current_page, false) {
+                    encode_literal_tag(&mut body, &name, false, &mut strtbl_index, &mut strtbl);
                 }
             }
             Ok(quick_xml::events::Event::End(_)) => {
-                output.push(TAG_END);
+                body.push(TAG_END);
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
-                output.push(TAG_STR_I);
+                body.push(TAG_STR_I);
                 let text_str = std::str::from_utf8(e.as_ref())
                     .map_err(|_| "Invalid UTF-8 in XML text node".to_string())?;
                 let t = quick_xml::escape::unescape(text_str)
                     .map_err(|e| format!("XML text unescape error: {}", e))?;
-                output.extend(t.as_bytes());
-                output.push(0x00);
+                body.extend(t.as_bytes());
+                body.push(0x00);
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(_) => {}
             Err(e) => return Err(format!("XML parsing error: {}", e)),
         }
     }
+
+    let mut output = vec![0x03, 0x01, 0x6A];
+    write_mb_u_int32(&mut output, strtbl.len());
+    output.extend_from_slice(&strtbl);
+    output.extend_from_slice(&body);
     Ok(output)
 }
 
