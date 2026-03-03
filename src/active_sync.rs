@@ -803,7 +803,7 @@ async fn render_changes(
     session: &jmap_client::JmapSession,
     changes: jmap_client::JmapChanges,
     tz_str: &str,
-) -> Result<(String, String), String> {
+) -> Result<(String, String), jmap_client::JmapError> {
     let mut xml = String::new();
     let new_key = Uuid::new_v4().to_string();
     for id in &changes.destroyed {
