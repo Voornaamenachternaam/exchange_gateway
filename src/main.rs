@@ -66,7 +66,7 @@ async fn handle_active_sync(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("application/xml");
 
-    let (xml_body, is_wbxml) = if content_type.contains("wbxml") {
+    let (xml_body, is_wbxml) = if content_type.to_ascii_lowercase().contains("wbxml") {
         match wbxml::decode(&body) {
             Ok(xml) => (xml, true),
             Err(e) => {
