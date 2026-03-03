@@ -1031,8 +1031,3 @@ async fn handle_folder_sync(
         utils::escape_xml(&cal_id)
     )
 }
-    format!(
-        r#"<FolderSync xmlns="AirSync:"><Status>1</Status><Collections><Collection><SyncKey>0</SyncKey><Changes><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></Collection></Collections></FolderSync>"#,
-        utils::escape_xml(&cal_id)
-    )
-}
