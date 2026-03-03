@@ -103,6 +103,9 @@ lazy_static! {
         for ((page, token), tag) in TAG_MAP.iter() {
             m.entry(tag.name).or_default().push((*page, *token));
         }
+        for entries in m.values_mut() {
+            entries.sort();
+        }
         m
     };
 }
