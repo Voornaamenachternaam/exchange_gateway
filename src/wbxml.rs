@@ -238,6 +238,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             }
             if pos < data.len() {
                 pos += 1;
+            } else {
+                return Err("Unexpected end in inline string".into());
             }
 
             if let Some(tag) = pending_tag.take() {
