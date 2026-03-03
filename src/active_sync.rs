@@ -196,9 +196,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         };
         if !from_email.eq_ignore_ascii_case(authenticated_user) {
             tracing::warn!(
-                "SendMail: From address '{}' does not match authenticated user '{}'",
-                from_email,
-                authenticated_user
+                "SendMail: From address does not match authenticated user"
             );
             return SEND_MAIL_ERROR.to_string();
         }
