@@ -249,16 +249,36 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             }
         };
 
-        // Prefer secure transport builders (TLS cert validation enabled).
-        let mut builder = match SmtpTransport::relay(smtp_host) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!("Failed to create SMTP relay transport: {}", e);
-                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
-            }
+        let scheme = smtp_url.scheme().to_ascii_lowercase();
+        let default_port = match scheme.as_str() {
+            "smtps" => 465,
+            "smtp" => 25,
+            _ => 587,
         };
+        let port = smtp_url.port().unwrap_or(default_port);
 
-        builder = builder.port(smtp_url.port().unwrap_or(587));
+        let mut builder = if scheme == "smtps" {
+            // Implicit TLS (port 465): use relay() which enforces TLS, then wrap.
+            let b = match SmtpTransport::relay(smtp_host) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create SMTP relay transport: {}", e);
+                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                }
+            };
+            let tls = match lettre::transport::smtp::client::TlsParameters::new(smtp_host.to_string()) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to configure SMTPS TLS parameters: {}", e);
+                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                }
+            };
+            b.port(port).tls(lettre::transport::smtp::client::Tls::Wrapper(tls))
+        } else {
+            // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
+            // unencrypted connections, restoring compatibility with smtp:// URLs.
+            SmtpTransport::builder_dangerous(smtp_host).port(port)
+        };
 
         // Optional basic auth from URL: smtp://user:pass@host:port
         let user = smtp_url.username();
@@ -269,18 +289,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                     pass.to_string(),
                 ));
             }
-        }
-
-        // If using implicit TLS (smtps://), wrap TLS explicitly.
-        if smtp_url.scheme().eq_ignore_ascii_case("smtps") {
-            let tls = match lettre::transport::smtp::client::TlsParameters::new(smtp_host.to_string()) {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::error!("Failed to configure SMTPS TLS parameters: {}", e);
-                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
-                }
-            };
-            builder = builder.tls(lettre::transport::smtp::client::Tls::Wrapper(tls));
         }
 
         let mailer = builder.build();
