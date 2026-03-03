@@ -321,26 +321,36 @@ async fn handle_sync_folder_items(
                 escape_xml(&id)
             ));
         }
-        if !changes.created.is_empty()
-            && let Ok(events) =
-                jmap_client::get_events_by_ids(session, &changes.created).await
-        {
-            for ev in events {
-                xml.push_str(&format!(
-                    r#"<t:Create>{}</t:Create>"#,
-                    render_ews_calendar_item(&ev, &config.timezone)
-                ));
+        if !changes.created.is_empty() {
+            match jmap_client::get_events_by_ids(session, &changes.created).await {
+                Ok(events) => {
+                    for ev in events {
+                        xml.push_str(&format!(
+                            r#"<t:Create>{}</t:Create>"#,
+                            render_ews_calendar_item(&ev, &config.timezone)
+                        ));
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fetch created events during delta sync: {}", e);
+                    return soap_fault("ErrorInternalServerError", "Sync Failed");
+                }
             }
         }
-        if !changes.updated.is_empty()
-            && let Ok(events) =
-                jmap_client::get_events_by_ids(session, &changes.updated).await
-        {
-            for ev in events {
-                xml.push_str(&format!(
-                    r#"<t:Update>{}</t:Update>"#,
-                    render_ews_calendar_item(&ev, &config.timezone)
-                ));
+        if !changes.updated.is_empty() {
+            match jmap_client::get_events_by_ids(session, &changes.updated).await {
+                Ok(events) => {
+                    for ev in events {
+                        xml.push_str(&format!(
+                            r#"<t:Update>{}</t:Update>"#,
+                            render_ews_calendar_item(&ev, &config.timezone)
+                        ));
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fetch updated events during delta sync: {}", e);
+                    return soap_fault("ErrorInternalServerError", "Sync Failed");
+                }
             }
         }
         (xml, true)
