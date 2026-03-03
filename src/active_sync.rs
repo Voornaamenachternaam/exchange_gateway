@@ -472,25 +472,37 @@ async fn handle_sync(
                     escape_xml(&collection_id)
                 );
             }
-            let changes = jmap_client::get_calendar_changes(
+            let changes = match jmap_client::get_calendar_changes(
                 &session.api_url,
                 &session.access_token,
                 &session.account_id,
                 &prev_jmap_state,
             )
             .await
-            .unwrap_or_default();
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Failed to fetch calendar changes: {}", e);
+                    return error_xml(500, "CalendarChangesError");
+                }
+            };
             render_changes(session, changes, &config.timezone).await
         }
         _ => {
             // Either prev_state is None, or old_sync_key is "0" (client reset)
-            let events = jmap_client::get_calendar_events(
+            let events = match jmap_client::get_calendar_events(
                 &session.api_url,
                 &session.access_token,
                 &session.account_id,
             )
             .await
-            .unwrap_or_default();
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!("Failed to fetch calendar events: {}", e);
+                    return error_xml(500, "CalendarEventsError");
+                }
+            };
             let mut xml = String::new();
             let new_key = Uuid::new_v4().to_string();
             for event in events {
