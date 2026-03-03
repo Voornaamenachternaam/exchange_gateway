@@ -82,6 +82,10 @@ async fn handle_active_sync(
         .get(header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok());
 
+    let is_explicit_wbxml = content_type
+        .map(|ct| ct.to_ascii_lowercase().contains("wbxml"))
+        .unwrap_or(false);
+
     let is_explicit_xml = content_type
         .map(|ct| {
             let lower = ct.to_ascii_lowercase();
@@ -97,9 +101,18 @@ async fn handle_active_sync(
                 return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response();
             }
         }
+    } else if is_explicit_wbxml {
+        // Explicit WBXML content-type — decode must succeed or return 400
+        match wbxml::decode(&body) {
+            Ok(xml) => (xml, true),
+            Err(e) => {
+                tracing::error!("WBXML decode error: {:?}", e);
+                return (StatusCode::BAD_REQUEST, "WBXML Decode Error".to_string())
+                    .into_response();
+            }
+        }
     } else {
-        // WBXML content-type, or no Content-Type header: try WBXML first,
-        // then fall back to plain XML so both cases work.
+        // No Content-Type header: try WBXML first, fall back to plain XML
         match wbxml::decode(&body) {
             Ok(xml) => (xml, true),
             Err(_) => match std::str::from_utf8(&body) {
