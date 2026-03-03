@@ -10,7 +10,10 @@ pub fn decode_basic_auth(auth: &str) -> (String, String) {
         Err(_) => return (String::new(), String::new()),
     };
 
-    let decoded_str = String::from_utf8_lossy(&decoded);
+    let decoded_str = match std::str::from_utf8(&decoded) {
+        Ok(s) => s,
+        Err(_) => return (String::new(), String::new()),
+    };
     let mut creds = decoded_str.splitn(2, ':');
     (
         creds.next().unwrap_or_default().to_string(),
