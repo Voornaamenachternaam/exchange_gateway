@@ -67,7 +67,7 @@ pub async fn get_sync_state(
     let state = extract_first_field(&json, "jmap_state");
     if state.is_none() && has_result_rows(&json) {
         tracing::warn!(
-            "get_sync_state: unexpected DB response format for user={user}, device={device_id}, coll={coll}: {json}"
+            "get_sync_state: unexpected DB response format for user and device."
         );
     }
     state
@@ -112,7 +112,7 @@ pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) ->
     let state = extract_first_field(&json, "jmap_state");
     if state.is_none() && has_result_rows(&json) {
         tracing::warn!(
-            "get_ews_sync_state: unexpected DB response format for user={user}, folder={folder}: {json}"
+            "get_ews_sync_state: unexpected DB response format for user and folder."
         );
     }
     state
