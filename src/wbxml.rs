@@ -438,22 +438,25 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             } else {
                 xml.push_str(&format!("<{}/>", tag_def.name));
             }
-        } else if has_content {
-            // Unknown tag with content: push a sentinel so the matching
-            // TAG_END consumes it instead of incorrectly closing a parent.
+        } else {
+            // Unknown tag: preserve structure with a deterministic placeholder.
             let placeholder = format!("Unknown_{}_{:02X}", current_page, token_id);
             if pending_tag.is_some() {
                 xml.push('>');
                 stack.push(pending_tag.take().unwrap());
             }
-            if stack.len() >= MAX_DECODE_DEPTH {
-                return Err(format!(
-                    "WBXML nesting depth exceeds maximum of {}",
-                    MAX_DECODE_DEPTH
-                ));
+            if has_content {
+                if stack.len() >= MAX_DECODE_DEPTH {
+                    return Err(format!(
+                        "WBXML nesting depth exceeds maximum of {}",
+                        MAX_DECODE_DEPTH
+                    ));
+                }
+                pending_tag = Some(placeholder.clone());
+                xml.push_str(&format!("<{}", placeholder));
+            } else {
+                xml.push_str(&format!("<{}/>", placeholder));
             }
-            pending_tag = Some(placeholder.clone());
-            xml.push_str(&format!("<{}", placeholder));
         }
     }
     if pending_tag.is_some() || !stack.is_empty() {
