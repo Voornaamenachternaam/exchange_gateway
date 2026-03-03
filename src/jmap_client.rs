@@ -276,7 +276,7 @@ pub async fn push_event(
     let mut event_json =
         serde_json::to_value(&event).map_err(|e| format!("Serialize failed: {}", e))?;
     if let Some(obj) = event_json.as_object_mut() {
-        obj.insert("calendarIds".to_string(), json!({ calendar_id: true }));
+        obj.insert("calendarIds".to_string(), json!({ (calendar_id): true }));
     }
     let create_map = json!({ Uuid::new_v4().to_string(): event_json });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "create": create_map }, "c0"]] });
@@ -316,7 +316,7 @@ pub async fn patch_event(
     id: &str,
     patch: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let update_map = json!({ id: patch });
+    let update_map = json!({ (id): patch });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": update_map }, "c0"]] });
     let res = session
         .client
@@ -446,7 +446,7 @@ pub async fn update_participant_status(
         return Err(format!("Invalid email for participant path: {}", user_email));
     }
     let patch = json!({ format!("participants/{}/participationStatus", user_email.replace('~', "~0").replace('/', "~1")): status });
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": { event_id: patch } }, "c0"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": { (event_id): patch } }, "c0"]] });
     let res = session
         .client
         .post(&session.api_url)
