@@ -548,18 +548,18 @@ fn extract_action_name(xml: &str) -> String {
 fn parse_body_content<T: for<'de> Deserialize<'de>>(xml: &str) -> Result<T, String> {
     // Use quick_xml Reader to find the Body element by local name,
     // which is namespace-prefix-agnostic (handles soap:Body, s:Body, SOAP-ENV:Body, etc.)
-    // We use the Reader only to identify the qualified tag name (e.g. "soap:Body"),
-    // then locate it in the original string to extract inner content safely,
-    // avoiding reliance on buffer_position() byte offsets.
+    // We track byte positions via buffer_position() to slice the original string.
+    // For a Reader created from &str, buffer_position() returns the byte offset
+    // into the original input, which is safe to use for slicing.
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
-    let qualified_body_tag: String;
-    // Find the opening Body tag and capture its full qualified name (e.g. "soap:Body")
+    let body_start;
+    // Find the opening Body tag; after this, buffer_position() points just past the '>'
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 if e.local_name().as_ref() == b"Body" {
-                    qualified_body_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    body_start = reader.buffer_position();
                     break;
                 }
             }
@@ -569,26 +569,33 @@ fn parse_body_content<T: for<'de> Deserialize<'de>>(xml: &str) -> Result<T, Stri
         }
         buf.clear();
     }
-
-    // Find the end of the opening Body tag (">") in the original string
-    let open_pattern = format!("<{}", qualified_body_tag);
-    let open_tag_start = xml
-        .find(&open_pattern)
-        .ok_or_else(|| "Could not locate Body opening tag in XML".to_string())?;
-    let after_open = &xml[open_tag_start..];
-    let close_bracket = after_open
-        .find('>')
-        .ok_or_else(|| "Malformed Body opening tag".to_string())?;
-    let body_start = open_tag_start + close_bracket + 1;
-
-    // Find the matching closing Body tag in the original string
-    let close_pattern = format!("</{}>", qualified_body_tag);
-    let body_end = xml[body_start..]
-        .rfind(&close_pattern)
-        .ok_or_else(|| "Could not locate Body closing tag in XML".to_string())?;
-
-    let inner = &xml[body_start..body_start + body_end];
-    quick_xml::de::from_str(inner).map_err(|e| format!("Deserialize Error: {}", e))
+    // Find the matching closing Body tag by reading events and tracking depth.
+    let mut depth = 1u32;
+    buf.clear();
+    loop {
+        let pos_before = reader.buffer_position();
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                if e.local_name().as_ref() == b"Body" {
+                    depth += 1;
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                if e.local_name().as_ref() == b"Body" {
+                    depth -= 1;
+                    if depth == 0 {
+                        let inner = &xml[body_start..pos_before];
+                        return quick_xml::de::from_str(inner)
+                            .map_err(|e| format!("Deserialize Error: {}", e));
+                    }
+                }
+            }
+            Ok(Event::Eof) => return Err("Could not find SOAP Body closing tag".into()),
+            Err(e) => return Err(format!("XML parse error: {}", e)),
+            _ => {}
+        }
+        buf.clear();
+    }
 }
 
 fn soap_response(content: &str) -> String {
