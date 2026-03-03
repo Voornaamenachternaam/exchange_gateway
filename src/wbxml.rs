@@ -267,11 +267,12 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                     break;
                 }
             }
-            if pos + len > data.len() {
+            let end = pos.checked_add(len).ok_or_else(|| "Opaque overflow".to_string())?;
+            if end > data.len() {
                 return Err("Opaque overflow".into());
             }
-            let content = &data[pos..pos + len];
-            pos += len;
+            let content = &data[pos..end];
+            pos = end;
 
             if let Some(tag) = pending_tag.take() {
                 xml.push('>');
