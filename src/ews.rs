@@ -316,7 +316,10 @@ async fn handle_sync_folder_items(
             }
         }
         (xml, true)
-    } else if let Some(prev_jmap_state) = prev_state {
+    } else {
+        // When is_initial is false, prev_state is guaranteed to be Some
+        // (is_initial includes prev_state.is_none() in its condition).
+        let prev_jmap_state = prev_state.expect("prev_state must be Some when is_initial is false");
         if prev_jmap_state == current_state {
             return soap_response(&format!(
                 r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes /></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
@@ -374,9 +377,6 @@ async fn handle_sync_folder_items(
             }
         }
         (xml, true)
-    } else {
-        // Unreachable: is_initial is true when prev_state is None
-        return soap_fault("ErrorInternalServerError", "Unexpected state");
     };
     db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await;
     soap_response(&format!(
