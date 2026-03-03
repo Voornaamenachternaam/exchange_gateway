@@ -412,22 +412,22 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
 }
 
 async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOpsReq) -> String {
-    let mut results = String::new();
+    let mut fetches = String::new();
     for fetch in req.fetch.into_iter() {
         if let Some(store) = fetch.store {
             let id_opt = store.server_id.or(store.file_reference);
             if let Some(id) = id_opt {
                 if let Ok(event) = jmap_client::get_event_by_id(session, &id).await {
-                    results.push_str(&format!(r#"<Response><Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch></Response>"#, escape_xml(&id), escape_xml(event.description.as_deref().unwrap_or(""))));
+                    fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch>"#, escape_xml(&id), escape_xml(event.description.as_deref().unwrap_or(""))));
                 } else {
-                    results.push_str("<Response><Fetch><Status>6</Status></Fetch></Response>");
+                    fetches.push_str("<Fetch><Status>6</Status></Fetch>");
                 }
             }
         }
     }
     format!(
-        r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status>{}</ItemOperations>"#,
-        results
+        r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status><Response>{}</Response></ItemOperations>"#,
+        fetches
     )
 }
 
