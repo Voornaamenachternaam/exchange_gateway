@@ -429,7 +429,7 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> St
 
 async fn handle_find_item() -> String {
     soap_response(&format!(
-        r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
+        r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder IndexedPagingOffset="0" TotalItemsInView="0" IncludesLastItemInRange="true"><t:Items /></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
         NS_M, NS_T
     ))
 }
