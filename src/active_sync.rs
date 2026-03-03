@@ -725,12 +725,7 @@ async fn render_changes(
         ));
     }
     if !changes.created.is_empty()
-        && let Ok(events) = jmap_client::get_events_by_ids(
-            &session.api_url,
-            &session.access_token,
-            &session.account_id,
-            &changes.created,
-        )
+        && let Ok(events) = jmap_client::get_events_by_ids(session, &changes.created)
         .await
     {
         for event in events {
