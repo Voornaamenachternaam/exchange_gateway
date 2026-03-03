@@ -40,7 +40,7 @@ async fn main() {
     info!("Exchange Gateway v{} started", env!("CARGO_PKG_VERSION"));
 
     let app = Router::new()
-        .route("/Microsoft-Server-ActiveSync", post(handle_active_sync))
+        .route("/Microsoft-Server-ActiveSync", post(handle_active_sync).options(handle_activesync_options))
         .route("/EWS/Exchange.asmx", post(handle_ews))
         .route("/health", get(|| async { "OK" }))
         .layer(TraceLayer::new_for_http())
@@ -51,6 +51,17 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn handle_activesync_options() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            ("MS-Server-ActiveSync", "15.0"),
+            ("Allow", "OPTIONS,POST"),
+        ],
+        "",
+    )
 }
 
 async fn handle_active_sync(
