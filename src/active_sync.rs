@@ -188,19 +188,25 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         .map(|m| m.as_str().trim().to_string());
 
     // Verify the From address matches the authenticated user to prevent spoofing
-    if let Some(ref from) = from_addr {
-        let from_email = if let Some(start) = from.find('<') {
-            from[start + 1..].trim_end_matches('>').trim()
-        } else {
-            from.trim()
-        };
-        if !from_email.eq_ignore_ascii_case(authenticated_user) {
-            tracing::warn!(
-                "SendMail: From address does not match authenticated user"
-            );
+    let from_addr = match from_addr {
+        Some(f) => f,
+        None => {
+            tracing::warn!("SendMail: Missing From header");
             return SEND_MAIL_ERROR.to_string();
         }
+    };
+    let from_email = if let Some(start) = from_addr.find('<') {
+        from_addr[start + 1..].trim_end_matches('>').trim().to_string()
+    } else {
+        from_addr.trim().to_string()
+    };
+    if !from_email.eq_ignore_ascii_case(authenticated_user) {
+        tracing::warn!(
+            "SendMail: From address does not match authenticated user"
+        );
+        return SEND_MAIL_ERROR.to_string();
     }
+    let from_addr = Some(from_addr);
 
     let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
         let subject = re_subj
