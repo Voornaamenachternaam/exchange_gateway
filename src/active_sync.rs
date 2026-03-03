@@ -195,14 +195,37 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             return SEND_MAIL_ERROR.to_string();
         }
     };
-    let from_email = if let Some(start) = from_addr.find('<') {
-        from_addr[start + 1..].trim_end_matches('>').trim().to_string()
+    let from_email = if let (Some(start), Some(end)) = (from_addr.find('<'), from_addr.find('>')) {
+        if end > start + 1 {
+            from_addr[start + 1..end].trim().to_string()
+        } else {
+            tracing::warn!("SendMail: Malformed From header (empty angle brackets)");
+            return SEND_MAIL_ERROR.to_string();
+        }
+    } else if from_addr.find('<').is_some() || from_addr.find('>').is_some() {
+        // Unmatched angle bracket
+        tracing::warn!("SendMail: Malformed From header (unmatched angle bracket)");
+        return SEND_MAIL_ERROR.to_string();
     } else {
         from_addr.trim().to_string()
     };
-    if !from_email.eq_ignore_ascii_case(authenticated_user) {
+    // Compare the from address against the authenticated user. The auth username
+    // may be a full email (user@domain) or just the local part (user). Accept
+    // the message if the full email matches, or if the auth username has no '@'
+    // and matches the local part of the from address.
+    let from_matches = if authenticated_user.contains('@') {
+        from_email.eq_ignore_ascii_case(authenticated_user)
+    } else {
+        from_email
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .eq_ignore_ascii_case(authenticated_user)
+    };
+    if !from_matches {
         tracing::warn!(
-            "SendMail: From address does not match authenticated user"
+            "SendMail: From address '{}' does not match authenticated user",
+            from_email
         );
         return SEND_MAIL_ERROR.to_string();
     }
