@@ -1,41 +1,108 @@
-// src/jmap_client.rs
-use base64::{Engine as _, engine::general_purpose};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct JmapSession {
-    #[serde(rename = "apiUrl")]
     pub api_url: String,
-    #[serde(rename = "primaryAccounts")]
-    pub primary_accounts: std::collections::HashMap<String, String>,
-
     pub access_token: String,
     pub account_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct JmapEvent {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(rename = "title")]
     pub title: String,
+    #[serde(rename = "start")]
     pub start: String,
+    #[serde(rename = "end")]
     pub end: String,
+    #[serde(rename = "location", skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "uid", skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    #[serde(
+        rename = "participants",
+        skip_serializing_if = "Option::is_none",
+        with = "participants_serde",
+        default
+    )]
+    pub participants: Option<Vec<Participant>>,
     #[serde(rename = "isAllDay")]
     pub is_all_day: bool,
-    pub location: Option<String>,
-    pub description: Option<String>,
-    pub uid: Option<String>,
-    pub participants: Option<Vec<Participant>>,
+    #[serde(rename = "recurrenceRule", skip_serializing_if = "Option::is_none")]
+    pub recurrence_rule: Option<String>,
+    #[serde(rename = "updated", skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>, // Added for ChangeKey
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Participant {
+    #[serde(skip)]
+    pub email: String,
+    pub name: String,
+    #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Custom serde module to convert between `Vec<Participant>` and the JSCalendar
+/// participants map format `{ "email": { "name": "...", ... }, ... }`.
+mod participants_serde {
+    use super::Participant;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(
+        value: &Option<Vec<Participant>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(participants) => {
+                let map: HashMap<&str, &Participant> = participants
+                    .iter()
+                    .map(|p| (p.email.as_str(), p))
+                    .collect();
+                map.serialize(serializer)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<Participant>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<HashMap<String, Participant>> = Option::deserialize(deserializer)?;
+        Ok(opt.map(|map| {
+            map.into_iter()
+                .map(|(email, mut p)| {
+                    p.email = email;
+                    p
+                })
+                .collect()
+        }))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Participant {
-    pub email: String,
+pub struct Principal {
     pub name: String,
+    pub email: String,
 }
 
+// Fix: Added Default derive
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct JmapChanges {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
     #[serde(rename = "oldState")]
     pub old_state: String,
     #[serde(rename = "newState")]
@@ -44,26 +111,30 @@ pub struct JmapChanges {
     pub destroyed: Vec<String>,
 }
 
-pub async fn get_session(url: &str, user: &str, pass: &str) -> Result<JmapSession, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let resp = client.get(url).basic_auth(user, Some(pass)).send().await?;
-
-    if !resp.status().is_success() {
-        return Err(anyhow::anyhow!("Auth failed: {}", resp.status()));
+pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapSession, String> {
+    let client = Client::new();
+    let token = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("{}:{}", user, pass),
+    );
+    let res = client
+        .get(jmap_url)
+        .header("Authorization", format!("Basic {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("Connection: {}", e))?;
+    if !res.status().is_success() {
+        return Err(format!("Auth Failed: {}", res.status()));
     }
-
-    let json: serde_json::Value = resp.json().await?;
-
-    let account_id = json["primaryAccounts"]["urn:ietf:params:jmap:calendars"]
+    let body: serde_json::Value = res.json().await.map_err(|e| format!("JSON: {}", e))?;
+    let account_id = body["primaryAccounts"]["urn:ietf:params:jmap:calendars"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("AccountId missing"))?
+        .ok_or("Missing Calendar Account ID")?
         .to_string();
-
     Ok(JmapSession {
-        api_url: json["apiUrl"].as_str().unwrap_or(url).to_string(),
-        access_token: general_purpose::STANDARD.encode(format!("{}:{}", user, pass)),
+        api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
+        access_token: token,
         account_id,
-        primary_accounts: std::collections::HashMap::new(),
     })
 }
 
@@ -71,118 +142,76 @@ pub async fn get_default_calendar_id(
     url: &str,
     token: &str,
     account_id: &str,
-) -> Result<String, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["Calendar/get", {
-                "accountId": account_id,
-                "ids": null
-            }, "c0"]
-        ]
-    });
-
-    let resp = client
+) -> Result<String, String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["Calendar/get", { "accountId": account_id, "ids": null }, "c0"]] });
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
-
-    let json: serde_json::Value = resp.json().await?;
-    
-    let list = json["methodResponses"][0][1]["list"].as_array().ok_or(JmapError::CalendarNotFound)?;
-    
-    for cal in list {
-        if let Some(is_default) = cal.get("isDefault").and_then(|v| v.as_bool())
-            && is_default
-                && let Some(id) = cal.get("id").and_then(|v| v.as_str()) {
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
+        // First, look for the calendar marked as default
+        for cal in list {
+            if cal["isDefault"].as_bool().unwrap_or(false) {
+                if let Some(id) = cal["id"].as_str() {
                     return Ok(id.to_string());
                 }
-    }
-    
-    if let Some(first) = list.first()
-        && let Some(id) = first.get("id").and_then(|v| v.as_str()) {
-            return Ok(id.to_string());
+            }
         }
-    
-    Err(JmapError::CalendarNotFound)
+        // Fall back to the first calendar if none is marked as default
+        if let Some(first) = list.first() {
+            return first["id"]
+                .as_str()
+                .map(String::from)
+                .ok_or("Missing ID".into());
+        }
+    }
+    Err("No Calendars".into())
 }
 
 pub async fn get_calendar_state(
     url: &str,
     token: &str,
     account_id: &str,
-) -> Result<String, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/get", {
-                "accountId": account_id,
-                "ids": [],
-                "properties": ["id"]
-            }, "c0"]
-        ]
-    });
-
-    let resp = client
+) -> Result<String, String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": [] }, "c0"]] });
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
-
-    let json: serde_json::Value = resp.json().await?;
-    Ok(json["methodResponses"][0][1]["state"]
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    json["methodResponses"][0][1]["state"]
         .as_str()
-        .unwrap_or("unknown")
-        .to_string())
+        .map(String::from)
+        .ok_or("Missing state".into())
 }
 
 pub async fn get_calendar_events(
     url: &str,
     token: &str,
     account_id: &str,
-) -> Result<Vec<JmapEvent>, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/get", {
-                "accountId": account_id,
-                "ids": null,
-                "properties": ["id", "title", "start", "end", "isAllDay", "location", "description", "uid", "participants"]
-            }, "c0"]
-        ]
-    });
-
-    let resp = client
+) -> Result<Vec<JmapEvent>, String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
-
-    let json: serde_json::Value = resp.json().await?;
-    let mut events = Vec::new();
-
-    if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
-        for item in list {
-            events.push(JmapEvent {
-                id: item["id"].as_str().map(String::from),
-                title: item["title"].as_str().unwrap_or("Untitled").to_string(),
-                start: item["start"].as_str().unwrap_or("").to_string(),
-                end: item["end"].as_str().unwrap_or("").to_string(),
-                is_all_day: item["isAllDay"].as_bool().unwrap_or(false),
-                location: item["location"].as_str().map(String::from),
-                description: item["description"].as_str().map(String::from),
-                uid: item["uid"].as_str().map(String::from),
-                participants: None,
-            });
-        }
-    }
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    let events: Vec<JmapEvent> =
+        serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
+            .map_err(|e| format!("Event deserialization failed: {}", e))?;
     Ok(events)
 }
 
@@ -191,181 +220,135 @@ pub async fn get_events_by_ids(
     token: &str,
     account_id: &str,
     ids: &[String],
-) -> Result<Vec<JmapEvent>, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/get", {
-                "accountId": account_id,
-                "ids": ids,
-                "properties": ["id", "title", "start", "end", "isAllDay", "location", "description", "uid"]
-            }, "c0"]
-        ]
-    });
-
-    let resp = client
-        .post(url)
-        .header("Authorization", format!("Basic {}", token))
-        .json(&body)
-        .send()
-        .await?;
-
-    let json: serde_json::Value = resp.json().await?;
-    let mut events = Vec::new();
-
-pub async fn push_event(url: &str, token: &str, account_id: &str, mut event: JmapEvent) -> Result<String, JmapError> {
+) -> Result<Vec<JmapEvent>, String> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
     let client = Client::new();
-    
-    if event.uid.is_none() {
-        event.uid = Some(Uuid::new_v4().to_string());
-    }
-    
-    let mut event_data = json!({
-        "title": event.title,
-        "start": event.start,
-        "end": event.end,
-        "isAllDay": event.is_all_day,
-        "uid": event.uid
-    });
-
-    if let Some(loc) = &event.location {
-        event_data["location"] = json!({ "description": loc });
-    }
-
-    if let Some(desc) = &event.description {
-        event_data["description"] = json!({ "description": desc });
-    }
-
-    // Handle participants: Convert Vec to Map for Stalwart/JSCalendar
-    if let Some(parts) = &event.participants
-        && !parts.is_empty() {
-            let mut participants_map = serde_json::Map::new();
-            for p in parts {
-                let mut p_map = json!({
-                    "email": p.email,
-                    "name": p.name
-                });
-                if let Some(status) = &p.status {
-                    p_map["status"] = json!(status);
-                }
-                participants_map.insert(p.email.clone(), p_map);
-            }
-            event_data["participants"] = serde_json::Value::Object(participants_map);
-        }
-    
-    let body = json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/set", {
-                "accountId": account_id,
-                "create": {
-                    "new-event": event_data
-                }
-            }, "c0"]
-        ]
-    });
-
+    // Added 'updated' to properties
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": account_id, "ids": ids, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
     let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
-
-    let json: serde_json::Value = res.json().await?;
-    
-    if let Some(err) = json["methodResponses"][0][1].as_object()
-        && err.get("type").and_then(|v| v.as_str()) == Some("error") {
-            let desc = err.get("description").and_then(|v| v.as_str()).unwrap_or("Unknown error");
-            return Err(JmapError::Method(desc.to_string()));
-        }
-    
-    let created_id = json["methodResponses"][0][1]["created"]["new-event"]["id"]
-        .as_str()
-        .ok_or(JmapError::Method("Failed to get created ID".to_string()))?;
-    
-    Ok(created_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    let events: Vec<JmapEvent> =
+        serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
+            .map_err(|e| format!("Event deserialization failed: {}", e))?;
+    Ok(events)
 }
 
-pub async fn find_event_by_uid(
+pub async fn get_event_by_id(
     url: &str,
     token: &str,
     account_id: &str,
-    uid: &str,
-) -> Result<String, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/query", {
-                "accountId": account_id,
-                "filter": { "uid": uid }
-            }, "c0"]
-        ]
-    });
+    id: &str,
+) -> Result<JmapEvent, String> {
+    let events = get_events_by_ids(url, token, account_id, &[id.to_string()]).await?;
+    events.into_iter().next().ok_or("Event not found".into())
+}
 
-    let resp = client
+pub async fn push_event(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    event: JmapEvent,
+) -> Result<String, String> {
+    let client = Client::new();
+    let create_map = json!({ Uuid::new_v4().to_string(): event });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "create": create_map }, "c0"]] });
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
-
-    let json: serde_json::Value = res.json().await?;
-    
-    if let Some(ids) = json["methodResponses"][0][1]["ids"].as_array()
-        && let Some(id) = ids.first().and_then(|v| v.as_str()) {
-            return Ok(id.to_string());
-        }
-    
-    Err(JmapError::EventNotFound)
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    if let Some(created) = json["methodResponses"][0][1]["created"].as_object()
+        && let Some((_, val)) = created.into_iter().next()
+    {
+        return val["id"]
+            .as_str()
+            .map(String::from)
+            .ok_or("Create Failed: missing server id".into());
+    }
+    Err("Create Failed".into())
 }
 
-// Updated to accept user_email to properly address the participant in JMAP
-pub async fn update_participant_status(
+fn check_jmap_set_errors(json: &serde_json::Value) -> Result<(), String> {
+    let resp = &json["methodResponses"][0];
+    if resp[0].as_str() == Some("error") {
+        let desc = resp[1]["description"]
+            .as_str()
+            .unwrap_or("Unknown JMAP error");
+        return Err(format!("JMAP error: {}", desc));
+    }
+    Ok(())
+}
+
+pub async fn patch_event(
     url: &str,
     token: &str,
     account_id: &str,
-    event_id: &str,
-    user_email: &str,
-    status: &str,
-) -> Result<(), anyhow::Error> {
-    let client = reqwest::Client::new();
-
-    // JMAP requires updating the specific participant key in the map.
-    // Using /set with update patch.
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/set", {
-                "accountId": account_id,
-                "update": {
-                    event_id: {
-                        format!("participants/{}", user_email): {
-                            "participationStatus": status
-                        }
-                    }
-                }
-            }, "c0"]
-        ]
-    });
-
-    let _res = client
+    id: &str,
+    patch: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let client = Client::new();
+    let update_map = json!({ id: patch });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": update_map }, "c0"]] });
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    check_jmap_set_errors(&json)?;
+    if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
+        && !not_updated.is_empty()
+    {
+        let desc = not_updated
+            .values()
+            .next()
+            .and_then(|v| v["description"].as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Update failed: {}", desc));
+    }
+    Ok(())
+}
 
-    let json: serde_json::Value = res.json().await?;
-    
-    if let Some(err) = json["methodResponses"][0][1].as_object()
-        && err.get("type").and_then(|v| v.as_str()) == Some("error") {
-            let desc = err.get("description").and_then(|v| v.as_str()).unwrap_or_default();
-            return Err(JmapError::Method(desc.to_string()));
-        }
-    
+pub async fn destroy_events(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "destroy": ids }, "c0"]] });
+    let res = client
+        .post(url)
+        .header("Authorization", format!("Basic {}", token))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    check_jmap_set_errors(&json)?;
+    if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object()
+        && !not_destroyed.is_empty()
+    {
+        let desc = not_destroyed
+            .values()
+            .next()
+            .and_then(|v| v["description"].as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Destroy failed: {}", desc));
+    }
     Ok(())
 }
 
@@ -374,90 +357,135 @@ pub async fn get_calendar_changes(
     token: &str,
     account_id: &str,
     since: &str,
-) -> Result<JmapChanges, anyhow::Error> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/changes", {
-                "accountId": account_id,
-                "sinceState": since
-            }, "c0"]
-        ]
-    });
-
-    let resp = client
+) -> Result<JmapChanges, String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/changes", { "accountId": account_id, "sinceState": since }, "c0"]] });
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
-
-    let json: serde_json::Value = resp.json().await?;
-
-    let res = &json["methodResponses"][0][1];
-    Ok(JmapChanges {
-        old_state: since.to_string(),
-        new_state: res["newState"].as_str().unwrap_or(since).to_string(),
-        updated: res["changed"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        destroyed: res["removed"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    })
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    serde_json::from_value(json["methodResponses"][0][1].clone())
+        .map_err(|e| format!("Changes Parse: {}", e))
 }
 
-pub async fn push_event(
+pub async fn search_principals(
     url: &str,
     token: &str,
     account_id: &str,
-    event: JmapEvent,
-) -> Result<String, anyhow::Error> {
-    let client = reqwest::Client::new();
-
-    let body = serde_json::json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [
-            ["CalendarEvent/set", {
-                "accountId": account_id,
-                "create": {
-                    "client-id-123": {
-                        "title": event.title,
-                        "start": event.start,
-                        "end": event.end,
-                        "location": event.location,
-                        "description": event.description,
-                        "isAllDay": event.is_all_day,
-                        "uid": event.uid
-                    }
-                }
-            }, "c0"]
-        ]
-    });
-
-    let resp = client
+    query: &str,
+) -> Result<Vec<Principal>, String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"], "methodCalls": [["Principal/query", { "accountId": account_id, "filter": { "operator": "OR", "conditions": [{ "email": query }, { "name": query }] } }, "c0"], ["Principal/get", { "accountId": account_id, "#ids": { "resultOf": "c0", "name": "Principal/query", "path": "/ids" } }, "c1"]] });
+    let res = client
         .post(url)
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    if let Some(list) = json["methodResponses"][1][1]["list"].as_array() {
+        for item in list {
+            results.push(Principal {
+                name: item["name"].as_str().unwrap_or_default().to_string(),
+                email: item["email"].as_str().unwrap_or_default().to_string(),
+            });
+        }
+    }
+    Ok(results)
+}
 
-    let json: serde_json::Value = resp.json().await?;
-    Ok(
-        json["methodResponses"][0][1]["created"]["client-id-123"]["id"]
-            .as_str()
-            .unwrap_or("new-id")
-            .to_string(),
-    )
+pub async fn find_event_by_uid(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    uid: &str,
+) -> Result<String, String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/query", { "accountId": account_id, "filter": { "uid": uid } }, "c0"], ["CalendarEvent/get", { "accountId": account_id, "#ids": { "resultOf": "c0", "name": "CalendarEvent/query", "path": "/ids" } }, "c1"]] });
+    let res = client
+        .post(url)
+        .header("Authorization", format!("Basic {}", token))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    json["methodResponses"][1][1]["list"][0]["id"]
+        .as_str()
+        .map(String::from)
+        .ok_or("Not Found".into())
+}
+
+fn is_valid_email_for_path(email: &str) -> bool {
+    !email.is_empty()
+        && !email.contains('/')
+        && !email.contains('\\')
+        && !email.contains('\0')
+        && email.contains('@')
+        && email.len() <= 254
+}
+
+pub async fn update_participant_status(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    event_id: &str,
+    user_email: &str,
+    status: &str,
+) -> Result<(), String> {
+    if !is_valid_email_for_path(user_email) {
+        return Err(format!("Invalid email for participant path: {}", user_email));
+    }
+    let client = Client::new();
+    let patch = json!({ format!("participants/{}/participationStatus", user_email): status });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": account_id, "update": { event_id: patch } }, "c0"]] });
+    let res = client
+        .post(url)
+        .header("Authorization", format!("Basic {}", token))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    check_jmap_set_errors(&json)?;
+    if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
+        && !not_updated.is_empty()
+    {
+        let desc = not_updated
+            .values()
+            .next()
+            .and_then(|v| v["description"].as_str())
+            .unwrap_or("Unknown error");
+        return Err(format!("Update failed: {}", desc));
+    }
+    Ok(())
+}
+
+pub async fn get_blob(
+    url: &str,
+    token: &str,
+    account_id: &str,
+    blob_id: &str,
+) -> Result<Vec<u8>, String> {
+    let client = Client::new();
+    let body = json!({ "using": ["urn:ietf:params:jmap:core"], "methodCalls": [["Blob/get", { "accountId": account_id, "ids": [blob_id] }, "c0"]] });
+    let res = client
+        .post(url)
+        .header("Authorization", format!("Basic {}", token))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    if let Some(b64) = json["methodResponses"][0][1]["list"][0]["data:asBase64"].as_str() {
+        return base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
+            .map_err(|e| e.to_string());
+    }
+    Err("Blob not found".into())
 }
