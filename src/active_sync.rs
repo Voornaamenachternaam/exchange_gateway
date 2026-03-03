@@ -76,10 +76,11 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                let clean_name = name.split(':').next_back().unwrap_or(&name);
-                if clean_name != "Envelope" && clean_name != "Body" && clean_name != "Collections" {
+            Ok(Event::Eof) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
                     command = clean_name.to_string();
                     break;
                 }
