@@ -129,9 +129,13 @@ async fn handle_get_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let ids: Vec<String> = req.item_ids.items.iter().map(|i| i.id.clone()).collect();
-    let events = jmap_client::get_events_by_ids(session, &ids)
-        .await
-        .unwrap_or_default();
+    let events = match jmap_client::get_events_by_ids(session, &ids).await {
+        Ok(events) => events,
+        Err(e) => {
+            tracing::error!("get_events_by_ids failed: {}", e);
+            return soap_fault("ErrorInternalServerError", "GetItem Failed");
+        }
+    };
     let mut response_messages = String::new();
     for item_id in &req.item_ids.items {
         if let Some(event) = events.iter().find(|e| e.id.as_deref() == Some(&item_id.id)) {
