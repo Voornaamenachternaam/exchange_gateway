@@ -259,14 +259,17 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         }
 
         if token == TAG_OPAQUE {
-            let mut len = 0;
+            let mut len: usize = 0;
             loop {
                 if pos >= data.len() {
                     return Err("Unexpected end opaque".into());
                 }
                 let byte = data[pos];
                 pos += 1;
-                len = (len << 7) | ((byte & 0x7F) as usize);
+                len = len
+                    .checked_shl(7)
+                    .and_then(|v| v.checked_add((byte & 0x7F) as usize))
+                    .ok_or_else(|| "Opaque length overflow".to_string())?;
                 if (byte & 0x80) == 0 {
                     break;
                 }
