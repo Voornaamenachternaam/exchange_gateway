@@ -472,5 +472,8 @@ pub async fn get_blob(session: &JmapSession, blob_id: &str) -> Result<Vec<u8>, S
         return base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
             .map_err(|e| e.to_string());
     }
+    if let Some(text) = json["methodResponses"][0][1]["list"][0]["data:asText"].as_str() {
+        return Ok(text.as_bytes().to_vec());
+    }
     Err("Blob not found".into())
 }
