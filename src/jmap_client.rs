@@ -79,18 +79,25 @@ mod participants_serde {
     {
         match value {
             Some(participants) => {
-                let map: HashMap<&str, ParticipantValue<'_>> = participants
-                    .iter()
-                    .map(|p| {
-                        (
+                let mut map = HashMap::new();
+                for p in participants {
+                    if map
+                        .insert(
                             p.email.as_str(),
                             ParticipantValue {
                                 name: &p.name,
                                 status: &p.status,
                             },
                         )
-                    })
-                    .collect();
+                        .is_some()
+                    {
+                        tracing::warn!(
+                            email = %p.email,
+                            "Duplicate participant email during serialization; \
+                             last entry wins"
+                        );
+                    }
+                }
                 map.serialize(serializer)
             }
             None => serializer.serialize_none(),
