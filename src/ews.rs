@@ -419,7 +419,12 @@ async fn handle_create_item(
                     NS_M,
                     NS_T,
                     utils::escape_xml(&id),
-                    utils::escape_xml(&Uuid::new_v4().to_string())
+                    utils::escape_xml(&id),
+                    utils::escape_xml(&{
+                        let mut h = sha2::Sha256::new();
+                        sha2::Digest::update(&mut h, &id);
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, h.finalize())
+                    })
                 ));
             }
             Err(_) => return soap_fault("ErrorInternalServerError", "JMAP Create Failed"),
