@@ -6,6 +6,8 @@ const TAG_END: u8 = 0x01;
 const TAG_STR_I: u8 = 0x03;
 const TAG_OPAQUE: u8 = 0xC3;
 
+const MAX_DECODE_DEPTH: usize = 256;
+
 const CP_AIRSYNC: u8 = 0;
 const CP_CALENDAR: u8 = 4;
 const CP_AIRSYNCBASE: u8 = 17;
@@ -295,6 +297,12 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             }
 
             if has_content {
+                if stack.len() >= MAX_DECODE_DEPTH {
+                    return Err(format!(
+                        "WBXML nesting depth exceeds maximum of {}",
+                        MAX_DECODE_DEPTH
+                    ));
+                }
                 pending_tag = Some(tag_def.name.to_string());
                 xml.push_str(&format!("<{}", tag_def.name));
             } else {
@@ -307,6 +315,12 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             if pending_tag.is_some() {
                 xml.push('>');
                 stack.push(pending_tag.take().unwrap());
+            }
+            if stack.len() >= MAX_DECODE_DEPTH {
+                return Err(format!(
+                    "WBXML nesting depth exceeds maximum of {}",
+                    MAX_DECODE_DEPTH
+                ));
             }
             pending_tag = Some(placeholder.clone());
             xml.push_str(&format!("<{}", placeholder));
