@@ -70,9 +70,14 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
+    const MAX_RESOLVE_NAMES_RESULTS: usize = 10;
+
     let results = jmap_client::search_principals(session, &req.unresolved_entry)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .take(MAX_RESOLVE_NAMES_RESULTS)
+        .collect::<Vec<_>>();
     let mut resolutions = String::new();
     // Fix: Borrow results to iterate, then use results.len()
     for p in &results {
