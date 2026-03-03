@@ -312,6 +312,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             }
         }
     } else {
+        tracing::warn!("SendMail failed: Missing To or From header");
         "2"
     };
 
