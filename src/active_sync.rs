@@ -553,8 +553,6 @@ async fn handle_sync(
 
 fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> String {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
-fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> String {
-    let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
 
     // Avoid silently defaulting to Unix epoch on parse errors.
     // If parsing fails, log and fall back to using the original JMAP string as-is.
@@ -611,8 +609,8 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
         utils::escape_xml(event.id.as_deref().unwrap_or("")),
         utils::escape_xml(&event.title),
         utils::escape_xml(event.location.as_deref().unwrap_or("")),
-        start_local.format("%Y-%m-%dT%H:%M:%S"),
-        end_local.format("%Y-%m-%dT%H:%M:%S"),
+        start_str,
+        end_str,
         utils::escape_xml(event.uid.as_deref().unwrap_or("")),
         if event.is_all_day { "1" } else { "0" },
         recurrence_xml,
