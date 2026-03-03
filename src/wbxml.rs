@@ -29,71 +29,129 @@ lazy_static! {
                 m.insert(($page, $token), Tag { name: $name, _has_content: $content });
             };
         }
-        // AirSync (0)
+        // AirSync (0) – per MS-ASWBXML spec
         add!(CP_AIRSYNC, 0x05, "Sync", true);
-        add!(CP_AIRSYNC, 0x06, "Collections", true);
-        add!(CP_AIRSYNC, 0x07, "Collection", true);
-        add!(CP_AIRSYNC, 0x09, "SyncKey", true);
-        add!(CP_AIRSYNC, 0x0A, "CollectionId", true);
-        add!(CP_AIRSYNC, 0x0B, "Status", true);
-        add!(CP_AIRSYNC, 0x0C, "Commands", true);
-        add!(CP_AIRSYNC, 0x0E, "Add", true);
-        add!(CP_AIRSYNC, 0x0F, "Change", true);
-        add!(CP_AIRSYNC, 0x10, "Delete", true);
-        add!(CP_AIRSYNC, 0x12, "ServerId", true);
-        add!(CP_AIRSYNC, 0x13, "ClientId", true);
-        add!(CP_AIRSYNC, 0x16, "SendMail", true);
-        add!(CP_AIRSYNC, 0x18, "Options", true);
-        add!(CP_AIRSYNC, 0x24, "ApplicationData", true);
+        add!(CP_AIRSYNC, 0x06, "Responses", true);
+        add!(CP_AIRSYNC, 0x07, "Add", true);
+        add!(CP_AIRSYNC, 0x08, "Change", true);
+        add!(CP_AIRSYNC, 0x09, "Delete", true);
+        add!(CP_AIRSYNC, 0x0A, "Fetch", true);
+        add!(CP_AIRSYNC, 0x0B, "SyncKey", true);
+        add!(CP_AIRSYNC, 0x0C, "ClientId", true);
+        add!(CP_AIRSYNC, 0x0D, "ServerId", true);
+        add!(CP_AIRSYNC, 0x0E, "Status", true);
+        add!(CP_AIRSYNC, 0x0F, "Collection", true);
+        add!(CP_AIRSYNC, 0x10, "Class", true);
+        add!(CP_AIRSYNC, 0x12, "Collections", true);
+        add!(CP_AIRSYNC, 0x13, "GetChanges", true);
+        add!(CP_AIRSYNC, 0x14, "MoreAvailable", true);
+        add!(CP_AIRSYNC, 0x15, "WindowSize", true);
+        add!(CP_AIRSYNC, 0x16, "Commands", true);
+        add!(CP_AIRSYNC, 0x17, "Options", true);
+        add!(CP_AIRSYNC, 0x18, "FilterType", true);
+        add!(CP_AIRSYNC, 0x1B, "ConversationMode", true);
+        add!(CP_AIRSYNC, 0x1C, "MaxItems", true);
+        add!(CP_AIRSYNC, 0x1D, "HeartbeatInterval", true);
+        add!(CP_AIRSYNC, 0x20, "ApplicationData", true);
+        add!(CP_AIRSYNC, 0x21, "DeletesAsMoves", true);
+        add!(CP_AIRSYNC, 0x22, "Supported", true);
+        add!(CP_AIRSYNC, 0x23, "SoftDelete", true);
+        add!(CP_AIRSYNC, 0x24, "MIMETruncation", true);
+        add!(CP_AIRSYNC, 0x25, "MIMESize", true);
+        add!(CP_AIRSYNC, 0x26, "BodyPreference", true);
+        add!(CP_AIRSYNC, 0x27, "BodyPartPreference", true);
+        add!(CP_AIRSYNC, 0x28, "RightsManagementSupport", true);
+        add!(CP_AIRSYNC, 0x1E, "CollectionId", true);
 
-        // Calendar (4)
-        add!(CP_CALENDAR, 0x05, "Timezone", true);
+        // Calendar (4) – per MS-ASWBXML spec
+        add!(CP_CALENDAR, 0x05, "TimeZone", true);
         add!(CP_CALENDAR, 0x06, "AllDayEvent", true);
         add!(CP_CALENDAR, 0x07, "Attendees", true);
         add!(CP_CALENDAR, 0x08, "Attendee", true);
         add!(CP_CALENDAR, 0x09, "Email", true);
         add!(CP_CALENDAR, 0x0A, "Name", true);
-        add!(CP_CALENDAR, 0x0D, "Location", true);
-        add!(CP_CALENDAR, 0x11, "Recurrence", true);
-        add!(CP_CALENDAR, 0x12, "Type", true);
-        add!(CP_CALENDAR, 0x13, "Interval", true);
-        add!(CP_CALENDAR, 0x17, "DayOfWeek", true);
-        add!(CP_CALENDAR, 0x1A, "StartTime", true);
-        add!(CP_CALENDAR, 0x1B, "EndTime", true);
-        add!(CP_CALENDAR, 0x1D, "Subject", true);
-        add!(CP_CALENDAR, 0x1E, "UID", true);
-        add!(CP_CALENDAR, 0x20, "Reminder", true);
+        add!(CP_CALENDAR, 0x0B, "AttendeeStatus", true);
+        add!(CP_CALENDAR, 0x0C, "AttendeeType", true);
+        add!(CP_CALENDAR, 0x0D, "BusyStatus", true);
+        add!(CP_CALENDAR, 0x10, "DtStamp", true);
+        add!(CP_CALENDAR, 0x11, "EndTime", true);
+        add!(CP_CALENDAR, 0x16, "Location", true);
+        add!(CP_CALENDAR, 0x1A, "Recurrence", true);
+        add!(CP_CALENDAR, 0x1B, "Type", true);
+        add!(CP_CALENDAR, 0x1C, "Interval", true);
+        add!(CP_CALENDAR, 0x1D, "DayOfWeek", true);
+        add!(CP_CALENDAR, 0x23, "Reminder", true);
+        add!(CP_CALENDAR, 0x24, "Sensitivity", true);
+        add!(CP_CALENDAR, 0x25, "Subject", true);
+        add!(CP_CALENDAR, 0x26, "StartTime", true);
+        add!(CP_CALENDAR, 0x27, "UID", true);
+        add!(CP_CALENDAR, 0x29, "DisallowNewTimeProposal", true);
+        add!(CP_CALENDAR, 0x2A, "ResponseRequested", true);
 
-        // AirSyncBase (17)
-        add!(CP_AIRSYNCBASE, 0x05, "BodyPreference", true);
-        add!(CP_AIRSYNCBASE, 0x06, "Type", true);
-        add!(CP_AIRSYNCBASE, 0x07, "TruncationSize", true);
-        add!(CP_AIRSYNCBASE, 0x08, "AllOrNone", true);
-        add!(CP_AIRSYNCBASE, 0x0A, "Body", true);
-        add!(CP_AIRSYNCBASE, 0x0B, "Data", true);
-        add!(CP_AIRSYNCBASE, 0x0C, "EstimatedDataSize", true);
+        // AirSyncBase (17) – per MS-ASWBXML spec
+        add!(CP_AIRSYNCBASE, 0x05, "Body", true);
+        add!(CP_AIRSYNCBASE, 0x06, "BodyType", true);
+        add!(CP_AIRSYNCBASE, 0x07, "Data", true);
+        add!(CP_AIRSYNCBASE, 0x08, "EstimatedDataSize", true);
+        add!(CP_AIRSYNCBASE, 0x09, "Truncated", true);
+        add!(CP_AIRSYNCBASE, 0x0A, "Attachments", true);
+        add!(CP_AIRSYNCBASE, 0x0B, "Attachment", true);
+        add!(CP_AIRSYNCBASE, 0x0C, "DisplayName", true);
+        add!(CP_AIRSYNCBASE, 0x0D, "FileReference", true);
+        add!(CP_AIRSYNCBASE, 0x12, "NativeBodyType", true);
+        add!(CP_AIRSYNCBASE, 0x14, "Preview", true);
+        add!(CP_AIRSYNCBASE, 0x15, "BodyPart", true);
+        add!(CP_AIRSYNCBASE, 0x16, "Status", true);
+        add!(CP_AIRSYNCBASE, 0x17, "BodyPartPreference", true);
+        add!(CP_AIRSYNCBASE, 0x18, "Type", true);
+        add!(CP_AIRSYNCBASE, 0x19, "TruncationSize", true);
+        add!(CP_AIRSYNCBASE, 0x1A, "AllOrNone", true);
 
-        // Settings (18)
+        // Settings (18) – per MS-ASWBXML spec
         add!(CP_SETTINGS, 0x05, "Settings", true);
-        add!(CP_SETTINGS, 0x13, "DeviceInformation", true);
+        add!(CP_SETTINGS, 0x06, "Status", true);
+        add!(CP_SETTINGS, 0x16, "DeviceInformation", true);
+        add!(CP_SETTINGS, 0x19, "FriendlyName", true);
 
-        // ItemOperations (10)
+        // ItemOperations (20) – per MS-ASWBXML spec
         add!(CP_ITEMOPERATIONS, 0x05, "ItemOperations", true);
         add!(CP_ITEMOPERATIONS, 0x06, "Fetch", true);
         add!(CP_ITEMOPERATIONS, 0x07, "Store", true);
+        add!(CP_ITEMOPERATIONS, 0x0D, "Status", true);
+        add!(CP_ITEMOPERATIONS, 0x0E, "Response", true);
 
-        // Search (11)
+        // Search (15) – per MS-ASWBXML spec
         add!(CP_SEARCH, 0x05, "Search", true);
         add!(CP_SEARCH, 0x06, "Store", true);
+        add!(CP_SEARCH, 0x07, "Name", true);
         add!(CP_SEARCH, 0x08, "Query", true);
+        add!(CP_SEARCH, 0x0B, "Status", true);
+        add!(CP_SEARCH, 0x0C, "Response", true);
+        add!(CP_SEARCH, 0x0D, "Result", true);
         add!(CP_SEARCH, 0x0E, "Properties", true);
+        add!(CP_SEARCH, 0x0F, "Total", true);
+        add!(CP_SEARCH, 0x10, "Range", true);
+        add!(CP_SEARCH, 0x13, "FreeText", true);
 
-        // Provision (12)
+        // Provision (14) – per MS-ASWBXML spec
         add!(CP_PROVISION, 0x05, "Provision", true);
+        add!(CP_PROVISION, 0x06, "Policies", true);
+        add!(CP_PROVISION, 0x07, "Policy", true);
+        add!(CP_PROVISION, 0x08, "PolicyType", true);
         add!(CP_PROVISION, 0x09, "PolicyKey", true);
+        add!(CP_PROVISION, 0x0A, "Data", true);
+        add!(CP_PROVISION, 0x0B, "Status", true);
+        add!(CP_PROVISION, 0x0C, "RemoteWipe", true);
+        add!(CP_PROVISION, 0x0D, "EASProvisionDoc", true);
+        add!(CP_PROVISION, 0x0E, "DevicePasswordEnabled", true);
+        add!(CP_PROVISION, 0x10, "RequireDeviceEncryption", true);
 
-        // Ping (13)
+        // Ping (13) – per MS-ASWBXML spec
         add!(CP_PING, 0x05, "Ping", true);
+        add!(CP_PING, 0x07, "Status", true);
+        add!(CP_PING, 0x08, "HeartbeatInterval", true);
+        add!(CP_PING, 0x09, "Folders", true);
+        add!(CP_PING, 0x0A, "Folder", true);
 
         m
     };
