@@ -44,7 +44,6 @@ pub struct JmapEvent {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Participant {
-    #[serde(skip)]
     pub email: String,
     pub name: String,
     #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
@@ -53,10 +52,23 @@ pub struct Participant {
 
 /// Custom serde module to convert between `Vec<Participant>` and the JSCalendar
 /// participants map format `{ "email": { "name": "...", ... }, ... }`.
+///
+/// In JSCalendar, participants are represented as a map keyed by email address,
+/// where the value contains the participant properties (name, status) but NOT
+/// the email (since it's already the key). This module handles that conversion.
 mod participants_serde {
     use super::Participant;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::HashMap;
+
+    /// Intermediate struct for serialization that excludes the email field,
+    /// since in JSCalendar format the email is used as the map key.
+    #[derive(Serialize)]
+    struct ParticipantValue<'a> {
+        name: &'a str,
+        #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
+        status: &'a Option<String>,
+    }
 
     pub fn serialize<S>(
         value: &Option<Vec<Participant>>,
@@ -67,9 +79,17 @@ mod participants_serde {
     {
         match value {
             Some(participants) => {
-                let map: HashMap<&str, &Participant> = participants
+                let map: HashMap<&str, ParticipantValue<'_>> = participants
                     .iter()
-                    .map(|p| (p.email.as_str(), p))
+                    .map(|p| {
+                        (
+                            p.email.as_str(),
+                            ParticipantValue {
+                                name: &p.name,
+                                status: &p.status,
+                            },
+                        )
+                    })
                     .collect();
                 map.serialize(serializer)
             }
@@ -81,12 +101,22 @@ mod participants_serde {
     where
         D: Deserializer<'de>,
     {
-        let opt: Option<HashMap<String, Participant>> = Option::deserialize(deserializer)?;
+        /// Intermediate struct for deserialization that captures the participant
+        /// properties from the map value. The email is set afterwards from the map key.
+        #[derive(Deserialize)]
+        struct ParticipantValue {
+            name: String,
+            #[serde(rename = "participationStatus", default)]
+            status: Option<String>,
+        }
+
+        let opt: Option<HashMap<String, ParticipantValue>> = Option::deserialize(deserializer)?;
         Ok(opt.map(|map| {
             map.into_iter()
-                .map(|(email, mut p)| {
-                    p.email = email;
-                    p
+                .map(|(email, p)| Participant {
+                    email,
+                    name: p.name,
+                    status: p.status,
                 })
                 .collect()
         }))
