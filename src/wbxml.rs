@@ -73,7 +73,7 @@ lazy_static! {
         add!(CP_AIRSYNCBASE, 0x0B, "Data", true);
         add!(CP_AIRSYNCBASE, 0x0C, "EstimatedDataSize", true);
 
-        // Settings (9)
+        // Settings (18)
         add!(CP_SETTINGS, 0x05, "Settings", true);
         add!(CP_SETTINGS, 0x13, "DeviceInformation", true);
 
