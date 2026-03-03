@@ -607,7 +607,7 @@ fn soap_response(content: &str) -> String {
 fn soap_fault(code: &str, msg: &str) -> String {
     soap_response(&format!(
         r#"<soap:Fault><faultcode>{}</faultcode><faultstring>{}</faultstring></soap:Fault>"#,
-        code, msg
+        escape_xml(code), escape_xml(msg)
     ))
 }
 fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
