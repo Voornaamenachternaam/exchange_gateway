@@ -233,6 +233,7 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     let mut skip_depth: usize = 0;
 
     loop {
+        buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 if skip_depth > 0 {
