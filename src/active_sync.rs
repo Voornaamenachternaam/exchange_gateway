@@ -11,6 +11,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#;
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct Recurrence {
     #[serde(rename = "Type")]
@@ -169,7 +171,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         }
     }
     if mime_content.is_empty() {
-        return r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#.to_string();
+        return SEND_MAIL_ERROR.to_string();
     }
 
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
@@ -198,7 +200,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                 from_email,
                 authenticated_user
             );
-            return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+            return SEND_MAIL_ERROR.to_string();
         }
     }
 
@@ -224,12 +226,12 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                 Ok(e) => e,
                 Err(e) => {
                     tracing::error!("Email build error: {}", e);
-                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                    return SEND_MAIL_ERROR.to_string();
                 }
             },
             _ => {
                 tracing::warn!("SendMail: invalid From/To address");
-                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                return SEND_MAIL_ERROR.to_string();
             }
         };
 
@@ -237,7 +239,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             Ok(u) => u,
             Err(e) => {
                 tracing::error!("Invalid SMTP URL: {}", e);
-                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                return SEND_MAIL_ERROR.to_string();
             }
         };
 
@@ -245,7 +247,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             Some(h) => h,
             None => {
                 tracing::error!("SMTP URL has no host");
-                return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                return SEND_MAIL_ERROR.to_string();
             }
         };
 
@@ -263,14 +265,14 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!("Failed to create SMTP relay transport: {}", e);
-                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                    return SEND_MAIL_ERROR.to_string();
                 }
             };
             let tls = match lettre::transport::smtp::client::TlsParameters::new(smtp_host.to_string()) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to configure SMTPS TLS parameters: {}", e);
-                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                    return SEND_MAIL_ERROR.to_string();
                 }
             };
             b.port(port).tls(lettre::transport::smtp::client::Tls::Wrapper(tls))
@@ -284,7 +286,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                     Ok(b) => b,
                     Err(e) => {
                         tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
-                        return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                        return SEND_MAIL_ERROR.to_string();
                     }
                 }
             };
