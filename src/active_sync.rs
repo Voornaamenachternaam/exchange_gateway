@@ -277,7 +277,14 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         } else {
             // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
             // unencrypted connections, restoring compatibility with smtp:// URLs.
-            SmtpTransport::builder_dangerous(smtp_host).port(port)
+            let b = match SmtpTransport::starttls_relay(smtp_host) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                    return format!(r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#);
+                }
+            };
+            b.port(port)
         };
 
         // Optional basic auth from URL: smtp://user:pass@host:port
