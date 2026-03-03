@@ -343,8 +343,10 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 output.push(TAG_STR_I);
-                let text_str = std::str::from_utf8(e.as_ref()).unwrap_or("");
-                let t = quick_xml::escape::unescape(text_str).unwrap_or_default();
+                let text_str = std::str::from_utf8(e.as_ref())
+                    .map_err(|_| "Invalid UTF-8 in XML text node".to_string())?;
+                let t = quick_xml::escape::unescape(text_str)
+                    .map_err(|e| format!("XML text unescape error: {}", e))?;
                 output.extend(t.as_bytes());
                 output.push(0x00);
             }
