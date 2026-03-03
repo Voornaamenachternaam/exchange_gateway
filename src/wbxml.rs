@@ -346,7 +346,8 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 output.push(0x00);
             }
             Ok(quick_xml::events::Event::Eof) => break,
-            _ => {}
+            Ok(_) => {}
+            Err(e) => return Err(format!("XML parsing error: {}", e)),
         }
     }
     Ok(output)
