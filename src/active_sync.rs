@@ -381,7 +381,9 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
             }
             Ok(Event::Text(t)) => {
                 if current_tag == "FreeText" {
-                    query = String::from_utf8_lossy(&t).to_string();
+                    query = escape::unescape(std::str::from_utf8(&t).unwrap_or(""))
+                        .unwrap_or_default()
+                        .to_string();
                 }
             }
             Ok(Event::Eof) => break,
