@@ -412,8 +412,9 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
         .await
         .map_err(|e| e.to_string())?;
     let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-    json["methodResponses"][1][1]["list"][0]["id"]
-        .as_str()
+    json["methodResponses"][1][1]["list"]
+        .get(0)
+        .and_then(|item| item["id"].as_str())
         .map(String::from)
         .ok_or("Not Found".into())
 }
