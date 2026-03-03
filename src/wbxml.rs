@@ -442,6 +442,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             xml.push_str(&format!("<{}", placeholder));
         }
     }
+    if pending_tag.is_some() || !stack.is_empty() {
+        return Err("Unexpected end: unclosed tag(s)".into());
+    }
     Ok(xml)
 }
 
