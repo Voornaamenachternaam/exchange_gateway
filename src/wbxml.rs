@@ -45,6 +45,20 @@ struct Tag {
 }
 
 lazy_static! {
+    /// Maps ActiveSync-style namespace prefixes to WBXML code pages.
+    static ref PREFIX_TO_PAGE: HashMap<&'static str, u8> = {
+        let mut m = HashMap::new();
+        m.insert("AirSync", CP_AIRSYNC);
+        m.insert("Calendar", CP_CALENDAR);
+        m.insert("AirSyncBase", CP_AIRSYNCBASE);
+        m.insert("Settings", CP_SETTINGS);
+        m.insert("ItemOperations", CP_ITEMOPERATIONS);
+        m.insert("Search", CP_SEARCH);
+        m.insert("Provision", CP_PROVISION);
+        m.insert("Ping", CP_PING);
+        m
+    };
+
     static ref TAG_MAP: HashMap<(u8, u8), Tag> = {
         let mut m = HashMap::new();
         macro_rules! add {
@@ -517,17 +531,19 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
         buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
-                let local_name = e.local_name();
-                let name = String::from_utf8_lossy(local_name.as_ref());
-                if !encode_tag(&mut body, &name, &mut current_page, true) {
-                    encode_literal_tag(&mut body, &name, true, &mut strtbl_index, &mut strtbl);
+                let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let (prefix, local) = split_prefix(&full_name);
+                let target_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
+                if !encode_tag(&mut body, local, &mut current_page, true, target_page) {
+                    encode_literal_tag(&mut body, local, true, &mut strtbl_index, &mut strtbl);
                 }
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
-                let local_name = e.local_name();
-                let name = String::from_utf8_lossy(local_name.as_ref());
-                if !encode_tag(&mut body, &name, &mut current_page, false) {
-                    encode_literal_tag(&mut body, &name, false, &mut strtbl_index, &mut strtbl);
+                let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let (prefix, local) = split_prefix(&full_name);
+                let target_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
+                if !encode_tag(&mut body, local, &mut current_page, false, target_page) {
+                    encode_literal_tag(&mut body, local, false, &mut strtbl_index, &mut strtbl);
                 }
             }
             Ok(quick_xml::events::Event::End(_)) => {
@@ -555,14 +571,37 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_content: bool) -> bool {
+/// Split a possibly-prefixed tag name (e.g. "Calendar:Type") into an optional
+/// prefix and the local name. Returns `(None, name)` when there is no prefix.
+fn split_prefix(name: &str) -> (Option<&str>, &str) {
+    match name.rsplit_once(':') {
+        Some((prefix, local)) if !prefix.is_empty() && !local.is_empty() => (Some(prefix), local),
+        _ => (None, name),
+    }
+}
+
+fn encode_tag(
+    output: &mut Vec<u8>,
+    name: &str,
+    current_page: &mut u8,
+    has_content: bool,
+    target_page: Option<u8>,
+) -> bool {
     if let Some(entries) = NAME_MAP.get(name) {
-        // Prefer the entry on the current page to avoid unnecessary page switches
-        // and to correctly resolve ambiguous tag names (e.g., "Type", "Store").
-        let (page, token) = entries
-            .iter()
-            .find(|(p, _)| *p == *current_page)
-            .unwrap_or(&entries[0]);
+        // When a namespace prefix resolved to a specific code page, use that page
+        // for disambiguation. Otherwise prefer the entry on the current page to
+        // avoid unnecessary page switches.
+        let (page, token) = if let Some(tp) = target_page {
+            entries
+                .iter()
+                .find(|(p, _)| *p == tp)
+                .unwrap_or(&entries[0])
+        } else {
+            entries
+                .iter()
+                .find(|(p, _)| *p == *current_page)
+                .unwrap_or(&entries[0])
+        };
         if *page != *current_page {
             output.push(TAG_SWITCH_PAGE);
             output.push(*page);
