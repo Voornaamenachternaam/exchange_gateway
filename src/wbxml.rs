@@ -1,1252 +1,379 @@
-// src/wbxml.rs
-use bytes::Buf;
-use quick_xml::Reader;
-use quick_xml::escape;
-use quick_xml::events::Event;
+use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::io::Cursor;
-use std::sync::OnceLock;
-use thiserror::Error;
 
-// WBXML Global Tokens
-const SWITCH_PAGE: u8 = 0x00;
-const END: u8 = 0x01;
-const STR_I: u8 = 0x03; // Inline string
-const STR_T: u8 = 0x04; // String table (rarely used in EAS but supported per spec)
+const TAG_SWITCH_PAGE: u8 = 0x00;
+const TAG_END: u8 = 0x01;
+const TAG_STR_I: u8 = 0x03;
+const TAG_OPAQUE: u8 = 0xC3;
 
-// WBXML Header constants
-const WBXML_VERSION: u8 = 0x03; // WBXML 1.3
-const WBXML_PUBLIC_ID: u8 = 0x01; // Unknown/Any
-const WBXML_CHARSET_UTF8: u8 = 0x6A; // IANA charset ID for UTF-8
-const WBXML_STRTBL_EMPTY: u8 = 0x00;
-
-#[derive(Debug, Error)]
-pub enum WbXmlError {
-    #[error("Unexpected end of input")]
-    UnexpectedEof,
-    #[error("Invalid WBXML header")]
-    InvalidHeader,
-    #[error("Unknown tag token: {0} on page {1}")]
-    UnknownTag(u8, u8),
-    #[error("Unknown code page: {0}")]
-    UnknownPage(u8),
-    #[error("Invalid global token: {0}")]
-    InvalidGlobalToken(u8),
-    #[error("XML parsing error: {0}")]
-    XmlError(#[from] quick_xml::Error),
-    #[error("String table not supported in this context")]
-    StringTableUnsupported,
-    #[error("Malformed string")]
-    MalformedString,
-    #[error("Ambiguous tag without context")]
-    AmbiguousTag,
-}
-
-// --- Code Page Definitions (Per MS-ASWBXML) ---
+const CP_AIRSYNC: u8 = 0;
+const CP_CALENDAR: u8 = 4;
+const CP_AIRSYNCBASE: u8 = 17;
+const CP_SETTINGS: u8 = 18;
+const CP_ITEMOPERATIONS: u8 = 20;
+const CP_SEARCH: u8 = 15;
+const CP_PROVISION: u8 = 14;
+const CP_PING: u8 = 13;
 
 #[derive(Debug, Clone)]
-struct TagInfo {
+struct Tag {
     name: &'static str,
-    token: u8,
+    _has_content: bool,
 }
 
-// Static lookup tables generated from MS-ASWBXML spec
-static CODE_PAGES: OnceLock<Vec<HashMap<u8, TagInfo>>> = OnceLock::new();
-static TAG_TO_TOKEN_MAP: OnceLock<HashMap<String, (u8, u8)>> = OnceLock::new();
-static NS_TO_PAGE_MAP: OnceLock<HashMap<String, u8>> = OnceLock::new();
-
-fn get_code_pages() -> &'static Vec<HashMap<u8, TagInfo>> {
-    CODE_PAGES.get_or_init(|| {
-        let mut pages = Vec::with_capacity(17);
-
-        // Page 0: AirSync
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Sync",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Responses",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Add",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "Change",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Delete",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Fetch",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "SyncKey",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "ClientId",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "ServerId",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0E,
-            TagInfo {
-                name: "Status",
-                token: 0x0E,
-            },
-        );
-        page.insert(
-            0x0F,
-            TagInfo {
-                name: "Collection",
-                token: 0x0F,
-            },
-        );
-        page.insert(
-            0x10,
-            TagInfo {
-                name: "Class",
-                token: 0x10,
-            },
-        );
-        page.insert(
-            0x11,
-            TagInfo {
-                name: "Version",
-                token: 0x11,
-            },
-        );
-        page.insert(
-            0x12,
-            TagInfo {
-                name: "Collections",
-                token: 0x12,
-            },
-        );
-        page.insert(
-            0x13,
-            TagInfo {
-                name: "GetChanges",
-                token: 0x13,
-            },
-        );
-        page.insert(
-            0x14,
-            TagInfo {
-                name: "MoreAvailable",
-                token: 0x14,
-            },
-        );
-        page.insert(
-            0x15,
-            TagInfo {
-                name: "WindowSize",
-                token: 0x15,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Commands",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x17,
-            TagInfo {
-                name: "Options",
-                token: 0x17,
-            },
-        );
-        page.insert(
-            0x18,
-            TagInfo {
-                name: "FilterType",
-                token: 0x18,
-            },
-        );
-        page.insert(
-            0x19,
-            TagInfo {
-                name: "Truncation",
-                token: 0x19,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "RTF",
-                token: 0x1A,
-            },
-        );
-        page.insert(
-            0x1B,
-            TagInfo {
-                name: "ConversationMode",
-                token: 0x1B,
-            },
-        );
-        page.insert(
-            0x1C,
-            TagInfo {
-                name: "MaxItems",
-                token: 0x1C,
-            },
-        );
-        page.insert(
-            0x1D,
-            TagInfo {
-                name: "HeartbeatInterval",
-                token: 0x1D,
-            },
-        );
-        page.insert(
-            0x1E,
-            TagInfo {
-                name: "Folders",
-                token: 0x1E,
-            },
-        );
-        page.insert(
-            0x1F,
-            TagInfo {
-                name: "Folder",
-                token: 0x1F,
-            },
-        );
-        page.insert(
-            0x20,
-            TagInfo {
-                name: "ApplicationData",
-                token: 0x20,
-            },
-        );
-        page.insert(
-            0x21,
-            TagInfo {
-                name: "DeletesAsMoves",
-                token: 0x21,
-            },
-        );
-        page.insert(
-            0x22,
-            TagInfo {
-                name: "Supported",
-                token: 0x22,
-            },
-        );
-        page.insert(
-            0x23,
-            TagInfo {
-                name: "SoftDelete",
-                token: 0x23,
-            },
-        );
-        page.insert(
-            0x24,
-            TagInfo {
-                name: "MIMETruncation",
-                token: 0x24,
-            },
-        );
-        page.insert(
-            0x25,
-            TagInfo {
-                name: "MIMESize",
-                token: 0x25,
-            },
-        );
-        page.insert(
-            0x26,
-            TagInfo {
-                name: "BodyPreference",
-                token: 0x26,
-            },
-        );
-        page.insert(
-            0x27,
-            TagInfo {
-                name: "BodyPartPreference",
-                token: 0x27,
-            },
-        );
-        page.insert(
-            0x28,
-            TagInfo {
-                name: "RightsManagementSupport",
-                token: 0x28,
-            },
-        );
-        pages.push(page);
-
-        // Page 1: Contacts (Selected relevant tags)
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Anniversary",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "AssistantName",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x17,
-            TagInfo {
-                name: "CompanyName",
-                token: 0x17,
-            },
-        );
-        page.insert(
-            0x1F,
-            TagInfo {
-                name: "FirstName",
-                token: 0x1F,
-            },
-        );
-        page.insert(
-            0x29,
-            TagInfo {
-                name: "LastName",
-                token: 0x29,
-            },
-        );
-        page.insert(
-            0x2A,
-            TagInfo {
-                name: "MiddleName",
-                token: 0x2A,
-            },
-        );
-        pages.push(page);
-
-        // Page 2: Email
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "DateReceived",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Importance",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Subject",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Read",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "From",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0F,
-            TagInfo {
-                name: "AllDayEvent",
-                token: 0x0F,
-            },
-        );
-        page.insert(
-            0x13,
-            TagInfo {
-                name: "EndTime",
-                token: 0x13,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Location",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "Reminder",
-                token: 0x1A,
-            },
-        );
-        page.insert(
-            0x1E,
-            TagInfo {
-                name: "Type",
-                token: 0x1E,
-            },
-        );
-        page.insert(
-            0x26,
-            TagInfo {
-                name: "StartTime",
-                token: 0x26,
-            },
-        );
-        page.insert(
-            0x27,
-            TagInfo {
-                name: "Sensitivity",
-                token: 0x27,
-            },
-        );
-        page.insert(
-            0x35,
-            TagInfo {
-                name: "TimeZone",
-                token: 0x35,
-            },
-        );
-        page.insert(
-            0x36,
-            TagInfo {
-                name: "Attendees",
-                token: 0x36,
-            },
-        );
-        page.insert(
-            0x37,
-            TagInfo {
-                name: "Attendee",
-                token: 0x37,
-            },
-        );
-        page.insert(
-            0x38,
-            TagInfo {
-                name: "Email",
-                token: 0x38,
-            },
-        );
-        page.insert(
-            0x39,
-            TagInfo {
-                name: "Name",
-                token: 0x39,
-            },
-        );
-        page.insert(
-            0x3A,
-            TagInfo {
-                name: "AttendeeStatus",
-                token: 0x3A,
-            },
-        );
-        page.insert(
-            0x3B,
-            TagInfo {
-                name: "AttendeeType",
-                token: 0x3B,
-            },
-        );
-        pages.push(page);
-
-        // Page 3: AirSyncBase
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Body",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "BodyType",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Data",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "EstimatedDataSize",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Truncated",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Attachments",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "Attachment",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "DisplayName",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "FileReference",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x12,
-            TagInfo {
-                name: "NativeBodyType",
-                token: 0x12,
-            },
-        );
-        page.insert(
-            0x14,
-            TagInfo {
-                name: "Preview",
-                token: 0x14,
-            },
-        );
-        page.insert(
-            0x15,
-            TagInfo {
-                name: "BodyPart",
-                token: 0x15,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Status",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x17,
-            TagInfo {
-                name: "BodyPartPreference",
-                token: 0x17,
-            },
-        );
-        page.insert(
-            0x18,
-            TagInfo {
-                name: "Type",
-                token: 0x18,
-            },
-        );
-        page.insert(
-            0x19,
-            TagInfo {
-                name: "TruncationSize",
-                token: 0x19,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "AllOrNone",
-                token: 0x1A,
-            },
-        );
-        pages.push(page);
-
-        // Page 4: Calendar
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "TimeZone",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "AllDayEvent",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Attendees",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "Attendee",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Email",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Name",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "AttendeeStatus",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "AttendeeType",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "BusyStatus",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x10,
-            TagInfo {
-                name: "DtStamp",
-                token: 0x10,
-            },
-        );
-        page.insert(
-            0x11,
-            TagInfo {
-                name: "EndTime",
-                token: 0x11,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Location",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "Recurrence",
-                token: 0x1A,
-            },
-        );
-        page.insert(
-            0x1B,
-            TagInfo {
-                name: "RecurrenceType",
-                token: 0x1B,
-            },
-        );
-        page.insert(
-            0x23,
-            TagInfo {
-                name: "Reminder",
-                token: 0x23,
-            },
-        );
-        page.insert(
-            0x24,
-            TagInfo {
-                name: "Sensitivity",
-                token: 0x24,
-            },
-        );
-        page.insert(
-            0x25,
-            TagInfo {
-                name: "Subject",
-                token: 0x25,
-            },
-        );
-        page.insert(
-            0x26,
-            TagInfo {
-                name: "StartTime",
-                token: 0x26,
-            },
-        );
-        page.insert(
-            0x27,
-            TagInfo {
-                name: "UID",
-                token: 0x27,
-            },
-        );
-        page.insert(
-            0x29,
-            TagInfo {
-                name: "DisallowNewTimeProposal",
-                token: 0x29,
-            },
-        );
-        page.insert(
-            0x2A,
-            TagInfo {
-                name: "ResponseRequested",
-                token: 0x2A,
-            },
-        );
-        pages.push(page);
-
-        // Page 7: Tasks
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Subject",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x1F,
-            TagInfo {
-                name: "Reminder",
-                token: 0x1F,
-            },
-        );
-        pages.push(page);
-
-        // Page 10: Ping
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Ping",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Status",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "HeartbeatInterval",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Folders",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Folder",
-                token: 0x0A,
-            },
-        );
-        pages.push(page);
-
-        // Page 11: Provision
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Provision",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Policies",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Policy",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "PolicyType",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "PolicyKey",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Data",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "Status",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "RemoteWipe",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "EASProvisionDoc",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0E,
-            TagInfo {
-                name: "DevicePasswordEnabled",
-                token: 0x0E,
-            },
-        );
-        page.insert(
-            0x10,
-            TagInfo {
-                name: "RequireDeviceEncryption",
-                token: 0x10,
-            },
-        );
-        pages.push(page);
-
-        // Page 12: Settings
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Settings",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Status",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "DeviceInformation",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x19,
-            TagInfo {
-                name: "FriendlyName",
-                token: 0x19,
-            },
-        );
-        pages.push(page);
-
-        // Page 14: ItemOperations
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "ItemOperations",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Fetch",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "Status",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0E,
-            TagInfo {
-                name: "Response",
-                token: 0x0E,
-            },
-        );
-        pages.push(page);
-
-        // Page 16: Search
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Search",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Store",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "Status",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "Response",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "Result",
-                token: 0x0D,
-            },
-        );
-        pages.push(page);
-
-        pages
-    })
-}
-
-// Build a reverse map for Encoding: Name -> (Page, Token)
-fn get_tag_to_token_map() -> &'static HashMap<String, (u8, u8)> {
-    TAG_TO_TOKEN_MAP.get_or_init(|| {
-        let mut map = HashMap::new();
-        for (page_idx, page) in get_code_pages().iter().enumerate() {
-            for info in page.values() {
-                map.insert(info.name.to_string(), (page_idx as u8, info.token));
-            }
+lazy_static! {
+    static ref TAG_MAP: HashMap<(u8, u8), Tag> = {
+        let mut m = HashMap::new();
+        macro_rules! add {
+            ($page:expr, $token:expr, $name:expr, $content:expr) => {
+                m.insert(($page, $token), Tag { name: $name, _has_content: $content });
+            };
         }
-        map
-    })
-}
+        // AirSync (0) – per MS-ASWBXML spec
+        add!(CP_AIRSYNC, 0x05, "Sync", true);
+        add!(CP_AIRSYNC, 0x06, "Responses", true);
+        add!(CP_AIRSYNC, 0x07, "Add", true);
+        add!(CP_AIRSYNC, 0x08, "Change", true);
+        add!(CP_AIRSYNC, 0x09, "Delete", true);
+        add!(CP_AIRSYNC, 0x0A, "Fetch", true);
+        add!(CP_AIRSYNC, 0x0B, "SyncKey", true);
+        add!(CP_AIRSYNC, 0x0C, "ClientId", true);
+        add!(CP_AIRSYNC, 0x0D, "ServerId", true);
+        add!(CP_AIRSYNC, 0x0E, "Status", true);
+        add!(CP_AIRSYNC, 0x0F, "Collection", true);
+        add!(CP_AIRSYNC, 0x10, "Class", true);
+        add!(CP_AIRSYNC, 0x12, "CollectionId", true);
+        add!(CP_AIRSYNC, 0x13, "GetChanges", true);
+        add!(CP_AIRSYNC, 0x14, "MoreAvailable", true);
+        add!(CP_AIRSYNC, 0x15, "WindowSize", true);
+        add!(CP_AIRSYNC, 0x16, "Commands", true);
+        add!(CP_AIRSYNC, 0x17, "Options", true);
+        add!(CP_AIRSYNC, 0x18, "FilterType", true);
+        add!(CP_AIRSYNC, 0x19, "Truncation", true);
+        add!(CP_AIRSYNC, 0x1B, "Conflict", true);
+        add!(CP_AIRSYNC, 0x1C, "Collections", true);
+        add!(CP_AIRSYNC, 0x1D, "ApplicationData", true);
+        add!(CP_AIRSYNC, 0x1E, "DeletesAsMoves", true);
+        add!(CP_AIRSYNC, 0x20, "Supported", true);
+        add!(CP_AIRSYNC, 0x21, "SoftDelete", true);
+        add!(CP_AIRSYNC, 0x22, "MIMESupport", true);
+        add!(CP_AIRSYNC, 0x23, "MIMETruncation", true);
+        add!(CP_AIRSYNC, 0x24, "Wait", true);
+        add!(CP_AIRSYNC, 0x25, "Limit", true);
+        add!(CP_AIRSYNC, 0x26, "Partial", true);
+        add!(CP_AIRSYNC, 0x27, "ConversationMode", true);
+        add!(CP_AIRSYNC, 0x28, "MaxItems", true);
+        add!(CP_AIRSYNC, 0x29, "HeartbeatInterval", true);
 
-fn get_ns_to_page_map() -> &'static HashMap<String, u8> {
-    NS_TO_PAGE_MAP.get_or_init(|| {
-        let mut map = HashMap::new();
-        map.insert("AirSync".to_string(), 0);
-        map.insert("AirSyncBase".to_string(), 3);
-        map.insert("Calendar".to_string(), 4);
-        map.insert("Email".to_string(), 2);
-        map.insert("Tasks".to_string(), 7);
-        map.insert("Ping".to_string(), 10);
-        map.insert("Provision".to_string(), 11);
-        map.insert("Settings".to_string(), 12);
-        map.insert("ItemOperations".to_string(), 14);
-        map.insert("Search".to_string(), 16);
-        map
-    })
-}
+        // Calendar (4) – per MS-ASWBXML spec
+        add!(CP_CALENDAR, 0x05, "Timezone", true);
+        add!(CP_CALENDAR, 0x06, "AllDayEvent", true);
+        add!(CP_CALENDAR, 0x07, "Attendees", true);
+        add!(CP_CALENDAR, 0x08, "Attendee", true);
+        add!(CP_CALENDAR, 0x09, "Email", true);
+        add!(CP_CALENDAR, 0x0A, "Name", true);
+        add!(CP_CALENDAR, 0x0D, "BusyStatus", true);
+        add!(CP_CALENDAR, 0x0E, "Categories", true);
+        add!(CP_CALENDAR, 0x0F, "Category", true);
+        add!(CP_CALENDAR, 0x11, "DtStamp", true);
+        add!(CP_CALENDAR, 0x12, "EndTime", true);
+        add!(CP_CALENDAR, 0x13, "Exception", true);
+        add!(CP_CALENDAR, 0x14, "Exceptions", true);
+        add!(CP_CALENDAR, 0x15, "Deleted", true);
+        add!(CP_CALENDAR, 0x16, "ExceptionStartTime", true);
+        add!(CP_CALENDAR, 0x17, "Location", true);
+        add!(CP_CALENDAR, 0x18, "MeetingStatus", true);
+        add!(CP_CALENDAR, 0x19, "OrganizerEmail", true);
+        add!(CP_CALENDAR, 0x1A, "OrganizerName", true);
+        add!(CP_CALENDAR, 0x1B, "Recurrence", true);
+        add!(CP_CALENDAR, 0x1C, "Type", true);
+        add!(CP_CALENDAR, 0x1D, "Until", true);
+        add!(CP_CALENDAR, 0x1E, "Occurrences", true);
+        add!(CP_CALENDAR, 0x1F, "Interval", true);
+        add!(CP_CALENDAR, 0x20, "DayOfWeek", true);
+        add!(CP_CALENDAR, 0x21, "DayOfMonth", true);
+        add!(CP_CALENDAR, 0x22, "WeekOfMonth", true);
+        add!(CP_CALENDAR, 0x23, "MonthOfYear", true);
+        add!(CP_CALENDAR, 0x24, "Reminder", true);
+        add!(CP_CALENDAR, 0x25, "Sensitivity", true);
+        add!(CP_CALENDAR, 0x26, "Subject", true);
+        add!(CP_CALENDAR, 0x27, "StartTime", true);
+        add!(CP_CALENDAR, 0x28, "UID", true);
+        add!(CP_CALENDAR, 0x29, "AttendeeStatus", true);
+        add!(CP_CALENDAR, 0x2A, "AttendeeType", true);
+        add!(CP_CALENDAR, 0x33, "DisallowNewTimeProposal", true);
+        add!(CP_CALENDAR, 0x34, "ResponseRequested", true);
 
-/// Encode XML string to WBXML bytes
-pub fn encode(xml: &str) -> Result<Vec<u8>, WbXmlError> {
-    let mut buf = Vec::new();
+        // AirSyncBase (17) – per MS-ASWBXML spec
+        add!(CP_AIRSYNCBASE, 0x05, "BodyPreference", true);
+        add!(CP_AIRSYNCBASE, 0x06, "Type", true);
+        add!(CP_AIRSYNCBASE, 0x07, "TruncationSize", true);
+        add!(CP_AIRSYNCBASE, 0x08, "AllOrNone", true);
+        add!(CP_AIRSYNCBASE, 0x0A, "Body", true);
+        add!(CP_AIRSYNCBASE, 0x0B, "Data", true);
+        add!(CP_AIRSYNCBASE, 0x0C, "EstimatedDataSize", true);
+        add!(CP_AIRSYNCBASE, 0x0D, "Truncated", true);
+        add!(CP_AIRSYNCBASE, 0x0E, "Attachments", true);
+        add!(CP_AIRSYNCBASE, 0x0F, "Attachment", true);
+        add!(CP_AIRSYNCBASE, 0x10, "DisplayName", true);
+        add!(CP_AIRSYNCBASE, 0x11, "FileReference", true);
+        add!(CP_AIRSYNCBASE, 0x12, "Method", true);
+        add!(CP_AIRSYNCBASE, 0x13, "ContentId", true);
+        add!(CP_AIRSYNCBASE, 0x14, "ContentLocation", true);
+        add!(CP_AIRSYNCBASE, 0x15, "IsInline", true);
+        add!(CP_AIRSYNCBASE, 0x16, "NativeBodyType", true);
+        add!(CP_AIRSYNCBASE, 0x17, "ContentType", true);
+        add!(CP_AIRSYNCBASE, 0x18, "Preview", true);
+        add!(CP_AIRSYNCBASE, 0x19, "BodyPartPreference", true);
+        add!(CP_AIRSYNCBASE, 0x1A, "BodyPart", true);
+        add!(CP_AIRSYNCBASE, 0x1B, "Status", true);
 
-    // Write Header
-    buf.push(WBXML_VERSION);
-    buf.push(WBXML_PUBLIC_ID);
-    buf.push(WBXML_CHARSET_UTF8);
-    buf.push(WBXML_STRTBL_EMPTY);
+        // Settings (18) – per MS-ASWBXML spec
+        add!(CP_SETTINGS, 0x05, "Settings", true);
+        add!(CP_SETTINGS, 0x06, "Status", true);
+        add!(CP_SETTINGS, 0x16, "DeviceInformation", true);
+        add!(CP_SETTINGS, 0x19, "FriendlyName", true);
 
-    let mut current_page = 0;
-    let mut tag_stack: Vec<String> = Vec::new();
+        // ItemOperations (20) – per MS-ASWBXML spec
+        add!(CP_ITEMOPERATIONS, 0x05, "ItemOperations", true);
+        add!(CP_ITEMOPERATIONS, 0x06, "Fetch", true);
+        add!(CP_ITEMOPERATIONS, 0x07, "Store", true);
+        add!(CP_ITEMOPERATIONS, 0x0D, "Status", true);
+        add!(CP_ITEMOPERATIONS, 0x0E, "Response", true);
 
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+        // Search (15) – per MS-ASWBXML spec
+        add!(CP_SEARCH, 0x05, "Search", true);
+        add!(CP_SEARCH, 0x07, "Store", true);
+        add!(CP_SEARCH, 0x08, "Name", true);
+        add!(CP_SEARCH, 0x09, "Query", true);
+        add!(CP_SEARCH, 0x0A, "Options", true);
+        add!(CP_SEARCH, 0x0B, "Range", true);
+        add!(CP_SEARCH, 0x0C, "Status", true);
+        add!(CP_SEARCH, 0x0D, "Response", true);
+        add!(CP_SEARCH, 0x0E, "Result", true);
+        add!(CP_SEARCH, 0x0F, "Properties", true);
+        add!(CP_SEARCH, 0x10, "Total", true);
+        add!(CP_SEARCH, 0x15, "FreeText", true);
 
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let (prefix_opt, local_name) = extract_name_parts(e.name());
-                handle_element_start(
-                    &mut buf,
-                    &mut current_page,
-                    &mut tag_stack,
-                    prefix_opt,
-                    local_name,
-                )?;
-            }
-            Ok(Event::Empty(ref e)) => {
-                let (prefix_opt, local_name) = extract_name_parts(e.name());
-                handle_element_start(
-                    &mut buf,
-                    &mut current_page,
-                    &mut tag_stack,
-                    prefix_opt,
-                    local_name.clone(),
-                )?;
-                buf.push(END);
-                tag_stack.pop();
-            }
-            Ok(Event::End(ref _e)) => {
-                if !tag_stack.is_empty() {
-                    buf.push(END);
-                    tag_stack.pop();
-                }
-            }
-            Ok(Event::Text(ref e)) => {
-                // Fix for quick-xml 0.39: unescape is a free function
-                let text_str =
-                    std::str::from_utf8(e.as_ref()).map_err(|_| WbXmlError::MalformedString)?;
-                let text = escape::unescape(text_str).map_err(|_| WbXmlError::MalformedString)?;
+        // Provision (14) – per MS-ASWBXML spec
+        add!(CP_PROVISION, 0x05, "Provision", true);
+        add!(CP_PROVISION, 0x06, "Policies", true);
+        add!(CP_PROVISION, 0x07, "Policy", true);
+        add!(CP_PROVISION, 0x08, "PolicyType", true);
+        add!(CP_PROVISION, 0x09, "PolicyKey", true);
+        add!(CP_PROVISION, 0x0A, "Data", true);
+        add!(CP_PROVISION, 0x0B, "Status", true);
+        add!(CP_PROVISION, 0x0C, "RemoteWipe", true);
+        add!(CP_PROVISION, 0x0D, "EASProvisionDoc", true);
+        add!(CP_PROVISION, 0x0E, "DevicePasswordEnabled", true);
+        add!(CP_PROVISION, 0x10, "RequireStorageCardEncryption", true);
+        add!(CP_PROVISION, 0x1D, "RequireDeviceEncryption", true);
 
-                if !text.is_empty() {
-                    buf.push(STR_I);
-                    buf.extend_from_slice(text.as_bytes());
-                    buf.push(0x00);
-                }
-            }
-            Ok(Event::Eof) => break,
-            _ => {}
-        }
-    }
+        // Ping (13) – per MS-ASWBXML spec
+        add!(CP_PING, 0x05, "Ping", true);
+        add!(CP_PING, 0x07, "Status", true);
+        add!(CP_PING, 0x08, "HeartbeatInterval", true);
+        add!(CP_PING, 0x09, "Folders", true);
+        add!(CP_PING, 0x0A, "Folder", true);
+        add!(CP_PING, 0x0B, "Id", true);
+        add!(CP_PING, 0x0C, "Class", true);
+        add!(CP_PING, 0x0D, "MaxFolders", true);
 
-    Ok(buf)
-}
-
-fn handle_element_start(
-    buf: &mut Vec<u8>,
-    current_page: &mut u8,
-    tag_stack: &mut Vec<String>,
-    prefix_opt: Option<&str>,
-    local_name: String,
-) -> Result<(), WbXmlError> {
-    let (page, token) = {
-        if let Some(prefix) = prefix_opt {
-            if let Some(&target_page) = get_ns_to_page_map().get(prefix) {
-                if let Some(&(_, token)) = get_tag_to_token_map().get(&local_name) {
-                    (target_page, token)
-                } else {
-                    return Err(WbXmlError::UnknownTag(0, target_page));
-                }
-            } else {
-                lookup_tag(&local_name, *current_page)?
-            }
-        } else {
-            lookup_tag(&local_name, *current_page)?
-        }
+        m
     };
 
-    if page != *current_page {
-        buf.push(SWITCH_PAGE);
-        buf.push(page);
-        *current_page = page;
-    }
-
-    buf.push(token | 0x40);
-    tag_stack.push(local_name);
-
-    Ok(())
+    static ref NAME_MAP: HashMap<&'static str, Vec<(u8, u8)>> = {
+        let mut m: HashMap<&'static str, Vec<(u8, u8)>> = HashMap::new();
+        for ((page, token), tag) in TAG_MAP.iter() {
+            m.entry(tag.name).or_default().push((*page, *token));
+        }
+        for entries in m.values_mut() {
+            entries.sort();
+        }
+        m
+    };
 }
 
-fn lookup_tag(local_name: &str, current_page: u8) -> Result<(u8, u8), WbXmlError> {
-    if let Some(&(page, token)) = get_tag_to_token_map().get(local_name) {
-        Ok((page, token))
-    } else {
-        Err(WbXmlError::UnknownTag(0, current_page))
+pub fn decode(data: &[u8]) -> Result<String, String> {
+    if data.len() < 4 {
+        return Err("Data too short".into());
     }
-}
-
-/// Decode WBXML bytes to XML string
-pub fn decode(bytes: &[u8]) -> Result<String, WbXmlError> {
-    let mut cursor = Cursor::new(bytes);
-
-    let version = cursor.get_u8();
-    let _public_id = cursor.get_u8();
-    let charset = cursor.get_u8();
-    let strtbl_len = cursor.get_u8();
-
-    if strtbl_len != 0 {
-        return Err(WbXmlError::StringTableUnsupported);
+    if data[0] != 0x03 || data[2] != 0x6A || data[3] != 0x00 {
+        return Err("Invalid WBXML header".into());
     }
-
-    if version != WBXML_VERSION || charset != WBXML_CHARSET_UTF8 {
-        return Err(WbXmlError::InvalidHeader);
-    }
-
-    let mut xml = String::new();
+    let mut pos = 4;
     let mut current_page = 0;
-    let mut tag_stack: Vec<String> = Vec::new();
+    let mut xml = String::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut pending_tag: Option<String> = None;
 
-    while cursor.has_remaining() {
-        let token = cursor.get_u8();
+    while pos < data.len() {
+        let token = data[pos];
+        pos += 1;
 
-        match token {
-            SWITCH_PAGE => {
-                if !cursor.has_remaining() {
-                    return Err(WbXmlError::UnexpectedEof);
+        if token == TAG_SWITCH_PAGE {
+            if pos >= data.len() {
+                return Err("Unexpected end".into());
+            }
+            current_page = data[pos];
+            pos += 1;
+            continue;
+        }
+
+        if token == TAG_END {
+            if pending_tag.is_some() {
+                xml.push_str("/>");
+                pending_tag = None;
+            } else if let Some(tag) = stack.pop() {
+                xml.push_str(&format!("</{}>", tag));
+            }
+            continue;
+        }
+
+        if token == TAG_STR_I {
+            let mut str_buf = Vec::new();
+            while pos < data.len() && data[pos] != 0 {
+                str_buf.push(data[pos]);
+                pos += 1;
+            }
+            if pos < data.len() {
+                pos += 1;
+            }
+
+            if let Some(tag) = pending_tag.take() {
+                xml.push('>');
+                stack.push(tag);
+            }
+            let text = String::from_utf8_lossy(&str_buf);
+            xml.push_str(
+                &text
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;"),
+            );
+            continue;
+        }
+
+        if token == TAG_OPAQUE {
+            let mut len = 0;
+            loop {
+                if pos >= data.len() {
+                    return Err("Unexpected end opaque".into());
                 }
-                current_page = cursor.get_u8();
-            }
-            END => {
-                if let Some(tag) = tag_stack.pop() {
-                    xml.push_str(&format!("</{}>", tag));
+                let byte = data[pos];
+                pos += 1;
+                len = (len << 7) | ((byte & 0x7F) as usize);
+                if (byte & 0x80) == 0 {
+                    break;
                 }
             }
-            STR_I => {
-                let mut str_bytes = Vec::new();
-                loop {
-                    if !cursor.has_remaining() {
-                        return Err(WbXmlError::UnexpectedEof);
-                    }
-                    let b = cursor.get_u8();
-                    if b == 0x00 {
-                        break;
-                    }
-                    str_bytes.push(b);
-                }
-                let text = String::from_utf8(str_bytes).map_err(|_| WbXmlError::MalformedString)?;
-                xml.push_str(&text);
+            let end = pos.checked_add(len).ok_or_else(|| "Opaque overflow".to_string())?;
+            if end > data.len() {
+                return Err("Opaque overflow".into());
             }
-            STR_T => {
-                return Err(WbXmlError::StringTableUnsupported);
+            let content = &data[pos..end];
+            pos = end;
+
+            if let Some(tag) = pending_tag.take() {
+                xml.push('>');
+                stack.push(tag);
             }
-            _ => {
-                let has_content = (token & 0x40) != 0;
-                let tag_id = token & 0x3F;
+            let text = String::from_utf8_lossy(content);
+            xml.push_str(&text.replace('&', "&amp;").replace('<', "&lt;"));
+            continue;
+        }
 
-                let pages = get_code_pages();
-                let page = pages
-                    .get(current_page as usize)
-                    .ok_or(WbXmlError::UnknownPage(current_page))?;
-                let tag_info = page
-                    .get(&tag_id)
-                    .ok_or(WbXmlError::UnknownTag(tag_id, current_page))?;
+        let has_content = (token & 0x40) != 0;
+        let token_id = token & 0x3F;
 
-                let tag_name = tag_info.name;
-
-                if has_content {
-                    xml.push_str(&format!("<{}>", tag_name));
-                    tag_stack.push(tag_name.to_string());
-                } else {
-                    xml.push_str(&format!("<{}/>", tag_name));
-                }
+        if let Some(tag_def) = TAG_MAP.get(&(current_page, token_id)) {
+            if pending_tag.is_some() {
+                xml.push('>');
+                stack.push(pending_tag.take().unwrap());
             }
+
+            if has_content {
+                pending_tag = Some(tag_def.name.to_string());
+                xml.push_str(&format!("<{}", tag_def.name));
+            } else {
+                xml.push_str(&format!("<{}/>", tag_def.name));
+            }
+        } else if has_content {
+            // Unknown tag with content: push a sentinel so the matching
+            // TAG_END consumes it instead of incorrectly closing a parent.
+            let placeholder = format!("Unknown_{}_{:02X}", current_page, token_id);
+            if pending_tag.is_some() {
+                xml.push('>');
+                stack.push(pending_tag.take().unwrap());
+            }
+            pending_tag = Some(placeholder.clone());
+            xml.push_str(&format!("<{}", placeholder));
         }
     }
-
     Ok(xml)
 }
 
-fn extract_name_parts(name: quick_xml::name::QName<'_>) -> (Option<&str>, String) {
-    let name_bytes = name.0;
-    let name_str = std::str::from_utf8(name_bytes).unwrap_or("");
-    let mut parts = name_str.split(':');
-    let first = parts.next();
-    let second = parts.next();
+pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut output = vec![0x03, 0x01, 0x6A, 0x00];
+    let mut current_page = 0;
 
-    match (first, second) {
-        (Some(prefix), Some(local)) => (Some(prefix), local.to_string()),
-        (Some(local), None) => (None, local.to_string()),
-        _ => (None, "Unknown".to_string()),
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                let local_name = e.local_name();
+                let name = String::from_utf8_lossy(local_name.as_ref());
+                if !encode_tag(&mut output, &name, &mut current_page, true) {
+                    return Err(format!("Unknown WBXML tag: {}", name));
+                }
+            }
+            Ok(quick_xml::events::Event::Empty(ref e)) => {
+                let local_name = e.local_name();
+                let name = String::from_utf8_lossy(local_name.as_ref());
+                if !encode_tag(&mut output, &name, &mut current_page, false) {
+                    return Err(format!("Unknown WBXML tag: {}", name));
+                }
+            }
+            Ok(quick_xml::events::Event::End(_)) => {
+                output.push(TAG_END);
+            }
+            Ok(quick_xml::events::Event::Text(ref e)) => {
+                output.push(TAG_STR_I);
+                let text_str = std::str::from_utf8(e.as_ref()).unwrap_or("");
+                let t = quick_xml::escape::unescape(text_str).unwrap_or_default();
+                output.extend(t.as_bytes());
+                output.push(0x00);
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => return Err(format!("XML parsing error: {}", e)),
+        }
+    }
+    Ok(output)
+}
+
+fn encode_tag(output: &mut Vec<u8>, name: &str, current_page: &mut u8, has_content: bool) -> bool {
+    if let Some(entries) = NAME_MAP.get(name) {
+        // Prefer the entry on the current page to avoid unnecessary page switches
+        // and to correctly resolve ambiguous tag names (e.g., "Type", "Store").
+        let (page, token) = entries
+            .iter()
+            .find(|(p, _)| *p == *current_page)
+            .unwrap_or(&entries[0]);
+        if *page != *current_page {
+            output.push(TAG_SWITCH_PAGE);
+            output.push(*page);
+            *current_page = *page;
+        }
+        let mut final_token = *token;
+        if has_content {
+            final_token |= 0x40;
+        }
+        output.push(final_token);
+        true
+    } else {
+        false
     }
 }
