@@ -23,13 +23,12 @@ use crate::config::AppConfig;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive("info,exchange_gateway=debug".parse().unwrap())
-                .from_env_lossy(),
-        )
-        .init();
+    let env_filter = match tracing_subscriber::EnvFilter::try_from_default_env() {
+        Ok(filter) => filter,
+        Err(_) => "info,exchange_gateway=debug".parse().expect("valid default filter"),
+    };
+
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let config = Arc::new(AppConfig::from_env().expect("Failed to load configuration"));
     info!("Exchange Gateway v{} started", env!("CARGO_PKG_VERSION"));
