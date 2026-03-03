@@ -435,7 +435,6 @@ async fn handle_create_item(
         };
         match jmap_client::push_event(session, event, &cal_id).await {
             Ok(id) => {
-                return soap_response(&format!(
                 let change_key = {
                     let mut h = sha2::Sha256::new();
                     sha2::Digest::update(&mut h, &id);
@@ -447,12 +446,6 @@ async fn handle_create_item(
                     NS_T,
                     utils::escape_xml(&id),
                     utils::escape_xml(&change_key),
-                ));
-                    utils::escape_xml(&{
-                        let mut h = sha2::Sha256::new();
-                        sha2::Digest::update(&mut h, &id);
-                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, h.finalize())
-                    })
                 ));
             }
             Err(_) => return soap_fault("ErrorInternalServerError", "JMAP Create Failed"),
