@@ -787,6 +787,19 @@ async fn render_changes(
             escape_xml(id)
         ));
     }
+    if !changes.created.is_empty()
+        && let Ok(events) = jmap_client::get_events_by_ids(
+            &session.api_url,
+            &session.access_token,
+            &session.account_id,
+            &changes.created,
+        )
+        .await
+    {
+        for event in events {
+            xml.push_str(&render_event_xml(event, "Add", tz_str));
+        }
+    }
     if !changes.updated.is_empty()
         && let Ok(events) = jmap_client::get_events_by_ids(
             &session.api_url,

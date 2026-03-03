@@ -107,6 +107,7 @@ pub struct JmapChanges {
     pub old_state: String,
     #[serde(rename = "newState")]
     pub new_state: String,
+    pub created: Vec<String>,
     pub updated: Vec<String>,
     pub destroyed: Vec<String>,
 }
