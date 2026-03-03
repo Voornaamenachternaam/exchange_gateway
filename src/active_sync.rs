@@ -87,6 +87,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
             Ok(Event::Eof) => break,
             _ => {}
         }
+        buf.clear();
     }
 
     let auth = match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
@@ -169,6 +170,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             Ok(Event::Eof) => break,
             _ => {}
         }
+        buf.clear();
     }
     if mime_content.is_empty() {
         return SEND_MAIL_ERROR.to_string();
@@ -386,6 +388,7 @@ async fn handle_meeting_response(
             Ok(Event::Eof) => break,
             _ => {}
         }
+        buf.clear();
     }
     if uid.is_empty() {
         return error_xml(400, "Missing UID");
@@ -431,6 +434,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
             Ok(Event::Eof) => break,
             _ => {}
         }
+        buf.clear();
     }
     let results = jmap_client::search_principals(session, &query)
         .await
