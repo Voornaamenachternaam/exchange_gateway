@@ -198,6 +198,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
     if data.len() < 4 {
         return Err("Data too short".into());
     }
+    if data[0] != 0x03 || data[2] != 0x6A || data[3] != 0x00 {
+        return Err("Invalid WBXML header".into());
+    }
     let mut pos = 4;
     let mut current_page = 0;
     let mut xml = String::new();
