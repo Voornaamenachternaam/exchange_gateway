@@ -401,6 +401,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
     let results = jmap_client::search_principals(session, &query)
         .await
         .unwrap_or_default();
+    let results: Vec<_> = results.into_iter().take(10).collect();
     let mut results_xml = String::new();
     for p in results {
         results_xml.push_str(&format!(r#"<Result><Properties><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress></Properties></Result>"#, escape_xml(&p.name), escape_xml(&p.email)));
