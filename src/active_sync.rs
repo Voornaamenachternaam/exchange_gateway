@@ -498,7 +498,6 @@ async fn handle_sync(
                     utils::escape_xml(&collection_id)
                 );
             }
-            }
             let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
             {
                 Ok(c) => c,
