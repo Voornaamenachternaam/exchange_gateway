@@ -375,7 +375,7 @@ pub async fn search_principals(
     session: &JmapSession,
     query: &str,
 ) -> Result<Vec<Principal>, String> {
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"], "methodCalls": [["Principal/query", { "accountId": session.account_id, "filter": { "operator": "OR", "conditions": [{ "email": query }, { "name": query }] } }, "c0"], ["Principal/get", { "accountId": session.account_id, "#ids": { "resultOf": "c0", "name": "Principal/query", "path": "/ids" } }, "c1"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:principals"], "methodCalls": [["Principal/query", { "accountId": session.account_id, "filter": { "operator": "OR", "conditions": [{ "email": query }, { "name": query }] } }, "c0"], ["Principal/get", { "accountId": session.account_id, "#ids": { "resultOf": "c0", "name": "Principal/query", "path": "/ids" } }, "c1"]] });
     let res = session
         .client
         .post(&session.api_url)
