@@ -553,16 +553,42 @@ async fn handle_sync(
 
 fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> String {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
-    let start_local: DateTime<Tz> = event
-        .start
-        .parse::<DateTime<Utc>>()
-        .unwrap_or_default()
-        .with_timezone(&tz);
-    let end_local: DateTime<Tz> = event
-        .end
-        .parse::<DateTime<Utc>>()
-        .unwrap_or_default()
-        .with_timezone(&tz);
+fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> String {
+    let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
+
+    // Avoid silently defaulting to Unix epoch on parse errors.
+    // If parsing fails, log and fall back to using the original JMAP string as-is.
+    let start_str = match DateTime::parse_from_rfc3339(&event.start)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map(|dt| dt.with_timezone(&tz))
+    {
+        Ok(start_local) => start_local.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        Err(e) => {
+            tracing::warn!(
+                "Invalid JMAP event start timestamp for event id {:?}: '{}' ({})",
+                event.id,
+                event.start,
+                e
+            );
+            event.start.clone()
+        }
+    };
+
+    let end_str = match DateTime::parse_from_rfc3339(&event.end)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map(|dt| dt.with_timezone(&tz))
+    {
+        Ok(end_local) => end_local.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        Err(e) => {
+            tracing::warn!(
+                "Invalid JMAP event end timestamp for event id {:?}: '{}' ({})",
+                event.id,
+                event.end,
+                e
+            );
+            event.end.clone()
+        }
+    };
 
     let mut attendees_xml = String::new();
     if let Some(attendees) = &event.participants {
