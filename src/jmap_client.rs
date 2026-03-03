@@ -265,6 +265,10 @@ pub async fn get_event_by_id(session: &JmapSession, id: &str) -> Result<JmapEven
 }
 
 pub async fn push_event(session: &JmapSession, event: JmapEvent) -> Result<String, String> {
+    let mut event = event;
+    if event.uid.is_none() {
+        event.uid = Some(Uuid::new_v4().to_string());
+    }
     let create_map = json!({ Uuid::new_v4().to_string(): event });
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "create": create_map }, "c0"]] });
     let res = session
