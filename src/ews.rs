@@ -436,11 +436,18 @@ async fn handle_create_item(
         match jmap_client::push_event(session, event, &cal_id).await {
             Ok(id) => {
                 return soap_response(&format!(
+                let change_key = {
+                    let mut h = sha2::Sha256::new();
+                    sha2::Digest::update(&mut h, &id);
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, h.finalize())
+                };
+                return soap_response(&format!(
                     r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
                     NS_M,
                     NS_T,
                     utils::escape_xml(&id),
-                    utils::escape_xml(&id),
+                    utils::escape_xml(&change_key),
+                ));
                     utils::escape_xml(&{
                         let mut h = sha2::Sha256::new();
                         sha2::Digest::update(&mut h, &id);
