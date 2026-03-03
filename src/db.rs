@@ -16,6 +16,20 @@ fn extract_first_field(json: &serde_json::Value, field: &str) -> Option<String> 
     None
 }
 
+/// Returns `true` when the DB response contains at least one result row.
+/// An empty `"results": []` array (normal "no rows matched") returns `false`.
+fn has_result_rows(json: &serde_json::Value) -> bool {
+    // New format
+    if let Some(arr) = json["result"][0]["results"].as_array() {
+        return !arr.is_empty();
+    }
+    // Legacy format
+    if let Some(arr) = json[0]["results"].as_array() {
+        return !arr.is_empty();
+    }
+    false
+}
+
 pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
     let client = reqwest::Client::new();
     let body = json!({
@@ -51,7 +65,7 @@ pub async fn get_sync_state(
     let json: serde_json::Value = res.json().await.ok()?;
 
     let state = extract_first_field(&json, "jmap_state");
-    if state.is_none() && !json.is_null() {
+    if state.is_none() && has_result_rows(&json) {
         tracing::warn!(
             "get_sync_state: unexpected DB response format for user={user}, device={device_id}, coll={coll}: {json}"
         );
@@ -96,7 +110,7 @@ pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) ->
     let json: serde_json::Value = res.json().await.ok()?;
 
     let state = extract_first_field(&json, "jmap_state");
-    if state.is_none() && !json.is_null() {
+    if state.is_none() && has_result_rows(&json) {
         tracing::warn!(
             "get_ews_sync_state: unexpected DB response format for user={user}, folder={folder}: {json}"
         );
