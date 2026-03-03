@@ -200,26 +200,12 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             return SEND_MAIL_ERROR.to_string();
         }
     };
-    let from_email = if let Some(start) = from_addr.find('<') {
-        match from_addr[start + 1..].find('>') {
-            Some(rel_end) if rel_end > 0 => {
-                from_addr[start + 1..start + 1 + rel_end].trim().to_string()
-            }
-            Some(_) => {
-                tracing::warn!("SendMail: Malformed From header (empty angle brackets)");
-                return SEND_MAIL_ERROR.to_string();
-            }
-            None => {
-                tracing::warn!("SendMail: Malformed From header (unmatched angle bracket)");
-                return SEND_MAIL_ERROR.to_string();
-            }
+    let from_email = match from_addr.parse::<lettre::message::Mailbox>() {
+        Ok(mb) => mb.email.to_string(),
+        Err(e) => {
+            tracing::warn!("SendMail: Malformed From header '{}': {}", from_addr, e);
+            return SEND_MAIL_ERROR.to_string();
         }
-    } else if from_addr.find('>').is_some() {
-        // Unmatched angle bracket
-        tracing::warn!("SendMail: Malformed From header (unmatched angle bracket)");
-        return SEND_MAIL_ERROR.to_string();
-    } else {
-        from_addr.trim().to_string()
     };
     // Compare the from address against the authenticated user. The auth username
     // may be a full email (user@domain) or just the local part (user). Accept
