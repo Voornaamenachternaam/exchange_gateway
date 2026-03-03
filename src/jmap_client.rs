@@ -25,6 +25,14 @@ pub enum JmapError {
     InvalidInput(String),
 }
 
+impl JmapError {
+    /// Returns `true` for transient errors (network / connection issues) where
+    /// retrying later is likely to succeed and cached state should be preserved.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, JmapError::Connection(_))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct JmapSession {
     pub api_url: String,
@@ -403,6 +411,14 @@ pub async fn get_calendar_changes(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
+    // JMAP returns ["error", {"type": "..."}, "c0"] when the server cannot
+    // fulfil the request (e.g. cannotCalculateChanges for an expired state).
+    if json["methodResponses"][0][0].as_str() == Some("error") {
+        let err_type = json["methodResponses"][0][1]["type"]
+            .as_str()
+            .unwrap_or("unknown");
+        return Err(JmapError::Api(format!("CalendarEvent/changes: {}", err_type)));
+    }
     serde_json::from_value(json["methodResponses"][0][1].clone())
         .map_err(|e| JmapError::Parse(format!("changes: {}", e)))
 }

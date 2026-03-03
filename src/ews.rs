@@ -330,10 +330,16 @@ async fn handle_sync_folder_items(
         }
         let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await {
             Ok(c) => c,
+            Err(e) if e.is_transient() => {
+                // Network / connection error – don't invalidate the sync state
+                // because the server state is likely still valid.
+                tracing::warn!("get_calendar_changes transient failure: {}", e);
+                return soap_fault("ErrorInternalServerError", "Temporary error, please retry");
+            }
             Err(e) => {
-                // sinceState may be expired/invalid; clear stored state so the
-                // client's next request triggers a proper initial (full) sync
-                // that includes both creates and deletions.
+                // Permanent error (expired/invalid sinceState, parse failure,
+                // etc.) – clear stored state so the client's next request
+                // triggers a proper initial (full) sync.
                 tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
                 db::delete_ews_sync_state(config, user, &folder_id).await;
                 return soap_fault("ErrorInvalidSyncStateData", "Sync state expired, please re-sync");
