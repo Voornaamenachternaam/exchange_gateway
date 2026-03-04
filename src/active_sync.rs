@@ -757,7 +757,9 @@ async fn process_client_commands(
             patch.insert("description".into(), serde_json::json!(b.data));
         }
         if !patch.is_empty() {
-            let _ = jmap_client::patch_event(session, &id, patch).await;
+            if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
+                tracing::error!("ActiveSync Update failed for id {}: {}", id, e);
+            }
         }
     }
     if let Some(deletes) = cmds.delete
