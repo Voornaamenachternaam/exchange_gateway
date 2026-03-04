@@ -764,7 +764,9 @@ async fn process_client_commands(
         && !deletes.is_empty()
     {
         let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
-        let _ = jmap_client::destroy_events(session, ids).await;
+        if let Err(e) = jmap_client::destroy_events(session, ids).await {
+            tracing::error!("ActiveSync Delete failed: {}", e);
+        }
     }
 }
 
