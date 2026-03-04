@@ -451,10 +451,11 @@ async fn handle_create_item(
                     .collect()
             })
             .unwrap_or_default();
+        let start_utc = utils::parse_local_to_utc(&item.start.unwrap_or_default(), tz);
         let event = jmap_client::JmapEvent {
             id: None,
             title: item.subject.unwrap_or_default(),
-            start: utils::parse_local_to_utc(&item.start.unwrap_or_default(), tz),
+            start: start_utc.clone(),
             end: utils::parse_local_to_utc(&item.end.unwrap_or_default(), tz),
             location: item.location,
             description: item.body.map(|b| b.content),
@@ -473,6 +474,7 @@ async fn handle_create_item(
                 let change_key = {
                     let mut h = sha2::Sha256::new();
                     sha2::Digest::update(&mut h, &id);
+                    sha2::Digest::update(&mut h, &start_utc);
                     base64::Engine::encode(&base64::engine::general_purpose::STANDARD, h.finalize())
                 };
                 return soap_response(&format!(
