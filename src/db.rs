@@ -6,26 +6,47 @@ use serde_json::json;
 /// and the legacy direct-array format `[ { "results": [...] } ]`.
 fn extract_first_field(json: &serde_json::Value, field: &str) -> Option<String> {
     // New format: { "result": [ { "results": [ { field: "..." } ] } ] }
-    if let Some(val) = json["result"][0]["results"][0][field].as_str() {
+    if let Some(val) = json
+        .get("result")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("results"))
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get(field))
+        .and_then(|v| v.as_str())
+    {
         return Some(val.to_owned());
     }
+
     // Legacy format: [ { "results": [ { field: "..." } ] } ]
-    if let Some(val) = json[0]["results"][0][field].as_str() {
-        return Some(val.to_owned());
-    }
-    None
+    json.get(0)
+        .and_then(|r| r.get("results"))
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get(field))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned())
 }
 
 /// Returns `true` when the DB response contains at least one result row.
 /// An empty `"results": []` array (normal "no rows matched") returns `false`.
 fn has_result_rows(json: &serde_json::Value) -> bool {
     // New format
-    if let Some(arr) = json["result"][0]["results"].as_array() {
-        return !arr.is_empty();
+    if let Some(true) = json
+        .get("result")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("results"))
+        .and_then(|a| a.as_array())
+        .map(|a| !a.is_empty())
+    {
+        return true;
     }
     // Legacy format
-    if let Some(arr) = json[0]["results"].as_array() {
-        return !arr.is_empty();
+    if let Some(true) = json
+        .get(0)
+        .and_then(|r| r.get("results"))
+        .and_then(|a| a.as_array())
+        .map(|a| !a.is_empty())
+    {
+        return true;
     }
     false
 }
