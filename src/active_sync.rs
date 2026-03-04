@@ -565,20 +565,24 @@ async fn handle_sync(
                 // No server-side changes since the last sync.  Still need to
                 // persist the post-command state so the next sync baseline is
                 // up-to-date with any client-originated writes.
-                if pre_command_jmap_state != post_command_jmap_state {
+                let updated_sync_key = if pre_command_jmap_state != post_command_jmap_state {
+                    let new_key = Uuid::new_v4().to_string();
                     db::update_sync_state(
                         config,
                         user,
                         device_id,
                         &collection_id,
-                        &old_sync_key,
+                        &new_key,
                         &post_command_jmap_state,
                     )
                     .await;
-                }
+                    new_key
+                } else {
+                    old_sync_key.clone()
+                };
                 return format!(
                     r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#,
-                    utils::escape_xml(&old_sync_key),
+                    utils::escape_xml(&updated_sync_key),
                     utils::escape_xml(&collection_id)
                 );
             }
