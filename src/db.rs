@@ -113,6 +113,7 @@ pub async fn delete_sync_state(
         .send()
         .await
         .and_then(|res| res.error_for_status())
+        .and_then(|res| res.error_for_status())
     {
         Ok(_) => {}
         Err(e) => {
