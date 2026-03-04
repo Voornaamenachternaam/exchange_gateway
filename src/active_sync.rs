@@ -253,21 +253,40 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             .1
             .trim_start_matches("\r\n\r\n");
 
-        let email = match (from.parse(), to.parse()) {
-            (Ok(f), Ok(t)) => match Message::builder()
-                .from(f)
-                .to(t)
-                .subject(subject)
-                .body(clean_body.to_string())
-            {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::error!("Email build error: {}", e);
-                    return SEND_MAIL_ERROR.to_string();
-                }
-            },
-            _ => {
-                tracing::warn!("SendMail: invalid From/To address");
+        let from_mailbox: lettre::message::Mailbox = match from.parse() {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("SendMail: invalid From address '{}': {}", from, e);
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        // Parse potentially multiple To: addresses (comma-separated)
+        let to_mailboxes: Vec<lettre::message::Mailbox> = to
+            .split(',')
+            .map(|addr| addr.trim())
+            .filter(|addr| !addr.is_empty())
+            .map(|addr| addr.parse::<lettre::message::Mailbox>())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|e| {
+                tracing::warn!("SendMail: invalid To address in '{}': {}", to, e);
+                Vec::new()
+            });
+
+        if to_mailboxes.is_empty() {
+            tracing::warn!("SendMail: no valid To addresses in '{}'", to);
+            return SEND_MAIL_ERROR.to_string();
+        }
+
+        let mut builder = Message::builder().from(from_mailbox);
+        for mb in to_mailboxes {
+            builder = builder.to(mb);
+        }
+
+        let email = match builder.subject(subject).body(clean_body.to_string()) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("Email build error: {}", e);
                 return SEND_MAIL_ERROR.to_string();
             }
         };
