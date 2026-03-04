@@ -106,17 +106,21 @@ pub async fn delete_sync_state(
         "query": "DELETE FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
         "params": [user, device_id, coll]
     });
-    if let Err(e) = client
+    match client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
         .await
+        .and_then(|res| res.error_for_status())
     {
-        tracing::error!(
-            user = user, device_id = device_id, collection = coll,
-            "delete_sync_state failed: {e}"
-        );
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "delete_sync_state failed: {e}"
+            );
+        }
     }
 }
 
