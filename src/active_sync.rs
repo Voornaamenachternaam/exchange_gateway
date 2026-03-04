@@ -76,7 +76,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 command = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 break;
             }
