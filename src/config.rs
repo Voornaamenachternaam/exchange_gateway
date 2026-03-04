@@ -18,7 +18,9 @@ impl AppConfig {
             db_auth_token: env::var("GATEWAY_SECRET").map_err(|_| "GATEWAY_SECRET missing")?,
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
             smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
-            mail_domain: env::var("GATEWAY_HOST").map_err(|_| "GATEWAY_HOST missing")?,
+            mail_domain: env::var("MAIL_DOMAIN")
+                .or_else(|_| env::var("GATEWAY_HOST"))
+                .map_err(|_| "MAIL_DOMAIN or GATEWAY_HOST missing")?,
         })
     }
 }
