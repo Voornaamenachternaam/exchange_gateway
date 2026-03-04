@@ -506,10 +506,14 @@ async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOps
         if let Some(store) = fetch.store {
             let id_opt = store.server_id.or(store.file_reference);
             if let Some(id) = id_opt {
-                if let Ok(event) = jmap_client::get_event_by_id(session, &id).await {
-                    fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch>"#, utils::escape_xml(&id), utils::escape_xml(event.description.as_deref().unwrap_or(""))));
-                } else {
-                    fetches.push_str("<Fetch><Status>6</Status></Fetch>");
+                match jmap_client::get_event_by_id(session, &id).await {
+                    Ok(event) => {
+                        fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch>"#, utils::escape_xml(&id), utils::escape_xml(event.description.as_deref().unwrap_or(""))));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to get event by id '{}': {}", id, e);
+                        fetches.push_str("<Fetch><Status>6</Status></Fetch>");
+                    }
                 }
             }
         }
