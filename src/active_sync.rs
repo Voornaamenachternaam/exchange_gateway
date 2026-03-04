@@ -438,7 +438,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
         results_xml.push_str(&format!(r#"<Result><Properties><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress></Properties></Result>"#, utils::escape_xml(&p.name), utils::escape_xml(&p.email)));
     }
     format!(
-        r#"<Search xmlns="Search:"><Status>1</Status><Response><Store><Status>1</Status><Result>{}</Result></Store></Response></Search>"#,
+        r#"<Search xmlns="Search:"><Status>1</Status><Response><Store><Status>1</Status>{}</Store></Response></Search>"#,
         results_xml
     )
 }
