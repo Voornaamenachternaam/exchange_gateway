@@ -346,9 +346,7 @@ async fn handle_sync_folder_items(
         }
         (xml, true)
     } else {
-        // When is_initial is false, prev_state is guaranteed to be Some
-        // (is_initial includes prev_state.is_none() in its condition).
-        let prev_jmap_state = prev_state.expect("prev_state must be Some when is_initial is false");
+        let Some(prev_jmap_state) = prev_state else { unreachable!("is_initial is false but prev_state is None") };
         if prev_jmap_state == current_state {
             return soap_response(&format!(
                 r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes /></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
