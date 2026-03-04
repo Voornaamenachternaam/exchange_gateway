@@ -893,10 +893,10 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             continue;
         }
 
-        // Handle LITERAL (0x04), LITERAL_C (0x44), LITERAL_A (0x84), LITERAL_AC (0xC4) tokens
+        // Handle LITERAL (0x04), LITERAL_A (0x44), LITERAL_C (0x84), LITERAL_AC (0xC4) tokens
         if token == 0x04 || token == 0x44 || token == 0x84 || token == 0xC4 {
-            let has_content = (token & 0x40) != 0;
-            let has_attrs = (token & 0x80) != 0;
+            let has_content = (token & 0x80) != 0;
+            let has_attrs = (token & 0x40) != 0;
             let offset = read_mb_u_int32(data, &mut pos)?;
             let tag_name = read_strtbl_string(strtbl, offset)?;
 
@@ -1078,8 +1078,8 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
         idx: &mut HashMap<String, usize>,
         table: &mut Vec<u8>,
     ) {
-        // WBXML LITERAL (0x04) / LITERAL_C (0x44): followed by string table index (mb_u_int32)
-        let token = if has_content { 0x44 } else { 0x04 };
+        // WBXML LITERAL (0x04) / LITERAL_C (0x84): followed by string table index (mb_u_int32)
+        let token = if has_content { 0x84 } else { 0x04 };
         out.push(token);
         let off = strtbl_offset(name, idx, table);
         write_mb_u_int32(out, off);
