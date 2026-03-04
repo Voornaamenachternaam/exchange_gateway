@@ -628,6 +628,7 @@ struct GetItemRequest {
 #[derive(Debug, Deserialize)]
 struct EwsItemIds {
     #[serde(rename = "ItemId")]
+    #[serde(default)]
     items: Vec<EwsItemId>,
 }
 #[derive(Debug, Deserialize)]
