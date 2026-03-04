@@ -212,17 +212,25 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     let from_matches = if authenticated_user.contains('@') {
         from_email.eq_ignore_ascii_case(authenticated_user)
     } else {
-        let local_matches = from_email
-            .split('@')
-            .next()
-            .unwrap_or("")
-            .eq_ignore_ascii_case(authenticated_user);
-        let domain_matches = from_email
-            .split('@')
-            .nth(1)
-            .unwrap_or("")
-            .eq_ignore_ascii_case(&config.mail_domain);
-        local_matches && domain_matches
+        // Reject if mail_domain is empty to prevent trivial bypass
+        if config.mail_domain.trim().is_empty() {
+            tracing::error!(
+                "SendMail: mail_domain is empty; cannot verify From address for non-email username"
+            );
+            false
+        } else {
+            let local_matches = from_email
+                .split('@')
+                .next()
+                .unwrap_or("")
+                .eq_ignore_ascii_case(authenticated_user);
+            let domain_matches = from_email
+                .split('@')
+                .nth(1)
+                .unwrap_or("")
+                .eq_ignore_ascii_case(&config.mail_domain);
+            local_matches && domain_matches
+        }
     };
     if !from_matches {
         tracing::warn!(
