@@ -486,9 +486,13 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
         }
         buf.clear();
     }
-    let results = jmap_client::search_principals(session, &query)
-        .await
-        .unwrap_or_default();
+    let results = match jmap_client::search_principals(session, &query).await {
+        Ok(results) => results,
+        Err(e) => {
+            tracing::error!("Failed to search principals: {}", e);
+            Vec::new()
+        }
+    };
     let results: Vec<_> = results.into_iter().take(10).collect();
     let mut results_xml = String::new();
     for p in results {
