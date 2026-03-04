@@ -999,6 +999,7 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     // <string table bytes>
     // <WBXML body>
     let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
 
     // Build WBXML body separately so we can prefix the final output with a string table.
