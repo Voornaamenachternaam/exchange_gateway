@@ -227,7 +227,7 @@ pub async fn get_default_calendar_id(session: &JmapSession) -> Result<String, Jm
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
-    check_jmap_set_errors(&json)?;
+    check_jmap_method_error(&json)?;
     if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
         // First, look for the calendar marked as default
         for cal in list {
@@ -345,7 +345,7 @@ pub async fn push_event(
     Err(JmapError::Api("create failed".into()))
 }
 
-fn check_jmap_set_errors(json: &serde_json::Value) -> Result<(), JmapError> {
+fn check_jmap_method_error(json: &serde_json::Value) -> Result<(), JmapError> {
     if let Some(resp) = json.get("methodResponses").and_then(|mr| mr.get(0)) {
         if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
             let desc = resp
@@ -378,7 +378,7 @@ pub async fn patch_event(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
-    check_jmap_set_errors(&json)?;
+    check_jmap_method_error(&json)?;
     if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
         && !not_updated.is_empty()
     {
@@ -402,7 +402,7 @@ pub async fn destroy_events(session: &JmapSession, ids: Vec<String>) -> Result<(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
-    check_jmap_set_errors(&json)?;
+    check_jmap_method_error(&json)?;
     if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object()
         && !not_destroyed.is_empty()
     {
@@ -593,7 +593,7 @@ pub async fn update_participant_status(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
-    check_jmap_set_errors(&json)?;
+    check_jmap_method_error(&json)?;
     if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
         && !not_updated.is_empty()
     {
