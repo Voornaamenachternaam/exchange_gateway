@@ -111,6 +111,9 @@ async fn handle_active_sync(
                     .into_response();
             }
         }
+    } else if body.is_empty() {
+        // Empty body is valid for commands like Ping or FolderSync — treat as plain XML
+        (String::new(), false)
     } else {
         // No Content-Type: sniff by first byte — WBXML never starts with '<'
         if body.first() == Some(&b'<') {
