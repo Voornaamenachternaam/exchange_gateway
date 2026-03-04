@@ -20,8 +20,14 @@ impl AppConfig {
             smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
             mail_domain: env::var("MAIL_DOMAIN")
                 .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| env::var("GATEWAY_HOST").ok().filter(|v| !v.trim().is_empty()))
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .or_else(|| {
+                    env::var("GATEWAY_HOST")
+                        .ok()
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty())
+                })
                 .ok_or_else(|| "MAIL_DOMAIN or GATEWAY_HOST must be set and non-empty".to_string())?,
         })
     }
