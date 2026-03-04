@@ -1,6 +1,6 @@
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -252,13 +252,13 @@ async fn handle_update_item(
                     if let Some(s) = update.calendar_item.start {
                         patch.insert(
                             "start".into(),
-                            serde_json::json!(parse_local_to_utc(&s, tz)),
+                            serde_json::json!(utils::parse_local_to_utc(&s, tz)),
                         );
                     }
                 }
                 "calendar:End" => {
                     if let Some(e) = update.calendar_item.end {
-                        patch.insert("end".into(), serde_json::json!(parse_local_to_utc(&e, tz)));
+                        patch.insert("end".into(), serde_json::json!(utils::parse_local_to_utc(&e, tz)));
                     }
                 }
                 _ => {}
@@ -425,8 +425,8 @@ async fn handle_create_item(
         let event = jmap_client::JmapEvent {
             id: None,
             title: item.subject.unwrap_or_default(),
-            start: parse_local_to_utc(&item.start.unwrap_or_default(), tz),
-            end: parse_local_to_utc(&item.end.unwrap_or_default(), tz),
+            start: utils::parse_local_to_utc(&item.start.unwrap_or_default(), tz),
+            end: utils::parse_local_to_utc(&item.end.unwrap_or_default(), tz),
             location: item.location,
             description: item.body.map(|b| b.content),
             uid: Some(Uuid::new_v4().to_string()),
@@ -599,19 +599,6 @@ fn soap_fault(code: &str, msg: &str) -> String {
         r#"<soap:Fault><faultcode>{}</faultcode><faultstring>{}</faultstring></soap:Fault>"#,
         utils::escape_xml(code), utils::escape_xml(msg)
     ))
-}
-fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%SZ") {
-        return Utc.from_utc_datetime(&dt).to_rfc3339();
-    }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
-        return tz
-            .from_local_datetime(&dt)
-            .single()
-            .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
-            .unwrap_or_default();
-    }
-    local_str.to_string()
 }
 #[derive(Debug, Deserialize)]
 struct ResolveNamesRequest {

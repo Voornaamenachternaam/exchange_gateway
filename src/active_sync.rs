@@ -1,6 +1,6 @@
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lettre::message::Message;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
@@ -679,8 +679,8 @@ async fn process_client_commands(
         .unwrap_or("default".into());
     for add_cmd in cmds.add.unwrap_or_default() {
         let data = add_cmd.application_data;
-        let start_utc = parse_local_to_utc(&data.start.unwrap_or_default(), tz);
-        let end_utc = parse_local_to_utc(&data.end.unwrap_or_default(), tz);
+        let start_utc = utils::parse_local_to_utc(&data.start.unwrap_or_default(), tz);
+        let end_utc = utils::parse_local_to_utc(&data.end.unwrap_or_default(), tz);
         let attendees: Vec<jmap_client::Participant> = data
             .attendees
             .map(|a| {
@@ -726,11 +726,11 @@ async fn process_client_commands(
         if let Some(s) = data.start {
             patch.insert(
                 "start".into(),
-                serde_json::json!(parse_local_to_utc(&s, tz)),
+                serde_json::json!(utils::parse_local_to_utc(&s, tz)),
             );
         }
         if let Some(e) = data.end {
-            patch.insert("end".into(), serde_json::json!(parse_local_to_utc(&e, tz)));
+            patch.insert("end".into(), serde_json::json!(utils::parse_local_to_utc(&e, tz)));
         }
         if let Some(b) = data.body {
             patch.insert("description".into(), serde_json::json!(b.data));
@@ -785,17 +785,6 @@ fn build_rrule(r: Recurrence) -> String {
         }
     }
     parts.join(";")
-}
-
-fn parse_local_to_utc(local_str: &str, tz: Tz) -> String {
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
-        return tz
-            .from_local_datetime(&dt)
-            .single()
-            .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
-            .unwrap_or_default();
-    }
-    local_str.to_string()
 }
 
 async fn render_changes(
