@@ -380,6 +380,7 @@ lazy_static! {
         add!(CP_EMAIL, 0x07, "AttName", true);
         add!(CP_EMAIL, 0x08, "AttSize", true);
         add!(CP_EMAIL, 0x09, "Att0Id", true);
+        add!(CP_EMAIL, 0x0A, "AttMethod", true);
         add!(CP_EMAIL, 0x0B, "Body", true);
         add!(CP_EMAIL, 0x0C, "BodySize", true);
         add!(CP_EMAIL, 0x0D, "BodyTruncated", true);
