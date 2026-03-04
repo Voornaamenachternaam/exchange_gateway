@@ -348,11 +348,15 @@ async fn handle_sync_folder_items(
     } else {
         let Some(prev_jmap_state) = prev_state else { unreachable!("is_initial is false but prev_state is None") };
         if prev_jmap_state == current_state {
+            // Persist the new sync token so the client's next request
+            // maps back to the current JMAP state (avoids an unnecessary
+            // full re-sync if the stored token were to drift).
+            db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await;
             return soap_response(&format!(
                 r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes /></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
                 NS_M,
                 NS_T,
-                utils::escape_xml(&req.sync_state.unwrap_or_default())
+                utils::escape_xml(&new_sync_token)
             ));
         }
         let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await {
