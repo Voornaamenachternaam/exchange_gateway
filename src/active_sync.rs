@@ -862,7 +862,8 @@ fn build_rrule(r: Recurrence) -> String {
         0 => "DAILY",
         1 => "WEEKLY",
         2 => "MONTHLY",
-        3 => "YEARLY",
+        3 => "MONTHLY",
+        5 | 6 => "YEARLY",
         _ => "DAILY",
     };
     let mut parts = vec![format!("FREQ={}", freq)];
