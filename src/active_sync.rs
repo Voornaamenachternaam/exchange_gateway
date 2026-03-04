@@ -363,11 +363,15 @@ async fn handle_meeting_response(
     let mut buf = Vec::new();
     let mut current_tag = String::new();
     let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 current_tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+            }
+            Ok(Event::End(_)) => {
+                current_tag.clear();
             }
             Ok(Event::Text(t)) => {
                 let text =
@@ -411,11 +415,15 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
     let mut buf = Vec::new();
     let mut current_tag = String::new();
     let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 current_tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+            }
+            Ok(Event::End(_)) => {
+                current_tag.clear();
             }
             Ok(Event::Text(t)) => {
                 if current_tag == "FreeText" {
