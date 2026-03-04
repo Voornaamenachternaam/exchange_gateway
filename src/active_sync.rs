@@ -402,8 +402,10 @@ async fn handle_meeting_response(
         3 => "declined",
         _ => "needs-action",
     };
-    let _ = jmap_client::update_participant_status(session, &event_id, user_email, status_str)
-        .await;
+    if let Err(e) = jmap_client::update_participant_status(session, &event_id, user_email, status_str).await {
+        tracing::error!("MeetingResponse update failed: {}", e);
+        return error_xml(500, "ParticipantUpdateFailed");
+    }
 
     format!(
         r#"<MeetingResponse xmlns="AirSync:"><Result><Status>1</Status><CalendarId>{}</CalendarId></Result></MeetingResponse>"#,
