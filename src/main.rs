@@ -107,7 +107,7 @@ async fn handle_active_sync(
             Ok(xml) => (xml, true),
             Err(e) => {
                 tracing::error!("WBXML decode error: {:?}", e);
-                return (StatusCode::BAD_REQUEST, "WBXML Decode Error".to_string())
+                    return (StatusCode::BAD_REQUEST, "Unable to decode request body".to_string())
                     .into_response();
             }
         }
