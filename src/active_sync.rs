@@ -475,7 +475,7 @@ async fn handle_sync(
     let collection_id = coll.collection_id.clone();
 
     if let Some(cmds) = coll.commands {
-        process_client_commands(session, cmds, &config.timezone, user).await;
+        process_client_commands(session, cmds, &config.timezone).await;
     }
 
     let current_jmap_state = match jmap_client::get_calendar_state(session).await {
@@ -672,7 +672,6 @@ async fn process_client_commands(
     session: &jmap_client::JmapSession,
     cmds: Commands,
     tz_str: &str,
-    _user: &str,
 ) {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
     let cal_id = jmap_client::get_default_calendar_id(session)
