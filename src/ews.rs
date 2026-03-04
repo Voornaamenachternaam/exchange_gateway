@@ -37,6 +37,8 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         "FindItem" => handle_find_item().await,
         "ResolveNames" => handle_resolve_names(&session, xml).await,
         "GetAttachment" => handle_get_attachment(&session, xml).await,
+        "GetRoomLists" => handle_get_room_lists().await,
+        "GetRooms" => handle_get_rooms().await,
         _ => soap_fault("ErrorInvalidRequest", &format!("Unsupported: {}", action)),
     }
 }
@@ -495,6 +497,20 @@ async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> St
 async fn handle_find_item() -> String {
     soap_response(&format!(
         r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder IndexedPagingOffset="0" TotalItemsInView="0" IncludesLastItemInRange="true"><t:Items /></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
+        NS_M, NS_T
+    ))
+}
+
+async fn handle_get_room_lists() -> String {
+    soap_response(&format!(
+        r#"<m:GetRoomListsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetRoomListsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RoomLists /></m:GetRoomListsResponseMessage></m:ResponseMessages></m:GetRoomListsResponse>"#,
+        NS_M, NS_T
+    ))
+}
+
+async fn handle_get_rooms() -> String {
+    soap_response(&format!(
+        r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetRoomsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Rooms /></m:GetRoomsResponseMessage></m:ResponseMessages></m:GetRoomsResponse>"#,
         NS_M, NS_T
     ))
 }
