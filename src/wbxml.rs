@@ -694,7 +694,10 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         }
         let byte = data[pos];
         pos += 1;
-        publicid = (publicid << 7) | (byte & 0x7F) as u32;
+        publicid = publicid
+            .checked_shl(7)
+            .and_then(|v| v.checked_add((byte & 0x7F) as u32))
+            .ok_or_else(|| "Public ID overflow".to_string())?;
         if (byte & 0x80) == 0 {
             break;
         }
@@ -724,7 +727,10 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         }
         let byte = data[pos];
         pos += 1;
-        charset = (charset << 7) | (byte & 0x7F) as u32;
+        charset = charset
+            .checked_shl(7)
+            .and_then(|v| v.checked_add((byte & 0x7F) as u32))
+            .ok_or_else(|| "Charset overflow".to_string())?;
         if (byte & 0x80) == 0 {
             break;
         }
