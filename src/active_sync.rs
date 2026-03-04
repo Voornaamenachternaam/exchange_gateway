@@ -208,13 +208,14 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             return SEND_MAIL_ERROR.to_string();
         }
     };
-    let from_email = match from_addr.parse::<lettre::message::Mailbox>() {
-        Ok(mb) => mb.email.to_string(),
+    let from_mailbox = match from_addr.parse::<lettre::message::Mailbox>() {
+        Ok(mb) => mb,
         Err(e) => {
             tracing::warn!("SendMail: Malformed From header '{}': {}", from_addr, e);
             return SEND_MAIL_ERROR.to_string();
         }
     };
+    let from_email = from_mailbox.email.to_string();
     // Compare the from address against the authenticated user. The auth username
     // may be a full email (user@domain) or just the local part (user). Accept
     // the message if the full email matches, or if the auth username has no '@'
@@ -250,9 +251,9 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         );
         return SEND_MAIL_ERROR.to_string();
     }
-    let from_addr = Some(from_email);
+    let from_addr = Some(from_mailbox);
 
-    let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
+    let status = if let (Some(to), Some(from_mailbox)) = (to_addr, from_addr) {
         let subject = re_subj
             .captures(&mime_content)
             .and_then(|c| c.get(1))
@@ -263,14 +264,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             .split_at(body_start)
             .1
             .trim_start_matches("\r\n\r\n");
-
-        let from_mailbox: lettre::message::Mailbox = match from.parse() {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::warn!("SendMail: invalid From address '{}': {}", from, e);
-                return SEND_MAIL_ERROR.to_string();
-            }
-        };
 
         // Parse potentially multiple To: addresses (comma-separated)
         let to_mailboxes: Vec<lettre::message::Mailbox> = to
