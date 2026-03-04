@@ -541,7 +541,9 @@ async fn handle_sync(
     };
 
     if let Some(cmds) = coll.commands {
-        process_client_commands(session, cmds, &config.timezone).await;
+        if let Err(_e) = process_client_commands(session, cmds, &config.timezone).await {
+            return error_xml(6, "ServerError");
+        }
     }
 
     // After client commands have been applied, re-fetch the state so the
@@ -765,58 +767,56 @@ async fn process_client_commands(
     session: &jmap_client::JmapSession,
     cmds: Commands,
     tz_str: &str,
-) {
+) -> Result<(), String> {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
     if let Some(add_cmds) = cmds.add {
         let cal_id = match jmap_client::get_default_calendar_id(session).await {
             Ok(id) => id,
             Err(e) => {
-                tracing::error!(
+                let msg = format!(
                     "ActiveSync Add failed: unable to determine default calendar id: {}",
                     e
                 );
-                // Fall through to still process change/delete commands below
-                String::new()
+                tracing::error!("{}", msg);
+                return Err(msg);
             }
         };
-        if !cal_id.is_empty() {
-            for add_cmd in add_cmds {
-                let data = add_cmd.application_data;
-                let start_utc = utils::parse_local_to_utc(&data.start.unwrap_or_default(), tz);
-                let end_utc = utils::parse_local_to_utc(&data.end.unwrap_or_default(), tz);
-                let attendees: Vec<jmap_client::Participant> = data
-                    .attendees
-                    .map(|a| {
-                        a.items
-                            .into_iter()
-                            .map(|att| jmap_client::Participant {
-                                email: att.email,
-                                name: att.name,
-                                status: None,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let event = jmap_client::JmapEvent {
-                    id: None,
-                    title: data.subject.unwrap_or_default(),
-                    start: start_utc,
-                    end: end_utc,
-                    location: data.location,
-                    description: data.body.map(|b| b.data),
-                    uid: data.uid.or(Some(Uuid::new_v4().to_string())),
-                    participants: if attendees.is_empty() {
-                        None
-                    } else {
-                        Some(attendees)
-                    },
-                    is_all_day: data.all_day_event.unwrap_or(0) == 1,
-                    recurrence_rule: data.recurrence.map(build_rrule),
-                    updated: None,
-                };
-                if let Err(e) = jmap_client::push_event(session, event, &cal_id).await {
-                    tracing::error!("ActiveSync Add failed: {}", e);
-                }
+        for add_cmd in add_cmds {
+            let data = add_cmd.application_data;
+            let start_utc = utils::parse_local_to_utc(&data.start.unwrap_or_default(), tz);
+            let end_utc = utils::parse_local_to_utc(&data.end.unwrap_or_default(), tz);
+            let attendees: Vec<jmap_client::Participant> = data
+                .attendees
+                .map(|a| {
+                    a.items
+                        .into_iter()
+                        .map(|att| jmap_client::Participant {
+                            email: att.email,
+                            name: att.name,
+                            status: None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let event = jmap_client::JmapEvent {
+                id: None,
+                title: data.subject.unwrap_or_default(),
+                start: start_utc,
+                end: end_utc,
+                location: data.location,
+                description: data.body.map(|b| b.data),
+                uid: data.uid.or(Some(Uuid::new_v4().to_string())),
+                participants: if attendees.is_empty() {
+                    None
+                } else {
+                    Some(attendees)
+                },
+                is_all_day: data.all_day_event.unwrap_or(0) == 1,
+                recurrence_rule: data.recurrence.map(build_rrule),
+                updated: None,
+            };
+            if let Err(e) = jmap_client::push_event(session, event, &cal_id).await {
+                tracing::error!("ActiveSync Add failed: {}", e);
             }
         }
     }
@@ -856,6 +856,7 @@ async fn process_client_commands(
             tracing::error!("ActiveSync Delete failed: {}", e);
         }
     }
+    Ok(())
 }
 
 fn build_rrule(r: Recurrence) -> String {
