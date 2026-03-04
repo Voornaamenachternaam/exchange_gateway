@@ -67,7 +67,8 @@ pub async fn get_sync_state(
     let state = extract_first_field(&json, "jmap_state");
     if state.is_none() && has_result_rows(&json) {
         tracing::warn!(
-            "get_sync_state: unexpected DB response format for user and device."
+            user = user, device_id = device_id, collection = coll,
+            "get_sync_state: unexpected DB response format"
         );
     }
     state
