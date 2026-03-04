@@ -722,7 +722,7 @@ fn parse_rrule_to_eas(rrule: &str) -> String {
                 "DAILY" => "0",
                 "WEEKLY" => "1",
                 "MONTHLY" => "2",
-                "YEARLY" => "3",
+                "YEARLY" => "5",
                 _ => "0",
             };
         }
