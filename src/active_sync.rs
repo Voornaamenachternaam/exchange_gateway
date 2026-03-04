@@ -265,17 +265,18 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             .1
             .trim_start_matches("\r\n\r\n");
 
-        // Parse potentially multiple To: addresses (comma-separated)
-        let to_mailboxes: Vec<lettre::message::Mailbox> = to
-            .split(',')
-            .map(|addr| addr.trim())
-            .filter(|addr| !addr.is_empty())
-            .map(|addr| addr.parse::<lettre::message::Mailbox>())
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_or_else(|e| {
+        // Parse potentially multiple To: addresses using RFC 5322 mailbox-list
+        // parsing. Naive comma-splitting breaks quoted display names such as
+        // "Doe, John" <john@example.com>.
+        let to_mailboxes: Vec<lettre::message::Mailbox> = match to
+            .parse::<lettre::message::Mailboxes>()
+        {
+            Ok(mbs) => mbs.into(),
+            Err(e) => {
                 tracing::warn!("SendMail: invalid To address in '{}': {}", to, e);
                 Vec::new()
-            });
+            }
+        };
 
         if to_mailboxes.is_empty() {
             tracing::warn!("SendMail: no valid To addresses in '{}'", to);
