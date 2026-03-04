@@ -168,6 +168,12 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                     );
                 }
             }
+            Ok(Event::CData(t)) => {
+                if in_mime {
+                    mime_content
+                        .push_str(std::str::from_utf8(t.as_ref()).unwrap_or(""));
+                }
+            }
             Ok(Event::Eof) => break,
             _ => {}
         }
@@ -405,6 +411,14 @@ async fn handle_meeting_response(
                     _ => {}
                 }
             }
+            Ok(Event::CData(t)) => {
+                let text = String::from_utf8_lossy(t.as_ref());
+                match current_tag.as_str() {
+                    "RequestId" => uid = text.to_string(),
+                    "UserResponse" => response_code = text.parse().unwrap_or(0),
+                    _ => {}
+                }
+            }
             Ok(Event::Eof) => break,
             _ => {}
         }
@@ -455,6 +469,11 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
                     query = escape::unescape(std::str::from_utf8(&t).unwrap_or(""))
                         .unwrap_or_default()
                         .to_string();
+                }
+            }
+            Ok(Event::CData(t)) => {
+                if current_tag == "FreeText" {
+                    query = String::from_utf8_lossy(t.as_ref()).to_string();
                 }
             }
             Ok(Event::Eof) => break,
