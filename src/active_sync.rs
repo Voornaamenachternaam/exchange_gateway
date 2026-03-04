@@ -133,7 +133,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
             };
             handle_item_operations(&session, req).await
         }
-        "MeetingResponse" => handle_meeting_response(&session, xml, &user).await,
+        "MeetingResponse" => handle_meeting_response(&session, config, xml, &user).await,
         "SendMail" => handle_send_mail(config, xml, &user).await,
         "Settings" => handle_settings(&session, config, &user, device_id).await,
         "Provision" => handle_provision().await,
@@ -382,9 +382,16 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
 
 async fn handle_meeting_response(
     session: &jmap_client::JmapSession,
+    config: &AppConfig,
     xml: &str,
-    user_email: &str,
+    authenticated_user: &str,
 ) -> String {
+    let user_email = if authenticated_user.contains('@') {
+        authenticated_user.to_string()
+    } else {
+        format!("{}@{}", authenticated_user, config.mail_domain)
+    };
+
     let mut uid = String::new();
     let mut response_code = 0;
     let mut buf = Vec::new();
@@ -436,7 +443,7 @@ async fn handle_meeting_response(
         3 => "declined",
         _ => "needs-action",
     };
-    if let Err(e) = jmap_client::update_participant_status(session, &event_id, user_email, status_str).await {
+    if let Err(e) = jmap_client::update_participant_status(session, &event_id, &user_email, status_str).await {
         tracing::error!("MeetingResponse update failed: {}", e);
         return error_xml(500, "ParticipantUpdateFailed");
     }
