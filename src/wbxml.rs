@@ -1079,7 +1079,7 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
         table: &mut Vec<u8>,
     ) {
         // WBXML LITERAL (0x04) / LITERAL_C (0x84): followed by string table index (mb_u_int32)
-        let token = if has_content { 0x84 } else { 0x04 };
+        let token = if has_content { 0x44 } else { 0x04 };
         out.push(token);
         let off = strtbl_offset(name, idx, table);
         write_mb_u_int32(out, off);
