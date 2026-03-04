@@ -28,8 +28,18 @@ pub enum JmapError {
 impl JmapError {
     /// Returns `true` for transient errors (network / connection issues) where
     /// retrying later is likely to succeed and cached state should be preserved.
+    ///
+    /// Inspects the underlying `reqwest::Error` to distinguish genuinely
+    /// transient conditions (timeouts, connection resets, DNS failures) from
+    /// non-transient ones (e.g. response-body deserialization failures that
+    /// would recur on every retry).
     pub fn is_transient(&self) -> bool {
-        matches!(self, JmapError::Connection(_))
+        match self {
+            JmapError::Connection(e) => {
+                e.is_timeout() || e.is_connect() || e.is_request()
+            }
+            _ => false,
+        }
     }
 }
 
