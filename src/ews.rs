@@ -644,6 +644,7 @@ struct UpdateItemRequest {
 #[derive(Debug, Deserialize)]
 struct EwsItemChanges {
     #[serde(rename = "ItemChange")]
+    #[serde(default)]
     items: Vec<EwsItemChange>,
 }
 #[derive(Debug, Deserialize)]
