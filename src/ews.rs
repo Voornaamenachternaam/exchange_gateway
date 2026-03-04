@@ -322,13 +322,30 @@ async fn handle_sync_folder_items(
         .folder_id
         .map(|f| f.id)
         .unwrap_or_else(|| "default".to_string());
-    let prev_state = db::get_ews_sync_state(config, user, &folder_id).await;
+    let stored = db::get_ews_sync_state(config, user, &folder_id).await;
     let current_state = match jmap_client::get_calendar_state(session).await {
         Ok(s) => s,
         Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),
     };
     let new_sync_token = Uuid::new_v4().to_string();
-    let is_initial = req.sync_state.is_none() || prev_state.is_none();
+
+    // Determine whether this is an initial or delta sync.
+    // If the client supplies a SyncState that doesn't match the last token we
+    // issued, reject it so the client performs a clean re-sync rather than
+    // silently computing deltas from the wrong baseline.
+    let is_initial = match (&req.sync_state, &stored) {
+        (None, _) => true,
+        (Some(_), None) => true,
+        (Some(client_token), Some(s)) => {
+            if *client_token != s.sync_state {
+                return soap_fault(
+                    "ErrorInvalidSyncStateData",
+                    "SyncState does not match; please re-sync",
+                );
+            }
+            false
+        }
+    };
 
     let (changes_xml, includes_last) = if is_initial {
         let events = match jmap_client::get_calendar_events(session).await {
@@ -346,8 +363,9 @@ async fn handle_sync_folder_items(
         }
         (xml, true)
     } else {
-        let Some(prev_jmap_state) = prev_state else { unreachable!("is_initial is false but prev_state is None") };
-        if prev_jmap_state == current_state {
+        let Some(ref stored_state) = stored else { unreachable!("is_initial is false but stored is None") };
+        let prev_jmap_state = &stored_state.jmap_state;
+        if *prev_jmap_state == current_state {
             // Persist the new sync token so the client's next request
             // maps back to the current JMAP state (avoids an unnecessary
             // full re-sync if the stored token were to drift).

@@ -124,10 +124,21 @@ pub async fn delete_sync_state(
     }
 }
 
-pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) -> Option<String> {
+/// Stored EWS sync state: the token issued to the client and the corresponding
+/// JMAP state used to compute deltas.
+pub struct EwsSyncState {
+    pub sync_state: String,
+    pub jmap_state: String,
+}
+
+pub async fn get_ews_sync_state(
+    config: &AppConfig,
+    user: &str,
+    folder: &str,
+) -> Option<EwsSyncState> {
     let client = reqwest::Client::new();
     let body = json!({
-        "query": "SELECT jmap_state FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
+        "query": "SELECT sync_state, jmap_state FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
         "params": [user, folder]
     });
     let res = client
@@ -139,13 +150,22 @@ pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) ->
         .ok()?;
     let json: serde_json::Value = res.json().await.ok()?;
 
-    let state = extract_first_field(&json, "jmap_state");
-    if state.is_none() && has_result_rows(&json) {
-        tracing::warn!(
-            "get_ews_sync_state: unexpected DB response format for user and folder."
-        );
+    let sync_state = extract_first_field(&json, "sync_state");
+    let jmap_state = extract_first_field(&json, "jmap_state");
+    match (sync_state, jmap_state) {
+        (Some(sync_state), Some(jmap_state)) => Some(EwsSyncState {
+            sync_state,
+            jmap_state,
+        }),
+        _ => {
+            if has_result_rows(&json) {
+                tracing::warn!(
+                    "get_ews_sync_state: unexpected DB response format for user and folder."
+                );
+            }
+            None
+        }
     }
-    state
 }
 
 pub async fn delete_ews_sync_state(config: &AppConfig, user: &str, folder: &str) {
