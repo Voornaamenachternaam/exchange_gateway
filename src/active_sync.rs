@@ -484,22 +484,53 @@ async fn handle_sync(
     let coll = req.collections.collection;
     let old_sync_key = coll.sync_key.clone();
     let collection_id = coll.collection_id.clone();
+    let has_client_commands = coll.commands.is_some();
+
+    // Capture the JMAP state *before* processing client commands so that
+    // change-detection (below) only returns true server-side changes and
+    // does not echo the client's own modifications back to the device.
+    let pre_command_jmap_state = match jmap_client::get_calendar_state(session).await {
+        Ok(s) => s,
+        Err(_) => return error_xml(500, "JMAPStateError"),
+    };
 
     if let Some(cmds) = coll.commands {
         process_client_commands(session, cmds, &config.timezone).await;
     }
 
-    let current_jmap_state = match jmap_client::get_calendar_state(session).await {
-        Ok(s) => s,
-        Err(_) => return error_xml(500, "JMAPStateError"),
+    // After client commands have been applied, re-fetch the state so the
+    // value stored in the DB reflects the post-command server state.  If no
+    // client commands were sent, the state has not changed.
+    let post_command_jmap_state = if has_client_commands {
+        match jmap_client::get_calendar_state(session).await {
+            Ok(s) => s,
+            Err(_) => return error_xml(500, "JMAPStateError"),
+        }
+    } else {
+        pre_command_jmap_state.clone()
     };
+
     let prev_state = db::get_sync_state(config, user, device_id, &collection_id).await;
 
-    // Fix: Use match to avoid unwrap and handle logic clearly
+    // Use pre_command_jmap_state for change detection so the diff only
+    // contains genuine server-side changes (not the client's own writes).
     let (items_xml, new_sync_key) = match prev_state {
         Some(prev_jmap_state) if old_sync_key != "0" => {
-            if prev_jmap_state == current_jmap_state {
-                // Keep schema consistent with the normal response path by always including <Commands>.
+            if prev_jmap_state == pre_command_jmap_state {
+                // No server-side changes since the last sync.  Still need to
+                // persist the post-command state so the next sync baseline is
+                // up-to-date with any client-originated writes.
+                if pre_command_jmap_state != post_command_jmap_state {
+                    db::update_sync_state(
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &old_sync_key,
+                        &post_command_jmap_state,
+                    )
+                    .await;
+                }
                 return format!(
                     r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#,
                     utils::escape_xml(&old_sync_key),
@@ -547,7 +578,7 @@ async fn handle_sync(
             device_id,
             &collection_id,
             &new_sync_key,
-            &current_jmap_state,
+            &post_command_jmap_state,
         )
         .await;
     }
