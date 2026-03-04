@@ -360,7 +360,7 @@ async fn handle_sync_folder_items(
         }
     };
 
-    let (changes_xml, includes_last) = if is_initial {
+    let (changes_xml, includes_last, jmap_state_to_persist) = if is_initial {
         let events = match jmap_client::get_calendar_events(session).await {
             Ok(e) => e,
             Err(e) => {
@@ -374,7 +374,7 @@ async fn handle_sync_folder_items(
                 xml.push_str(&format!(r#"<t:Create>{}</t:Create>"#, rendered));
             }
         }
-        (xml, true)
+        (xml, true, current_state)
     } else {
         let Some(ref stored_state) = stored else { unreachable!("is_initial is false but stored is None") };
         let prev_jmap_state = &stored_state.jmap_state;
@@ -407,6 +407,10 @@ async fn handle_sync_folder_items(
                 return soap_fault("ErrorInvalidSyncStateData", "Sync state expired, please re-sync");
             }
         };
+        // Capture the resulting JMAP state from /changes *before* consuming
+        // the struct fields, so we persist the authoritative state rather
+        // than the potentially stale `current_state` snapshot.
+        let resulting_state = changes.new_state.clone();
         let mut xml = String::new();
         for id in changes.destroyed {
             xml.push_str(&format!(
@@ -444,9 +448,9 @@ async fn handle_sync_folder_items(
                 }
             }
         }
-        (xml, true)
+        (xml, true, resulting_state)
     };
-    db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await;
+    db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &jmap_state_to_persist).await;
     soap_response(&format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
         NS_M,

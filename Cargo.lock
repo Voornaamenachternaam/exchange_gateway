@@ -403,6 +403,7 @@ dependencies = [
  "chrono-tz",
  "lazy_static",
  "lettre",
+ "percent-encoding",
  "quick-xml",
  "regex",
  "reqwest",
