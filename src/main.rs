@@ -126,7 +126,7 @@ async fn handle_active_sync(
                 Err(_) => match std::str::from_utf8(&body) {
                     Ok(s) => (s.to_string(), false),
                     Err(_) => {
-                        return (StatusCode::BAD_REQUEST, "WBXML Decode Error".to_string())
+                        return (StatusCode::BAD_REQUEST, "Unable to decode request body".to_string())
                             .into_response();
                     }
                 },
