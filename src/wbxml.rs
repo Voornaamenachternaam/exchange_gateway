@@ -685,92 +685,6 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         return Err("Invalid WBXML header".into());
     }
 
-    // Parse public ID as mb_u_int32 (per WBXML spec, section 5.4)
-    let mut pos = 1;
-    let mut publicid: u32 = 0;
-    loop {
-        if pos >= data.len() {
-            return Err("Unexpected end reading public ID".into());
-        }
-        let byte = data[pos];
-        pos += 1;
-        publicid = publicid
-            .checked_mul(1 << 7)
-            .and_then(|v| v.checked_add((byte & 0x7F) as u32))
-            .ok_or_else(|| "Public ID overflow".to_string())?;
-        if (byte & 0x80) == 0 {
-            break;
-        }
-    }
-
-    // When publicid is 0 the actual identifier is stored as a string table index
-    // encoded as an additional mb_u_int32 that must be consumed before charset.
-    if publicid == 0 {
-        loop {
-            if pos >= data.len() {
-                return Err("Unexpected end reading public ID string table index".into());
-            }
-            let byte = data[pos];
-            pos += 1;
-            if (byte & 0x80) == 0 {
-                break;
-            }
-        }
-    }
-
-    // Read charset as mb_u_int32 (per WBXML spec); for ActiveSync this is always
-    // 0x6A (UTF-8) which fits in a single byte.
-    let mut charset: u32 = 0;
-    loop {
-        if pos >= data.len() {
-            return Err("Unexpected end reading charset".into());
-        }
-        let byte = data[pos];
-        pos += 1;
-        charset = charset
-            .checked_mul(1 << 7)
-            .and_then(|v| v.checked_add((byte & 0x7F) as u32))
-            .ok_or_else(|| "Charset overflow".to_string())?;
-        if (byte & 0x80) == 0 {
-            break;
-        }
-    }
-    if charset != 0x6A {
-        return Err("Invalid WBXML header".into());
-    }
-
-    // Read string table length (mb_u_int32)
-    let mut strtbl_len: usize = 0;
-    loop {
-        if pos >= data.len() {
-            return Err("Unexpected end reading string table length".into());
-        }
-        let byte = data[pos];
-        pos += 1;
-        strtbl_len = strtbl_len
-            .checked_shl(7)
-            .and_then(|v| v.checked_add((byte & 0x7F) as usize))
-            .ok_or_else(|| "String table length overflow".to_string())?;
-        if (byte & 0x80) == 0 {
-            break;
-        }
-    }
-
-    // Read string table
-    let strtbl_start = pos;
-    let strtbl_end = strtbl_start.checked_add(strtbl_len)
-        .ok_or_else(|| "String table end overflow".to_string())?;
-    if strtbl_end > data.len() {
-        return Err("String table exceeds data length".into());
-    }
-    let strtbl = &data[strtbl_start..strtbl_end];
-    pos = strtbl_end;
-
-    let mut current_page = 0;
-    let mut xml = String::new();
-    let mut stack: Vec<String> = Vec::new();
-    let mut pending_tag: Option<String> = None;
-
     fn read_mb_u_int32(data: &[u8], pos: &mut usize) -> Result<usize, String> {
         let mut val: usize = 0;
         loop {
@@ -801,6 +715,41 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         let s = String::from_utf8_lossy(&strtbl[offset..end]).to_string();
         Ok(s)
     }
+
+    // Parse public ID as mb_u_int32 (per WBXML spec, section 5.4)
+    let mut pos = 1;
+    let publicid = read_mb_u_int32(data, &mut pos)?;
+
+    // When publicid is 0 the actual identifier is stored as a string table index
+    // encoded as an additional mb_u_int32 that must be consumed before charset.
+    if publicid == 0 {
+        let _ = read_mb_u_int32(data, &mut pos)?;
+    }
+
+    // Read charset as mb_u_int32 (per WBXML spec); for ActiveSync this is always
+    // 0x6A (UTF-8) which fits in a single byte.
+    let charset = read_mb_u_int32(data, &mut pos)?;
+    if charset != 0x6A {
+        return Err("Invalid WBXML header".into());
+    }
+
+    // Read string table length (mb_u_int32)
+    let strtbl_len = read_mb_u_int32(data, &mut pos)?;
+
+    // Read string table
+    let strtbl_start = pos;
+    let strtbl_end = strtbl_start.checked_add(strtbl_len)
+        .ok_or_else(|| "String table end overflow".to_string())?;
+    if strtbl_end > data.len() {
+        return Err("String table exceeds data length".into());
+    }
+    let strtbl = &data[strtbl_start..strtbl_end];
+    pos = strtbl_end;
+
+    let mut current_page = 0;
+    let mut xml = String::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut pending_tag: Option<String> = None;
 
     while pos < data.len() {
         let token = data[pos];
@@ -852,21 +801,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         }
 
         if token == TAG_OPAQUE {
-            let mut len: usize = 0;
-            loop {
-                if pos >= data.len() {
-                    return Err("Unexpected end opaque".into());
-                }
-                let byte = data[pos];
-                pos += 1;
-                len = len
-                    .checked_shl(7)
-                    .and_then(|v| v.checked_add((byte & 0x7F) as usize))
-                    .ok_or_else(|| "Opaque length overflow".to_string())?;
-                if (byte & 0x80) == 0 {
-                    break;
-                }
-            }
+            let len = read_mb_u_int32(data, &mut pos)?;
             let end = pos.checked_add(len).ok_or_else(|| "Opaque overflow".to_string())?;
             if end > data.len() {
                 return Err("Opaque overflow".into());
