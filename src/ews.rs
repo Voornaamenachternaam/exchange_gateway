@@ -335,7 +335,12 @@ async fn handle_sync_folder_items(
     // silently computing deltas from the wrong baseline.
     let is_initial = match (&req.sync_state, &stored) {
         (None, _) => true,
-        (Some(_), None) => true,
+        (Some(_), None) => {
+            return soap_fault(
+                "ErrorInvalidSyncStateData",
+                "SyncState does not match; please re-sync",
+            );
+        }
         (Some(client_token), Some(s)) => {
             if *client_token != s.sync_state {
                 return soap_fault(
