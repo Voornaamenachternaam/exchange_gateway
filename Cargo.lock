@@ -364,6 +364,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "lettre",
+ "percent-encoding",
  "quick-xml",
  "regex",
  "reqwest",
