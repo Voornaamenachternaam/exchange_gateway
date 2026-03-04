@@ -674,9 +674,13 @@ async fn process_client_commands(
     tz_str: &str,
 ) {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
-    let cal_id = jmap_client::get_default_calendar_id(session)
-        .await
-        .unwrap_or("default".into());
+    let cal_id = match jmap_client::get_default_calendar_id(session).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("ActiveSync Add failed: unable to determine default calendar id: {}", e);
+            return;
+        }
+    };
     for add_cmd in cmds.add.unwrap_or_default() {
         let data = add_cmd.application_data;
         let start_utc = utils::parse_local_to_utc(&data.start.unwrap_or_default(), tz);
