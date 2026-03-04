@@ -1,6 +1,6 @@
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -190,30 +190,38 @@ async fn handle_get_item(
     ))
 }
 
+fn parse_jmap_timestamp(s: &str) -> Option<DateTime<Utc>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(naive.and_utc());
+    }
+    None
+}
+
 fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Option<String> {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
-    let start_local: DateTime<Tz> = match event.start.parse::<DateTime<Utc>>() {
-        Ok(dt) => dt.with_timezone(&tz),
-        Err(e) => {
+    let start_local = match parse_jmap_timestamp(&event.start) {
+        Some(dt) => dt.with_timezone(&tz).format("%Y-%m-%dT%H:%M:%S").to_string(),
+        None => {
             tracing::warn!(
-                "Skipping event {:?}: failed to parse start timestamp '{}': {}",
+                "Could not parse start timestamp for event {:?}: '{}'; using raw value",
                 event.id,
                 event.start,
-                e
             );
-            return None;
+            event.start.clone()
         }
     };
-    let end_local: DateTime<Tz> = match event.end.parse::<DateTime<Utc>>() {
-        Ok(dt) => dt.with_timezone(&tz),
-        Err(e) => {
+    let end_local = match parse_jmap_timestamp(&event.end) {
+        Some(dt) => dt.with_timezone(&tz).format("%Y-%m-%dT%H:%M:%S").to_string(),
+        None => {
             tracing::warn!(
-                "Skipping event {:?}: failed to parse end timestamp '{}': {}",
+                "Could not parse end timestamp for event {:?}: '{}'; using raw value",
                 event.id,
                 event.end,
-                e
             );
-            return None;
+            event.end.clone()
         }
     };
 
@@ -239,8 +247,8 @@ fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Opt
         utils::escape_xml(&change_key),
         utils::escape_xml(&event.title),
         utils::escape_xml(event.description.as_deref().unwrap_or("")),
-        start_local.format("%Y-%m-%dT%H:%M:%S"),
-        end_local.format("%Y-%m-%dT%H:%M:%S"),
+        utils::escape_xml(&start_local),
+        utils::escape_xml(&end_local),
         utils::escape_xml(event.location.as_deref().unwrap_or("")),
         event.is_all_day,
         attendees_xml
