@@ -9,6 +9,7 @@
       - CF_D1_API_URL=${CF_D1_API_URL}
       - GATEWAY_SECRET=${GATEWAY_SECRET}
       - SMTP_URL=${SMTP_URL}
+      - MAIL_DOMAIN=${MAIL_DOMAIN}
       - GATEWAY_HOST=${GATEWAY_HOST}
     ports:
       - 8134:8134
