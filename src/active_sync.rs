@@ -18,10 +18,14 @@ const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="AirSync:"><Status>2</Status></
 struct Recurrence {
     #[serde(rename = "Type")]
     r#type: i32,
-    #[serde(rename = "Interval")]
+    #[serde(rename = "Interval", default = "default_interval")]
     interval: i32,
     #[serde(rename = "DayOfWeek", skip_serializing_if = "Option::is_none")]
     day_of_week: Option<i32>,
+}
+
+fn default_interval() -> i32 {
+    1
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
