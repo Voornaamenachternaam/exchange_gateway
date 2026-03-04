@@ -657,6 +657,7 @@ struct EwsItemChange {
 #[derive(Debug, Deserialize)]
 struct EwsUpdates {
     #[serde(rename = "SetItemField")]
+    #[serde(default)]
     set_fields: Vec<SetItemField>,
 }
 #[derive(Debug, Deserialize)]
