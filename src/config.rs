@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub db_auth_token: String,
     pub timezone: String,
     pub smtp_url: String,
+    pub mail_domain: String,
 }
 
 impl AppConfig {
@@ -17,6 +18,11 @@ impl AppConfig {
             db_auth_token: env::var("GATEWAY_SECRET").map_err(|_| "GATEWAY_SECRET missing")?,
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
             smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
+            mail_domain: env::var("MAIL_DOMAIN")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(|| env::var("GATEWAY_HOST").ok().filter(|v| !v.trim().is_empty()))
+                .ok_or_else(|| "MAIL_DOMAIN or GATEWAY_HOST must be set and non-empty".to_string())?,
         })
     }
 }
