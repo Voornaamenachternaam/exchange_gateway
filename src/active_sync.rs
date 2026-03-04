@@ -541,7 +541,8 @@ async fn handle_sync(
             {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::error!("Failed to fetch calendar changes: {}", e);
+                    tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
+                    db::delete_sync_state(config, user, device_id, &collection_id).await;
                     return error_xml(500, "CalendarChangesError");
                 }
             };

@@ -95,6 +95,25 @@ pub async fn update_sync_state(
         .await;
 }
 
+pub async fn delete_sync_state(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    coll: &str,
+) {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "query": "DELETE FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
+        "params": [user, device_id, coll]
+    });
+    let _ = client
+        .post(&config.db_api_url)
+        .bearer_auth(&config.db_auth_token)
+        .json(&body)
+        .send()
+        .await;
+}
+
 pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) -> Option<String> {
     let client = reqwest::Client::new();
     let body = json!({
