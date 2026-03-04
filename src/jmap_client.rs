@@ -218,16 +218,6 @@ pub async fn get_default_calendar_id(session: &JmapSession) -> Result<String, Jm
         .await?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_set_errors(&json)?;
-    if let Some(not_created) = json["methodResponses"][0][1]["notCreated"].as_object()
-        && !not_created.is_empty()
-    {
-        let desc = not_created
-            .values()
-            .next()
-            .and_then(|v| v["description"].as_str())
-            .unwrap_or("unknown error");
-        return Err(JmapError::Api(format!("create failed: {}", desc)));
-    }
     if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
         // First, look for the calendar marked as default
         for cal in list {
