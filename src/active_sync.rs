@@ -289,7 +289,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         let port = smtp_url.port().unwrap_or(default_port);
 
         let mut builder = if scheme == "smtps" {
-            // Implicit TLS (port 465): use relay() which enforces TLS, then wrap.
+            // Implicit TLS (port 465): relay() already configures TLS::Wrapper internally.
             let b = match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
                 Ok(b) => b,
                 Err(e) => {
@@ -297,14 +297,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                     return SEND_MAIL_ERROR.to_string();
                 }
             };
-            let tls = match lettre::transport::smtp::client::TlsParameters::new(smtp_host.to_string()) {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::error!("Failed to configure SMTPS TLS parameters: {}", e);
-                    return SEND_MAIL_ERROR.to_string();
-                }
-            };
-            b.port(port).tls(lettre::transport::smtp::client::Tls::Wrapper(tls))
+            b.port(port)
         } else {
             // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
             // unencrypted connections, restoring compatibility with smtp:// URLs.
