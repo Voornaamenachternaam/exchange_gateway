@@ -75,6 +75,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     let mut buf = Vec::new();
 
     loop {
+        buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 command = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
@@ -87,7 +88,6 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
             }
             _ => {}
         }
-        buf.clear();
     }
 
     let auth = match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
