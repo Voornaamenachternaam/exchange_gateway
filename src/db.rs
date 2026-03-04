@@ -113,7 +113,6 @@ pub async fn delete_sync_state(
         .send()
         .await
         .and_then(|res| res.error_for_status())
-        .and_then(|res| res.error_for_status())
     {
         Ok(_) => {}
         Err(e) => {
@@ -155,17 +154,21 @@ pub async fn delete_ews_sync_state(config: &AppConfig, user: &str, folder: &str)
         "query": "DELETE FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
         "params": [user, folder]
     });
-    if let Err(e) = client
+    match client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
         .await
+        .and_then(|res| res.error_for_status())
     {
-        tracing::error!(
-            user = user, folder = folder,
-            "delete_ews_sync_state failed: {e}"
-        );
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(
+                user = user, folder = folder,
+                "delete_ews_sync_state failed: {e}"
+            );
+        }
     }
 }
 
