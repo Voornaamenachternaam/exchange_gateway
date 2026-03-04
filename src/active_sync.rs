@@ -570,7 +570,7 @@ async fn handle_sync(
 
     // Use pre_command_jmap_state for change detection so the diff only
     // contains genuine server-side changes (not the client's own writes).
-    let (items_xml, new_sync_key) = match prev_state {
+    let (items_xml, new_sync_key, jmap_state_to_persist) = match prev_state {
         Some(prev_jmap_state) if old_sync_key != "0" => {
             if prev_jmap_state == pre_command_jmap_state {
                 // No server-side changes since the last sync.  Still need to
@@ -628,7 +628,7 @@ async fn handle_sync(
             for event in events {
                 xml.push_str(&render_event_xml(event, "Add", &config.timezone));
             }
-            (xml, new_key)
+            (xml, new_key, post_command_jmap_state)
         }
     };
 
@@ -639,7 +639,7 @@ async fn handle_sync(
             device_id,
             &collection_id,
             &new_sync_key,
-            &post_command_jmap_state,
+            &jmap_state_to_persist,
         )
         .await;
     }
@@ -912,9 +912,13 @@ async fn render_changes(
     session: &jmap_client::JmapSession,
     changes: jmap_client::JmapChanges,
     tz_str: &str,
-) -> Result<(String, String), jmap_client::JmapError> {
+) -> Result<(String, String, String), jmap_client::JmapError> {
     let mut xml = String::new();
     let new_key = Uuid::new_v4().to_string();
+    // Capture the authoritative JMAP state from the /changes response
+    // *before* consuming the struct fields, so we persist the correct
+    // state rather than a potentially stale snapshot.
+    let new_state = changes.new_state.clone();
     for id in &changes.destroyed {
         xml.push_str(&format!(
             "<Delete><ServerId>{}</ServerId></Delete>",
@@ -933,7 +937,7 @@ async fn render_changes(
             xml.push_str(&render_event_xml(event, "Change", tz_str));
         }
     }
-    Ok((xml, new_key))
+    Ok((xml, new_key, new_state))
 }
 
 fn error_xml(code: i32, msg: &str) -> String {
