@@ -402,9 +402,28 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             continue;
         }
 
-        // Handle LITERAL (0x04) and LITERAL_C (0x44) tokens
-        if token == 0x04 || token == 0x44 {
-            let has_content = token == 0x44;
+        // Handle STR_T (0x83) — string table reference
+        if token == 0x83 {
+            let offset = read_mb_u_int32(data, &mut pos)?;
+            let text = read_strtbl_string(strtbl, offset)?;
+
+            if let Some(tag) = pending_tag.take() {
+                xml.push('>');
+                stack.push(tag);
+            }
+            xml.push_str(
+                &text
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;"),
+            );
+            continue;
+        }
+
+        // Handle LITERAL (0x04), LITERAL_C (0x44), LITERAL_A (0x84), LITERAL_AC (0xC4) tokens
+        if token == 0x04 || token == 0x44 || token == 0x84 || token == 0xC4 {
+            let has_content = (token & 0x40) != 0;
+            let has_attrs = (token & 0x80) != 0;
             let offset = read_mb_u_int32(data, &mut pos)?;
             let tag_name = read_strtbl_string(strtbl, offset)?;
 
@@ -413,6 +432,50 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                     "Invalid LITERAL tag name in string table: {:?}",
                     tag_name
                 ));
+            }
+
+            // Skip attributes if present (consume until END token).
+            // Per WBXML spec, attributes are a flat sequence of ATTRSTART/ATTRVALUE
+            // tokens terminated by END (0x01). ActiveSync doesn't use attributes, so
+            // we just consume them to keep the parse position correct.
+            if has_attrs {
+                loop {
+                    if pos >= data.len() {
+                        return Err("Unexpected end while skipping LITERAL attributes".into());
+                    }
+                    let attr_token = data[pos];
+                    pos += 1;
+                    if attr_token == TAG_END {
+                        break;
+                    } else if attr_token == TAG_STR_I {
+                        // Skip inline string
+                        while pos < data.len() && data[pos] != 0 {
+                            pos += 1;
+                        }
+                        if pos < data.len() {
+                            pos += 1;
+                        } else {
+                            return Err("Unexpected end in attribute inline string".into());
+                        }
+                    } else if attr_token == 0x83 {
+                        // STR_T — skip mb_u_int32 index
+                        let _ = read_mb_u_int32(data, &mut pos)?;
+                    } else if attr_token == TAG_OPAQUE {
+                        // Skip opaque data
+                        let len = read_mb_u_int32(data, &mut pos)?;
+                        let end = pos.checked_add(len).ok_or_else(|| "Opaque overflow in attrs".to_string())?;
+                        if end > data.len() {
+                            return Err("Opaque overflow in attrs".into());
+                        }
+                        pos = end;
+                    } else if attr_token == TAG_SWITCH_PAGE {
+                        if pos >= data.len() {
+                            return Err("Unexpected end in attribute page switch".into());
+                        }
+                        pos += 1;
+                    }
+                    // Other attribute tokens (ATTRSTART/ATTRVALUE) are single bytes — already consumed
+                }
             }
 
             if pending_tag.is_some() {
