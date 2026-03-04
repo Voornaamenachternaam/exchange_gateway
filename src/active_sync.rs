@@ -867,16 +867,16 @@ struct SyncCollection {
     sync_key: String,
     #[serde(rename = "CollectionId")]
     collection_id: String,
-    #[serde(rename = "Commands", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Commands", default)]
     commands: Option<Commands>,
 }
 #[derive(Debug, Deserialize)]
 struct Commands {
-    #[serde(rename = "Add", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Add", default)]
     add: Option<Vec<AddCommand>>,
-    #[serde(rename = "Change", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Change", default)]
     change: Option<Vec<ChangeCommand>>,
-    #[serde(rename = "Delete", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Delete", default)]
     delete: Option<Vec<DeleteCommand>>,
 }
 #[derive(Debug, Deserialize)]
