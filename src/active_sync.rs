@@ -310,7 +310,54 @@ async fn handle_send_mail(
 
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
 
-        match mailer.send(&email) {
+        let scheme = smtp_url.scheme().to_ascii_lowercase();
+        let default_port = match scheme.as_str() {
+            "smtps" => 465,
+            "smtp" => 25,
+            _ => 587,
+        };
+        let port = smtp_url.port().unwrap_or(default_port);
+
+        let mut builder = if scheme == "smtps" {
+            // Implicit TLS (port 465): relay() already configures TLS::Wrapper internally.
+            let b = match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create SMTP relay transport: {}", e);
+                    return SEND_MAIL_ERROR.to_string();
+                }
+            };
+            b.port(port)
+        } else {
+            // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
+            // unencrypted connections, restoring compatibility with smtp:// URLs.
+            let b = if scheme == "smtp" {
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+            } else {
+                match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                        return SEND_MAIL_ERROR.to_string();
+                    }
+                }
+            };
+            b.port(port)
+        };
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        let user = smtp_url.username();
+        if !user.is_empty()
+            && let Some(pass) = smtp_url.password() {
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.to_string(),
+                    pass.to_string(),
+                ));
+            }
+
+        let mailer = builder.build();
+
+        match mailer.send(email).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
@@ -498,52 +545,60 @@ fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> 
         let body_content = escape_xml(event.description.as_deref().unwrap_or(""));
         let body_size = body_content.len();
 
-        let mut attendees_xml = String::new();
-        if let Some(attendees) = &event.participants {
-            for att in attendees {
-                attendees_xml.push_str(&format!(
-                    r#"<Attendee>
-                        <Email>{}</Email>
-                        <Name>{}</Name>
-                        <AttendeeStatus>{}</AttendeeStatus>
-                        <AttendeeType>1</AttendeeType>
-                       </Attendee>"#,
-                    escape_xml(&att.email),
-                    escape_xml(&att.name),
-                    "0"
-                ));
-            }
-        }
+    format!(
+        r#"<{}><ServerId>{}</ServerId><ApplicationData><Calendar:Subject>{}</Calendar:Subject><Calendar:Location>{}</Calendar:Location><Calendar:StartTime>{}</Calendar:StartTime><Calendar:EndTime>{}</Calendar:EndTime><Calendar:UID>{}</Calendar:UID><Calendar:AllDayEvent>{}</Calendar:AllDayEvent>{}{}<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></{}>"#,
+        mode,
+        utils::escape_xml(event.id.as_deref().unwrap_or("")),
+        utils::escape_xml(&event.title),
+        utils::escape_xml(event.location.as_deref().unwrap_or("")),
+        utils::escape_xml(&start_str),
+        utils::escape_xml(&end_str),
+        utils::escape_xml(event.uid.as_deref().unwrap_or("")),
+        if event.is_all_day { "1" } else { "0" },
+        recurrence_xml,
+        attendees_xml,
+        body_content,
+        mode
+    )
+}
 
-        xml.push_str(&format!(
-            r#"<{}><ServerId>{}</ServerId><ApplicationData>
-                <Calendar:Subject>{}</Calendar:Subject>
-                <Calendar:Location>{}</Calendar:Location>
-                <Calendar:Start>{}</Calendar:Start>
-                <Calendar:End>{}</Calendar:End>
-                <Calendar:UID>{}</Calendar:UID>
-                <Calendar:AllDayEvent>{}</Calendar:AllDayEvent>
-                <AirSyncBase:Body>
-                    <AirSyncBase:Type>{}</AirSyncBase:Type>
-                    <AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>
-                    <AirSyncBase:Data>{}</AirSyncBase:Data>
-                </AirSyncBase:Body>
-                <Calendar:Attendees>{}</Calendar:Attendees>
-            </ApplicationData></{}>"#,
-            mode,
-            escape_xml(event.id.as_deref().unwrap_or("")),
-            escape_xml(&event.title),
-            escape_xml(event.location.as_deref().unwrap_or("")),
-            start_local.format("%Y-%m-%dT%H:%M:%S"),
-            end_local.format("%Y-%m-%dT%H:%M:%S"),
-            escape_xml(event.uid.as_deref().unwrap_or("")),
-            if event.is_all_day { "1" } else { "0" },
-            body_type,
-            body_size,
-            body_content,
-            attendees_xml,
-            mode
-        ));
+fn parse_rrule_to_eas(rrule: &str) -> String {
+    let parts: Vec<&str> = rrule.split(';').collect();
+    let mut freq = "0";
+    let mut interval = "1";
+    let mut day_of_week = String::new();
+    for part in parts {
+        // Fix: Use strip_prefix
+        if let Some(val) = part.strip_prefix("FREQ=") {
+            freq = match val {
+                "DAILY" => "0",
+                "WEEKLY" => "1",
+                "MONTHLY" => "2",
+                "YEARLY" => "3",
+                _ => "0",
+            };
+        }
+        if let Some(val) = part.strip_prefix("INTERVAL=")
+            && val.parse::<u32>().is_ok() {
+                interval = val;
+            }
+        if let Some(val) = part.strip_prefix("BYDAY=") {
+            day_of_week = val
+                .split(',')
+                .map(|d| match d.trim() {
+                    "MO" => "2",
+                    "TU" => "4",
+                    "WE" => "8",
+                    "TH" => "16",
+                    "FR" => "32",
+                    "SA" => "64",
+                    "SU" => "1",
+                    _ => "",
+                })
+                .filter_map(|s| s.parse::<i32>().ok())
+                .fold(0i32, |acc, v| acc | v)
+                .to_string();
+        }
     }
     (xml, new_key)
 }
