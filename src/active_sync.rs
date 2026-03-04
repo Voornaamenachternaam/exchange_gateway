@@ -730,7 +730,9 @@ async fn process_client_commands(
                     recurrence_rule: data.recurrence.map(build_rrule),
                     updated: None,
                 };
-                let _ = jmap_client::push_event(session, event, &cal_id).await;
+                if let Err(e) = jmap_client::push_event(session, event, &cal_id).await {
+                    tracing::error!("ActiveSync Add failed: {}", e);
+                }
             }
         }
     }
