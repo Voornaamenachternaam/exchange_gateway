@@ -685,22 +685,51 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
     // Parse public ID as mb_u_int32 (per WBXML spec, section 5.4)
     let mut pos = 1;
+    let mut publicid: u32 = 0;
     loop {
         if pos >= data.len() {
             return Err("Unexpected end reading public ID".into());
         }
         let byte = data[pos];
         pos += 1;
+        publicid = (publicid << 7) | (byte & 0x7F) as u32;
         if (byte & 0x80) == 0 {
             break;
         }
     }
 
-    // Validate charset byte (must be UTF-8 = 0x6A)
-    if pos >= data.len() || data[pos] != 0x6A {
+    // When publicid is 0 the actual identifier is stored as a string table index
+    // encoded as an additional mb_u_int32 that must be consumed before charset.
+    if publicid == 0 {
+        loop {
+            if pos >= data.len() {
+                return Err("Unexpected end reading public ID string table index".into());
+            }
+            let byte = data[pos];
+            pos += 1;
+            if (byte & 0x80) == 0 {
+                break;
+            }
+        }
+    }
+
+    // Read charset as mb_u_int32 (per WBXML spec); for ActiveSync this is always
+    // 0x6A (UTF-8) which fits in a single byte.
+    let mut charset: u32 = 0;
+    loop {
+        if pos >= data.len() {
+            return Err("Unexpected end reading charset".into());
+        }
+        let byte = data[pos];
+        pos += 1;
+        charset = (charset << 7) | (byte & 0x7F) as u32;
+        if (byte & 0x80) == 0 {
+            break;
+        }
+    }
+    if charset != 0x6A {
         return Err("Invalid WBXML header".into());
     }
-    pos += 1;
 
     // Read string table length (mb_u_int32)
     let mut strtbl_len: usize = 0;
