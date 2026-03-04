@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lettre::message::Message;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+use percent_encoding::percent_decode_str;
 use quick_xml::Reader;
 use quick_xml::escape;
 use quick_xml::events::Event;
@@ -343,12 +344,14 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         };
 
         // Optional basic auth from URL: smtp://user:pass@host:port
-        let user = smtp_url.username();
+        // URL components are percent-encoded, so decode before use as credentials.
+        let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
         if !user.is_empty() {
             if let Some(pass) = smtp_url.password() {
+                let pass = percent_decode_str(pass).decode_utf8_lossy();
                 builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
-                    user.to_string(),
-                    pass.to_string(),
+                    user.into_owned(),
+                    pass.into_owned(),
                 ));
             }
         }
