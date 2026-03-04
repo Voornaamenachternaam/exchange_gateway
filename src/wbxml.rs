@@ -30,13 +30,29 @@ fn is_valid_xml_name(name: &str) -> bool {
 }
 
 const CP_AIRSYNC: u8 = 0;
+const CP_CONTACTS: u8 = 1;
+const CP_EMAIL: u8 = 2;
 const CP_CALENDAR: u8 = 4;
+const CP_MOVE: u8 = 5;
+const CP_GETITEMESTIMATE: u8 = 6;
+const CP_FOLDERHIERARCHY: u8 = 7;
+const CP_MEETINGRESPONSE: u8 = 8;
+const CP_TASKS: u8 = 9;
+const CP_RESOLVERECIPIENTS: u8 = 10;
+const CP_VALIDATECERT: u8 = 11;
+const CP_CONTACTS2: u8 = 12;
+const CP_PING: u8 = 13;
+const CP_PROVISION: u8 = 14;
+const CP_SEARCH: u8 = 15;
+const CP_GAL: u8 = 16;
 const CP_AIRSYNCBASE: u8 = 17;
 const CP_SETTINGS: u8 = 18;
+const CP_DOCUMENTLIBRARY: u8 = 19;
 const CP_ITEMOPERATIONS: u8 = 20;
-const CP_SEARCH: u8 = 15;
-const CP_PROVISION: u8 = 14;
-const CP_PING: u8 = 13;
+const CP_COMPOSEMAIL: u8 = 21;
+const CP_EMAIL2: u8 = 22;
+const CP_NOTES: u8 = 23;
+const CP_RIGHTSMANAGEMENT: u8 = 24;
 
 #[derive(Debug, Clone)]
 struct Tag {
@@ -49,13 +65,29 @@ lazy_static! {
     static ref PREFIX_TO_PAGE: HashMap<&'static str, u8> = {
         let mut m = HashMap::new();
         m.insert("AirSync", CP_AIRSYNC);
+        m.insert("Contacts", CP_CONTACTS);
+        m.insert("Email", CP_EMAIL);
         m.insert("Calendar", CP_CALENDAR);
+        m.insert("Move", CP_MOVE);
+        m.insert("GetItemEstimate", CP_GETITEMESTIMATE);
+        m.insert("FolderHierarchy", CP_FOLDERHIERARCHY);
+        m.insert("MeetingResponse", CP_MEETINGRESPONSE);
+        m.insert("Tasks", CP_TASKS);
+        m.insert("ResolveRecipients", CP_RESOLVERECIPIENTS);
+        m.insert("ValidateCert", CP_VALIDATECERT);
+        m.insert("Contacts2", CP_CONTACTS2);
+        m.insert("Ping", CP_PING);
+        m.insert("Provision", CP_PROVISION);
+        m.insert("Search", CP_SEARCH);
+        m.insert("GAL", CP_GAL);
         m.insert("AirSyncBase", CP_AIRSYNCBASE);
         m.insert("Settings", CP_SETTINGS);
+        m.insert("DocumentLibrary", CP_DOCUMENTLIBRARY);
         m.insert("ItemOperations", CP_ITEMOPERATIONS);
-        m.insert("Search", CP_SEARCH);
-        m.insert("Provision", CP_PROVISION);
-        m.insert("Ping", CP_PING);
+        m.insert("ComposeMail", CP_COMPOSEMAIL);
+        m.insert("Email2", CP_EMAIL2);
+        m.insert("Notes", CP_NOTES);
+        m.insert("RightsManagement", CP_RIGHTSMANAGEMENT);
         m
     };
 
@@ -165,20 +197,55 @@ lazy_static! {
         add!(CP_AIRSYNCBASE, 0x1A, "BodyPart", true);
         add!(CP_AIRSYNCBASE, 0x1B, "Status", true);
 
-        // Settings (18) – per MS-ASWBXML spec
+        // Settings (18) – per MS-ASCMD / MS-ASWBXML spec
         add!(CP_SETTINGS, 0x05, "Settings", true);
         add!(CP_SETTINGS, 0x06, "Status", true);
+        add!(CP_SETTINGS, 0x07, "Get", true);
+        add!(CP_SETTINGS, 0x08, "Set", true);
+        add!(CP_SETTINGS, 0x09, "Oof", true);
+        add!(CP_SETTINGS, 0x0A, "OofState", true);
+        add!(CP_SETTINGS, 0x0B, "StartTime", true);
+        add!(CP_SETTINGS, 0x0C, "EndTime", true);
+        add!(CP_SETTINGS, 0x0D, "OofMessage", true);
+        add!(CP_SETTINGS, 0x0E, "AppliesToInternal", true);
+        add!(CP_SETTINGS, 0x0F, "AppliesToExternalKnown", true);
+        add!(CP_SETTINGS, 0x10, "AppliesToExternalUnknown", true);
+        add!(CP_SETTINGS, 0x11, "Enabled", true);
+        add!(CP_SETTINGS, 0x12, "ReplyMessage", true);
+        add!(CP_SETTINGS, 0x13, "BodyType", true);
+        add!(CP_SETTINGS, 0x14, "Password", true);
+        add!(CP_SETTINGS, 0x15, "DevicePassword", true);
         add!(CP_SETTINGS, 0x16, "DeviceInformation", true);
+        add!(CP_SETTINGS, 0x17, "Model", true);
+        add!(CP_SETTINGS, 0x18, "IMEI", true);
         add!(CP_SETTINGS, 0x19, "FriendlyName", true);
+        add!(CP_SETTINGS, 0x1A, "OS", true);
+        add!(CP_SETTINGS, 0x1B, "OSLanguage", true);
+        add!(CP_SETTINGS, 0x1C, "PhoneNumber", true);
+        add!(CP_SETTINGS, 0x1D, "UserInformation", true);
+        add!(CP_SETTINGS, 0x1E, "EmailAddresses", true);
+        add!(CP_SETTINGS, 0x1F, "SmtpAddress", true);
+        add!(CP_SETTINGS, 0x20, "UserAgent", true);
+        add!(CP_SETTINGS, 0x21, "EnableOutboundSMS", true);
+        add!(CP_SETTINGS, 0x22, "MobileOperator", true);
 
-        // ItemOperations (20) – per MS-ASWBXML spec
+        // ItemOperations (20) – per MS-ASCMD / MS-ASWBXML spec
         add!(CP_ITEMOPERATIONS, 0x05, "ItemOperations", true);
         add!(CP_ITEMOPERATIONS, 0x06, "Fetch", true);
         add!(CP_ITEMOPERATIONS, 0x07, "Store", true);
+        add!(CP_ITEMOPERATIONS, 0x08, "Options", true);
+        add!(CP_ITEMOPERATIONS, 0x09, "Range", true);
+        add!(CP_ITEMOPERATIONS, 0x0A, "Total", true);
+        add!(CP_ITEMOPERATIONS, 0x0B, "Properties", true);
+        add!(CP_ITEMOPERATIONS, 0x0C, "Data", true);
         add!(CP_ITEMOPERATIONS, 0x0D, "Status", true);
         add!(CP_ITEMOPERATIONS, 0x0E, "Response", true);
+        add!(CP_ITEMOPERATIONS, 0x0F, "Move", true);
+        add!(CP_ITEMOPERATIONS, 0x10, "DstFldId", true);
+        add!(CP_ITEMOPERATIONS, 0x11, "ConversationId", true);
+        add!(CP_ITEMOPERATIONS, 0x12, "MoveAlways", true);
 
-        // Search (15) – per MS-ASWBXML spec
+        // Search (15) – per MS-ASCMD / MS-ASWBXML spec
         add!(CP_SEARCH, 0x05, "Search", true);
         add!(CP_SEARCH, 0x07, "Store", true);
         add!(CP_SEARCH, 0x08, "Name", true);
@@ -190,9 +257,24 @@ lazy_static! {
         add!(CP_SEARCH, 0x0E, "Result", true);
         add!(CP_SEARCH, 0x0F, "Properties", true);
         add!(CP_SEARCH, 0x10, "Total", true);
+        add!(CP_SEARCH, 0x11, "EqualTo", true);
+        add!(CP_SEARCH, 0x12, "Value", true);
+        add!(CP_SEARCH, 0x13, "And", true);
+        add!(CP_SEARCH, 0x14, "Or", true);
         add!(CP_SEARCH, 0x15, "FreeText", true);
+        add!(CP_SEARCH, 0x17, "DeepTraversal", true);
+        add!(CP_SEARCH, 0x18, "LongId", true);
+        add!(CP_SEARCH, 0x19, "RebuildResults", true);
+        add!(CP_SEARCH, 0x1A, "LessThan", true);
+        add!(CP_SEARCH, 0x1B, "GreaterThan", true);
+        add!(CP_SEARCH, 0x1E, "UserName", true);
+        add!(CP_SEARCH, 0x1F, "Password", true);
+        add!(CP_SEARCH, 0x20, "ConversationId", true);
+        add!(CP_SEARCH, 0x21, "Picture", true);
+        add!(CP_SEARCH, 0x22, "MaxSize", true);
+        add!(CP_SEARCH, 0x23, "MaxPictures", true);
 
-        // Provision (14) – per MS-ASWBXML spec
+        // Provision (14) – per MS-ASPROV / MS-ASWBXML spec
         add!(CP_PROVISION, 0x05, "Provision", true);
         add!(CP_PROVISION, 0x06, "Policies", true);
         add!(CP_PROVISION, 0x07, "Policy", true);
@@ -203,8 +285,285 @@ lazy_static! {
         add!(CP_PROVISION, 0x0C, "RemoteWipe", true);
         add!(CP_PROVISION, 0x0D, "EASProvisionDoc", true);
         add!(CP_PROVISION, 0x0E, "DevicePasswordEnabled", true);
+        add!(CP_PROVISION, 0x0F, "AlphanumericDevicePasswordRequired", true);
         add!(CP_PROVISION, 0x10, "RequireStorageCardEncryption", true);
+        add!(CP_PROVISION, 0x11, "PasswordRecoveryEnabled", true);
+        add!(CP_PROVISION, 0x13, "AttachmentsEnabled", true);
+        add!(CP_PROVISION, 0x14, "MinDevicePasswordLength", true);
+        add!(CP_PROVISION, 0x15, "MaxInactivityTimeDeviceLock", true);
+        add!(CP_PROVISION, 0x16, "MaxDevicePasswordFailedAttempts", true);
+        add!(CP_PROVISION, 0x17, "MaxAttachmentSize", true);
+        add!(CP_PROVISION, 0x18, "AllowSimpleDevicePassword", true);
+        add!(CP_PROVISION, 0x19, "DevicePasswordExpiration", true);
+        add!(CP_PROVISION, 0x1A, "DevicePasswordHistory", true);
+        add!(CP_PROVISION, 0x1B, "AllowStorageCard", true);
+        add!(CP_PROVISION, 0x1C, "AllowCamera", true);
         add!(CP_PROVISION, 0x1D, "RequireDeviceEncryption", true);
+        add!(CP_PROVISION, 0x1E, "AllowUnsignedApplications", true);
+        add!(CP_PROVISION, 0x1F, "AllowUnsignedInstallationPackages", true);
+        add!(CP_PROVISION, 0x20, "MinDevicePasswordComplexCharacters", true);
+        add!(CP_PROVISION, 0x21, "AllowWiFi", true);
+        add!(CP_PROVISION, 0x22, "AllowTextMessaging", true);
+        add!(CP_PROVISION, 0x23, "AllowPOPIMAPEmail", true);
+        add!(CP_PROVISION, 0x24, "AllowBluetooth", true);
+        add!(CP_PROVISION, 0x25, "AllowIrDA", true);
+        add!(CP_PROVISION, 0x26, "RequireManualSyncWhenRoaming", true);
+        add!(CP_PROVISION, 0x27, "AllowDesktopSync", true);
+        add!(CP_PROVISION, 0x28, "MaxCalendarAgeFilter", true);
+        add!(CP_PROVISION, 0x29, "AllowHTMLEmail", true);
+        add!(CP_PROVISION, 0x2A, "MaxEmailAgeFilter", true);
+        add!(CP_PROVISION, 0x2B, "MaxEmailBodyTruncationSize", true);
+        add!(CP_PROVISION, 0x2C, "MaxEmailHTMLBodyTruncationSize", true);
+        add!(CP_PROVISION, 0x2D, "RequireSignedSMIMEMessages", true);
+        add!(CP_PROVISION, 0x2E, "RequireEncryptedSMIMEMessages", true);
+        add!(CP_PROVISION, 0x2F, "RequireSignedSMIMEAlgorithm", true);
+        add!(CP_PROVISION, 0x30, "RequireEncryptionSMIMEAlgorithm", true);
+        add!(CP_PROVISION, 0x31, "AllowSMIMEEncryptionAlgorithmNegotiation", true);
+        add!(CP_PROVISION, 0x32, "AllowSMIMESoftCerts", true);
+        add!(CP_PROVISION, 0x33, "AllowBrowser", true);
+        add!(CP_PROVISION, 0x34, "AllowConsumerEmail", true);
+        add!(CP_PROVISION, 0x35, "AllowRemoteDesktop", true);
+        add!(CP_PROVISION, 0x36, "AllowInternetSharing", true);
+        add!(CP_PROVISION, 0x37, "UnapprovedInROMApplicationList", true);
+        add!(CP_PROVISION, 0x38, "ApplicationName", true);
+        add!(CP_PROVISION, 0x39, "ApprovedApplicationList", true);
+        add!(CP_PROVISION, 0x3A, "Hash", true);
+
+        // Contacts (1) – per MS-ASCNTC / MS-ASWBXML spec
+        add!(CP_CONTACTS, 0x05, "Anniversary", true);
+        add!(CP_CONTACTS, 0x06, "AssistantName", true);
+        add!(CP_CONTACTS, 0x07, "AssistantPhoneNumber", true);
+        add!(CP_CONTACTS, 0x08, "Birthday", true);
+        add!(CP_CONTACTS, 0x0C, "Business2PhoneNumber", true);
+        add!(CP_CONTACTS, 0x0D, "BusinessCity", true);
+        add!(CP_CONTACTS, 0x0E, "BusinessCountry", true);
+        add!(CP_CONTACTS, 0x0F, "BusinessPostalCode", true);
+        add!(CP_CONTACTS, 0x10, "BusinessState", true);
+        add!(CP_CONTACTS, 0x11, "BusinessStreet", true);
+        add!(CP_CONTACTS, 0x12, "BusinessFaxNumber", true);
+        add!(CP_CONTACTS, 0x13, "BusinessPhoneNumber", true);
+        add!(CP_CONTACTS, 0x17, "CompanyName", true);
+        add!(CP_CONTACTS, 0x19, "Department", true);
+        add!(CP_CONTACTS, 0x1A, "Email1Address", true);
+        add!(CP_CONTACTS, 0x1B, "Email2Address", true);
+        add!(CP_CONTACTS, 0x1C, "Email3Address", true);
+        add!(CP_CONTACTS, 0x1D, "FileAs", true);
+        add!(CP_CONTACTS, 0x1F, "FirstName", true);
+        add!(CP_CONTACTS, 0x20, "Home2PhoneNumber", true);
+        add!(CP_CONTACTS, 0x21, "HomeCity", true);
+        add!(CP_CONTACTS, 0x22, "HomeCountry", true);
+        add!(CP_CONTACTS, 0x23, "HomePostalCode", true);
+        add!(CP_CONTACTS, 0x24, "HomeState", true);
+        add!(CP_CONTACTS, 0x25, "HomeStreet", true);
+        add!(CP_CONTACTS, 0x26, "HomeFaxNumber", true);
+        add!(CP_CONTACTS, 0x27, "HomePhoneNumber", true);
+        add!(CP_CONTACTS, 0x28, "JobTitle", true);
+        add!(CP_CONTACTS, 0x29, "LastName", true);
+        add!(CP_CONTACTS, 0x2A, "MiddleName", true);
+        add!(CP_CONTACTS, 0x2B, "MobilePhoneNumber", true);
+        add!(CP_CONTACTS, 0x2C, "OfficeLocation", true);
+        add!(CP_CONTACTS, 0x2F, "PagerNumber", true);
+        add!(CP_CONTACTS, 0x31, "Spouse", true);
+        add!(CP_CONTACTS, 0x32, "Suffix", true);
+        add!(CP_CONTACTS, 0x33, "Title", true);
+        add!(CP_CONTACTS, 0x34, "WebPage", true);
+        add!(CP_CONTACTS, 0x35, "YomiCompanyName", true);
+        add!(CP_CONTACTS, 0x36, "YomiFirstName", true);
+        add!(CP_CONTACTS, 0x37, "YomiLastName", true);
+        add!(CP_CONTACTS, 0x3C, "Picture", true);
+        add!(CP_CONTACTS, 0x3D, "Alias", true);
+        add!(CP_CONTACTS, 0x3E, "WeightedRank", true);
+
+        // Email (2) – per MS-ASEMAIL / MS-ASWBXML spec
+        add!(CP_EMAIL, 0x05, "Attachment", true);
+        add!(CP_EMAIL, 0x06, "Attachments", true);
+        add!(CP_EMAIL, 0x07, "AttName", true);
+        add!(CP_EMAIL, 0x08, "AttSize", true);
+        add!(CP_EMAIL, 0x09, "Att0Id", true);
+        add!(CP_EMAIL, 0x0B, "Body", true);
+        add!(CP_EMAIL, 0x0C, "BodySize", true);
+        add!(CP_EMAIL, 0x0D, "BodyTruncated", true);
+        add!(CP_EMAIL, 0x0E, "DateReceived", true);
+        add!(CP_EMAIL, 0x0F, "DisplayName", true);
+        add!(CP_EMAIL, 0x10, "DisplayTo", true);
+        add!(CP_EMAIL, 0x11, "Importance", true);
+        add!(CP_EMAIL, 0x12, "MessageClass", true);
+        add!(CP_EMAIL, 0x13, "Subject", true);
+        add!(CP_EMAIL, 0x14, "Read", true);
+        add!(CP_EMAIL, 0x15, "To", true);
+        add!(CP_EMAIL, 0x16, "Cc", true);
+        add!(CP_EMAIL, 0x17, "From", true);
+        add!(CP_EMAIL, 0x18, "ReplyTo", true);
+        add!(CP_EMAIL, 0x19, "AllDayEvent", true);
+        add!(CP_EMAIL, 0x1A, "Categories", true);
+        add!(CP_EMAIL, 0x1B, "Category", true);
+        add!(CP_EMAIL, 0x1C, "DTStamp", true);
+        add!(CP_EMAIL, 0x1D, "EndTime", true);
+        add!(CP_EMAIL, 0x1E, "InstanceType", true);
+        add!(CP_EMAIL, 0x1F, "BusyStatus", true);
+        add!(CP_EMAIL, 0x20, "Location", true);
+        add!(CP_EMAIL, 0x21, "MeetingRequest", true);
+        add!(CP_EMAIL, 0x22, "Organizer", true);
+        add!(CP_EMAIL, 0x23, "RecurrenceId", true);
+        add!(CP_EMAIL, 0x24, "Reminder", true);
+        add!(CP_EMAIL, 0x25, "ResponseRequested", true);
+        add!(CP_EMAIL, 0x26, "Recurrences", true);
+        add!(CP_EMAIL, 0x27, "Recurrence", true);
+        add!(CP_EMAIL, 0x28, "Type", true);
+        add!(CP_EMAIL, 0x29, "Until", true);
+        add!(CP_EMAIL, 0x2A, "Occurrences", true);
+        add!(CP_EMAIL, 0x2B, "Interval", true);
+        add!(CP_EMAIL, 0x2C, "DayOfWeek", true);
+        add!(CP_EMAIL, 0x2D, "DayOfMonth", true);
+        add!(CP_EMAIL, 0x2E, "WeekOfMonth", true);
+        add!(CP_EMAIL, 0x2F, "MonthOfYear", true);
+        add!(CP_EMAIL, 0x30, "StartTime", true);
+        add!(CP_EMAIL, 0x31, "Sensitivity", true);
+        add!(CP_EMAIL, 0x32, "TimeZone", true);
+        add!(CP_EMAIL, 0x33, "GlobalObjId", true);
+        add!(CP_EMAIL, 0x34, "ThreadTopic", true);
+        add!(CP_EMAIL, 0x35, "MIMEData", true);
+        add!(CP_EMAIL, 0x36, "MIMETruncated", true);
+        add!(CP_EMAIL, 0x37, "MIMESize", true);
+        add!(CP_EMAIL, 0x38, "InternetCPID", true);
+        add!(CP_EMAIL, 0x39, "Flag", true);
+        add!(CP_EMAIL, 0x3A, "FlagStatus", true);
+        add!(CP_EMAIL, 0x3B, "ContentClass", true);
+        add!(CP_EMAIL, 0x3C, "FlagType", true);
+        add!(CP_EMAIL, 0x3D, "CompleteTime", true);
+        add!(CP_EMAIL, 0x3E, "DisallowNewTimeProposal", true);
+
+        // Move (5) – per MS-ASCMD / MS-ASWBXML spec
+        add!(CP_MOVE, 0x05, "MoveItems", true);
+        add!(CP_MOVE, 0x06, "Move", true);
+        add!(CP_MOVE, 0x07, "SrcMsgId", true);
+        add!(CP_MOVE, 0x08, "SrcFldId", true);
+        add!(CP_MOVE, 0x09, "DstFldId", true);
+        add!(CP_MOVE, 0x0A, "Response", true);
+        add!(CP_MOVE, 0x0B, "Status", true);
+        add!(CP_MOVE, 0x0C, "DstMsgId", true);
+
+        // GetItemEstimate (6) – per MS-ASCMD / MS-ASWBXML spec
+        add!(CP_GETITEMESTIMATE, 0x05, "GetItemEstimate", true);
+        add!(CP_GETITEMESTIMATE, 0x06, "Version", true);
+        add!(CP_GETITEMESTIMATE, 0x07, "Collections", true);
+        add!(CP_GETITEMESTIMATE, 0x08, "Collection", true);
+        add!(CP_GETITEMESTIMATE, 0x09, "Class", true);
+        add!(CP_GETITEMESTIMATE, 0x0A, "CollectionId", true);
+        add!(CP_GETITEMESTIMATE, 0x0B, "DateTime", true);
+        add!(CP_GETITEMESTIMATE, 0x0C, "Estimate", true);
+        add!(CP_GETITEMESTIMATE, 0x0D, "Response", true);
+        add!(CP_GETITEMESTIMATE, 0x0E, "Status", true);
+
+        // FolderHierarchy (7) – per MS-ASCMD / MS-ASWBXML spec
+        add!(CP_FOLDERHIERARCHY, 0x05, "Folders", true);
+        add!(CP_FOLDERHIERARCHY, 0x06, "Folder", true);
+        add!(CP_FOLDERHIERARCHY, 0x07, "DisplayName", true);
+        add!(CP_FOLDERHIERARCHY, 0x08, "ServerId", true);
+        add!(CP_FOLDERHIERARCHY, 0x09, "ParentId", true);
+        add!(CP_FOLDERHIERARCHY, 0x0A, "Type", true);
+        add!(CP_FOLDERHIERARCHY, 0x0C, "Status", true);
+        add!(CP_FOLDERHIERARCHY, 0x0D, "ContentClass", true);
+        add!(CP_FOLDERHIERARCHY, 0x0E, "Changes", true);
+        add!(CP_FOLDERHIERARCHY, 0x0F, "Add", true);
+        add!(CP_FOLDERHIERARCHY, 0x10, "Delete", true);
+        add!(CP_FOLDERHIERARCHY, 0x11, "Update", true);
+        add!(CP_FOLDERHIERARCHY, 0x12, "SyncKey", true);
+        add!(CP_FOLDERHIERARCHY, 0x13, "FolderCreate", true);
+        add!(CP_FOLDERHIERARCHY, 0x14, "FolderDelete", true);
+        add!(CP_FOLDERHIERARCHY, 0x15, "FolderUpdate", true);
+        add!(CP_FOLDERHIERARCHY, 0x16, "FolderSync", true);
+        add!(CP_FOLDERHIERARCHY, 0x17, "Count", true);
+
+        // MeetingResponse (8) – per MS-ASCMD / MS-ASWBXML spec
+        add!(CP_MEETINGRESPONSE, 0x05, "CalendarId", true);
+        add!(CP_MEETINGRESPONSE, 0x06, "CollectionId", true);
+        add!(CP_MEETINGRESPONSE, 0x07, "MeetingResponse", true);
+        add!(CP_MEETINGRESPONSE, 0x08, "RequestId", true);
+        add!(CP_MEETINGRESPONSE, 0x09, "Request", true);
+        add!(CP_MEETINGRESPONSE, 0x0A, "Result", true);
+        add!(CP_MEETINGRESPONSE, 0x0B, "Status", true);
+        add!(CP_MEETINGRESPONSE, 0x0C, "UserResponse", true);
+        add!(CP_MEETINGRESPONSE, 0x0E, "InstanceId", true);
+
+        // Tasks (9) – per MS-ASTASK / MS-ASWBXML spec
+        add!(CP_TASKS, 0x08, "Categories", true);
+        add!(CP_TASKS, 0x09, "Category", true);
+        add!(CP_TASKS, 0x0A, "Complete", true);
+        add!(CP_TASKS, 0x0B, "DateCompleted", true);
+        add!(CP_TASKS, 0x0C, "DueDate", true);
+        add!(CP_TASKS, 0x0D, "UtcDueDate", true);
+        add!(CP_TASKS, 0x0E, "Importance", true);
+        add!(CP_TASKS, 0x0F, "Recurrence", true);
+        add!(CP_TASKS, 0x10, "Type", true);
+        add!(CP_TASKS, 0x11, "Start", true);
+        add!(CP_TASKS, 0x12, "Until", true);
+        add!(CP_TASKS, 0x13, "Occurrences", true);
+        add!(CP_TASKS, 0x14, "Interval", true);
+        add!(CP_TASKS, 0x15, "DayOfMonth", true);
+        add!(CP_TASKS, 0x16, "DayOfWeek", true);
+        add!(CP_TASKS, 0x17, "WeekOfMonth", true);
+        add!(CP_TASKS, 0x18, "MonthOfYear", true);
+        add!(CP_TASKS, 0x19, "Regenerate", true);
+        add!(CP_TASKS, 0x1A, "DeadOccur", true);
+        add!(CP_TASKS, 0x1B, "ReminderSet", true);
+        add!(CP_TASKS, 0x1C, "ReminderTime", true);
+        add!(CP_TASKS, 0x1D, "Sensitivity", true);
+        add!(CP_TASKS, 0x1E, "StartDate", true);
+        add!(CP_TASKS, 0x1F, "UtcStartDate", true);
+        add!(CP_TASKS, 0x20, "Subject", true);
+        add!(CP_TASKS, 0x22, "OrdinalDate", true);
+        add!(CP_TASKS, 0x23, "SubOrdinalDate", true);
+        add!(CP_TASKS, 0x24, "CalendarType", true);
+        add!(CP_TASKS, 0x25, "IsLeapMonth", true);
+        add!(CP_TASKS, 0x26, "FirstDayOfWeek", true);
+
+        // ResolveRecipients (10) – per MS-ASCMD / MS-ASWBXML spec
+        add!(CP_RESOLVERECIPIENTS, 0x05, "ResolveRecipients", true);
+        add!(CP_RESOLVERECIPIENTS, 0x06, "Response", true);
+        add!(CP_RESOLVERECIPIENTS, 0x07, "Status", true);
+        add!(CP_RESOLVERECIPIENTS, 0x08, "Type", true);
+        add!(CP_RESOLVERECIPIENTS, 0x09, "Recipient", true);
+        add!(CP_RESOLVERECIPIENTS, 0x0A, "DisplayName", true);
+        add!(CP_RESOLVERECIPIENTS, 0x0B, "EmailAddress", true);
+        add!(CP_RESOLVERECIPIENTS, 0x0C, "Certificates", true);
+        add!(CP_RESOLVERECIPIENTS, 0x0D, "Certificate", true);
+        add!(CP_RESOLVERECIPIENTS, 0x0E, "MiniCertificate", true);
+        add!(CP_RESOLVERECIPIENTS, 0x0F, "Options", true);
+        add!(CP_RESOLVERECIPIENTS, 0x10, "To", true);
+        add!(CP_RESOLVERECIPIENTS, 0x11, "CertificateRetrieval", true);
+        add!(CP_RESOLVERECIPIENTS, 0x12, "RecipientCount", true);
+        add!(CP_RESOLVERECIPIENTS, 0x13, "MaxCertificates", true);
+        add!(CP_RESOLVERECIPIENTS, 0x14, "MaxAmbiguousRecipients", true);
+        add!(CP_RESOLVERECIPIENTS, 0x15, "CertificateCount", true);
+        add!(CP_RESOLVERECIPIENTS, 0x16, "Availability", true);
+        add!(CP_RESOLVERECIPIENTS, 0x17, "StartTime", true);
+        add!(CP_RESOLVERECIPIENTS, 0x18, "EndTime", true);
+        add!(CP_RESOLVERECIPIENTS, 0x19, "MergedFreeBusy", true);
+        add!(CP_RESOLVERECIPIENTS, 0x1A, "Picture", true);
+        add!(CP_RESOLVERECIPIENTS, 0x1B, "MaxSize", true);
+        add!(CP_RESOLVERECIPIENTS, 0x1C, "Data", true);
+        add!(CP_RESOLVERECIPIENTS, 0x1D, "MaxPictures", true);
+
+        // ValidateCert (11) – per MS-ASCMD / MS-ASWBXML spec
+        add!(CP_VALIDATECERT, 0x05, "ValidateCert", true);
+        add!(CP_VALIDATECERT, 0x06, "Certificates", true);
+        add!(CP_VALIDATECERT, 0x07, "Certificate", true);
+        add!(CP_VALIDATECERT, 0x08, "CertificateChain", true);
+        add!(CP_VALIDATECERT, 0x09, "CheckCRL", true);
+        add!(CP_VALIDATECERT, 0x0A, "Status", true);
+
+        // Contacts2 (12) – per MS-ASCNTC / MS-ASWBXML spec
+        add!(CP_CONTACTS2, 0x05, "CustomerId", true);
+        add!(CP_CONTACTS2, 0x06, "GovernmentId", true);
+        add!(CP_CONTACTS2, 0x07, "IMAddress", true);
+        add!(CP_CONTACTS2, 0x08, "IMAddress2", true);
+        add!(CP_CONTACTS2, 0x09, "IMAddress3", true);
+        add!(CP_CONTACTS2, 0x0A, "ManagerName", true);
+        add!(CP_CONTACTS2, 0x0B, "CompanyMainPhone", true);
+        add!(CP_CONTACTS2, 0x0C, "AccountName", true);
+        add!(CP_CONTACTS2, 0x0D, "NickName", true);
+        add!(CP_CONTACTS2, 0x0E, "MMS", true);
 
         // Ping (13) – per MS-ASWBXML spec
         add!(CP_PING, 0x05, "Ping", true);
@@ -215,6 +574,91 @@ lazy_static! {
         add!(CP_PING, 0x0B, "Id", true);
         add!(CP_PING, 0x0C, "Class", true);
         add!(CP_PING, 0x0D, "MaxFolders", true);
+
+        // GAL (16) – per MS-ASWBXML spec
+        add!(CP_GAL, 0x05, "DisplayName", true);
+        add!(CP_GAL, 0x06, "Phone", true);
+        add!(CP_GAL, 0x07, "Office", true);
+        add!(CP_GAL, 0x08, "Title", true);
+        add!(CP_GAL, 0x09, "Company", true);
+        add!(CP_GAL, 0x0A, "Alias", true);
+        add!(CP_GAL, 0x0B, "FirstName", true);
+        add!(CP_GAL, 0x0C, "LastName", true);
+        add!(CP_GAL, 0x0D, "HomePhone", true);
+        add!(CP_GAL, 0x0E, "MobilePhone", true);
+        add!(CP_GAL, 0x0F, "EmailAddress", true);
+
+        // DocumentLibrary (19) – per MS-ASWBXML spec
+        add!(CP_DOCUMENTLIBRARY, 0x05, "LinkId", true);
+        add!(CP_DOCUMENTLIBRARY, 0x06, "DisplayName", true);
+        add!(CP_DOCUMENTLIBRARY, 0x07, "IsFolder", true);
+        add!(CP_DOCUMENTLIBRARY, 0x09, "CreationDate", true);
+        add!(CP_DOCUMENTLIBRARY, 0x0A, "LastModifiedDate", true);
+        add!(CP_DOCUMENTLIBRARY, 0x0B, "IsHidden", true);
+        add!(CP_DOCUMENTLIBRARY, 0x0C, "ContentLength", true);
+        add!(CP_DOCUMENTLIBRARY, 0x0D, "ContentType", true);
+
+        // ComposeMail (21) – per MS-ASCMD / MS-ASWBXML spec
+        add!(CP_COMPOSEMAIL, 0x05, "SendMail", true);
+        add!(CP_COMPOSEMAIL, 0x06, "SmartForward", true);
+        add!(CP_COMPOSEMAIL, 0x07, "SmartReply", true);
+        add!(CP_COMPOSEMAIL, 0x08, "SaveInSentItems", true);
+        add!(CP_COMPOSEMAIL, 0x09, "ReplaceMime", true);
+        add!(CP_COMPOSEMAIL, 0x0B, "Source", true);
+        add!(CP_COMPOSEMAIL, 0x0C, "FolderId", true);
+        add!(CP_COMPOSEMAIL, 0x0D, "ItemId", true);
+        add!(CP_COMPOSEMAIL, 0x0E, "LongId", true);
+        add!(CP_COMPOSEMAIL, 0x0F, "InstanceId", true);
+        add!(CP_COMPOSEMAIL, 0x10, "Mime", true);
+        add!(CP_COMPOSEMAIL, 0x11, "ClientId", true);
+        add!(CP_COMPOSEMAIL, 0x12, "Status", true);
+        add!(CP_COMPOSEMAIL, 0x13, "AccountId", true);
+
+        // Email2 (22) – per MS-ASEMAIL / MS-ASWBXML spec
+        add!(CP_EMAIL2, 0x05, "UmCallerID", true);
+        add!(CP_EMAIL2, 0x06, "UmUserNotes", true);
+        add!(CP_EMAIL2, 0x07, "UmAttDuration", true);
+        add!(CP_EMAIL2, 0x08, "UmAttOrder", true);
+        add!(CP_EMAIL2, 0x09, "ConversationId", true);
+        add!(CP_EMAIL2, 0x0A, "ConversationIndex", true);
+        add!(CP_EMAIL2, 0x0B, "LastVerbExecuted", true);
+        add!(CP_EMAIL2, 0x0C, "LastVerbExecutionTime", true);
+        add!(CP_EMAIL2, 0x0D, "ReceivedAsBcc", true);
+        add!(CP_EMAIL2, 0x0E, "Sender", true);
+        add!(CP_EMAIL2, 0x0F, "CalendarType", true);
+        add!(CP_EMAIL2, 0x10, "IsLeapMonth", true);
+        add!(CP_EMAIL2, 0x11, "AccountId", true);
+        add!(CP_EMAIL2, 0x12, "FirstDayOfWeek", true);
+        add!(CP_EMAIL2, 0x13, "MeetingMessageType", true);
+
+        // Notes (23) – per MS-ASWBXML spec
+        add!(CP_NOTES, 0x05, "Subject", true);
+        add!(CP_NOTES, 0x06, "MessageClass", true);
+        add!(CP_NOTES, 0x07, "LastModifiedDate", true);
+        add!(CP_NOTES, 0x08, "Categories", true);
+        add!(CP_NOTES, 0x09, "Category", true);
+
+        // RightsManagement (24) – per MS-ASWBXML spec
+        add!(CP_RIGHTSMANAGEMENT, 0x05, "RightsManagementSupport", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x06, "RightsManagementTemplates", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x07, "RightsManagementTemplate", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x08, "RightsManagementLicense", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x09, "EditAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x0A, "ReplyAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x0B, "ReplyAllAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x0C, "ForwardAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x0D, "ModifyRecipientsAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x0E, "ExtractAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x0F, "PrintAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x10, "ExportAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x11, "ProgrammaticAccessAllowed", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x12, "Owner", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x13, "ContentExpiryDate", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x14, "TemplateID", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x15, "TemplateName", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x16, "TemplateDescription", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x17, "ContentOwner", true);
+        add!(CP_RIGHTSMANAGEMENT, 0x18, "RemoveRightsManagementProtection", true);
 
         m
     };
