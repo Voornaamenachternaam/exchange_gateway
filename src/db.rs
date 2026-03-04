@@ -106,12 +106,18 @@ pub async fn delete_sync_state(
         "query": "DELETE FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
         "params": [user, device_id, coll]
     });
-    let _ = client
+    if let Err(e) = client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
-        .await;
+        .await
+    {
+        tracing::error!(
+            user = user, device_id = device_id, collection = coll,
+            "delete_sync_state failed: {e}"
+        );
+    }
 }
 
 pub async fn get_ews_sync_state(config: &AppConfig, user: &str, folder: &str) -> Option<String> {
@@ -144,12 +150,18 @@ pub async fn delete_ews_sync_state(config: &AppConfig, user: &str, folder: &str)
         "query": "DELETE FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
         "params": [user, folder]
     });
-    let _ = client
+    if let Err(e) = client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
-        .await;
+        .await
+    {
+        tracing::error!(
+            user = user, folder = folder,
+            "delete_ews_sync_state failed: {e}"
+        );
+    }
 }
 
 pub async fn update_ews_sync_state(
