@@ -613,6 +613,7 @@ struct GetAttachmentRequest {
 #[derive(Debug, Deserialize)]
 struct EwsAttachmentIds {
     #[serde(rename = "AttachmentId")]
+    #[serde(default)]
     items: Vec<EwsAttachmentId>,
 }
 #[derive(Debug, Deserialize)]
