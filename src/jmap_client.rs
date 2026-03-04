@@ -476,6 +476,25 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
+    if json["methodResponses"][0][0].as_str() == Some("error")
+        || json["methodResponses"][1][0].as_str() == Some("error")
+    {
+        let err_type = json["methodResponses"]
+            .as_array()
+            .and_then(|responses| {
+                responses.iter().find_map(|resp| {
+                    if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
+                        resp.get(1)
+                            .and_then(|e| e.get("type"))
+                            .and_then(|t| t.as_str())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or("unknown");
+        return Err(JmapError::Api(format!("find by uid failed: {}", err_type)));
+    }
     json["methodResponses"][1][1]["list"]
         .get(0)
         .and_then(|item| item["id"].as_str())
