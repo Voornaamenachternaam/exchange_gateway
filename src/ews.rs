@@ -134,7 +134,7 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
                 let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
                 response_messages.push_str(&format!(
                     r#"<m:GetAttachmentResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Attachments><t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment></m:Attachments></m:GetAttachmentResponseMessage>"#,
-                    utils::escape_xml(id_str), b64
+                    utils::escape_xml(id_str), utils::escape_xml(&b64)
                 ));
             }
             Err(e) => {
