@@ -28,7 +28,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     match action.as_str() {
         "GetFolder" => handle_get_folder(&session, xml).await,
         "FindFolder" => handle_find_folder(&session).await,
-        "SyncFolderHierarchy" => handle_sync_folder_hierarchy(&session).await,
+        "SyncFolderHierarchy" => handle_sync_folder_hierarchy(&session, xml).await,
         "SyncFolderItems" => handle_sync_folder_items(&session, config, &user, xml).await,
         "CreateItem" => handle_create_item(&session, config, xml).await,
         "UpdateItem" => handle_update_item(&session, config, xml).await,
@@ -43,15 +43,42 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     }
 }
 
-async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession) -> String {
+async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &str) -> String {
+    let req: SyncFolderHierarchyRequest = match parse_body_content(xml) {
+        Ok(r) => r,
+        Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
+    };
     let cal_id = jmap_client::get_default_calendar_id(session)
         .await
         .unwrap_or("default".into());
+
+    // Generate a stable sync state from the calendar ID so clients can
+    // distinguish initial from subsequent syncs.
+    let sync_state = {
+        let mut h = Sha256::new();
+        h.update(b"folder-hierarchy:");
+        h.update(cal_id.as_bytes());
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, h.finalize())
+    };
+
+    let changes = if req.sync_state.is_some() {
+        // Subsequent sync: hierarchy hasn't changed (single calendar folder),
+        // return empty changes.
+        String::new()
+    } else {
+        // Initial sync: report the calendar folder as created.
+        format!(
+            r#"<t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create>"#,
+            utils::escape_xml(&cal_id)
+        )
+    };
+
     soap_response(&format!(
-        r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Changes><t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create></m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
+        r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
         NS_M,
         NS_T,
-        utils::escape_xml(&cal_id)
+        utils::escape_xml(&sync_state),
+        changes
     ))
 }
 
@@ -757,4 +784,9 @@ struct EwsItems {
 struct DeleteItemRequest {
     #[serde(rename = "ItemIds")]
     item_ids: EwsItemIds,
+}
+#[derive(Debug, Deserialize)]
+struct SyncFolderHierarchyRequest {
+    #[serde(rename = "SyncState", default)]
+    sync_state: Option<String>,
 }
