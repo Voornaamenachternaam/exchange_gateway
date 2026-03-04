@@ -112,16 +112,25 @@ async fn handle_active_sync(
             }
         }
     } else {
-        // No Content-Type header: try WBXML first, fall back to plain XML
-        match wbxml::decode(&body) {
-            Ok(xml) => (xml, true),
-            Err(_) => match std::str::from_utf8(&body) {
+        // No Content-Type: sniff by first byte — WBXML never starts with '<'
+        if body.first() == Some(&b'<') {
+            match std::str::from_utf8(&body) {
                 Ok(s) => (s.to_string(), false),
                 Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "WBXML Decode Error".to_string())
-                        .into_response();
+                    return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response();
                 }
-            },
+            }
+        } else {
+            match wbxml::decode(&body) {
+                Ok(xml) => (xml, true),
+                Err(_) => match std::str::from_utf8(&body) {
+                    Ok(s) => (s.to_string(), false),
+                    Err(_) => {
+                        return (StatusCode::BAD_REQUEST, "WBXML Decode Error".to_string())
+                            .into_response();
+                    }
+                },
+            }
         }
     };
 
