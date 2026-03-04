@@ -694,7 +694,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             let byte = data[*pos];
             *pos += 1;
             val = val
-                .checked_shl(7)
+                .checked_mul(1 << 7)
                 .and_then(|v| v.checked_add((byte & 0x7F) as usize))
                 .ok_or_else(|| "mb_u_int32 overflow".to_string())?;
             if (byte & 0x80) == 0 {
