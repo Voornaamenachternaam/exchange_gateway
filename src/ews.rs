@@ -581,56 +581,21 @@ fn extract_action_name(xml: &str) -> String {
 }
 
 fn parse_body_content<T: for<'de> Deserialize<'de>>(xml: &str) -> Result<T, String> {
-    // Use quick_xml Reader to find the Body element by local name,
-    // which is namespace-prefix-agnostic (handles soap:Body, s:Body, SOAP-ENV:Body, etc.)
-    // We track byte positions via buffer_position() to slice the original string.
-    // For a Reader created from &str, buffer_position() returns the byte offset
-    // into the original input, which is safe to use for slicing.
-    let mut reader = Reader::from_str(xml);
-    let mut buf = Vec::new();
-    let body_start;
-    // Find the opening Body tag; after this, buffer_position() points just past the '>'
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                if e.local_name().as_ref() == b"Body" {
-                    body_start = reader.buffer_position();
-                    break;
-                }
-            }
-            Ok(Event::Eof) => return Err("Could not find SOAP Body".into()),
-            Err(e) => return Err(format!("XML parse error: {}", e)),
-            _ => {}
-        }
-        buf.clear();
-    }
-    // Find the matching closing Body tag by reading events and tracking depth.
-    let mut depth = 1u32;
-    buf.clear();
-    loop {
-        let pos_before = reader.buffer_position();
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                if e.local_name().as_ref() == b"Body" {
-                    depth += 1;
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                if e.local_name().as_ref() == b"Body" {
-                    depth -= 1;
-                    if depth == 0 {
-                        let inner = &xml[body_start..pos_before];
-                        return quick_xml::de::from_str(inner)
-                            .map_err(|e| format!("Deserialize Error: {}", e));
-                    }
-                }
-            }
-            Ok(Event::Eof) => return Err("Could not find SOAP Body closing tag".into()),
-            Err(e) => return Err(format!("XML parse error: {}", e)),
-            _ => {}
-        }
-        buf.clear();
-    }
+    let envelope: SoapEnvelope<T> =
+        quick_xml::de::from_str(xml).map_err(|e| format!("Deserialize Error: {}", e))?;
+    Ok(envelope.body.content)
+}
+
+#[derive(Debug, Deserialize)]
+struct SoapEnvelope<T> {
+    #[serde(rename = "Body")]
+    body: SoapBody<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SoapBody<T> {
+    #[serde(rename = "$value")]
+    content: T,
 }
 
 fn soap_response(content: &str) -> String {
