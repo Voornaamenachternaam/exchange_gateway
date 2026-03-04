@@ -16,7 +16,7 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
             .from_local_datetime(&dt)
             .single()
             .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
-            .unwrap_or_default();
+            .unwrap_or_else(|| local_str.to_string());
     }
     local_str.to_string()
 }
