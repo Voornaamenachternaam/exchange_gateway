@@ -895,8 +895,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
         // Handle LITERAL (0x04), LITERAL_A (0x44), LITERAL_C (0x84), LITERAL_AC (0xC4) tokens
         if token == 0x04 || token == 0x44 || token == 0x84 || token == 0xC4 {
-            let has_content = (token & 0x80) != 0;
-            let has_attrs = (token & 0x40) != 0;
+            let has_content = (token & 0x40) != 0;
+            let has_attrs = (token & 0x80) != 0;
             let offset = read_mb_u_int32(data, &mut pos)?;
             let tag_name = read_strtbl_string(strtbl, offset)?;
 
