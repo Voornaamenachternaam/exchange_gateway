@@ -115,8 +115,13 @@ async fn handle_active_sync(
         // Empty body is valid for commands like Ping or FolderSync — treat as plain XML
         (String::new(), false)
     } else {
-        // No Content-Type: sniff by first byte — WBXML never starts with '<'
-        if body.first() == Some(&b'<') {
+        // No Content-Type: sniff by first meaningful byte — WBXML never starts with '<'
+        // Strip UTF-8 BOM and leading whitespace before checking
+        let trimmed = body
+            .strip_prefix(b"\xEF\xBB\xBF")
+            .unwrap_or(&body);
+        let first_meaningful = trimmed.iter().find(|b| !b.is_ascii_whitespace());
+        if first_meaningful == Some(&b'<') {
             match std::str::from_utf8(&body) {
                 Ok(s) => (s.to_string(), false),
                 Err(_) => {
