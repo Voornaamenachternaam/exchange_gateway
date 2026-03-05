@@ -1285,7 +1285,7 @@ struct ItemOpsReq {
 #[derive(Debug, Deserialize)]
 struct ItemOpsFetch {
     #[serde(rename = "Store", default)]
-    store: Option<String>,
+    _store: Option<String>,
     #[serde(rename = "ServerId", default)]
     server_id: Option<String>,
     #[serde(rename = "FileReference", default)]
