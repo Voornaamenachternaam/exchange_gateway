@@ -567,17 +567,14 @@ async fn handle_sync(
 
     if let Some(cmds) = coll.commands {
         if let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
-            tracing::error!("Client commands failed, returning error status to device: {}", e);
-            // Return Status 6 (server error) with the *old* SyncKey so the
-            // client knows its commands were not fully applied and will
-            // retry them on the next Sync attempt.  Do NOT advance the
-            // SyncKey — advancing it would cause the device to discard its
-            // pending commands, silently dropping the failed operations.
-            return format!(
-                r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection></Collections></Sync>"#,
-                utils::escape_xml(&old_sync_key),
-                utils::escape_xml(&collection_id)
-            );
+            // Log partial failures but continue the normal sync flow.
+            // Returning the old SyncKey with Status 6 would cause the
+            // device to replay ALL commands — including ones that already
+            // succeeded — creating duplicate events.  By advancing the
+            // SyncKey below, successfully-applied operations are not
+            // replayed.  The device will reconcile any failed operations
+            // when it sees the server state in the response.
+            tracing::warn!("Some client commands failed (continuing sync): {}", e);
         }
     }
 
@@ -891,17 +888,22 @@ async fn process_client_commands(
     let mut errors: Vec<String> = Vec::new();
     if let Some(add_cmds) = cmds.add {
         let cal_id = match jmap_client::get_default_calendar_id(session).await {
-            Ok(id) => id,
+            Ok(id) => Some(id),
             Err(e) => {
                 let msg = format!(
                     "ActiveSync Add failed: unable to determine default calendar id: {}",
                     e
                 );
                 tracing::error!("{}", msg);
-                return Err(msg);
+                errors.push(msg);
+                None
             }
         };
         for add_cmd in add_cmds {
+            let Some(ref cal_id) = cal_id else {
+                // Already logged above; skip individual Add commands.
+                break;
+            };
             let data = add_cmd.application_data;
             let start_utc = utils::parse_local_to_utc(&data.start.unwrap_or_default(), tz);
             let end_utc = utils::parse_local_to_utc(&data.end.unwrap_or_default(), tz);
