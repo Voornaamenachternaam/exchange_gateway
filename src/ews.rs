@@ -528,7 +528,10 @@ async fn handle_create_item(
                     utils::escape_xml(&change_key),
                 ));
             }
-            Err(_) => return soap_fault("ErrorInternalServerError", "JMAP Create Failed"),
+            Err(e) => {
+                tracing::error!("Failed to push JMAP event: {}", e);
+                return soap_fault("ErrorInternalServerError", "JMAP Create Failed");
+            }
         }
     }
     soap_fault("ErrorInvalidRequest", "No Item")
