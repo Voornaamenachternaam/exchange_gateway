@@ -792,7 +792,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 xml.push('>');
                 stack.push(tag);
             }
-            let text = String::from_utf8_lossy(&str_buf);
+            let text = String::from_utf8(str_buf)
+                .map_err(|_| "Invalid UTF-8 in inline string".to_string())?;
             xml.push_str(
                 &text
                     .replace('&', "&amp;")
