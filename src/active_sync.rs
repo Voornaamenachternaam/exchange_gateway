@@ -607,7 +607,7 @@ async fn handle_sync(
                             device_id,
                             &collection_id,
                             &new_key,
-                            &post_command_jmap_state,
+                            &prev_jmap_state,
                         )
                         .await;
                         return format!(
