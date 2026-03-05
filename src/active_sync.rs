@@ -515,7 +515,10 @@ async fn handle_meeting_response(
 
     let event_id = match jmap_client::find_event_by_uid(session, &uid).await {
         Ok(id) => id,
-        Err(_) => return error_xml(400, "EventNotFound"),
+        Err(e) => {
+            tracing::error!("Failed to find event by UID '{}': {}", uid, e);
+            return error_xml(400, "EventNotFound");
+        }
     };
     let status_str = match response_code {
         1 => "accepted",
