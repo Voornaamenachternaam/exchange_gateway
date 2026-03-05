@@ -48,6 +48,7 @@ pub struct JmapSession {
     pub api_url: String,
     pub access_token: String,
     pub account_id: String,
+    pub principals_account_id: String,
     pub client: Client,
 }
 
@@ -254,10 +255,15 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         })
         .ok_or_else(|| JmapError::Parse("no usable account in JMAP session".into()))?
         .to_string();
+    let principals_account_id = body["primaryAccounts"]["urn:ietf:params:jmap:principals"]
+        .as_str()
+        .unwrap_or(&account_id)
+        .to_string();
     Ok(JmapSession {
         api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
         access_token: token,
         account_id,
+        principals_account_id,
         client,
     })
 }
@@ -498,7 +504,7 @@ pub async fn search_principals(
     session: &JmapSession,
     query: &str,
 ) -> Result<Vec<Principal>, JmapError> {
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:principals"], "methodCalls": [["Principal/query", { "accountId": session.account_id, "filter": { "operator": "OR", "conditions": [{ "email": query }, { "name": query }] } }, "c0"], ["Principal/get", { "accountId": session.account_id, "#ids": { "resultOf": "c0", "name": "Principal/query", "path": "/ids" } }, "c1"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:principals"], "methodCalls": [["Principal/query", { "accountId": session.principals_account_id, "filter": { "operator": "OR", "conditions": [{ "email": query }, { "name": query }] } }, "c0"], ["Principal/get", { "accountId": session.principals_account_id, "#ids": { "resultOf": "c0", "name": "Principal/query", "path": "/ids" } }, "c1"]] });
     let res = session
         .client
         .post(&session.api_url)
