@@ -567,21 +567,17 @@ async fn handle_sync(
 
     if let Some(cmds) = coll.commands {
         if let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
-            // One or more client commands failed.  Return the old SyncKey
-            // with Status 6 so the device knows commands were not fully
-            // applied and will retry on the next Sync.
+            // Log the partial failure but do NOT return early with the old
+            // SyncKey.  Returning Status 6 + old SyncKey would cause the
+            // device to replay the entire batch, including Add commands
+            // that already succeeded on the server, creating duplicate
+            // calendar events.
             //
-            // We intentionally do NOT advance the SyncKey or update the
-            // persisted sync state.  On the next sync the server will
-            // detect any successfully-applied operations as server-side
-            // changes and send them back to the device, which will merge
-            // them with its local copies — avoiding true data duplicates.
-            tracing::error!("Client commands failed, returning error to device: {}", e);
-            return format!(
-                r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection></Collections></Sync>"#,
-                utils::escape_xml(&old_sync_key),
-                utils::escape_xml(&collection_id)
-            );
+            // Instead, fall through to the normal change-detection path.
+            // The SyncKey will advance and the post-command JMAP state
+            // will reflect any successfully-applied operations.  The
+            // device moves forward and will not replay them.
+            tracing::error!("Some client commands failed (partial apply): {}", e);
         }
     }
 
