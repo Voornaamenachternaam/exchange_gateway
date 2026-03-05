@@ -860,43 +860,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             // tokens terminated by END (0x01). ActiveSync doesn't use attributes, so
             // we just consume them to keep the parse position correct.
             if has_attrs {
-                loop {
-                    if pos >= data.len() {
-                        return Err("Unexpected end while skipping LITERAL attributes".into());
-                    }
-                    let attr_token = data[pos];
-                    pos += 1;
-                    if attr_token == TAG_END {
-                        break;
-                    } else if attr_token == TAG_STR_I {
-                        // Skip inline string
-                        while pos < data.len() && data[pos] != 0 {
-                            pos += 1;
-                        }
-                        if pos < data.len() {
-                            pos += 1;
-                        } else {
-                            return Err("Unexpected end in attribute inline string".into());
-                        }
-                    } else if attr_token == 0x83 {
-                        // STR_T — skip mb_u_int32 index
-                        let _ = read_mb_u_int32(data, &mut pos)?;
-                    } else if attr_token == TAG_OPAQUE {
-                        // Skip opaque data
-                        let len = read_mb_u_int32(data, &mut pos)?;
-                        let end = pos.checked_add(len).ok_or_else(|| "Opaque overflow in attrs".to_string())?;
-                        if end > data.len() {
-                            return Err("Opaque overflow in attrs".into());
-                        }
-                        pos = end;
-                    } else if attr_token == TAG_SWITCH_PAGE {
-                        if pos >= data.len() {
-                            return Err("Unexpected end in attribute page switch".into());
-                        }
-                        pos += 1;
-                    }
-                    // Other attribute tokens (ATTRSTART/ATTRVALUE) are single bytes — already consumed
-                }
+                return Err("Attributes on LITERAL tags are not supported".into());
             }
 
             if pending_tag.is_some() {
