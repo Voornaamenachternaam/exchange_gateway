@@ -417,6 +417,10 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         // Optional basic auth from URL: smtp://user:pass@host:port
         // URL components are percent-encoded, so decode before use as credentials.
         let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
+        if scheme == "smtp" && !user.is_empty() && smtp_url.password().is_some() {
+            tracing::error!("SMTP credentials require TLS; use smtps:// or starttls://");
+            return SEND_MAIL_ERROR.to_string();
+        }
         if !user.is_empty() {
             if let Some(pass) = smtp_url.password() {
                 let pass = percent_decode_str(pass).decode_utf8_lossy();
