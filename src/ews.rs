@@ -657,7 +657,7 @@ fn soap_response(content: &str) -> String {
 }
 fn soap_fault(code: &str, msg: &str) -> String {
     soap_response(&format!(
-        r#"<soap:Fault><faultcode>{}</faultcode><faultstring>{}</faultstring></soap:Fault>"#,
+        r#"<soap:Fault><faultcode>soap:Client</faultcode><faultstring>{}: {}</faultstring></soap:Fault>"#,
         utils::escape_xml(code), utils::escape_xml(msg)
     ))
 }
