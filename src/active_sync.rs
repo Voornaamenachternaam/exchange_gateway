@@ -607,8 +607,12 @@ async fn handle_sync(
             {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
-                    db::delete_sync_state(config, user, device_id, &collection_id).await;
+                    if e.is_transient() {
+                        tracing::warn!("get_calendar_changes failed (transient), preserving sync state: {}", e);
+                    } else {
+                        tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
+                        db::delete_sync_state(config, user, device_id, &collection_id).await;
+                    }
                     return error_xml(500, "CalendarChangesError");
                 }
             };
