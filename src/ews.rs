@@ -587,6 +587,7 @@ fn extract_action_name(xml: &str) -> String {
     let mut depth = 0;
     let mut in_body = false;
     loop {
+        buf.clear();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
