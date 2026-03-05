@@ -510,7 +510,7 @@ async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOps
             if let Some(id) = id_opt {
                 match jmap_client::get_event_by_id(session, &id).await {
                     Ok(event) => {
-                        fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><ApplicationData><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></Fetch>"#, utils::escape_xml(&id), utils::escape_xml(event.description.as_deref().unwrap_or(""))));
+                        fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><Properties><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></Properties></Fetch>"#, utils::escape_xml(&id), utils::escape_xml(event.description.as_deref().unwrap_or(""))));
                     }
                     Err(e) => {
                         tracing::warn!("Failed to get event by id '{}': {}", id, e);
