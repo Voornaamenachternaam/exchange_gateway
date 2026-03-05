@@ -177,14 +177,11 @@ async fn handle_get_item(
     let mut response_messages = String::new();
     for item_id in &req.item_ids.items {
         if let Some(event) = events.iter().find(|e| e.id.as_deref() == Some(&item_id.id)) {
-            if let Some(rendered) = render_ews_calendar_item(event, &config.timezone) {
-                response_messages.push_str(&format!(
-                    r#"<m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage>"#,
-                    rendered
-                ));
-            } else {
-                response_messages.push_str(r#"<m:GetItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:Items/></m:GetItemResponseMessage>"#);
-            }
+            let rendered = render_ews_calendar_item(event, &config.timezone);
+            response_messages.push_str(&format!(
+                r#"<m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage>"#,
+                rendered
+            ));
         } else {
             response_messages.push_str(r#"<m:GetItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:Items/></m:GetItemResponseMessage>"#);
         }
@@ -205,7 +202,7 @@ fn parse_jmap_timestamp(s: &str) -> Option<DateTime<Utc>> {
     None
 }
 
-fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Option<String> {
+fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> String {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
     let start_local = match parse_jmap_timestamp(&event.start) {
         Some(dt) => dt.with_timezone(&tz).format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -246,7 +243,7 @@ fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Opt
         }
         attendees_xml.push_str("</t:RequiredAttendees>");
     }
-    Some(format!(
+    format!(
         r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:Body BodyType="Text">{}</t:Body><t:Start>{}</t:Start><t:End>{}</t:End><t:Location>{}</t:Location><t:IsAllDayEvent>{}</t:IsAllDayEvent>{}</t:CalendarItem>"#,
         utils::escape_xml(event.id.as_deref().unwrap_or("")),
         utils::escape_xml(&change_key),
@@ -257,7 +254,7 @@ fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Opt
         utils::escape_xml(event.location.as_deref().unwrap_or("")),
         event.is_all_day,
         attendees_xml
-    ))
+    )
 }
 
 async fn handle_update_item(
@@ -375,9 +372,8 @@ async fn handle_sync_folder_items(
         };
         let mut xml = String::new();
         for ev in events {
-            if let Some(rendered) = render_ews_calendar_item(&ev, &config.timezone) {
-                xml.push_str(&format!(r#"<t:Create>{}</t:Create>"#, rendered));
-            }
+            let rendered = render_ews_calendar_item(&ev, &config.timezone);
+            xml.push_str(&format!(r#"<t:Create>{}</t:Create>"#, rendered));
         }
         (xml, true, current_state)
     } else {
@@ -427,9 +423,8 @@ async fn handle_sync_folder_items(
             match jmap_client::get_events_by_ids(session, &changes.created).await {
                 Ok(events) => {
                     for ev in events {
-                        if let Some(rendered) = render_ews_calendar_item(&ev, &config.timezone) {
-                            xml.push_str(&format!(r#"<t:Create>{}</t:Create>"#, rendered));
-                        }
+                        let rendered = render_ews_calendar_item(&ev, &config.timezone);
+                        xml.push_str(&format!(r#"<t:Create>{}</t:Create>"#, rendered));
                     }
                 }
                 Err(e) => {
@@ -442,9 +437,8 @@ async fn handle_sync_folder_items(
             match jmap_client::get_events_by_ids(session, &changes.updated).await {
                 Ok(events) => {
                     for ev in events {
-                        if let Some(rendered) = render_ews_calendar_item(&ev, &config.timezone) {
-                            xml.push_str(&format!(r#"<t:Update>{}</t:Update>"#, rendered));
-                        }
+                        let rendered = render_ews_calendar_item(&ev, &config.timezone);
+                        xml.push_str(&format!(r#"<t:Update>{}</t:Update>"#, rendered));
                     }
                 }
                 Err(e) => {
