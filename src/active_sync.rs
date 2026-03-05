@@ -877,11 +877,10 @@ async fn process_client_commands(
             errors.push(msg);
         }
     }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("; "))
+    if !errors.is_empty() {
+        tracing::error!("ActiveSync command failures: {}", errors.join("; "));
     }
+    Ok(())
 }
 
 fn build_rrule(r: Recurrence) -> String {
