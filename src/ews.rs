@@ -473,6 +473,14 @@ async fn handle_create_item(
         let cal_id = jmap_client::get_default_calendar_id(session)
             .await
             .unwrap_or("default".into());
+        let raw_start = match item.start {
+            Some(s) if !s.is_empty() => s,
+            _ => return soap_fault("ErrorMissingArgument", "Start is required"),
+        };
+        let raw_end = match item.end {
+            Some(s) if !s.is_empty() => s,
+            _ => return soap_fault("ErrorMissingArgument", "End is required"),
+        };
         let attendees: Vec<jmap_client::Participant> = item
             .required_attendees
             .map(|a| {
@@ -486,12 +494,12 @@ async fn handle_create_item(
                     .collect()
             })
             .unwrap_or_default();
-        let start_utc = utils::parse_local_to_utc(&item.start.unwrap_or_default(), tz);
+        let start_utc = utils::parse_local_to_utc(&raw_start, tz);
         let event = jmap_client::JmapEvent {
             id: None,
             title: item.subject.unwrap_or_default(),
             start: start_utc.clone(),
-            end: utils::parse_local_to_utc(&item.end.unwrap_or_default(), tz),
+            end: utils::parse_local_to_utc(&raw_end, tz),
             location: item.location,
             description: item.body.map(|b| b.content),
             uid: Some(Uuid::new_v4().to_string()),
