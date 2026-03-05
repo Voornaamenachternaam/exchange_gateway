@@ -184,13 +184,20 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         }
         buf.clear();
     }
-    // WBXML opaque data is base64-encoded by wbxml::decode. Attempt to
-    // decode so that regex header extraction works on the raw MIME text.
-    if let Ok(decoded_bytes) =
-        base64::engine::general_purpose::STANDARD.decode(mime_content.trim())
-    {
-        if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
-            mime_content = decoded_str;
+    // WBXML opaque data is base64-encoded by wbxml::decode. Only attempt
+    // to decode when the content does not already look like raw MIME text,
+    // so that plain-text MIME arriving via XML is not accidentally corrupted.
+    let dominated_by_mime_headers = mime_content
+        .lines()
+        .take(5)
+        .any(|l| l.starts_with("From:") || l.starts_with("To:") || l.starts_with("MIME-Version:"));
+    if !dominated_by_mime_headers {
+        if let Ok(decoded_bytes) =
+            base64::engine::general_purpose::STANDARD.decode(mime_content.trim())
+        {
+            if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                mime_content = decoded_str;
+            }
         }
     }
 
