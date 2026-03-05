@@ -231,17 +231,12 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             );
             false
         } else {
-            let local_matches = from_email
-                .split('@')
-                .next()
-                .unwrap_or("")
-                .eq_ignore_ascii_case(authenticated_user);
-            let domain_matches = from_email
-                .split('@')
-                .nth(1)
-                .unwrap_or("")
-                .eq_ignore_ascii_case(&config.mail_domain);
-            local_matches && domain_matches
+            if let Some((local, domain)) = from_email.rsplit_once('@') {
+                local.eq_ignore_ascii_case(authenticated_user)
+                    && domain.eq_ignore_ascii_case(&config.mail_domain)
+            } else {
+                false
+            }
         }
     };
     if !from_matches {
