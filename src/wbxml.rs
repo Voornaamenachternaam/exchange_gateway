@@ -712,7 +712,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         while end < strtbl.len() && strtbl[end] != 0 {
             end += 1;
         }
-        let s = String::from_utf8_lossy(&strtbl[offset..end]).to_string();
+        let s = std::str::from_utf8(&strtbl[offset..end])
+            .map_err(|_| "Invalid UTF-8 in string table".to_string())?
+            .to_string();
         Ok(s)
     }
 
