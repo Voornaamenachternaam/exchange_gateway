@@ -594,10 +594,22 @@ async fn handle_sync(
                 && pre_command_jmap_state == post_command_jmap_state
             {
                 // No server-side changes and no client-originated changes —
-                // nothing to send or persist.
+                // nothing to send.  Still advance the SyncKey so the client
+                // sees a successful round-trip (ActiveSync requires the key
+                // to change on every response).
+                let new_key = Uuid::new_v4().to_string();
+                db::update_sync_state(
+                    config,
+                    user,
+                    device_id,
+                    &collection_id,
+                    &new_key,
+                    &prev_jmap_state,
+                )
+                .await;
                 return format!(
                     r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#,
-                    utils::escape_xml(&old_sync_key),
+                    utils::escape_xml(&new_key),
                     utils::escape_xml(&collection_id)
                 );
             }
