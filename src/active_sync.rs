@@ -629,16 +629,15 @@ async fn handle_sync(
         Err(_) => return error_xml(500, "JMAPStateError"),
     };
 
+    // On partial failure, fall through to the normal change-detection
+    // path.  The SyncKey will advance and the post-command JMAP state
+    // will reflect any successfully-applied operations.  The device
+    // moves forward and will not replay succeeded commands.
+    //
+    // Failed commands are reported individually via <Responses> so
+    // the device knows which ones to retry.
     let cmd_results = if let Some(cmds) = coll.commands {
-        let results = process_client_commands(session, cmds, &config.timezone).await;
-        // On partial failure, fall through to the normal change-detection
-        // path.  The SyncKey will advance and the post-command JMAP state
-        // will reflect any successfully-applied operations.  The device
-        // moves forward and will not replay succeeded commands.
-        //
-        // Failed commands are reported individually via <Responses> so
-        // the device knows which ones to retry.
-        results
+        process_client_commands(session, cmds, &config.timezone).await
     } else {
         CommandResults::default()
     };
