@@ -505,17 +505,15 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
 async fn handle_item_operations(session: &jmap_client::JmapSession, req: ItemOpsReq) -> String {
     let mut fetches = String::new();
     for fetch in req.fetch.into_iter() {
-        if let Some(store) = fetch.store {
-            let id_opt = store.server_id.or(store.file_reference);
-            if let Some(id) = id_opt {
-                match jmap_client::get_event_by_id(session, &id).await {
-                    Ok(event) => {
-                        fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><Properties><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></Properties></Fetch>"#, utils::escape_xml(&id), utils::escape_xml(event.description.as_deref().unwrap_or(""))));
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to get event by id '{}': {}", id, e);
-                        fetches.push_str("<Fetch><Status>6</Status></Fetch>");
-                    }
+        let id_opt = fetch.server_id.or(fetch.file_reference);
+        if let Some(id) = id_opt {
+            match jmap_client::get_event_by_id(session, &id).await {
+                Ok(event) => {
+                    fetches.push_str(&format!(r#"<Fetch><Status>1</Status><ServerId>{}</ServerId><Properties><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></Properties></Fetch>"#, utils::escape_xml(&id), utils::escape_xml(event.description.as_deref().unwrap_or(""))));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get event by id '{}': {}", id, e);
+                    fetches.push_str("<Fetch><Status>6</Status></Fetch>");
                 }
             }
         }
@@ -1032,11 +1030,8 @@ struct ItemOpsReq {
 }
 #[derive(Debug, Deserialize)]
 struct ItemOpsFetch {
-    #[serde(rename = "Store")]
-    store: Option<ItemOpsStore>,
-}
-#[derive(Debug, Deserialize)]
-struct ItemOpsStore {
+    #[serde(rename = "Store", default)]
+    store: Option<String>,
     #[serde(rename = "ServerId", default)]
     server_id: Option<String>,
     #[serde(rename = "FileReference", default)]
