@@ -877,10 +877,13 @@ async fn process_client_commands(
             errors.push(msg);
         }
     }
-    if !errors.is_empty() {
-        tracing::error!("ActiveSync command failures: {}", errors.join("; "));
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let joined = errors.join("; ");
+        tracing::error!("ActiveSync command failures: {}", joined);
+        Err(joined)
     }
-    Ok(())
 }
 
 fn build_rrule(r: Recurrence) -> String {
