@@ -583,28 +583,15 @@ pub async fn update_participant_status(
             user_email
         )));
     }
-    let patch = json!({ format!("participants/{}/participationStatus", user_email.replace('~', "~0").replace('/', "~1")): status });
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": { (event_id): patch } }, "c0"]] });
-    let res = session
-        .client
-        .post(&session.api_url)
-        .header("Authorization", format!("Basic {}", session.access_token))
-        .json(&body)
-        .send()
-        .await?;
-    let json: serde_json::Value = res.json().await?;
-    check_jmap_method_error(&json)?;
-    if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
-        && !not_updated.is_empty()
-    {
-        let desc = not_updated
-            .values()
-            .next()
-            .and_then(|v| v["description"].as_str())
-            .unwrap_or("unknown error");
-        return Err(JmapError::Api(format!("update failed: {}", desc)));
-    }
-    Ok(())
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        format!(
+            "participants/{}/participationStatus",
+            user_email.replace('~', "~0").replace('/', "~1")
+        ),
+        json!(status),
+    );
+    patch_event(session, event_id, patch).await
 }
 
 pub async fn get_blob(session: &JmapSession, blob_id: &str) -> Result<Vec<u8>, JmapError> {
