@@ -270,6 +270,24 @@ async fn handle_send_mail(
             Ok(Event::Eof) => break,
             _ => {}
         }
+        buf.clear();
+    }
+    // WBXML opaque data is base64-encoded by wbxml::decode. Only attempt
+    // to decode when the content does not already look like raw MIME text,
+    // so that plain-text MIME arriving via XML is not accidentally corrupted.
+    let dominated_by_mime_headers = mime_content
+        .lines()
+        .take(5)
+        .any(|l| l.starts_with("From:") || l.starts_with("To:") || l.starts_with("MIME-Version:"));
+    if !dominated_by_mime_headers
+        && let Ok(decoded_bytes) =
+            base64::engine::general_purpose::STANDARD.decode(mime_content.trim())
+            && let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                mime_content = decoded_str;
+            }
+
+    if mime_content.is_empty() {
+        return SEND_MAIL_ERROR.to_string();
     }
 
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
@@ -286,7 +304,45 @@ async fn handle_send_mail(
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
-    let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
+    // Verify the From address matches the authenticated user to prevent spoofing
+    let from_addr = match from_addr {
+        Some(f) => f,
+        None => {
+            tracing::warn!("SendMail: Missing From header");
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+    let from_mailbox = match from_addr.parse::<lettre::message::Mailbox>() {
+        Ok(mb) => mb,
+        Err(e) => {
+            tracing::warn!("SendMail: Malformed From header '{}': {}", from_addr, e);
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+    let from_email = from_mailbox.email.to_string();
+    // Compare the from address against the authenticated user. The auth username
+    // may be a full email (user@domain) or just the local part (user). Accept
+    // the message if the full email matches, or if the auth username has no '@'
+    // and matches the local part of the from address AND the domain matches the
+    // configured mail domain (to prevent domain spoofing).
+    let from_matches = if authenticated_user.contains('@') {
+        from_email.eq_ignore_ascii_case(authenticated_user)
+    } else if let Some((local, domain)) = from_email.rsplit_once('@') {
+        local.eq_ignore_ascii_case(authenticated_user)
+            && domain.eq_ignore_ascii_case(&config.mail_domain)
+    } else {
+        false
+    };
+    if !from_matches {
+        tracing::warn!(
+            "SendMail: From address '{}' does not match authenticated user",
+            from_email
+        );
+        return SEND_MAIL_ERROR.to_string();
+    }
+    let from_addr = Some(from_mailbox);
+
+    let status = if let (Some(to), Some(from_mailbox)) = (to_addr, from_addr) {
         let subject = re_subj
             .captures(&mime_content)
             .and_then(|c| c.get(1))
@@ -310,7 +366,80 @@ async fn handle_send_mail(
 
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
 
-        match mailer.send(&email) {
+        let email = match builder.subject(subject).body(clean_body.to_string()) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("Email build error: {}", e);
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let smtp_url = match url::Url::parse(&config.smtp_url) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!("Invalid SMTP URL: {}", e);
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let smtp_host = match smtp_url.host_str() {
+            Some(h) => h,
+            None => {
+                tracing::error!("SMTP URL has no host");
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let scheme = smtp_url.scheme().to_ascii_lowercase();
+        let default_port = match scheme.as_str() {
+            "smtps" => 465,
+            "smtp" => 25,
+            _ => 587,
+        };
+        let port = smtp_url.port().unwrap_or(default_port);
+
+        let mut builder = if scheme == "smtps" {
+            // Implicit TLS (port 465): relay() already configures TLS::Wrapper internally.
+            let b = match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create SMTP relay transport: {}", e);
+                    return SEND_MAIL_ERROR.to_string();
+                }
+            };
+            b.port(port)
+        } else {
+            // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
+            // unencrypted connections, restoring compatibility with smtp:// URLs.
+            let b = if scheme == "smtp" {
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+            } else {
+                match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                        return SEND_MAIL_ERROR.to_string();
+                    }
+                }
+            };
+            b.port(port)
+        };
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        // URL components are percent-encoded, so decode before use as credentials.
+        let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
+        if !user.is_empty()
+            && let Some(pass) = smtp_url.password() {
+                let pass = percent_decode_str(pass).decode_utf8_lossy();
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.into_owned(),
+                    pass.into_owned(),
+                ));
+            }
+
+        let mailer = builder.build();
+
+        match mailer.send(email).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
@@ -414,7 +543,10 @@ async fn handle_sync(
         Err(_) => return error_xml(500, "JMAPStateError"),
     };
 
-    let prev_state = db::get_sync_state(config, user, device_id, &coll.collection_id).await;
+    if let Some(cmds) = coll.commands
+        && let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
+            tracing::warn!("Some client commands failed (continuing sync): {}", e);
+        }
 
     let (items_xml, new_sync_key) = if old_sync_key == "0" || prev_state.is_none() {
         let events = jmap_client::get_calendar_events(
@@ -548,11 +680,116 @@ fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> 
     (xml, new_key)
 }
 
-async fn render_changes(
-    url: &str,
-    token: &str,
-    account_id: &str,
-    changes: jmap_client::JmapChanges,
+fn parse_rrule_to_eas(rrule: &str) -> String {
+    let parts: Vec<&str> = rrule.split(';').collect();
+    let mut raw_freq = "";
+    let mut interval = "1";
+    let mut day_of_week: i32 = 0;
+    let mut week_of_month: Option<i32> = None;
+    let mut day_of_month: Option<i32> = None;
+    let mut month_of_year: Option<i32> = None;
+    let mut has_byday = false;
+
+    for part in &parts {
+        if let Some(val) = part.strip_prefix("FREQ=") {
+            raw_freq = val;
+        }
+        if let Some(val) = part.strip_prefix("INTERVAL=")
+            && val.parse::<u32>().is_ok() {
+                interval = val;
+            }
+        if let Some(val) = part.strip_prefix("BYDAY=") {
+            has_byday = true;
+            for d in val.split(',') {
+                let d = d.trim();
+                // Extract optional ordinal prefix (e.g. "2TU" -> week_of_month=2)
+                let day_part = d.trim_start_matches(|c: char| c == '-' || c == '+' || c.is_ascii_digit());
+                let prefix = &d[..d.len() - day_part.len()];
+                if !prefix.is_empty()
+                    && let Ok(n) = prefix.parse::<i32>()
+                {
+                    // EAS WeekOfMonth: 1-4 for first-fourth, 5 for last
+                    week_of_month = Some(if n == -1 { 5 } else { n });
+                }
+                let mask = match day_part {
+                    "MO" => 2,
+                    "TU" => 4,
+                    "WE" => 8,
+                    "TH" => 16,
+                    "FR" => 32,
+                    "SA" => 64,
+                    "SU" => 1,
+                    _ => 0,
+                };
+                day_of_week |= mask;
+            }
+        }
+        if let Some(val) = part.strip_prefix("BYMONTHDAY=") {
+            day_of_month = val.parse::<i32>().ok();
+        }
+        if let Some(val) = part.strip_prefix("BYSETPOS=")
+            && let Ok(n) = val.parse::<i32>() {
+                week_of_month = Some(if n == -1 { 5 } else { n });
+            }
+        if let Some(val) = part.strip_prefix("BYMONTH=") {
+            month_of_year = val.parse::<i32>().ok();
+        }
+    }
+
+    // Determine EAS recurrence type:
+    //   0 = Daily, 1 = Weekly,
+    //   2 = Monthly (absolute, by day-of-month),
+    //   3 = Monthly (relative, by day-of-week + week-of-month),
+    //   5 = Yearly (absolute), 6 = Yearly (relative)
+    let eas_type = match raw_freq {
+        "DAILY" => "0",
+        "WEEKLY" => "1",
+        "MONTHLY" => {
+            if has_byday { "3" } else { "2" }
+        }
+        "YEARLY" => {
+            if has_byday { "6" } else { "5" }
+        }
+        _ => "0",
+    };
+
+    // Build optional child elements in the strict order required by MS-ASCAL:
+    // Type, Occurrences, Interval, WeekOfMonth, DayOfWeek, MonthOfYear, Until, DayOfMonth, ...
+    let mut extra_xml = String::new();
+    if let Some(wom) = week_of_month {
+        extra_xml.push_str(&format!(
+            "<Calendar:WeekOfMonth>{}</Calendar:WeekOfMonth>",
+            wom
+        ));
+    }
+    if day_of_week != 0 {
+        extra_xml.push_str(&format!(
+            "<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>",
+            day_of_week
+        ));
+    }
+    if let Some(moy) = month_of_year {
+        extra_xml.push_str(&format!(
+            "<Calendar:MonthOfYear>{}</Calendar:MonthOfYear>",
+            moy
+        ));
+    }
+    if let Some(dom) = day_of_month {
+        extra_xml.push_str(&format!(
+            "<Calendar:DayOfMonth>{}</Calendar:DayOfMonth>",
+            dom
+        ));
+    }
+
+    format!(
+        r#"<Calendar:Recurrence><Calendar:Type>{}</Calendar:Type><Calendar:Interval>{}</Calendar:Interval>{}</Calendar:Recurrence>"#,
+        eas_type, interval, extra_xml
+    )
+}
+
+async fn process_client_commands(
+    session: &jmap_client::JmapSession,
+    cmds: Commands,
     tz_str: &str,
 ) -> (String, String) {
     let mut xml = String::new();
@@ -650,31 +887,12 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         if let Some(b) = data.body {
             patch.insert("description".to_string(), serde_json::json!(b.data));
         }
-
-        if !patch.is_empty() {
-            let body = serde_json::json!({
-                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-                "methodCalls": [
-                    ["CalendarEvent/set", {
-                        "accountId": session.account_id,
-                        "update": {
-                            id: patch
-                        }
-                    }, "c0"]
-                ]
-            });
-
-            let res = client
-                .post(&session.api_url)
-                .header("Authorization", format!("Basic {}", session.access_token))
-                .json(&body)
-                .send()
-                .await;
-
-            if let Err(e) = res {
-                tracing::error!("ActiveSync Update failed: {}", e);
+        if !patch.is_empty()
+            && let Err(e) = jmap_client::patch_event(session, &id, patch).await {
+                let msg = format!("ActiveSync Update failed for id {}: {}", id, e);
+                tracing::error!("{}", msg);
+                errors.push(msg);
             }
-        }
     }
 
     if let Some(deletes) = cmds.delete
