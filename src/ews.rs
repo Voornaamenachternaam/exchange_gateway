@@ -344,10 +344,10 @@ async fn handle_sync_folder_items(
     let is_initial = match (&req.sync_state, &stored) {
         (None, _) => true,
         (Some(_), None) => {
-            return soap_fault(
-                "ErrorInvalidSyncStateData",
-                "SyncState does not match; please re-sync",
+            tracing::warn!(
+                "Client sent SyncState but server has no stored state for folder {folder_id}; treating as initial sync"
             );
+            true
         }
         (Some(client_token), Some(s)) => {
             if *client_token != s.sync_state {
