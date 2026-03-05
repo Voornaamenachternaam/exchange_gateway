@@ -254,8 +254,9 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         .take(5)
         .any(|l| l.starts_with("From:") || l.starts_with("To:") || l.starts_with("MIME-Version:"));
     if !dominated_by_mime_headers {
+        let stripped: String = mime_content.chars().filter(|c| !c.is_ascii_whitespace()).collect();
         if let Ok(decoded_bytes) =
-            base64::engine::general_purpose::STANDARD.decode(mime_content.trim())
+            base64::engine::general_purpose::STANDARD.decode(&stripped)
         {
             if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
                 mime_content = decoded_str;
