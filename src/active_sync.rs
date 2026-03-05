@@ -833,29 +833,31 @@ fn parse_rrule_to_eas(rrule: &str) -> String {
         _ => "0",
     };
 
+    // Build optional child elements in the strict order required by MS-ASCAL:
+    // Type, Occurrences, Interval, WeekOfMonth, DayOfWeek, MonthOfYear, Until, DayOfMonth, ...
     let mut extra_xml = String::new();
-    if day_of_week != 0 {
-        extra_xml.push_str(&format!(
-            "<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>",
-            day_of_week
-        ));
-    }
-    if let Some(dom) = day_of_month {
-        extra_xml.push_str(&format!(
-            "<Calendar:DayOfMonth>{}</Calendar:DayOfMonth>",
-            dom
-        ));
-    }
     if let Some(wom) = week_of_month {
         extra_xml.push_str(&format!(
             "<Calendar:WeekOfMonth>{}</Calendar:WeekOfMonth>",
             wom
         ));
     }
+    if day_of_week != 0 {
+        extra_xml.push_str(&format!(
+            "<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>",
+            day_of_week
+        ));
+    }
     if let Some(moy) = month_of_year {
         extra_xml.push_str(&format!(
             "<Calendar:MonthOfYear>{}</Calendar:MonthOfYear>",
             moy
+        ));
+    }
+    if let Some(dom) = day_of_month {
+        extra_xml.push_str(&format!(
+            "<Calendar:DayOfMonth>{}</Calendar:DayOfMonth>",
+            dom
         ));
     }
 
