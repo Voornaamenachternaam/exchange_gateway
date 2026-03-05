@@ -770,6 +770,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 pending_tag = None;
             } else if let Some(tag) = stack.pop() {
                 xml.push_str(&format!("</{}>", tag));
+            } else {
+                return Err("Unexpected END token".into());
             }
             continue;
         }
