@@ -93,7 +93,7 @@ fn recurrence_rule_type_default() -> String {
 pub struct JmapEvent {
     #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(rename = "title")]
+    #[serde(rename = "title", default)]
     pub title: String,
     #[serde(rename = "start")]
     pub start: String,
