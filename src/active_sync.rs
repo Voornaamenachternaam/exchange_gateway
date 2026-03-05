@@ -1,3 +1,4 @@
+use base64::Engine;
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
@@ -183,6 +184,16 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         }
         buf.clear();
     }
+    // WBXML opaque data is base64-encoded by wbxml::decode. Attempt to
+    // decode so that regex header extraction works on the raw MIME text.
+    if let Ok(decoded_bytes) =
+        base64::engine::general_purpose::STANDARD.decode(mime_content.trim())
+    {
+        if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+            mime_content = decoded_str;
+        }
+    }
+
     if mime_content.is_empty() {
         return SEND_MAIL_ERROR.to_string();
     }
