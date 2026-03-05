@@ -76,14 +76,32 @@ pub async fn get_sync_state(
         "query": "SELECT jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
         "params": [user, device_id, coll]
     });
-    let res = client
+    let res = match client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
         .await
-        .ok()?;
-    let json: serde_json::Value = res.json().await.ok()?;
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "get_sync_state: DB request failed: {e}"
+            );
+            return None;
+        }
+    };
+    let json: serde_json::Value = match res.json().await {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "get_sync_state: failed to parse DB response: {e}"
+            );
+            return None;
+        }
+    };
 
     let state = extract_first_field(&json, "jmap_state");
     if state.is_none() && has_result_rows(&json) {
@@ -162,14 +180,32 @@ pub async fn get_ews_sync_state(
         "query": "SELECT sync_state, jmap_state FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
         "params": [user, folder]
     });
-    let res = client
+    let res = match client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
         .await
-        .ok()?;
-    let json: serde_json::Value = res.json().await.ok()?;
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(
+                user = user, folder = folder,
+                "get_ews_sync_state: DB request failed: {e}"
+            );
+            return None;
+        }
+    };
+    let json: serde_json::Value = match res.json().await {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(
+                user = user, folder = folder,
+                "get_ews_sync_state: failed to parse DB response: {e}"
+            );
+            return None;
+        }
+    };
 
     let sync_state = extract_first_field(&json, "sync_state");
     let jmap_state = extract_first_field(&json, "jmap_state");
