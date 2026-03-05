@@ -1279,7 +1279,7 @@ struct DeleteCommand {
 }
 #[derive(Debug, Deserialize)]
 struct ItemOpsReq {
-    #[serde(rename = "Fetch")]
+    #[serde(rename = "Fetch", default)]
     fetch: Vec<ItemOpsFetch>,
 }
 #[derive(Debug, Deserialize)]
