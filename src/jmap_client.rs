@@ -350,14 +350,16 @@ pub async fn push_event(
 }
 
 fn check_jmap_method_error(json: &serde_json::Value) -> Result<(), JmapError> {
-    if let Some(resp) = json.get("methodResponses").and_then(|mr| mr.get(0)) {
-        if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
-            let desc = resp
-                .get(1)
-                .and_then(|e| e.get("description"))
-                .and_then(|d| d.as_str())
-                .unwrap_or("unknown JMAP error");
-            return Err(JmapError::Api(desc.to_string()));
+    if let Some(responses) = json.get("methodResponses").and_then(|v| v.as_array()) {
+        for resp in responses {
+            if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
+                let desc = resp
+                    .get(1)
+                    .and_then(|e| e.get("description"))
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("unknown JMAP error");
+                return Err(JmapError::Api(desc.to_string()));
+            }
         }
     } else {
         return Err(JmapError::Parse(
