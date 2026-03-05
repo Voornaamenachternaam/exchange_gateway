@@ -567,7 +567,17 @@ async fn handle_sync(
 
     if let Some(cmds) = coll.commands {
         if let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
-            tracing::warn!("Some client commands failed (continuing sync): {}", e);
+            tracing::error!("Client commands failed, returning error status to device: {}", e);
+            // Return Status 6 (server error) with the *old* SyncKey so the
+            // client knows its commands were not fully applied and will
+            // retry them on the next Sync attempt.  Do NOT advance the
+            // SyncKey — advancing it would cause the device to discard its
+            // pending commands, silently dropping the failed operations.
+            return format!(
+                r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
         }
     }
 
