@@ -61,16 +61,21 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, h.finalize())
     };
 
-    let changes = if req.sync_state.is_some() {
-        // Subsequent sync: hierarchy hasn't changed (single calendar folder),
-        // return empty changes.
-        String::new()
-    } else {
-        // Initial sync: report the calendar folder as created.
-        format!(
-            r#"<t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create>"#,
-            utils::escape_xml(&cal_id)
-        )
+    let changes = match req.sync_state.as_deref() {
+        Some(state) if state == sync_state.as_str() => {
+            // Subsequent sync: hierarchy hasn't changed (single calendar folder),
+            // return empty changes.
+            String::new()
+        }
+        Some(_) => return soap_fault("ErrorInvalidSyncStateData", "SyncState does not match; please re-sync"),
+        None => {
+            // Initial sync: report the calendar folder as created.
+            format!(
+                r#"<t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create>"#,
+                utils::escape_xml(&cal_id)
+            )
+        }
+    };
     };
 
     soap_response(&format!(
