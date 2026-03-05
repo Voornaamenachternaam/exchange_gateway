@@ -783,6 +783,7 @@ async fn process_client_commands(
     tz_str: &str,
 ) -> Result<(), String> {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
+    let mut errors: Vec<String> = Vec::new();
     if let Some(add_cmds) = cmds.add {
         let cal_id = match jmap_client::get_default_calendar_id(session).await {
             Ok(id) => id,
@@ -830,7 +831,9 @@ async fn process_client_commands(
                 updated: None,
             };
             if let Err(e) = jmap_client::push_event(session, event, &cal_id).await {
-                tracing::error!("ActiveSync Add failed: {}", e);
+                let msg = format!("ActiveSync Add failed: {}", e);
+                tracing::error!("{}", msg);
+                errors.push(msg);
             }
         }
     }
@@ -858,7 +861,9 @@ async fn process_client_commands(
         }
         if !patch.is_empty() {
             if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
-                tracing::error!("ActiveSync Update failed for id {}: {}", id, e);
+                let msg = format!("ActiveSync Update failed for id {}: {}", id, e);
+                tracing::error!("{}", msg);
+                errors.push(msg);
             }
         }
     }
@@ -867,10 +872,16 @@ async fn process_client_commands(
     {
         let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
         if let Err(e) = jmap_client::destroy_events(session, ids).await {
-            tracing::error!("ActiveSync Delete failed: {}", e);
+            let msg = format!("ActiveSync Delete failed: {}", e);
+            tracing::error!("{}", msg);
+            errors.push(msg);
         }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 fn build_rrule(r: Recurrence) -> String {
