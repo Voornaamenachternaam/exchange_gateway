@@ -36,7 +36,7 @@ impl JmapError {
     pub fn is_transient(&self) -> bool {
         match self {
             JmapError::Connection(e) => {
-                e.is_timeout() || e.is_connect() || e.is_request()
+                e.is_timeout() || e.is_connect()
             }
             _ => false,
         }
