@@ -18,15 +18,16 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
             chrono::LocalResult::None => {
                 // DST gap: the local time does not exist. Advance by 1 hour and
                 // resolve again so we always return a valid RFC 3339 UTC string.
-                let advanced = dt + chrono::TimeDelta::hours(1);
-                match tz.from_local_datetime(&advanced) {
-                    chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
-                    chrono::LocalResult::Ambiguous(earliest, _) => {
-                        earliest.with_timezone(&Utc).to_rfc3339()
+                let mut advanced = dt;
+                loop {
+                    advanced += chrono::TimeDelta::minutes(1);
+                    match tz.from_local_datetime(&advanced) {
+                        chrono::LocalResult::Single(dt) => break dt.with_timezone(&Utc).to_rfc3339(),
+                        chrono::LocalResult::Ambiguous(earliest, _) => {
+                            break earliest.with_timezone(&Utc).to_rfc3339()
+                        }
+                        chrono::LocalResult::None => continue,
                     }
-                    // Should not happen, but fall back to interpreting as UTC
-                    // to guarantee a valid RFC 3339 result.
-                    chrono::LocalResult::None => Utc.from_utc_datetime(&dt).to_rfc3339(),
                 }
             }
         };
