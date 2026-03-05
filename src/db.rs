@@ -82,6 +82,7 @@ pub async fn get_sync_state(
         .json(&body)
         .send()
         .await
+        .and_then(|res| res.error_for_status())
     {
         Ok(res) => res,
         Err(e) => {
@@ -186,6 +187,7 @@ pub async fn get_ews_sync_state(
         .json(&body)
         .send()
         .await
+        .and_then(|res| res.error_for_status())
     {
         Ok(res) => res,
         Err(e) => {
