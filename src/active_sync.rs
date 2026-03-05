@@ -27,6 +27,18 @@ enum CommandFailure {
     Delete { server_id: String },
 }
 
+/// Bundles the context needed by [`handle_sync_change_error`] so the helper
+/// stays under the recommended argument limit.
+struct SyncErrorContext<'a> {
+    config: &'a AppConfig,
+    user: &'a str,
+    device_id: &'a str,
+    collection_id: &'a str,
+    prev_jmap_state: &'a str,
+    has_client_commands: bool,
+    responses_xml: &'a str,
+}
+
 /// Result of processing client commands — the list of individual failures
 /// (empty when every command succeeded).
 #[derive(Debug, Default)]
@@ -691,39 +703,27 @@ async fn handle_sync(
             // writes echoed back (harmless — the device will merge/ignore
             // duplicates), but it also ensures any concurrent server-side
             // changes are not silently dropped.
+            let err_ctx = SyncErrorContext {
+                config,
+                user,
+                device_id,
+                collection_id: &collection_id,
+                prev_jmap_state: &prev_jmap_state,
+                has_client_commands,
+                responses_xml: &responses_xml,
+            };
             let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
             {
                 Ok(c) => c,
                 Err(e) => {
-                    return handle_sync_change_error(
-                        "get_calendar_changes",
-                        &e,
-                        config,
-                        user,
-                        device_id,
-                        &collection_id,
-                        &prev_jmap_state,
-                        has_client_commands,
-                        &responses_xml,
-                    )
-                    .await;
+                    return handle_sync_change_error("get_calendar_changes", &e, &err_ctx)
+                        .await;
                 }
             };
             match render_changes(session, changes, &config.timezone).await {
                 Ok(result) => result,
                 Err(e) => {
-                    return handle_sync_change_error(
-                        "render_changes",
-                        &e,
-                        config,
-                        user,
-                        device_id,
-                        &collection_id,
-                        &prev_jmap_state,
-                        has_client_commands,
-                        &responses_xml,
-                    )
-                    .await;
+                    return handle_sync_change_error("render_changes", &e, &err_ctx).await;
                 }
             }
         }
@@ -1187,37 +1187,31 @@ async fn render_changes(
 async fn handle_sync_change_error(
     label: &str,
     error: &jmap_client::JmapError,
-    config: &AppConfig,
-    user: &str,
-    device_id: &str,
-    collection_id: &str,
-    prev_jmap_state: &str,
-    has_client_commands: bool,
-    responses_xml: &str,
+    ctx: &SyncErrorContext<'_>,
 ) -> String {
     if error.is_transient() {
         tracing::warn!("{label} failed (transient), preserving sync state: {error}");
-        if has_client_commands {
+        if ctx.has_client_commands {
             let new_key = Uuid::new_v4().to_string();
             db::update_sync_state(
-                config,
-                user,
-                device_id,
-                collection_id,
+                ctx.config,
+                ctx.user,
+                ctx.device_id,
+                ctx.collection_id,
                 &new_key,
-                prev_jmap_state,
+                ctx.prev_jmap_state,
             )
             .await;
             return format!(
                 r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
                 utils::escape_xml(&new_key),
-                utils::escape_xml(collection_id),
-                responses_xml
+                utils::escape_xml(ctx.collection_id),
+                ctx.responses_xml
             );
         }
     } else {
         tracing::error!("{label} failed, invalidating sync state: {error}");
-        db::delete_sync_state(config, user, device_id, collection_id).await;
+        db::delete_sync_state(ctx.config, ctx.user, ctx.device_id, ctx.collection_id).await;
     }
     error_xml(500, "CalendarChangesError")
 }
