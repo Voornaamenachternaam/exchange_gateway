@@ -15,7 +15,20 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
         return match tz.from_local_datetime(&dt) {
             chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
             chrono::LocalResult::Ambiguous(earliest, _) => earliest.with_timezone(&Utc).to_rfc3339(),
-            chrono::LocalResult::None => local_str.to_string(),
+            chrono::LocalResult::None => {
+                // DST gap: the local time does not exist. Advance by 1 hour and
+                // resolve again so we always return a valid RFC 3339 UTC string.
+                let advanced = dt + chrono::TimeDelta::hours(1);
+                match tz.from_local_datetime(&advanced) {
+                    chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
+                    chrono::LocalResult::Ambiguous(earliest, _) => {
+                        earliest.with_timezone(&Utc).to_rfc3339()
+                    }
+                    // Should not happen, but fall back to interpreting as UTC
+                    // to guarantee a valid RFC 3339 result.
+                    chrono::LocalResult::None => Utc.from_utc_datetime(&dt).to_rfc3339(),
+                }
+            }
         };
     }
     local_str.to_string()
@@ -42,4 +55,53 @@ pub fn decode_basic_auth(auth: &str) -> (String, String) {
         creds.next().unwrap_or_default().to_string(),
         creds.next().unwrap_or_default().to_string(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_local_to_utc_normal_time() {
+        // 2024-01-15 10:30:00 EST (UTC-5) → 2024-01-15 15:30:00 UTC
+        let result = parse_local_to_utc("2024-01-15T10:30:00", chrono_tz::US::Eastern);
+        assert_eq!(result, "2024-01-15T15:30:00+00:00");
+    }
+
+    #[test]
+    fn parse_local_to_utc_utc_suffix() {
+        // Input already tagged with Z → treat as UTC
+        let result = parse_local_to_utc("2024-01-15T10:30:00Z", chrono_tz::US::Eastern);
+        assert_eq!(result, "2024-01-15T10:30:00+00:00");
+    }
+
+    #[test]
+    fn parse_local_to_utc_dst_gap_returns_valid_rfc3339() {
+        // 2024-03-10 02:30:00 US/Eastern does not exist (clocks spring forward
+        // from 2:00 to 3:00). The function must still return valid RFC 3339.
+        let result = parse_local_to_utc("2024-03-10T02:30:00", chrono_tz::US::Eastern);
+        // Must be parseable as RFC 3339 and end with +00:00 (UTC)
+        assert!(
+            result.ends_with("+00:00"),
+            "Expected UTC RFC 3339 but got: {result}"
+        );
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&result).is_ok(),
+            "Result is not valid RFC 3339: {result}"
+        );
+    }
+
+    #[test]
+    fn parse_local_to_utc_ambiguous_uses_earliest() {
+        // 2024-11-03 01:30:00 US/Eastern is ambiguous (fall-back).
+        // The function should pick the earliest (EDT, UTC-4) → 05:30 UTC.
+        let result = parse_local_to_utc("2024-11-03T01:30:00", chrono_tz::US::Eastern);
+        assert_eq!(result, "2024-11-03T05:30:00+00:00");
+    }
+
+    #[test]
+    fn parse_local_to_utc_unparseable_returns_input() {
+        let result = parse_local_to_utc("not-a-date", chrono_tz::US::Eastern);
+        assert_eq!(result, "not-a-date");
+    }
 }
