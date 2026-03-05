@@ -1049,13 +1049,18 @@ async fn process_client_commands(
         && !deletes.is_empty()
     {
         let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
-        // Keep a copy of IDs before the batch call so we can report each
-        // one individually if the bulk destroy fails.
-        let id_copies = ids.clone();
-        if let Err(e) = jmap_client::destroy_events(session, ids).await {
-            tracing::error!("ActiveSync Delete failed: {}", e);
-            for sid in id_copies {
-                failures.push(CommandFailure::Delete { server_id: sid });
+        match jmap_client::destroy_events(session, ids.clone()).await {
+            Ok(not_destroyed) => {
+                for sid in not_destroyed {
+                    tracing::error!("ActiveSync Delete failed for id {}", sid);
+                    failures.push(CommandFailure::Delete { server_id: sid });
+                }
+            }
+            Err(e) => {
+                tracing::error!("ActiveSync Delete failed: {}", e);
+                for sid in ids {
+                    failures.push(CommandFailure::Delete { server_id: sid });
+                }
             }
         }
     }

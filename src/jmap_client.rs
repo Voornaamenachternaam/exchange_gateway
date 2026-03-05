@@ -441,7 +441,15 @@ pub async fn patch_event(
     Ok(())
 }
 
-pub async fn destroy_events(session: &JmapSession, ids: Vec<String>) -> Result<(), JmapError> {
+/// Destroy calendar events by ID.
+///
+/// Returns a list of IDs that the server refused to destroy (partial
+/// failures).  An empty vector means every ID was destroyed successfully.
+/// Transport-level and method-level errors still surface as `Err`.
+pub async fn destroy_events(
+    session: &JmapSession,
+    ids: Vec<String>,
+) -> Result<Vec<String>, JmapError> {
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "destroy": ids }, "c0"]] });
     let res = session
         .client
@@ -455,14 +463,10 @@ pub async fn destroy_events(session: &JmapSession, ids: Vec<String>) -> Result<(
     if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object()
         && !not_destroyed.is_empty()
     {
-        let desc = not_destroyed
-            .values()
-            .next()
-            .and_then(|v| v["description"].as_str())
-            .unwrap_or("unknown error");
-        return Err(JmapError::Api(format!("destroy failed: {}", desc)));
+        let failed_ids: Vec<String> = not_destroyed.keys().cloned().collect();
+        return Ok(failed_ids);
     }
-    Ok(())
+    Ok(Vec::new())
 }
 
 pub async fn get_calendar_changes(
