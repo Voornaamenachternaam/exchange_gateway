@@ -351,6 +351,11 @@ pub async fn push_event(
 
 fn check_jmap_method_error(json: &serde_json::Value) -> Result<(), JmapError> {
     if let Some(responses) = json.get("methodResponses").and_then(|v| v.as_array()) {
+        if responses.is_empty() {
+            return Err(JmapError::Parse(
+                "Malformed or missing methodResponses".to_string(),
+            ));
+        }
         for resp in responses {
             if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
                 let desc = resp
