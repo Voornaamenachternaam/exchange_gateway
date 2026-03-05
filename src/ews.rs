@@ -501,7 +501,7 @@ async fn handle_create_item(
             } else {
                 Some(attendees)
             },
-            recurrence_rule: None,
+            recurrence_rules: None,
             updated: None,
         };
         match jmap_client::push_event(session, event, &cal_id).await {

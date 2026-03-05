@@ -51,6 +51,44 @@ pub struct JmapSession {
     pub client: Client,
 }
 
+/// JSCalendar NDay object (RFC 8984 Section 4.3.2) used inside
+/// `RecurrenceRule.by_day` to represent a day-of-week with an optional
+/// week-offset (e.g. "second Tuesday").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NDay {
+    #[serde(rename = "@type", default = "nday_type_default")]
+    pub r#type: String,
+    pub day: String,
+    #[serde(rename = "nthOfPeriod", skip_serializing_if = "Option::is_none")]
+    pub nth_of_period: Option<i32>,
+}
+
+fn nday_type_default() -> String {
+    "NDay".to_string()
+}
+
+/// JSCalendar RecurrenceRule object (RFC 8984 Section 4.3.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecurrenceRule {
+    #[serde(rename = "@type", default = "recurrence_rule_type_default")]
+    pub r#type: String,
+    pub frequency: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval: Option<u32>,
+    #[serde(rename = "byDay", skip_serializing_if = "Option::is_none")]
+    pub by_day: Option<Vec<NDay>>,
+    #[serde(rename = "byMonthDay", skip_serializing_if = "Option::is_none")]
+    pub by_month_day: Option<Vec<i32>>,
+    #[serde(rename = "byMonth", skip_serializing_if = "Option::is_none")]
+    pub by_month: Option<Vec<String>>,
+    #[serde(rename = "bySetPosition", skip_serializing_if = "Option::is_none")]
+    pub by_set_position: Option<Vec<i32>>,
+}
+
+fn recurrence_rule_type_default() -> String {
+    "RecurrenceRule".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct JmapEvent {
     #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
@@ -76,8 +114,8 @@ pub struct JmapEvent {
     pub participants: Option<Vec<Participant>>,
     #[serde(rename = "isAllDay", default)]
     pub is_all_day: bool,
-    #[serde(rename = "recurrenceRule", skip_serializing_if = "Option::is_none")]
-    pub recurrence_rule: Option<String>,
+    #[serde(rename = "recurrenceRules", skip_serializing_if = "Option::is_none")]
+    pub recurrence_rules: Option<Vec<RecurrenceRule>>,
     #[serde(rename = "updated", skip_serializing_if = "Option::is_none")]
     pub updated: Option<String>, // Added for ChangeKey
 }
@@ -266,7 +304,7 @@ pub async fn get_calendar_state(session: &JmapSession) -> Result<String, JmapErr
 }
 
 pub async fn get_calendar_events(session: &JmapSession) -> Result<Vec<JmapEvent>, JmapError> {
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRules", "updated"] }, "c0"]] });
     let res = session
         .client
         .post(&session.api_url)
@@ -289,7 +327,7 @@ pub async fn get_events_by_ids(
     if ids.is_empty() {
         return Ok(vec![]);
     }
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": ids, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRule", "updated"] }, "c0"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": ids, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRules", "updated"] }, "c0"]] });
     let res = session
         .client
         .post(&session.api_url)

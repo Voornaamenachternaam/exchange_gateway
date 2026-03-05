@@ -746,8 +746,12 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
         }
         attendees_xml.push_str("</Calendar:Attendees>");
     }
-    let recurrence_xml = if let Some(rrule) = &event.recurrence_rule {
-        parse_rrule_to_eas(rrule)
+    let recurrence_xml = if let Some(rules) = &event.recurrence_rules {
+        // EAS only supports a single recurrence; use the first rule
+        rules
+            .first()
+            .map(recurrence_rule_to_eas)
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -770,80 +774,69 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
     )
 }
 
-fn parse_rrule_to_eas(rrule: &str) -> String {
-    let parts: Vec<&str> = rrule.split(';').collect();
-    let mut raw_freq = "";
-    let mut interval = "1";
+fn recurrence_rule_to_eas(rule: &jmap_client::RecurrenceRule) -> String {
+    let has_byday = rule.by_day.is_some();
+
+    // Compute EAS day-of-week bitmask and optional week-of-month from NDay objects
     let mut day_of_week: i32 = 0;
     let mut week_of_month: Option<i32> = None;
-    let mut day_of_month: Option<i32> = None;
-    let mut month_of_year: Option<i32> = None;
-    let mut has_byday = false;
-
-    for part in &parts {
-        if let Some(val) = part.strip_prefix("FREQ=") {
-            raw_freq = val;
-        }
-        if let Some(val) = part.strip_prefix("INTERVAL=") {
-            if val.parse::<u32>().is_ok() {
-                interval = val;
+    if let Some(days) = &rule.by_day {
+        for nday in days {
+            let mask = match nday.day.as_str() {
+                "mo" => 2,
+                "tu" => 4,
+                "we" => 8,
+                "th" => 16,
+                "fr" => 32,
+                "sa" => 64,
+                "su" => 1,
+                _ => 0,
+            };
+            day_of_week |= mask;
+            if let Some(nth) = nday.nth_of_period {
+                // EAS WeekOfMonth: 1-4 for first-fourth, 5 for last
+                week_of_month = Some(if nth == -1 { 5 } else { nth });
             }
-        }
-        if let Some(val) = part.strip_prefix("BYDAY=") {
-            has_byday = true;
-            for d in val.split(',') {
-                let d = d.trim();
-                // Extract optional ordinal prefix (e.g. "2TU" -> week_of_month=2)
-                let day_part = d.trim_start_matches(|c: char| c == '-' || c == '+' || c.is_ascii_digit());
-                let prefix = &d[..d.len() - day_part.len()];
-                if !prefix.is_empty()
-                    && let Ok(n) = prefix.parse::<i32>()
-                {
-                    // EAS WeekOfMonth: 1-4 for first-fourth, 5 for last
-                    week_of_month = Some(if n == -1 { 5 } else { n });
-                }
-                let mask = match day_part {
-                    "MO" => 2,
-                    "TU" => 4,
-                    "WE" => 8,
-                    "TH" => 16,
-                    "FR" => 32,
-                    "SA" => 64,
-                    "SU" => 1,
-                    _ => 0,
-                };
-                day_of_week |= mask;
-            }
-        }
-        if let Some(val) = part.strip_prefix("BYMONTHDAY=") {
-            day_of_month = val.parse::<i32>().ok();
-        }
-        if let Some(val) = part.strip_prefix("BYSETPOS=") {
-            if let Ok(n) = val.parse::<i32>() {
-                week_of_month = Some(if n == -1 { 5 } else { n });
-            }
-        }
-        if let Some(val) = part.strip_prefix("BYMONTH=") {
-            month_of_year = val.parse::<i32>().ok();
         }
     }
+
+    // bySetPosition can also express week-of-month for non-relative rules
+    if week_of_month.is_none()
+        && let Some(positions) = &rule.by_set_position
+        && let Some(&pos) = positions.first()
+    {
+        week_of_month = Some(if pos == -1 { 5 } else { pos });
+    }
+
+    let day_of_month: Option<i32> = rule
+        .by_month_day
+        .as_ref()
+        .and_then(|v| v.first().copied());
+
+    let month_of_year: Option<i32> = rule
+        .by_month
+        .as_ref()
+        .and_then(|v| v.first())
+        .and_then(|s| s.parse::<i32>().ok());
 
     // Determine EAS recurrence type:
     //   0 = Daily, 1 = Weekly,
     //   2 = Monthly (absolute, by day-of-month),
     //   3 = Monthly (relative, by day-of-week + week-of-month),
     //   5 = Yearly (absolute), 6 = Yearly (relative)
-    let eas_type = match raw_freq {
-        "DAILY" => "0",
-        "WEEKLY" => "1",
-        "MONTHLY" => {
+    let eas_type = match rule.frequency.as_str() {
+        "daily" => "0",
+        "weekly" => "1",
+        "monthly" => {
             if has_byday { "3" } else { "2" }
         }
-        "YEARLY" => {
+        "yearly" => {
             if has_byday { "6" } else { "5" }
         }
         _ => "0",
     };
+
+    let interval = rule.interval.unwrap_or(1);
 
     // Build optional child elements in the strict order required by MS-ASCAL:
     // Type, Occurrences, Interval, WeekOfMonth, DayOfWeek, MonthOfYear, Until, DayOfMonth, ...
@@ -929,7 +922,7 @@ async fn process_client_commands(
                     Some(attendees)
                 },
                 is_all_day: data.all_day_event.unwrap_or(0) == 1,
-                recurrence_rule: data.recurrence.map(build_rrule),
+                recurrence_rules: data.recurrence.map(|r| vec![build_recurrence_rule(r)]),
                 updated: None,
             };
             if let Err(e) = jmap_client::push_event(session, event, &cal_id).await {
@@ -988,56 +981,78 @@ async fn process_client_commands(
     }
 }
 
-fn build_rrule(r: Recurrence) -> String {
-    let freq = match r.r#type {
-        0 => "DAILY",
-        1 => "WEEKLY",
-        2 => "MONTHLY",
-        3 => "MONTHLY",
-        5 | 6 => "YEARLY",
-        _ => "DAILY",
+fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
+    let frequency = match r.r#type {
+        0 => "daily",
+        1 => "weekly",
+        2 | 3 => "monthly",
+        5 | 6 => "yearly",
+        _ => "daily",
+    }
+    .to_string();
+
+    let interval = if r.interval > 1 {
+        Some(r.interval as u32)
+    } else {
+        None
     };
-    let mut parts = vec![format!("FREQ={}", freq)];
-    parts.push(format!("INTERVAL={}", r.interval));
-    if let Some(dow) = r.day_of_week {
-        let mut days = Vec::new();
-        if (dow & 1) != 0 {
-            days.push("SU");
-        }
-        if (dow & 2) != 0 {
-            days.push("MO");
-        }
-        if (dow & 4) != 0 {
-            days.push("TU");
-        }
-        if (dow & 8) != 0 {
-            days.push("WE");
-        }
-        if (dow & 16) != 0 {
-            days.push("TH");
-        }
-        if (dow & 32) != 0 {
-            days.push("FR");
-        }
-        if (dow & 64) != 0 {
-            days.push("SA");
-        }
-        if !days.is_empty() {
-            parts.push(format!("BYDAY={}", days.join(",")));
-        }
+
+    // EAS relative types (3 = monthly relative, 6 = yearly relative) use
+    // WeekOfMonth to express nth-of-period on the NDay objects.
+    let is_relative = matches!(r.r#type, 3 | 6);
+
+    let by_day = r.day_of_week.and_then(|dow| {
+        let day_bits: &[(&str, i32)] = &[
+            ("su", 1),
+            ("mo", 2),
+            ("tu", 4),
+            ("we", 8),
+            ("th", 16),
+            ("fr", 32),
+            ("sa", 64),
+        ];
+        let days: Vec<jmap_client::NDay> = day_bits
+            .iter()
+            .filter(|(_, mask)| (dow & mask) != 0)
+            .map(|(name, _)| {
+                let nth = if is_relative {
+                    r.week_of_month.map(|wom| if wom == 5 { -1 } else { wom })
+                } else {
+                    None
+                };
+                jmap_client::NDay {
+                    r#type: "NDay".to_string(),
+                    day: name.to_string(),
+                    nth_of_period: nth,
+                }
+            })
+            .collect();
+        if days.is_empty() { None } else { Some(days) }
+    });
+
+    let by_month_day = r.day_of_month.map(|dom| vec![dom]);
+
+    // For non-relative types, BYSETPOS from WeekOfMonth is still meaningful
+    let by_set_position = if !is_relative {
+        r.week_of_month.map(|wom| {
+            vec![if wom == 5 { -1 } else { wom }]
+        })
+    } else {
+        None
+    };
+
+    // RFC 8984 byMonth uses month number strings (e.g. "1", "2", …, "12")
+    let by_month = r.month_of_year.map(|moy| vec![moy.to_string()]);
+
+    jmap_client::RecurrenceRule {
+        r#type: "RecurrenceRule".to_string(),
+        frequency,
+        interval,
+        by_day,
+        by_month_day,
+        by_month,
+        by_set_position,
     }
-    if let Some(dom) = r.day_of_month {
-        parts.push(format!("BYMONTHDAY={}", dom));
-    }
-    if let Some(wom) = r.week_of_month {
-        // EAS WeekOfMonth 5 means "last"; map to BYSETPOS=-1
-        let setpos = if wom == 5 { -1 } else { wom };
-        parts.push(format!("BYSETPOS={}", setpos));
-    }
-    if let Some(moy) = r.month_of_year {
-        parts.push(format!("BYMONTH={}", moy));
-    }
-    parts.join(";")
 }
 
 async fn render_changes(
