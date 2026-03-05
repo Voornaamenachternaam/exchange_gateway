@@ -547,8 +547,8 @@ async fn handle_sync(
     };
 
     if let Some(cmds) = coll.commands {
-        if let Err(_e) = process_client_commands(session, cmds, &config.timezone).await {
-            return error_xml(6, "ServerError");
+        if let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
+            tracing::warn!("Some client commands failed (continuing sync): {}", e);
         }
     }
 
