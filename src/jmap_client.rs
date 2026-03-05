@@ -440,14 +440,7 @@ pub async fn get_calendar_changes(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
-    // JMAP returns ["error", {"type": "..."}, "c0"] when the server cannot
-    // fulfil the request (e.g. cannotCalculateChanges for an expired state).
-    if json["methodResponses"][0][0].as_str() == Some("error") {
-        let err_type = json["methodResponses"][0][1]["type"]
-            .as_str()
-            .unwrap_or("unknown");
-        return Err(JmapError::Api(format!("CalendarEvent/changes: {}", err_type)));
-    }
+    check_jmap_method_error(&json)?;
     serde_json::from_value(json["methodResponses"][0][1].clone())
         .map_err(|e| JmapError::Parse(format!("changes: {}", e)))
 }
@@ -465,25 +458,7 @@ pub async fn search_principals(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
-    if json["methodResponses"][0][0].as_str() == Some("error")
-        || json["methodResponses"][1][0].as_str() == Some("error")
-    {
-        let err_type = json["methodResponses"]
-            .as_array()
-            .and_then(|responses| {
-                responses.iter().find_map(|resp| {
-                    if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
-                        resp.get(1)
-                            .and_then(|e| e.get("type"))
-                            .and_then(|t| t.as_str())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or("unknown");
-        return Err(JmapError::Api(format!("search principals failed: {}", err_type)));
-    }
+    check_jmap_method_error(&json)?;
     let mut results = Vec::new();
     if let Some(list) = json["methodResponses"][1][1]["list"].as_array() {
         for item in list {
@@ -506,25 +481,7 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
-    if json["methodResponses"][0][0].as_str() == Some("error")
-        || json["methodResponses"][1][0].as_str() == Some("error")
-    {
-        let err_type = json["methodResponses"]
-            .as_array()
-            .and_then(|responses| {
-                responses.iter().find_map(|resp| {
-                    if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
-                        resp.get(1)
-                            .and_then(|e| e.get("type"))
-                            .and_then(|t| t.as_str())
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or("unknown");
-        return Err(JmapError::Api(format!("find by uid failed: {}", err_type)));
-    }
+    check_jmap_method_error(&json)?;
     json["methodResponses"][1][1]["list"]
         .get(0)
         .and_then(|item| item["id"].as_str())
