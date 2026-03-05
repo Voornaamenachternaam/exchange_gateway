@@ -1084,7 +1084,7 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
 /// Split a possibly-prefixed tag name (e.g. "Calendar:Type") into an optional
 /// prefix and the local name. Returns `(None, name)` when there is no prefix.
 fn split_prefix(name: &str) -> (Option<&str>, &str) {
-    match name.rsplit_once(':') {
+    match name.split_once(':') {
         Some((prefix, local)) if !prefix.is_empty() && !local.is_empty() => (Some(prefix), local),
         _ => (None, name),
     }
