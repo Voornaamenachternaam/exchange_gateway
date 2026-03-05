@@ -135,7 +135,7 @@ lazy_static! {
         add!(CP_AIRSYNC, 0x29, "HeartbeatInterval", true);
 
         // Calendar (4) – per MS-ASWBXML spec
-        add!(CP_CALENDAR, 0x05, "Timezone", true);
+        add!(CP_CALENDAR, 0x05, "TimeZone", true);
         add!(CP_CALENDAR, 0x06, "AllDayEvent", true);
         add!(CP_CALENDAR, 0x07, "Attendees", true);
         add!(CP_CALENDAR, 0x08, "Attendee", true);
