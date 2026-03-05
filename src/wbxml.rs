@@ -1107,10 +1107,13 @@ fn encode_tag(
                 None => return false,
             }
         } else {
-            entries
-                .iter()
-                .find(|(p, _)| *p == *current_page)
-                .unwrap_or(&entries[0])
+            if let Some(entry) = entries.iter().find(|(p, _)| *p == *current_page) {
+                entry
+            } else if entries.len() == 1 {
+                &entries[0]
+            } else {
+                return false;
+            }
         };
         if *page != *current_page {
             output.push(TAG_SWITCH_PAGE);
