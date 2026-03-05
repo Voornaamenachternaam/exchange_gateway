@@ -258,6 +258,7 @@ pub async fn get_calendar_state(session: &JmapSession) -> Result<String, JmapErr
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
     json["methodResponses"][0][1]["state"]
         .as_str()
         .map(String::from)
@@ -274,6 +275,7 @@ pub async fn get_calendar_events(session: &JmapSession) -> Result<Vec<JmapEvent>
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
     let events: Vec<JmapEvent> =
         serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
             .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
@@ -296,6 +298,7 @@ pub async fn get_events_by_ids(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
     let events: Vec<JmapEvent> =
         serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
             .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
@@ -334,6 +337,7 @@ pub async fn push_event(
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
     if let Some(created) = json["methodResponses"][0][1]["created"].as_object()
         && let Some((_, val)) = created.into_iter().next()
     {
@@ -604,6 +608,7 @@ pub async fn get_blob(session: &JmapSession, blob_id: &str) -> Result<Vec<u8>, J
         .send()
         .await?;
     let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
     if let Some(b64) = json["methodResponses"][0][1]["list"][0]["data:asBase64"].as_str() {
         return base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
             .map_err(|e| JmapError::Parse(format!("base64 decode: {}", e)));
