@@ -270,6 +270,18 @@ async fn handle_send_mail(
             Ok(Event::Eof) => break,
             _ => {}
         }
+        buf.clear();
+    }
+    // WBXML opaque data is base64-encoded by wbxml::decode. Attempt to
+    // decode so that regex header extraction works on the raw MIME text.
+    if let Ok(decoded_bytes) =
+        base64::engine::general_purpose::STANDARD.decode(mime_content.trim())
+        && let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+            mime_content = decoded_str;
+        }
+
+    if mime_content.is_empty() {
+        return SEND_MAIL_ERROR.to_string();
     }
 
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
@@ -286,7 +298,45 @@ async fn handle_send_mail(
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
-    let status = if let (Some(to), Some(from)) = (to_addr, from_addr) {
+    // Verify the From address matches the authenticated user to prevent spoofing
+    let from_addr = match from_addr {
+        Some(f) => f,
+        None => {
+            tracing::warn!("SendMail: Missing From header");
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+    let from_mailbox = match from_addr.parse::<lettre::message::Mailbox>() {
+        Ok(mb) => mb,
+        Err(e) => {
+            tracing::warn!("SendMail: Malformed From header '{}': {}", from_addr, e);
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+    let from_email = from_mailbox.email.to_string();
+    // Compare the from address against the authenticated user. The auth username
+    // may be a full email (user@domain) or just the local part (user). Accept
+    // the message if the full email matches, or if the auth username has no '@'
+    // and matches the local part of the from address AND the domain matches the
+    // configured mail domain (to prevent domain spoofing).
+    let from_matches = if authenticated_user.contains('@') {
+        from_email.eq_ignore_ascii_case(authenticated_user)
+    } else if let Some((local, domain)) = from_email.rsplit_once('@') {
+        local.eq_ignore_ascii_case(authenticated_user)
+            && domain.eq_ignore_ascii_case(&config.mail_domain)
+    } else {
+        false
+    };
+    if !from_matches {
+        tracing::warn!(
+            "SendMail: From address '{}' does not match authenticated user",
+            from_email
+        );
+        return SEND_MAIL_ERROR.to_string();
+    }
+    let from_addr = Some(from_mailbox);
+
+    let status = if let (Some(to), Some(from_mailbox)) = (to_addr, from_addr) {
         let subject = re_subj
             .captures(&mime_content)
             .and_then(|c| c.get(1))
@@ -310,7 +360,80 @@ async fn handle_send_mail(
 
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
 
-        match mailer.send(&email) {
+        let email = match builder.subject(subject).body(clean_body.to_string()) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("Email build error: {}", e);
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let smtp_url = match url::Url::parse(&config.smtp_url) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!("Invalid SMTP URL: {}", e);
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let smtp_host = match smtp_url.host_str() {
+            Some(h) => h,
+            None => {
+                tracing::error!("SMTP URL has no host");
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let scheme = smtp_url.scheme().to_ascii_lowercase();
+        let default_port = match scheme.as_str() {
+            "smtps" => 465,
+            "smtp" => 25,
+            _ => 587,
+        };
+        let port = smtp_url.port().unwrap_or(default_port);
+
+        let mut builder = if scheme == "smtps" {
+            // Implicit TLS (port 465): relay() already configures TLS::Wrapper internally.
+            let b = match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create SMTP relay transport: {}", e);
+                    return SEND_MAIL_ERROR.to_string();
+                }
+            };
+            b.port(port)
+        } else {
+            // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
+            // unencrypted connections, restoring compatibility with smtp:// URLs.
+            let b = if scheme == "smtp" {
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+            } else {
+                match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                        return SEND_MAIL_ERROR.to_string();
+                    }
+                }
+            };
+            b.port(port)
+        };
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        // URL components are percent-encoded, so decode before use as credentials.
+        let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
+        if !user.is_empty()
+            && let Some(pass) = smtp_url.password() {
+                let pass = percent_decode_str(pass).decode_utf8_lossy();
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.into_owned(),
+                    pass.into_owned(),
+                ));
+            }
+
+        let mailer = builder.build();
+
+        match mailer.send(email).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
@@ -414,7 +537,10 @@ async fn handle_sync(
         Err(_) => return error_xml(500, "JMAPStateError"),
     };
 
-    let prev_state = db::get_sync_state(config, user, device_id, &coll.collection_id).await;
+    if let Some(cmds) = coll.commands
+        && let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
+            tracing::warn!("Some client commands failed (continuing sync): {}", e);
+        }
 
     let (items_xml, new_sync_key) = if old_sync_key == "0" || prev_state.is_none() {
         let events = jmap_client::get_calendar_events(
@@ -498,52 +624,60 @@ fn render_items(events: &[jmap_client::JmapEvent], mode: &str, tz_str: &str) -> 
         let body_content = escape_xml(event.description.as_deref().unwrap_or(""));
         let body_size = body_content.len();
 
-        let mut attendees_xml = String::new();
-        if let Some(attendees) = &event.participants {
-            for att in attendees {
-                attendees_xml.push_str(&format!(
-                    r#"<Attendee>
-                        <Email>{}</Email>
-                        <Name>{}</Name>
-                        <AttendeeStatus>{}</AttendeeStatus>
-                        <AttendeeType>1</AttendeeType>
-                       </Attendee>"#,
-                    escape_xml(&att.email),
-                    escape_xml(&att.name),
-                    "0"
-                ));
-            }
-        }
+    format!(
+        r#"<{}><ServerId>{}</ServerId><ApplicationData><Calendar:Subject>{}</Calendar:Subject><Calendar:Location>{}</Calendar:Location><Calendar:StartTime>{}</Calendar:StartTime><Calendar:EndTime>{}</Calendar:EndTime><Calendar:UID>{}</Calendar:UID><Calendar:AllDayEvent>{}</Calendar:AllDayEvent>{}{}<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData></{}>"#,
+        mode,
+        utils::escape_xml(event.id.as_deref().unwrap_or("")),
+        utils::escape_xml(&event.title),
+        utils::escape_xml(event.location.as_deref().unwrap_or("")),
+        utils::escape_xml(&start_str),
+        utils::escape_xml(&end_str),
+        utils::escape_xml(event.uid.as_deref().unwrap_or("")),
+        if event.is_all_day { "1" } else { "0" },
+        recurrence_xml,
+        attendees_xml,
+        body_content,
+        mode
+    )
+}
 
-        xml.push_str(&format!(
-            r#"<{}><ServerId>{}</ServerId><ApplicationData>
-                <Calendar:Subject>{}</Calendar:Subject>
-                <Calendar:Location>{}</Calendar:Location>
-                <Calendar:Start>{}</Calendar:Start>
-                <Calendar:End>{}</Calendar:End>
-                <Calendar:UID>{}</Calendar:UID>
-                <Calendar:AllDayEvent>{}</Calendar:AllDayEvent>
-                <AirSyncBase:Body>
-                    <AirSyncBase:Type>{}</AirSyncBase:Type>
-                    <AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>
-                    <AirSyncBase:Data>{}</AirSyncBase:Data>
-                </AirSyncBase:Body>
-                <Calendar:Attendees>{}</Calendar:Attendees>
-            </ApplicationData></{}>"#,
-            mode,
-            escape_xml(event.id.as_deref().unwrap_or("")),
-            escape_xml(&event.title),
-            escape_xml(event.location.as_deref().unwrap_or("")),
-            start_local.format("%Y-%m-%dT%H:%M:%S"),
-            end_local.format("%Y-%m-%dT%H:%M:%S"),
-            escape_xml(event.uid.as_deref().unwrap_or("")),
-            if event.is_all_day { "1" } else { "0" },
-            body_type,
-            body_size,
-            body_content,
-            attendees_xml,
-            mode
-        ));
+fn parse_rrule_to_eas(rrule: &str) -> String {
+    let parts: Vec<&str> = rrule.split(';').collect();
+    let mut freq = "0";
+    let mut interval = "1";
+    let mut day_of_week = String::new();
+    for part in parts {
+        // Fix: Use strip_prefix
+        if let Some(val) = part.strip_prefix("FREQ=") {
+            freq = match val {
+                "DAILY" => "0",
+                "WEEKLY" => "1",
+                "MONTHLY" => "2",
+                "YEARLY" => "5",
+                _ => "0",
+            };
+        }
+        if let Some(val) = part.strip_prefix("INTERVAL=")
+            && val.parse::<u32>().is_ok() {
+                interval = val;
+            }
+        if let Some(val) = part.strip_prefix("BYDAY=") {
+            day_of_week = val
+                .split(',')
+                .map(|d| match d.trim() {
+                    "MO" => "2",
+                    "TU" => "4",
+                    "WE" => "8",
+                    "TH" => "16",
+                    "FR" => "32",
+                    "SA" => "64",
+                    "SU" => "1",
+                    _ => "",
+                })
+                .filter_map(|s| s.parse::<i32>().ok())
+                .fold(0i32, |acc, v| acc | v)
+                .to_string();
+        }
     }
     (xml, new_key)
 }
@@ -650,31 +784,12 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         if let Some(b) = data.body {
             patch.insert("description".to_string(), serde_json::json!(b.data));
         }
-
-        if !patch.is_empty() {
-            let body = serde_json::json!({
-                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-                "methodCalls": [
-                    ["CalendarEvent/set", {
-                        "accountId": session.account_id,
-                        "update": {
-                            id: patch
-                        }
-                    }, "c0"]
-                ]
-            });
-
-            let res = client
-                .post(&session.api_url)
-                .header("Authorization", format!("Basic {}", session.access_token))
-                .json(&body)
-                .send()
-                .await;
-
-            if let Err(e) = res {
-                tracing::error!("ActiveSync Update failed: {}", e);
+        if !patch.is_empty()
+            && let Err(e) = jmap_client::patch_event(session, &id, patch).await {
+                let msg = format!("ActiveSync Update failed for id {}: {}", id, e);
+                tracing::error!("{}", msg);
+                errors.push(msg);
             }
-        }
     }
 
     if let Some(deletes) = cmds.delete
