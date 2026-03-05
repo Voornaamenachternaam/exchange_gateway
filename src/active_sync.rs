@@ -818,11 +818,9 @@ async fn process_client_commands(
                 recurrence_rule: data.recurrence.map(build_rrule),
                 updated: None,
             };
-            jmap_client::push_event(session, event, &cal_id).await.map_err(|e| {
-                let msg = format!("ActiveSync Add failed: {}", e);
-                tracing::error!("{}", msg);
-                msg
-            })?;
+            if let Err(e) = jmap_client::push_event(session, event, &cal_id).await {
+                tracing::error!("ActiveSync Add failed: {}", e);
+            }
         }
     }
     for change_cmd in cmds.change.unwrap_or_default() {
@@ -848,22 +846,18 @@ async fn process_client_commands(
             patch.insert("description".into(), serde_json::json!(b.data));
         }
         if !patch.is_empty() {
-            jmap_client::patch_event(session, &id, patch).await.map_err(|e| {
-                let msg = format!("ActiveSync Update failed for id {}: {}", id, e);
-                tracing::error!("{}", msg);
-                msg
-            })?;
+            if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
+                tracing::error!("ActiveSync Update failed for id {}: {}", id, e);
+            }
         }
     }
     if let Some(deletes) = cmds.delete
         && !deletes.is_empty()
     {
         let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
-        jmap_client::destroy_events(session, ids).await.map_err(|e| {
-            let msg = format!("ActiveSync Delete failed: {}", e);
-            tracing::error!("{}", msg);
-            msg
-        })?;
+        if let Err(e) = jmap_client::destroy_events(session, ids).await {
+            tracing::error!("ActiveSync Delete failed: {}", e);
+        }
     }
     Ok(())
 }
