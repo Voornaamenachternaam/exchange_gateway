@@ -1244,9 +1244,148 @@ fn extract_name_parts(name: quick_xml::name::QName<'_>) -> (Option<&str>, String
     let first = parts.next();
     let second = parts.next();
 
-    match (first, second) {
-        (Some(prefix), Some(local)) => (Some(prefix), local.to_string()),
-        (Some(local), None) => (None, local.to_string()),
-        _ => (None, "Unknown".to_string()),
+    // Build WBXML body separately so we can prefix the final output with a string table.
+    let mut body: Vec<u8> = Vec::new();
+    let mut current_page: u8 = 0;
+
+    // String table for LITERAL tags (used when a tag isn't present in NAME_MAP).
+    let mut strtbl: Vec<u8> = Vec::new();
+    let mut strtbl_index: HashMap<String, usize> = HashMap::new();
+
+    fn write_mb_u_int32(out: &mut Vec<u8>, mut v: usize) {
+        // WBXML mb_u_int32: 7-bit groups, big-endian, high bit indicates continuation.
+        let mut bytes = [0u8; 10];
+        let mut n = 0usize;
+        loop {
+            bytes[n] = (v & 0x7F) as u8;
+            n += 1;
+            v >>= 7;
+            if v == 0 {
+                break;
+            }
+        }
+        for i in (0..n).rev() {
+            let mut b = bytes[i];
+            if i != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+        }
+    }
+
+    fn strtbl_offset(name: &str, idx: &mut HashMap<String, usize>, table: &mut Vec<u8>) -> usize {
+        if let Some(&off) = idx.get(name) {
+            return off;
+        }
+        let off = table.len();
+        table.extend_from_slice(name.as_bytes());
+        table.push(0x00);
+        idx.insert(name.to_string(), off);
+        off
+    }
+
+    fn encode_literal_tag(
+        out: &mut Vec<u8>,
+        name: &str,
+        has_content: bool,
+        idx: &mut HashMap<String, usize>,
+        table: &mut Vec<u8>,
+    ) {
+        // WBXML LITERAL (0x04) / LITERAL_C (0x44): followed by string table index (mb_u_int32)
+        let token = if has_content { 0x44 } else { 0x04 };
+        out.push(token);
+        let off = strtbl_offset(name, idx, table);
+        write_mb_u_int32(out, off);
+    }
+
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let (prefix, local) = split_prefix(&full_name);
+                let target_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
+                if !encode_tag(&mut body, local, &mut current_page, true, target_page) {
+                    encode_literal_tag(&mut body, local, true, &mut strtbl_index, &mut strtbl);
+                }
+            }
+            Ok(quick_xml::events::Event::Empty(ref e)) => {
+                let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let (prefix, local) = split_prefix(&full_name);
+                let target_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
+                if !encode_tag(&mut body, local, &mut current_page, false, target_page) {
+                    encode_literal_tag(&mut body, local, false, &mut strtbl_index, &mut strtbl);
+                }
+            }
+            Ok(quick_xml::events::Event::End(_)) => {
+                body.push(TAG_END);
+            }
+            Ok(quick_xml::events::Event::Text(ref e)) => {
+                body.push(TAG_STR_I);
+                let text_str = std::str::from_utf8(e.as_ref())
+                    .map_err(|_| "Invalid UTF-8 in XML text node".to_string())?;
+                let t = quick_xml::escape::unescape(text_str)
+                    .map_err(|e| format!("XML text unescape error: {}", e))?;
+                body.extend(t.as_bytes());
+                body.push(0x00);
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => return Err(format!("XML parsing error: {}", e)),
+        }
+    }
+
+    let mut output = vec![0x03, 0x01, 0x6A];
+    write_mb_u_int32(&mut output, strtbl.len());
+    output.extend_from_slice(&strtbl);
+    output.extend_from_slice(&body);
+    Ok(output)
+}
+
+/// Split a possibly-prefixed tag name (e.g. "Calendar:Type") into an optional
+/// prefix and the local name. Returns `(None, name)` when there is no prefix.
+fn split_prefix(name: &str) -> (Option<&str>, &str) {
+    match name.split_once(':') {
+        Some((prefix, local)) if !prefix.is_empty() && !local.is_empty() => (Some(prefix), local),
+        _ => (None, name),
+    }
+}
+
+fn encode_tag(
+    output: &mut Vec<u8>,
+    name: &str,
+    current_page: &mut u8,
+    has_content: bool,
+    target_page: Option<u8>,
+) -> bool {
+    if let Some(entries) = NAME_MAP.get(name) {
+        // When a namespace prefix resolved to a specific code page, use that page
+        // for disambiguation. Otherwise prefer the entry on the current page to
+        // avoid unnecessary page switches.
+        let (page, token) = if let Some(tp) = target_page {
+            match entries.iter().find(|(p, _)| *p == tp) {
+                Some(entry) => entry,
+                None => return false,
+            }
+        } else if let Some(entry) = entries.iter().find(|(p, _)| *p == *current_page) {
+            entry
+        } else if entries.len() == 1 {
+            &entries[0]
+        } else {
+            return false;
+        };
+        if *page != *current_page {
+            output.push(TAG_SWITCH_PAGE);
+            output.push(*page);
+            *current_page = *page;
+        }
+        let mut final_token = *token;
+        if has_content {
+            final_token |= 0x40;
+        }
+        output.push(final_token);
+        true
+    } else {
+        false
     }
 }
