@@ -967,8 +967,17 @@ async fn process_client_commands(
                 continue;
             };
             let data = add_cmd.application_data;
-            let start_utc = utils::parse_local_to_utc(&data.start.unwrap_or_default(), tz);
-            let end_utc = utils::parse_local_to_utc(&data.end.unwrap_or_default(), tz);
+            let (Some(start_raw), Some(end_raw)) = (data.start.as_deref(), data.end.as_deref())
+            else {
+                tracing::warn!(
+                    "ActiveSync Add rejected: missing start/end time (client_id={:?})",
+                    client_id
+                );
+                failures.push(CommandFailure::Add { client_id });
+                continue;
+            };
+            let start_utc = utils::parse_local_to_utc(start_raw, tz);
+            let end_utc = utils::parse_local_to_utc(end_raw, tz);
             let attendees: Vec<jmap_client::Participant> = data
                 .attendees
                 .map(|a| {
