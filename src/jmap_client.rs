@@ -532,7 +532,7 @@ fn is_valid_email_for_path(email: &str) -> bool {
     }
 
     // Domain must contain at least one dot (TLD required)
-    if !domain.contains('.') {
+    if domain.split('.').any(|label| label.is_empty()) {
         return false;
     }
 
