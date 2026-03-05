@@ -390,7 +390,7 @@ async fn handle_sync_folder_items(
                 utils::escape_xml(&new_sync_token)
             ));
         }
-        let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await {
+        let changes = match jmap_client::get_calendar_changes(session, prev_jmap_state).await {
             Ok(c) => c,
             Err(e) if e.is_transient() => {
                 // Network / connection error – don't invalidate the sync state
