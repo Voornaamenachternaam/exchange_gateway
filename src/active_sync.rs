@@ -567,14 +567,21 @@ async fn handle_sync(
 
     if let Some(cmds) = coll.commands {
         if let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
-            // Log partial failures but continue the normal sync flow.
-            // Returning the old SyncKey with Status 6 would cause the
-            // device to replay ALL commands — including ones that already
-            // succeeded — creating duplicate events.  By advancing the
-            // SyncKey below, successfully-applied operations are not
-            // replayed.  The device will reconcile any failed operations
-            // when it sees the server state in the response.
-            tracing::warn!("Some client commands failed (continuing sync): {}", e);
+            // One or more client commands failed.  Return the old SyncKey
+            // with Status 6 so the device knows commands were not fully
+            // applied and will retry on the next Sync.
+            //
+            // We intentionally do NOT advance the SyncKey or update the
+            // persisted sync state.  On the next sync the server will
+            // detect any successfully-applied operations as server-side
+            // changes and send them back to the device, which will merge
+            // them with its local copies — avoiding true data duplicates.
+            tracing::error!("Client commands failed, returning error to device: {}", e);
+            return format!(
+                r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
         }
     }
 
