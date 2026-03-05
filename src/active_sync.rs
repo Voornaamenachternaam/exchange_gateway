@@ -378,6 +378,22 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     )
 }
 
+fn apply_meeting_field(tag: &str, text: &str, uid: &mut String, response_code: &mut i32) {
+    match tag {
+        "RequestId" => *uid = text.to_string(),
+        "UserResponse" => {
+            *response_code = match text.parse() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("MeetingResponse: invalid UserResponse '{}': {}", text, e);
+                    0
+                }
+            };
+        }
+        _ => {}
+    }
+}
+
 async fn handle_meeting_response(
     session: &jmap_client::JmapSession,
     config: &AppConfig,
@@ -405,22 +421,14 @@ async fn handle_meeting_response(
             Ok(Event::End(_)) => {
                 current_tag.clear();
             }
-            Ok(Event::Text(t)) => {
+            Ok(Event::Text(ref t)) => {
                 let text =
-                    escape::unescape(std::str::from_utf8(&t).unwrap_or("")).unwrap_or_default();
-                match current_tag.as_str() {
-                    "RequestId" => uid = text.to_string(),
-                    "UserResponse" => response_code = text.parse().unwrap_or(0),
-                    _ => {}
-                }
+                    escape::unescape(std::str::from_utf8(t).unwrap_or("")).unwrap_or_default();
+                apply_meeting_field(&current_tag, &text, &mut uid, &mut response_code);
             }
-            Ok(Event::CData(t)) => {
+            Ok(Event::CData(ref t)) => {
                 let text = String::from_utf8_lossy(t.as_ref());
-                match current_tag.as_str() {
-                    "RequestId" => uid = text.to_string(),
-                    "UserResponse" => response_code = text.parse().unwrap_or(0),
-                    _ => {}
-                }
+                apply_meeting_field(&current_tag, &text, &mut uid, &mut response_code);
             }
             Ok(Event::Eof) => break,
             _ => {}
