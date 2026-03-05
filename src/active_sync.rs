@@ -695,69 +695,36 @@ async fn handle_sync(
             let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
             {
                 Ok(c) => c,
-                Err(e) if e.is_transient() => {
-                    // Transient error (timeout, connection reset, etc.).
-                    // Preserve existing sync state so nothing is lost.
-                    // If the client already sent commands that were applied
-                    // successfully, return a success response with a new
-                    // SyncKey so the device does NOT replay them.  The
-                    // next Sync will re-attempt /changes and deliver any
-                    // missed server-side updates.
-                    tracing::warn!("get_calendar_changes failed (transient), preserving sync state: {}", e);
-                    if has_client_commands {
-                        let new_key = Uuid::new_v4().to_string();
-                        db::update_sync_state(
-                            config,
-                            user,
-                            device_id,
-                            &collection_id,
-                            &new_key,
-                            &prev_jmap_state,
-                        )
-                        .await;
-                        return format!(
-                            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
-                            utils::escape_xml(&new_key),
-                            utils::escape_xml(&collection_id),
-                            responses_xml
-                        );
-                    }
-                    return error_xml(500, "CalendarChangesError");
-                }
                 Err(e) => {
-                    tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
-                    db::delete_sync_state(config, user, device_id, &collection_id).await;
-                    return error_xml(500, "CalendarChangesError");
+                    return handle_sync_change_error(
+                        "get_calendar_changes",
+                        &e,
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &prev_jmap_state,
+                        has_client_commands,
+                        &responses_xml,
+                    )
+                    .await;
                 }
             };
             match render_changes(session, changes, &config.timezone).await {
                 Ok(result) => result,
-                Err(e) if e.is_transient() => {
-                    tracing::warn!("render_changes failed (transient), preserving sync state: {}", e);
-                    if has_client_commands {
-                        let new_key = Uuid::new_v4().to_string();
-                        db::update_sync_state(
-                            config,
-                            user,
-                            device_id,
-                            &collection_id,
-                            &new_key,
-                            &prev_jmap_state,
-                        )
-                        .await;
-                        return format!(
-                            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
-                            utils::escape_xml(&new_key),
-                            utils::escape_xml(&collection_id),
-                            responses_xml
-                        );
-                    }
-                    return error_xml(500, "CalendarChangesError");
-                }
                 Err(e) => {
-                    tracing::error!("render_changes failed, invalidating sync state: {}", e);
-                    db::delete_sync_state(config, user, device_id, &collection_id).await;
-                    return error_xml(500, "CalendarChangesError");
+                    return handle_sync_change_error(
+                        "render_changes",
+                        &e,
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &prev_jmap_state,
+                        has_client_commands,
+                        &responses_xml,
+                    )
+                    .await;
                 }
             }
         }
@@ -1208,6 +1175,52 @@ async fn render_changes(
         }
     }
     Ok((xml, new_key, new_state))
+}
+
+/// Handle a JMAP error that occurred during the sync change-detection phase
+/// (either `get_calendar_changes` or `render_changes`).
+///
+/// * **Transient** errors preserve the existing sync state.  If the client
+///   already sent commands that were applied successfully, we return a success
+///   response with a fresh SyncKey so the device does NOT replay them.
+/// * **Non-transient** errors invalidate the sync state so the next sync
+///   starts from scratch.
+async fn handle_sync_change_error(
+    label: &str,
+    error: &jmap_client::JmapError,
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    collection_id: &str,
+    prev_jmap_state: &str,
+    has_client_commands: bool,
+    responses_xml: &str,
+) -> String {
+    if error.is_transient() {
+        tracing::warn!("{label} failed (transient), preserving sync state: {error}");
+        if has_client_commands {
+            let new_key = Uuid::new_v4().to_string();
+            db::update_sync_state(
+                config,
+                user,
+                device_id,
+                collection_id,
+                &new_key,
+                prev_jmap_state,
+            )
+            .await;
+            return format!(
+                r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                utils::escape_xml(&new_key),
+                utils::escape_xml(collection_id),
+                responses_xml
+            );
+        }
+    } else {
+        tracing::error!("{label} failed, invalidating sync state: {error}");
+        db::delete_sync_state(config, user, device_id, collection_id).await;
+    }
+    error_xml(500, "CalendarChangesError")
 }
 
 fn error_xml(code: i32, msg: &str) -> String {
