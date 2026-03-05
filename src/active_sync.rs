@@ -566,35 +566,27 @@ async fn handle_sync(
 
     let prev_state = db::get_sync_state(config, user, device_id, &collection_id).await;
 
-    // Use pre_command_jmap_state for change detection so the diff only
-    // contains genuine server-side changes (not the client's own writes).
+    // Detect changes since the last sync.  When client commands were
+    // processed, the changes may include the client's own writes — this is
+    // preferable to silently dropping concurrent server-side changes.
     let (items_xml, new_sync_key, jmap_state_to_persist) = match prev_state {
         Some(prev_jmap_state) if old_sync_key != "0" => {
-            if prev_jmap_state == pre_command_jmap_state {
-                // No server-side changes since the last sync.  Still need to
-                // persist the post-command state so the next sync baseline is
-                // up-to-date with any client-originated writes.
-                let updated_sync_key = if pre_command_jmap_state != post_command_jmap_state {
-                    let new_key = Uuid::new_v4().to_string();
-                    db::update_sync_state(
-                        config,
-                        user,
-                        device_id,
-                        &collection_id,
-                        &new_key,
-                        &post_command_jmap_state,
-                    )
-                    .await;
-                    new_key
-                } else {
-                    old_sync_key.clone()
-                };
+            if prev_jmap_state == pre_command_jmap_state
+                && pre_command_jmap_state == post_command_jmap_state
+            {
+                // No server-side changes and no client-originated changes —
+                // nothing to send or persist.
                 return format!(
                     r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#,
-                    utils::escape_xml(&updated_sync_key),
+                    utils::escape_xml(&old_sync_key),
                     utils::escape_xml(&collection_id)
                 );
             }
+            // Fetch changes since the last persisted state.  When client
+            // commands were processed, this may include the client's own
+            // writes echoed back (harmless — the device will merge/ignore
+            // duplicates), but it also ensures any concurrent server-side
+            // changes are not silently dropped.
             let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
             {
                 Ok(c) => c,
