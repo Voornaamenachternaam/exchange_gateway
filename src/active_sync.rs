@@ -23,6 +23,12 @@ struct Recurrence {
     interval: i32,
     #[serde(rename = "DayOfWeek", skip_serializing_if = "Option::is_none")]
     day_of_week: Option<i32>,
+    #[serde(rename = "DayOfMonth", skip_serializing_if = "Option::is_none", default)]
+    day_of_month: Option<i32>,
+    #[serde(rename = "WeekOfMonth", skip_serializing_if = "Option::is_none", default)]
+    week_of_month: Option<i32>,
+    #[serde(rename = "MonthOfYear", skip_serializing_if = "Option::is_none", default)]
+    month_of_year: Option<i32>,
 }
 
 fn default_interval() -> i32 {
@@ -754,19 +760,17 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
 
 fn parse_rrule_to_eas(rrule: &str) -> String {
     let parts: Vec<&str> = rrule.split(';').collect();
-    let mut freq = "0";
+    let mut raw_freq = "";
     let mut interval = "1";
-    let mut day_of_week = String::new();
-    for part in parts {
-        // Fix: Use strip_prefix
+    let mut day_of_week: i32 = 0;
+    let mut week_of_month: Option<i32> = None;
+    let mut day_of_month: Option<i32> = None;
+    let mut month_of_year: Option<i32> = None;
+    let mut has_byday = false;
+
+    for part in &parts {
         if let Some(val) = part.strip_prefix("FREQ=") {
-            freq = match val {
-                "DAILY" => "0",
-                "WEEKLY" => "1",
-                "MONTHLY" => "2",
-                "YEARLY" => "5",
-                _ => "0",
-            };
+            raw_freq = val;
         }
         if let Some(val) = part.strip_prefix("INTERVAL=") {
             if val.parse::<u32>().is_ok() {
@@ -774,31 +778,90 @@ fn parse_rrule_to_eas(rrule: &str) -> String {
             }
         }
         if let Some(val) = part.strip_prefix("BYDAY=") {
-            day_of_week = val
-                .split(',')
-                .map(|d| match d.trim() {
-                    "MO" => "2",
-                    "TU" => "4",
-                    "WE" => "8",
-                    "TH" => "16",
-                    "FR" => "32",
-                    "SA" => "64",
-                    "SU" => "1",
-                    _ => "",
-                })
-                .filter_map(|s| s.parse::<i32>().ok())
-                .fold(0i32, |acc, v| acc | v)
-                .to_string();
+            has_byday = true;
+            for d in val.split(',') {
+                let d = d.trim();
+                // Extract optional ordinal prefix (e.g. "2TU" -> week_of_month=2)
+                let day_part = d.trim_start_matches(|c: char| c == '-' || c == '+' || c.is_ascii_digit());
+                let prefix = &d[..d.len() - day_part.len()];
+                if !prefix.is_empty()
+                    && let Ok(n) = prefix.parse::<i32>()
+                {
+                    // EAS WeekOfMonth: 1-4 for first-fourth, 5 for last
+                    week_of_month = Some(if n == -1 { 5 } else { n });
+                }
+                let mask = match day_part {
+                    "MO" => 2,
+                    "TU" => 4,
+                    "WE" => 8,
+                    "TH" => 16,
+                    "FR" => 32,
+                    "SA" => 64,
+                    "SU" => 1,
+                    _ => 0,
+                };
+                day_of_week |= mask;
+            }
+        }
+        if let Some(val) = part.strip_prefix("BYMONTHDAY=") {
+            day_of_month = val.parse::<i32>().ok();
+        }
+        if let Some(val) = part.strip_prefix("BYSETPOS=") {
+            if let Ok(n) = val.parse::<i32>() {
+                week_of_month = Some(if n == -1 { 5 } else { n });
+            }
+        }
+        if let Some(val) = part.strip_prefix("BYMONTH=") {
+            month_of_year = val.parse::<i32>().ok();
         }
     }
-    let day_xml = if day_of_week.is_empty() {
-        String::new()
-    } else {
-        format!("<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>", day_of_week)
+
+    // Determine EAS recurrence type:
+    //   0 = Daily, 1 = Weekly,
+    //   2 = Monthly (absolute, by day-of-month),
+    //   3 = Monthly (relative, by day-of-week + week-of-month),
+    //   5 = Yearly (absolute), 6 = Yearly (relative)
+    let eas_type = match raw_freq {
+        "DAILY" => "0",
+        "WEEKLY" => "1",
+        "MONTHLY" => {
+            if has_byday { "3" } else { "2" }
+        }
+        "YEARLY" => {
+            if has_byday { "6" } else { "5" }
+        }
+        _ => "0",
     };
+
+    let mut extra_xml = String::new();
+    if day_of_week != 0 {
+        extra_xml.push_str(&format!(
+            "<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>",
+            day_of_week
+        ));
+    }
+    if let Some(dom) = day_of_month {
+        extra_xml.push_str(&format!(
+            "<Calendar:DayOfMonth>{}</Calendar:DayOfMonth>",
+            dom
+        ));
+    }
+    if let Some(wom) = week_of_month {
+        extra_xml.push_str(&format!(
+            "<Calendar:WeekOfMonth>{}</Calendar:WeekOfMonth>",
+            wom
+        ));
+    }
+    if let Some(moy) = month_of_year {
+        extra_xml.push_str(&format!(
+            "<Calendar:MonthOfYear>{}</Calendar:MonthOfYear>",
+            moy
+        ));
+    }
+
     format!(
         r#"<Calendar:Recurrence><Calendar:Type>{}</Calendar:Type><Calendar:Interval>{}</Calendar:Interval>{}</Calendar:Recurrence>"#,
-        freq, interval, day_xml
+        eas_type, interval, extra_xml
     )
 }
 
@@ -948,6 +1011,17 @@ fn build_rrule(r: Recurrence) -> String {
         if !days.is_empty() {
             parts.push(format!("BYDAY={}", days.join(",")));
         }
+    }
+    if let Some(dom) = r.day_of_month {
+        parts.push(format!("BYMONTHDAY={}", dom));
+    }
+    if let Some(wom) = r.week_of_month {
+        // EAS WeekOfMonth 5 means "last"; map to BYSETPOS=-1
+        let setpos = if wom == 5 { -1 } else { wom };
+        parts.push(format!("BYSETPOS={}", setpos));
+    }
+    if let Some(moy) = r.month_of_year {
+        parts.push(format!("BYMONTH={}", moy));
     }
     parts.join(";")
 }
