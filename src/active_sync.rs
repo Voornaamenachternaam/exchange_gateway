@@ -15,6 +15,62 @@ use uuid::Uuid;
 
 const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#;
 
+/// Per-command failure reported back in the `<Responses>` element of the Sync
+/// response so the client knows which commands failed and can retry them.
+#[derive(Debug)]
+enum CommandFailure {
+    /// An Add command failed.  `client_id` echoes the device-assigned ClientId.
+    Add { client_id: String },
+    /// A Change (update) command failed.  `server_id` identifies the item.
+    Change { server_id: String },
+    /// A Delete command failed.  `server_id` identifies the item.
+    Delete { server_id: String },
+}
+
+/// Result of processing client commands — the list of individual failures
+/// (empty when every command succeeded).
+#[derive(Debug, Default)]
+struct CommandResults {
+    failures: Vec<CommandFailure>,
+}
+
+impl CommandResults {
+    /// Render the ActiveSync `<Responses>` XML fragment.
+    ///
+    /// Status 6 = "Server error / object not found" — tells the device the
+    /// command was not applied and should be retried on the next Sync.
+    fn to_responses_xml(&self) -> String {
+        if self.failures.is_empty() {
+            return String::new();
+        }
+        let mut xml = String::from("<Responses>");
+        for f in &self.failures {
+            match f {
+                CommandFailure::Add { client_id } => {
+                    xml.push_str(&format!(
+                        "<Add><ClientId>{}</ClientId><Status>6</Status></Add>",
+                        utils::escape_xml(client_id),
+                    ));
+                }
+                CommandFailure::Change { server_id } => {
+                    xml.push_str(&format!(
+                        "<Change><ServerId>{}</ServerId><Status>6</Status></Change>",
+                        utils::escape_xml(server_id),
+                    ));
+                }
+                CommandFailure::Delete { server_id } => {
+                    xml.push_str(&format!(
+                        "<Delete><ServerId>{}</ServerId><Status>6</Status></Delete>",
+                        utils::escape_xml(server_id),
+                    ));
+                }
+            }
+        }
+        xml.push_str("</Responses>");
+        xml
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct Recurrence {
     #[serde(rename = "Type")]
@@ -565,21 +621,20 @@ async fn handle_sync(
         Err(_) => return error_xml(500, "JMAPStateError"),
     };
 
-    if let Some(cmds) = coll.commands {
-        if let Err(e) = process_client_commands(session, cmds, &config.timezone).await {
-            // Log the partial failure but do NOT return early with the old
-            // SyncKey.  Returning Status 6 + old SyncKey would cause the
-            // device to replay the entire batch, including Add commands
-            // that already succeeded on the server, creating duplicate
-            // calendar events.
-            //
-            // Instead, fall through to the normal change-detection path.
-            // The SyncKey will advance and the post-command JMAP state
-            // will reflect any successfully-applied operations.  The
-            // device moves forward and will not replay them.
-            tracing::error!("Some client commands failed (partial apply): {}", e);
-        }
-    }
+    let cmd_results = if let Some(cmds) = coll.commands {
+        let results = process_client_commands(session, cmds, &config.timezone).await;
+        // On partial failure, fall through to the normal change-detection
+        // path.  The SyncKey will advance and the post-command JMAP state
+        // will reflect any successfully-applied operations.  The device
+        // moves forward and will not replay succeeded commands.
+        //
+        // Failed commands are reported individually via <Responses> so
+        // the device knows which ones to retry.
+        results
+    } else {
+        CommandResults::default()
+    };
+    let responses_xml = cmd_results.to_responses_xml();
 
     // After client commands have been applied, re-fetch the state so the
     // value stored in the DB reflects the post-command server state.  If no
@@ -618,9 +673,10 @@ async fn handle_sync(
                 )
                 .await;
                 return format!(
-                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#,
+                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
                     utils::escape_xml(&new_key),
-                    utils::escape_xml(&collection_id)
+                    utils::escape_xml(&collection_id),
+                    responses_xml
                 );
             }
             // Fetch changes since the last persisted state.  When client
@@ -652,9 +708,10 @@ async fn handle_sync(
                         )
                         .await;
                         return format!(
-                            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands></Commands></Collection></Collections></Sync>"#,
+                            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
                             utils::escape_xml(&new_key),
-                            utils::escape_xml(&collection_id)
+                            utils::escape_xml(&collection_id),
+                            responses_xml
                         );
                     }
                     return error_xml(500, "CalendarChangesError");
@@ -704,9 +761,10 @@ async fn handle_sync(
     }
 
     format!(
-        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
+        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands>{}</Commands></Collection></Collections></Sync>"#,
         utils::escape_xml(&new_sync_key),
         utils::escape_xml(&collection_id),
+        responses_xml,
         items_xml
     )
 }
@@ -886,26 +944,27 @@ async fn process_client_commands(
     session: &jmap_client::JmapSession,
     cmds: Commands,
     tz_str: &str,
-) -> Result<(), String> {
+) -> CommandResults {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
-    let mut errors: Vec<String> = Vec::new();
+    let mut failures: Vec<CommandFailure> = Vec::new();
     if let Some(add_cmds) = cmds.add {
         let cal_id = match jmap_client::get_default_calendar_id(session).await {
             Ok(id) => Some(id),
             Err(e) => {
-                let msg = format!(
+                tracing::error!(
                     "ActiveSync Add failed: unable to determine default calendar id: {}",
                     e
                 );
-                tracing::error!("{}", msg);
-                errors.push(msg);
                 None
             }
         };
         for add_cmd in add_cmds {
+            let client_id = add_cmd.client_id;
             let Some(ref cal_id) = cal_id else {
-                // Already logged above; skip individual Add commands.
-                break;
+                // Calendar ID lookup failed — mark every Add as failed so
+                // the device retries them on the next Sync.
+                failures.push(CommandFailure::Add { client_id });
+                continue;
             };
             let data = add_cmd.application_data;
             let start_utc = utils::parse_local_to_utc(&data.start.unwrap_or_default(), tz);
@@ -940,10 +999,9 @@ async fn process_client_commands(
                 recurrence_rules: data.recurrence.map(|r| vec![build_recurrence_rule(r)]),
                 updated: None,
             };
-            if let Err(e) = jmap_client::push_event(session, event, &cal_id).await {
-                let msg = format!("ActiveSync Add failed: {}", e);
-                tracing::error!("{}", msg);
-                errors.push(msg);
+            if let Err(e) = jmap_client::push_event(session, event, cal_id).await {
+                tracing::error!("ActiveSync Add failed: {}", e);
+                failures.push(CommandFailure::Add { client_id });
             }
         }
     }
@@ -971,9 +1029,10 @@ async fn process_client_commands(
         }
         if !patch.is_empty() {
             if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
-                let msg = format!("ActiveSync Update failed for id {}: {}", id, e);
-                tracing::error!("{}", msg);
-                errors.push(msg);
+                tracing::error!("ActiveSync Update failed for id {}: {}", id, e);
+                failures.push(CommandFailure::Change {
+                    server_id: id.clone(),
+                });
             }
         }
     }
@@ -981,19 +1040,23 @@ async fn process_client_commands(
         && !deletes.is_empty()
     {
         let ids: Vec<String> = deletes.into_iter().map(|d| d.server_id).collect();
+        // Keep a copy of IDs before the batch call so we can report each
+        // one individually if the bulk destroy fails.
+        let id_copies = ids.clone();
         if let Err(e) = jmap_client::destroy_events(session, ids).await {
-            let msg = format!("ActiveSync Delete failed: {}", e);
-            tracing::error!("{}", msg);
-            errors.push(msg);
+            tracing::error!("ActiveSync Delete failed: {}", e);
+            for sid in id_copies {
+                failures.push(CommandFailure::Delete { server_id: sid });
+            }
         }
     }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        let joined = errors.join("; ");
-        tracing::error!("ActiveSync command failures: {}", joined);
-        Err(joined)
+    if !failures.is_empty() {
+        tracing::error!(
+            "ActiveSync command failures: {} command(s) failed",
+            failures.len()
+        );
     }
+    CommandResults { failures }
 }
 
 fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
@@ -1140,7 +1203,7 @@ struct Commands {
 #[derive(Debug, Deserialize)]
 struct AddCommand {
     #[serde(rename = "ClientId")]
-    _client_id: String,
+    client_id: String,
     #[serde(rename = "ApplicationData")]
     application_data: ApplicationData,
 }
