@@ -732,8 +732,31 @@ async fn handle_sync(
             };
             match render_changes(session, changes, &config.timezone).await {
                 Ok(result) => result,
+                Err(e) if e.is_transient() => {
+                    tracing::warn!("render_changes failed (transient), preserving sync state: {}", e);
+                    if has_client_commands {
+                        let new_key = Uuid::new_v4().to_string();
+                        db::update_sync_state(
+                            config,
+                            user,
+                            device_id,
+                            &collection_id,
+                            &new_key,
+                            &prev_jmap_state,
+                        )
+                        .await;
+                        return format!(
+                            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                            utils::escape_xml(&new_key),
+                            utils::escape_xml(&collection_id),
+                            responses_xml
+                        );
+                    }
+                    return error_xml(500, "CalendarChangesError");
+                }
                 Err(e) => {
-                    tracing::error!("Failed to render calendar changes: {}", e);
+                    tracing::error!("render_changes failed, invalidating sync state: {}", e);
+                    db::delete_sync_state(config, user, device_id, &collection_id).await;
                     return error_xml(500, "CalendarChangesError");
                 }
             }
