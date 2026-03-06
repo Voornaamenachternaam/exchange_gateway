@@ -632,6 +632,36 @@ async fn handle_sync(
     let collection_id = coll.collection_id.clone();
     let has_client_commands = coll.commands.is_some();
 
+    // Fetch the stored sync state (SyncKey + JMAP state) *before* processing
+    // client commands.  We need the stored SyncKey to validate the incoming
+    // key so that stale or replayed requests cannot mutate data.
+    let stored_state = db::get_sync_state_full(config, user, device_id, &collection_id).await;
+
+    // Validate the incoming SyncKey against the server-stored SyncKey when the
+    // client is not performing an initial sync (SyncKey "0").  ActiveSync
+    // Status 3 = "Invalid or mismatched SyncKey" — the device must re-issue a
+    // SyncKey 0 (full re-sync) to recover.
+    if old_sync_key != "0" {
+        if let Some(ref ss) = stored_state {
+            if ss.sync_key != old_sync_key {
+                tracing::warn!(
+                    "Sync: SyncKey mismatch for user={}, device={}, collection={}: \
+                     client sent '{}' but server stored '{}' — rejecting to prevent \
+                     stale/replayed command replay",
+                    user, device_id, collection_id, old_sync_key, ss.sync_key
+                );
+                // Status 3 tells the client its SyncKey is invalid.
+                return format!(
+                    r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
+                    utils::escape_xml(&old_sync_key),
+                    utils::escape_xml(&collection_id)
+                );
+            }
+        }
+        // If stored_state is None but old_sync_key != "0", that is handled
+        // below in the change-detection branch (falls through to full sync).
+    }
+
     // Capture the JMAP state *before* processing client commands so that
     // change-detection (below) only returns true server-side changes and
     // does not echo the client's own modifications back to the device.
@@ -666,7 +696,7 @@ async fn handle_sync(
         pre_command_jmap_state.clone()
     };
 
-    let prev_state = db::get_sync_state(config, user, device_id, &collection_id).await;
+    let prev_state = stored_state.map(|s| s.jmap_state);
 
     // Detect changes since the last sync.  When client commands were
     // processed, the changes may include the client's own writes — this is

@@ -65,15 +65,35 @@ pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
         .await;
 }
 
+/// Stored ActiveSync sync state: the SyncKey issued to the client and the
+/// corresponding JMAP state used to compute deltas.
+pub struct ActiveSyncState {
+    pub sync_key: String,
+    pub jmap_state: String,
+}
+
 pub async fn get_sync_state(
     config: &AppConfig,
     user: &str,
     device_id: &str,
     coll: &str,
 ) -> Option<String> {
+    get_sync_state_full(config, user, device_id, coll)
+        .await
+        .map(|s| s.jmap_state)
+}
+
+/// Retrieve the full sync state (SyncKey + JMAP state) for a given
+/// user / device / collection.  Returns `None` when no row exists.
+pub async fn get_sync_state_full(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    coll: &str,
+) -> Option<ActiveSyncState> {
     let client = reqwest::Client::new();
     let body = json!({
-        "query": "SELECT jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
+        "query": "SELECT sync_key, jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
         "params": [user, device_id, coll]
     });
     let res = match client
@@ -88,7 +108,7 @@ pub async fn get_sync_state(
         Err(e) => {
             tracing::error!(
                 user = user, device_id = device_id, collection = coll,
-                "get_sync_state: DB request failed: {e}"
+                "get_sync_state_full: DB request failed: {e}"
             );
             return None;
         }
@@ -98,20 +118,29 @@ pub async fn get_sync_state(
         Err(e) => {
             tracing::error!(
                 user = user, device_id = device_id, collection = coll,
-                "get_sync_state: failed to parse DB response: {e}"
+                "get_sync_state_full: failed to parse DB response: {e}"
             );
             return None;
         }
     };
 
-    let state = extract_first_field(&json, "jmap_state");
-    if state.is_none() && has_result_rows(&json) {
-        tracing::warn!(
-            user = user, device_id = device_id, collection = coll,
-            "get_sync_state: unexpected DB response format"
-        );
+    let sync_key = extract_first_field(&json, "sync_key");
+    let jmap_state = extract_first_field(&json, "jmap_state");
+    match (sync_key, jmap_state) {
+        (Some(sync_key), Some(jmap_state)) => Some(ActiveSyncState {
+            sync_key,
+            jmap_state,
+        }),
+        _ => {
+            if has_result_rows(&json) {
+                tracing::warn!(
+                    user = user, device_id = device_id, collection = coll,
+                    "get_sync_state_full: unexpected DB response format"
+                );
+            }
+            None
+        }
     }
-    state
 }
 
 pub async fn update_sync_state(
