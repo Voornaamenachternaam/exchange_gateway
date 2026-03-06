@@ -839,7 +839,9 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
 fn recurrence_rule_to_eas(rule: &jmap_client::RecurrenceRule) -> String {
     let has_byday = rule.by_day.is_some();
 
-    // Compute EAS day-of-week bitmask and optional week-of-month from NDay objects
+    // Compute EAS day-of-week bitmask and optional week-of-month from NDay objects.
+    // EAS only supports a single WeekOfMonth value, so we keep the first
+    // nth_of_period encountered and warn if subsequent entries disagree.
     let mut day_of_week: i32 = 0;
     let mut week_of_month: Option<i32> = None;
     if let Some(days) = &rule.by_day {
@@ -856,8 +858,21 @@ fn recurrence_rule_to_eas(rule: &jmap_client::RecurrenceRule) -> String {
             };
             day_of_week |= mask;
             if let Some(nth) = nday.nth_of_period {
-                // EAS WeekOfMonth: 1-4 for first-fourth, 5 for last
-                week_of_month = Some(if nth == -1 { 5 } else { nth });
+                let eas_wom = if nth == -1 { 5 } else { nth };
+                match week_of_month {
+                    None => week_of_month = Some(eas_wom),
+                    Some(existing) if existing != eas_wom => {
+                        tracing::warn!(
+                            "Recurrence rule has conflicting nthOfPeriod values \
+                             ({} vs {}); EAS only supports one WeekOfMonth — \
+                             keeping the first value ({})",
+                            existing,
+                            eas_wom,
+                            existing
+                        );
+                    }
+                    _ => {} // same value, no conflict
+                }
             }
         }
     }
