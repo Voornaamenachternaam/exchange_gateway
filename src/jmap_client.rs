@@ -334,17 +334,13 @@ pub async fn get_default_calendar_id(session: &JmapSession) -> Result<String, Jm
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
-        // First, look for the calendar marked as default
-        for cal in list {
-            if cal["isDefault"].as_bool().unwrap_or(false) {
-                if let Some(id) = cal["id"].as_str() {
-                    return Ok(id.to_string());
-                }
-            }
-        }
-        // Fall back to the first calendar if none is marked as default
-        if let Some(first) = list.first() {
-            return first["id"]
+        let cal_to_use = list
+            .iter()
+            .find(|cal| cal["isDefault"].as_bool().unwrap_or(false))
+            .or_else(|| list.first());
+
+        if let Some(cal) = cal_to_use {
+            return cal["id"]
                 .as_str()
                 .map(String::from)
                 .ok_or_else(|| JmapError::Parse("missing calendar ID".into()));
