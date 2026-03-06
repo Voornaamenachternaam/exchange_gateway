@@ -364,11 +364,17 @@ pub async fn get_event_by_id(session: &JmapSession, id: &str) -> Result<JmapEven
         .ok_or_else(|| JmapError::NotFound(format!("event {}", id)))
 }
 
+/// Result of a successfully created JMAP event.
+pub struct CreatedEvent {
+    pub id: String,
+    pub updated: Option<String>,
+}
+
 pub async fn push_event(
     session: &JmapSession,
     event: JmapEvent,
     calendar_id: &str,
-) -> Result<String, JmapError> {
+) -> Result<CreatedEvent, JmapError> {
     let mut event = event;
     if event.uid.is_none() {
         event.uid = Some(Uuid::new_v4().to_string());
@@ -392,10 +398,12 @@ pub async fn push_event(
     if let Some(created) = json["methodResponses"][0][1]["created"].as_object()
         && let Some((_, val)) = created.into_iter().next()
     {
-        return val["id"]
+        let id = val["id"]
             .as_str()
             .map(String::from)
-            .ok_or_else(|| JmapError::Api("create succeeded but missing server id".into()));
+            .ok_or_else(|| JmapError::Api("create succeeded but missing server id".into()))?;
+        let updated = val["updated"].as_str().map(String::from);
+        return Ok(CreatedEvent { id, updated });
     }
     Err(JmapError::Api("create failed".into()))
 }
