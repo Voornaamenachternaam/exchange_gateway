@@ -67,7 +67,16 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
             // return empty changes.
             String::new()
         }
-        Some(_) => return soap_fault("ErrorInvalidSyncStateData", "SyncState does not match; please re-sync"),
+        Some(_) => {
+            // Stale or unrecognised sync state (e.g. server restart, calendar
+            // ID change).  Fall back to an initial sync so the client can
+            // recover, consistent with handle_sync_folder_items.
+            tracing::warn!("SyncFolderHierarchy: client SyncState does not match; falling back to initial sync");
+            format!(
+                r#"<t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create>"#,
+                utils::escape_xml(&cal_id)
+            )
+        }
         None => {
             // Initial sync: report the calendar folder as created.
             format!(
