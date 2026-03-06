@@ -1349,6 +1349,32 @@ async fn handle_sync_change_error(
                 ctx.responses_xml
             );
         }
+    } else if ctx.has_client_commands {
+        // Non-transient error, but client commands were already applied.
+        // Preserve the sync state with a fresh SyncKey so the client
+        // advances and does NOT replay the commands (which would create
+        // duplicates).  The next sync will pick up changes via normal
+        // change-detection from prev_jmap_state.
+        tracing::error!(
+            "{label} failed (non-transient) after client commands, \
+             preserving sync state to prevent command replay: {error}"
+        );
+        let new_key = Uuid::new_v4().to_string();
+        db::update_sync_state(
+            ctx.config,
+            ctx.user,
+            ctx.device_id,
+            ctx.collection_id,
+            &new_key,
+            ctx.prev_jmap_state,
+        )
+        .await;
+        return format!(
+            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+            utils::escape_xml(&new_key),
+            utils::escape_xml(ctx.collection_id),
+            ctx.responses_xml
+        );
     } else {
         tracing::error!("{label} failed, invalidating sync state: {error}");
         db::delete_sync_state(ctx.config, ctx.user, ctx.device_id, ctx.collection_id).await;
