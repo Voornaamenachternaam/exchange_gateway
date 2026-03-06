@@ -723,6 +723,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
     /// (0x01) token.  Each token may carry inline data (strings, opaque, etc.)
     /// that must be consumed to keep `pos` in sync.
     fn skip_wbxml_attributes(data: &[u8], pos: &mut usize) -> Result<(), String> {
+        const MAX_DEPTH: usize = 64;
+        let mut depth: usize = 1;
         loop {
             if *pos >= data.len() {
                 return Err("Unexpected end while skipping attributes".into());
@@ -731,7 +733,12 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             *pos += 1;
             match t {
                 // END — attribute list finished
-                0x01 => return Ok(()),
+                0x01 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(());
+                    }
+                }
                 // SWITCH_PAGE — consume one page-number byte
                 0x00 => {
                     if *pos >= data.len() {
@@ -791,8 +798,10 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 }
                 // PI (processing instruction) — skip until END
                 0x43 => {
-                    // Nested: skip the PI body the same way (terminated by END)
-                    skip_wbxml_attributes(data, pos)?;
+                    depth += 1;
+                    if depth > MAX_DEPTH {
+                        return Err("Exceeded maximum nesting depth in WBXML attributes".into());
+                    }
                 }
                 // All remaining single-byte attribute tokens (ATTRSTART, ATTRVALUE, etc.)
                 _ => {}
