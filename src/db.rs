@@ -120,8 +120,6 @@ pub async fn get_sync_state_full(
                     user = user, device_id = device_id, collection = coll,
                     "get_sync_state_full: unexpected DB response format"
                 );
-            }
-            if has_result_rows(&json) {
                 Err("unexpected DB response format".to_string())
             } else {
                 Ok(None)
@@ -311,10 +309,13 @@ pub async fn get_ews_sync_state(
         _ => {
             if has_result_rows(&json) {
                 tracing::warn!(
-                    "get_ews_sync_state: unexpected DB response format for user and folder."
+                    user = user, folder = folder,
+                    "get_ews_sync_state: unexpected DB response format"
                 );
+                Err("unexpected DB response format".to_string())
+            } else {
+                Ok(None)
             }
-            Ok(None)
         }
     }
 }
