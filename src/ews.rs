@@ -114,12 +114,16 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
     };
     const MAX_RESOLVE_NAMES_RESULTS: usize = 10;
 
-    let results = jmap_client::search_principals(session, &req.unresolved_entry)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .take(MAX_RESOLVE_NAMES_RESULTS)
-        .collect::<Vec<_>>();
+    let results = match jmap_client::search_principals(session, &req.unresolved_entry).await {
+        Ok(results) => results
+            .into_iter()
+            .take(MAX_RESOLVE_NAMES_RESULTS)
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::error!("search_principals failed: {}", e);
+            return soap_fault("ErrorInternalServerError", "ResolveNames Failed");
+        }
+    };
     let mut resolutions = String::new();
     // Fix: Borrow results to iterate, then use results.len()
     for p in &results {
