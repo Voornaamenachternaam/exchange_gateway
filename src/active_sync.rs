@@ -721,7 +721,25 @@ async fn handle_sync(
     // does not echo the client's own modifications back to the device.
     let pre_command_jmap_state = match jmap_client::get_calendar_state(session).await {
         Ok(s) => s,
-        Err(_) => return error_xml(500, "JMAPStateError"),
+        Err(_) => {
+            // Restore the old SyncKey so the client can retry without being
+            // forced into a full resync.  No commands have been processed yet,
+            // so replaying the request is safe.
+            if old_sync_key != "0"
+                && let Some(ref st) = stored_state
+            {
+                db::update_sync_state(
+                    config,
+                    user,
+                    device_id,
+                    &collection_id,
+                    &old_sync_key,
+                    &st.jmap_state,
+                )
+                .await;
+            }
+            return error_xml(500, "JMAPStateError");
+        }
     };
 
     // On partial failure, fall through to the normal change-detection
@@ -744,7 +762,32 @@ async fn handle_sync(
     let post_command_jmap_state = if has_client_commands {
         match jmap_client::get_calendar_state(session).await {
             Ok(s) => s,
-            Err(_) => return error_xml(500, "JMAPStateError"),
+            Err(_) => {
+                // The post-command state fetch failed, but client commands may
+                // have already been applied.  Persist the pre-command JMAP
+                // state with a new SyncKey so the client advances (avoiding
+                // command replay) and the next sync picks up changes via
+                // normal change-detection.
+                if old_sync_key != "0" {
+                    let new_key = Uuid::new_v4().to_string();
+                    db::update_sync_state(
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &new_key,
+                        &pre_command_jmap_state,
+                    )
+                    .await;
+                    return format!(
+                        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&new_key),
+                        utils::escape_xml(&collection_id),
+                        responses_xml
+                    );
+                }
+                return error_xml(500, "JMAPStateError");
+            }
         }
     } else {
         pre_command_jmap_state.clone()
