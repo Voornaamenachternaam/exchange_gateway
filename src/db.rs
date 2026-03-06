@@ -121,7 +121,11 @@ pub async fn get_sync_state_full(
                     "get_sync_state_full: unexpected DB response format"
                 );
             }
-            Ok(None)
+            if has_result_rows(&json) {
+                Err("unexpected DB response format".to_string())
+            } else {
+                Ok(None)
+            }
         }
     }
 }
