@@ -777,26 +777,26 @@ async fn handle_sync(
                 // have already been applied.  Persist the pre-command JMAP
                 // state with a new SyncKey so the client advances (avoiding
                 // command replay) and the next sync picks up changes via
-                // normal change-detection.
-                if old_sync_key != "0" {
-                    let new_key = Uuid::new_v4().to_string();
-                    db::update_sync_state(
-                        config,
-                        user,
-                        device_id,
-                        &collection_id,
-                        &new_key,
-                        &pre_command_jmap_state,
-                    )
-                    .await;
-                    return format!(
-                        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
-                        utils::escape_xml(&new_key),
-                        utils::escape_xml(&collection_id),
-                        responses_xml
-                    );
-                }
-                return error_xml(500, "JMAPStateError");
+                // normal change-detection.  This applies to initial syncs
+                // (SyncKey "0") as well — without it the client would retry
+                // with SyncKey "0" and re-send the same commands, creating
+                // duplicate calendar events.
+                let new_key = Uuid::new_v4().to_string();
+                db::update_sync_state(
+                    config,
+                    user,
+                    device_id,
+                    &collection_id,
+                    &new_key,
+                    &pre_command_jmap_state,
+                )
+                .await;
+                return format!(
+                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                    utils::escape_xml(&new_key),
+                    utils::escape_xml(&collection_id),
+                    responses_xml
+                );
             }
         }
     } else {
