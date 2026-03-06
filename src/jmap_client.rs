@@ -113,8 +113,8 @@ pub struct JmapEvent {
         default
     )]
     pub participants: Option<Vec<Participant>>,
-    #[serde(rename = "isAllDay", default)]
-    pub is_all_day: bool,
+    #[serde(rename = "showWithoutTime", default)]
+    pub show_without_time: bool,
     #[serde(rename = "recurrenceRules", skip_serializing_if = "Option::is_none")]
     pub recurrence_rules: Option<Vec<RecurrenceRule>>,
     #[serde(rename = "updated", skip_serializing_if = "Option::is_none")]
@@ -317,7 +317,7 @@ pub async fn get_calendar_state(session: &JmapSession) -> Result<String, JmapErr
 }
 
 pub async fn get_calendar_events(session: &JmapSession) -> Result<Vec<JmapEvent>, JmapError> {
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRules", "updated"] }, "c0"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": null, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "showWithoutTime", "recurrenceRules", "updated"] }, "c0"]] });
     let res = session
         .client
         .post(&session.api_url)
@@ -340,7 +340,7 @@ pub async fn get_events_by_ids(
     if ids.is_empty() {
         return Ok(vec![]);
     }
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": ids, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "isAllDay", "recurrenceRules", "updated"] }, "c0"]] });
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/get", { "accountId": session.account_id, "ids": ids, "properties": ["id", "title", "start", "end", "location", "description", "uid", "participants", "showWithoutTime", "recurrenceRules", "updated"] }, "c0"]] });
     let res = session
         .client
         .post(&session.api_url)

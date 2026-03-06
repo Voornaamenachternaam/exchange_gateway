@@ -831,7 +831,7 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
         utils::escape_xml(&start_str),
         utils::escape_xml(&end_str),
         utils::escape_xml(event.uid.as_deref().unwrap_or("")),
-        if event.is_all_day { "1" } else { "0" },
+        if event.show_without_time { "1" } else { "0" },
         recurrence_xml,
         attendees_xml,
         body_content,
@@ -1001,7 +1001,7 @@ async fn process_client_commands(
                 } else {
                     Some(attendees)
                 },
-                is_all_day: data.all_day_event.unwrap_or(0) == 1,
+                show_without_time: data.all_day_event.unwrap_or(0) == 1,
                 recurrence_rules: data.recurrence.map(|r| vec![build_recurrence_rule(r)]),
                 updated: None,
             };

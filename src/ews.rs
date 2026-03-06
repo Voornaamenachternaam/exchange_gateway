@@ -251,7 +251,7 @@ fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Str
         utils::escape_xml(&start_local),
         utils::escape_xml(&end_local),
         utils::escape_xml(event.location.as_deref().unwrap_or("")),
-        event.is_all_day,
+        event.show_without_time,
         attendees_xml
     )
 }
@@ -503,7 +503,7 @@ async fn handle_create_item(
             location: item.location,
             description: item.body.map(|b| b.content),
             uid: Some(Uuid::new_v4().to_string()),
-            is_all_day: false,
+            show_without_time: false,
             participants: if attendees.is_empty() {
                 None
             } else {
