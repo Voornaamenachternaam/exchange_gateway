@@ -350,11 +350,11 @@ lazy_static! {
         add!(CP_CONTACTS, 0x1D, "FileAs", true);
         add!(CP_CONTACTS, 0x1F, "FirstName", true);
         add!(CP_CONTACTS, 0x20, "Home2PhoneNumber", true);
-        add!(CP_CONTACTS, 0x21, "HomeCity", true);
-        add!(CP_CONTACTS, 0x22, "HomeCountry", true);
-        add!(CP_CONTACTS, 0x23, "HomePostalCode", true);
-        add!(CP_CONTACTS, 0x24, "HomeState", true);
-        add!(CP_CONTACTS, 0x25, "HomeStreet", true);
+        add!(CP_CONTACTS, 0x21, "HomeAddressCity", true);
+        add!(CP_CONTACTS, 0x22, "HomeAddressCountry", true);
+        add!(CP_CONTACTS, 0x23, "HomeAddressPostalCode", true);
+        add!(CP_CONTACTS, 0x24, "HomeAddressState", true);
+        add!(CP_CONTACTS, 0x25, "HomeAddressStreet", true);
         add!(CP_CONTACTS, 0x26, "HomeFaxNumber", true);
         add!(CP_CONTACTS, 0x27, "HomePhoneNumber", true);
         add!(CP_CONTACTS, 0x28, "JobTitle", true);
