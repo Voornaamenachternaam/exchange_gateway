@@ -34,6 +34,7 @@ struct SyncErrorContext<'a> {
     user: &'a str,
     device_id: &'a str,
     collection_id: &'a str,
+    old_sync_key: &'a str,
     prev_jmap_state: &'a str,
     has_client_commands: bool,
     responses_xml: &'a str,
@@ -843,6 +844,7 @@ async fn handle_sync(
                 user,
                 device_id,
                 collection_id: &collection_id,
+                old_sync_key: &old_sync_key,
                 prev_jmap_state: &prev_jmap_state,
                 has_client_commands,
                 responses_xml: &responses_xml,
@@ -1356,6 +1358,21 @@ async fn handle_sync_change_error(
                 ctx.responses_xml
             );
         }
+        // No client commands — restore the original SyncKey so the client
+        // can retry with the same key without being forced into a full
+        // re-sync.  The claim_sync_key earlier replaced the DB's sync_key
+        // with a temporary placeholder; reverting it here makes the
+        // transient failure invisible to the client.
+        db::update_sync_state(
+            ctx.config,
+            ctx.user,
+            ctx.device_id,
+            ctx.collection_id,
+            ctx.old_sync_key,
+            ctx.prev_jmap_state,
+        )
+        .await;
+        return error_xml(500, "CalendarChangesError");
     } else if ctx.has_client_commands {
         // Non-transient error, but client commands were already applied.
         // Preserve the sync state with a fresh SyncKey so the client
