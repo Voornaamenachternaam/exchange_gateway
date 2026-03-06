@@ -773,14 +773,30 @@ async fn handle_sync(
         match jmap_client::get_calendar_state(session).await {
             Ok(s) => s,
             Err(_) => {
-                // The post-command state fetch failed, but client commands may
-                // have already been applied.  Persist the pre-command JMAP
-                // state with a new SyncKey so the client advances (avoiding
-                // command replay) and the next sync picks up changes via
-                // normal change-detection.  This applies to initial syncs
-                // (SyncKey "0") as well — without it the client would retry
-                // with SyncKey "0" and re-send the same commands, creating
-                // duplicate calendar events.
+                if old_sync_key == "0" {
+                    // Initial sync: do NOT advance the SyncKey.  The client
+                    // has not yet received the full snapshot of existing
+                    // server events.  Persisting state here would make the
+                    // client believe the initial sync completed, permanently
+                    // skipping all pre-existing events.  Return a server
+                    // error so the client retries the initial sync.
+                    tracing::warn!(
+                        "Sync: post-command JMAP state fetch failed during initial sync \
+                         (SyncKey \"0\") for user={}, device={}, collection={} — returning \
+                         server error so the client retries the full initial sync",
+                        user, device_id, collection_id
+                    );
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
+                // Non-initial sync: the post-command state fetch failed,
+                // but client commands may have already been applied.
+                // Persist the pre-command JMAP state with a new SyncKey so
+                // the client advances (avoiding command replay) and the
+                // next sync picks up changes via normal change-detection.
                 let new_key = Uuid::new_v4().to_string();
                 db::update_sync_state(
                     config,
