@@ -23,17 +23,21 @@ pub enum JmapError {
 }
 
 impl JmapError {
-    /// Returns `true` for transient errors (network / connection issues) where
-    /// retrying later is likely to succeed and cached state should be preserved.
+    /// Returns `true` for transient errors (network / connection / server
+    /// issues) where retrying later is likely to succeed and cached state
+    /// should be preserved.
     ///
     /// Inspects the underlying `reqwest::Error` to distinguish genuinely
-    /// transient conditions (timeouts, connection resets, DNS failures) from
-    /// non-transient ones (e.g. response-body deserialization failures that
-    /// would recur on every retry).
+    /// transient conditions (timeouts, connection resets, DNS failures,
+    /// HTTP 5xx server errors) from non-transient ones (e.g. response-body
+    /// deserialization failures that would recur on every retry).
     pub fn is_transient(&self) -> bool {
         match self {
             JmapError::Connection(e) => {
-                e.is_timeout() || e.is_connect()
+                e.is_timeout()
+                    || e.is_connect()
+                    || e.status()
+                        .is_some_and(|s| s.is_server_error())
             }
             _ => false,
         }
@@ -325,7 +329,8 @@ pub async fn get_default_calendar_id(session: &JmapSession) -> Result<String, Jm
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
@@ -356,7 +361,8 @@ pub async fn get_calendar_state(session: &JmapSession) -> Result<String, JmapErr
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     json["methodResponses"][0][1]["state"]
@@ -373,7 +379,8 @@ pub async fn get_calendar_events(session: &JmapSession) -> Result<Vec<JmapEvent>
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     let events: Vec<JmapEvent> =
@@ -396,7 +403,8 @@ pub async fn get_events_by_ids(
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     let events: Vec<JmapEvent> =
@@ -441,7 +449,8 @@ pub async fn push_event(
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     if let Some(created) = json["methodResponses"][0][1]["created"].as_object()
@@ -495,7 +504,8 @@ pub async fn patch_event(
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
@@ -527,7 +537,8 @@ pub async fn destroy_events(
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object()
@@ -550,7 +561,8 @@ pub async fn get_calendar_changes(
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     serde_json::from_value(json["methodResponses"][0][1].clone())
@@ -568,7 +580,8 @@ pub async fn search_principals(
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     let mut results = Vec::new();
@@ -591,7 +604,8 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     json["methodResponses"][1][1]["list"]
@@ -642,7 +656,8 @@ pub async fn get_blob(session: &JmapSession, blob_id: &str) -> Result<Vec<u8>, J
         .header("Authorization", format!("Basic {}", session.access_token))
         .json(&body)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     if let Some(b64) = json["methodResponses"][0][1]["list"][0]["data:asBase64"].as_str() {
