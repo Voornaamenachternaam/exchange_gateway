@@ -270,6 +270,26 @@ async fn handle_send_mail(
             Ok(Event::Eof) => break,
             _ => {}
         }
+        buf.clear();
+    }
+    // WBXML opaque data is base64-encoded by wbxml::decode. Only attempt
+    // to decode when the content does not already look like raw MIME text,
+    // so that plain-text MIME arriving via XML is not accidentally corrupted.
+    let dominated_by_mime_headers = mime_content
+        .lines()
+        .take(5)
+        .any(|l| l.starts_with("From:") || l.starts_with("To:") || l.starts_with("MIME-Version:"));
+    if !dominated_by_mime_headers {
+        let stripped: String = mime_content.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        if let Ok(decoded_bytes) =
+            base64::engine::general_purpose::STANDARD.decode(&stripped)
+            && let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                mime_content = decoded_str;
+            }
+    }
+
+    if mime_content.is_empty() {
+        return SEND_MAIL_ERROR.to_string();
     }
 
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
@@ -310,7 +330,78 @@ async fn handle_send_mail(
 
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
 
-        match mailer.send(&email) {
+        let email = match builder.subject(subject).body(clean_body.to_string()) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("Email build error: {}", e);
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let smtp_url = &config.smtp_url;
+
+        let smtp_host = match smtp_url.host_str() {
+            Some(h) => h,
+            None => {
+                tracing::error!("SMTP URL has no host");
+                return SEND_MAIL_ERROR.to_string();
+            }
+        };
+
+        let scheme = smtp_url.scheme().to_ascii_lowercase();
+        let default_port = match scheme.as_str() {
+            "smtps" => 465,
+            "smtp" => 25,
+            _ => 587,
+        };
+        let port = smtp_url.port().unwrap_or(default_port);
+
+        let mut builder = if scheme == "smtps" {
+            // Implicit TLS (port 465): relay() already configures TLS::Wrapper internally.
+            let b = match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create SMTP relay transport: {}", e);
+                    return SEND_MAIL_ERROR.to_string();
+                }
+            };
+            b.port(port)
+        } else {
+            // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
+            // unencrypted connections, restoring compatibility with smtp:// URLs.
+            let b = if scheme == "smtp" {
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+            } else {
+                match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                        return SEND_MAIL_ERROR.to_string();
+                    }
+                }
+            };
+            b.port(port)
+        };
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        // URL components are percent-encoded, so decode before use as credentials.
+        let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
+        if scheme == "smtp" && !user.is_empty() && smtp_url.password().is_some() {
+            tracing::error!("SMTP credentials require TLS; use smtps:// or starttls://");
+            return SEND_MAIL_ERROR.to_string();
+        }
+        if !user.is_empty()
+            && let Some(pass) = smtp_url.password() {
+                let pass = percent_decode_str(pass).decode_utf8_lossy();
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.into_owned(),
+                    pass.into_owned(),
+                ));
+            }
+
+        let mailer = builder.build();
+
+        match mailer.send(email).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
@@ -650,31 +741,13 @@ async fn process_client_commands(session: &jmap_client::JmapSession, cmds: Comma
         if let Some(b) = data.body {
             patch.insert("description".to_string(), serde_json::json!(b.data));
         }
-
-        if !patch.is_empty() {
-            let body = serde_json::json!({
-                "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-                "methodCalls": [
-                    ["CalendarEvent/set", {
-                        "accountId": session.account_id,
-                        "update": {
-                            id: patch
-                        }
-                    }, "c0"]
-                ]
-            });
-
-            let res = client
-                .post(&session.api_url)
-                .header("Authorization", format!("Basic {}", session.access_token))
-                .json(&body)
-                .send()
-                .await;
-
-            if let Err(e) = res {
-                tracing::error!("ActiveSync Update failed: {}", e);
+        if !patch.is_empty()
+            && let Err(e) = jmap_client::patch_event(session, &id, patch).await {
+                tracing::error!("ActiveSync Update failed for id {}: {}", id, e);
+                failures.push(CommandFailure::Change {
+                    server_id: id.clone(),
+                });
             }
-        }
     }
 
     if let Some(deletes) = cmds.delete
