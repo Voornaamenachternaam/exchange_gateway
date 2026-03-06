@@ -88,23 +88,17 @@ pub async fn get_default_calendar_id(
         .header("Authorization", format!("Basic {}", token))
         .json(&body)
         .send()
-        .await?;
-
-    let json: serde_json::Value = resp.json().await?;
-    
-    let list = json["methodResponses"][0][1]["list"].as_array().ok_or(JmapError::CalendarNotFound)?;
-    
-    for cal in list {
-        if let Some(is_default) = cal.get("isDefault").and_then(|v| v.as_bool())
-            && is_default
-                && let Some(id) = cal.get("id").and_then(|v| v.as_str()) {
+        .await?
+        .error_for_status()?;
+    let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
+    if let Some(list) = json["methodResponses"][0][1]["list"].as_array() {
+        // First, look for the calendar marked as default
+        for cal in list {
+            if cal["isDefault"].as_bool().unwrap_or(false)
+                && let Some(id) = cal["id"].as_str() {
                     return Ok(id.to_string());
                 }
-    }
-    
-    if let Some(first) = list.first()
-        && let Some(id) = first.get("id").and_then(|v| v.as_str()) {
-            return Ok(id.to_string());
         }
     
     Err(JmapError::CalendarNotFound)
