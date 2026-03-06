@@ -124,8 +124,14 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
             return soap_fault("ErrorInternalServerError", "ResolveNames Failed");
         }
     };
+    if results.is_empty() {
+        return soap_response(&format!(
+            r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorNameResolutionNoResults</m:ResponseCode><m:MessageText>No results were found.</m:MessageText></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
+            NS_M,
+            NS_T,
+        ));
+    }
     let mut resolutions = String::new();
-    // Fix: Borrow results to iterate, then use results.len()
     for p in &results {
         resolutions.push_str(&format!(r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Resolution>"#, utils::escape_xml(&p.name), utils::escape_xml(&p.email)));
     }
