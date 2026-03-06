@@ -951,6 +951,11 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     let mut body: Vec<u8> = Vec::new();
     let mut current_page: u8 = 0;
 
+    // Tracks the effective XML namespace (WBXML code page) at each nesting level
+    // so that unprefixed child tags inherit their parent's namespace scope rather
+    // than relying on the last WBXML page switch.
+    let mut scope_page_stack: Vec<u8> = Vec::new();
+
     // String table for LITERAL tags (used when a tag isn't present in NAME_MAP).
     let mut strtbl: Vec<u8> = Vec::new();
     let mut strtbl_index: HashMap<String, usize> = HashMap::new();
@@ -1007,21 +1012,31 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let (prefix, local) = split_prefix(&full_name);
-                let target_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
-                if !encode_tag(&mut body, local, &mut current_page, true, target_page) {
+                // Determine the effective page: explicit prefix wins, otherwise
+                // inherit the parent's scope page so unprefixed siblings stay in
+                // the correct namespace even after a WBXML page switch.
+                let scope_page = prefix
+                    .and_then(|p| PREFIX_TO_PAGE.get(p).copied())
+                    .or_else(|| scope_page_stack.last().copied());
+                if !encode_tag(&mut body, local, &mut current_page, true, scope_page) {
                     encode_literal_tag(&mut body, local, true, &mut strtbl_index, &mut strtbl);
                 }
+                // Push the resolved scope page (or current_page as fallback).
+                scope_page_stack.push(scope_page.unwrap_or(current_page));
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
                 let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let (prefix, local) = split_prefix(&full_name);
-                let target_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
-                if !encode_tag(&mut body, local, &mut current_page, false, target_page) {
+                let scope_page = prefix
+                    .and_then(|p| PREFIX_TO_PAGE.get(p).copied())
+                    .or_else(|| scope_page_stack.last().copied());
+                if !encode_tag(&mut body, local, &mut current_page, false, scope_page) {
                     encode_literal_tag(&mut body, local, false, &mut strtbl_index, &mut strtbl);
                 }
             }
             Ok(quick_xml::events::Event::End(_)) => {
                 body.push(TAG_END);
+                scope_page_stack.pop();
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
                 body.push(TAG_STR_I);
