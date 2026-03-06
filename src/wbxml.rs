@@ -718,6 +718,88 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         Ok(s)
     }
 
+    /// Skip over a WBXML attribute section.  Per the WBXML spec the attribute
+    /// list is a sequence of ATTRSTART / ATTRVALUE tokens terminated by an END
+    /// (0x01) token.  Each token may carry inline data (strings, opaque, etc.)
+    /// that must be consumed to keep `pos` in sync.
+    fn skip_wbxml_attributes(data: &[u8], pos: &mut usize) -> Result<(), String> {
+        loop {
+            if *pos >= data.len() {
+                return Err("Unexpected end while skipping attributes".into());
+            }
+            let t = data[*pos];
+            *pos += 1;
+            match t {
+                // END — attribute list finished
+                0x01 => return Ok(()),
+                // SWITCH_PAGE — consume one page-number byte
+                0x00 => {
+                    if *pos >= data.len() {
+                        return Err("Unexpected end after SWITCH_PAGE in attributes".into());
+                    }
+                    *pos += 1;
+                }
+                // STR_I — inline NUL-terminated string
+                0x03 => {
+                    while *pos < data.len() && data[*pos] != 0 {
+                        *pos += 1;
+                    }
+                    if *pos >= data.len() {
+                        return Err("Unexpected end in inline string in attributes".into());
+                    }
+                    *pos += 1; // skip NUL
+                }
+                // STR_T — string table reference (mb_u_int32)
+                0x83 => {
+                    let _ = read_mb_u_int32(data, pos)?;
+                }
+                // OPAQUE — length-prefixed binary blob
+                0xC3 => {
+                    let len = read_mb_u_int32(data, pos)?;
+                    let end = pos
+                        .checked_add(len)
+                        .ok_or_else(|| "Opaque overflow in attributes".to_string())?;
+                    if end > data.len() {
+                        return Err("Opaque overflow in attributes".into());
+                    }
+                    *pos = end;
+                }
+                // ENTITY — mb_u_int32 character entity
+                0x02 => {
+                    let _ = read_mb_u_int32(data, pos)?;
+                }
+                // EXT_I_0..2 — inline extension (NUL-terminated)
+                0x40..=0x42 => {
+                    while *pos < data.len() && data[*pos] != 0 {
+                        *pos += 1;
+                    }
+                    if *pos >= data.len() {
+                        return Err("Unexpected end in EXT_I in attributes".into());
+                    }
+                    *pos += 1; // skip NUL
+                }
+                // EXT_T_0..2 — integer extension (mb_u_int32)
+                0x80..=0x82 => {
+                    let _ = read_mb_u_int32(data, pos)?;
+                }
+                // EXT_0..2 — byte extension (no additional data)
+                0xC0..=0xC2 => {}
+                // LITERAL (0x04) in attribute context — attribute name from string
+                // table, carries an mb_u_int32 index that must be consumed.
+                0x04 => {
+                    let _ = read_mb_u_int32(data, pos)?;
+                }
+                // PI (processing instruction) — skip until END
+                0x43 => {
+                    // Nested: skip the PI body the same way (terminated by END)
+                    skip_wbxml_attributes(data, pos)?;
+                }
+                // All remaining single-byte attribute tokens (ATTRSTART, ATTRVALUE, etc.)
+                _ => {}
+            }
+        }
+    }
+
     // Parse public ID as mb_u_int32 (per WBXML spec, section 5.4)
     let mut pos = 1;
     let publicid = read_mb_u_int32(data, &mut pos)?;
@@ -860,7 +942,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             // tokens terminated by END (0x01). ActiveSync doesn't use attributes, so
             // we just consume them to keep the parse position correct.
             if has_attrs {
-                return Err("Attributes on LITERAL tags are not supported".into());
+                skip_wbxml_attributes(data, &mut pos)?;
             }
 
             if pending_tag.is_some() {
