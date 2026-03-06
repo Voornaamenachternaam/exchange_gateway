@@ -191,6 +191,7 @@ mod participants_serde {
         /// properties from the map value. The email is set afterwards from the map key.
         #[derive(Deserialize)]
         struct ParticipantValue {
+            #[serde(default)]
             name: String,
             #[serde(rename = "participationStatus", default)]
             status: Option<String>,
