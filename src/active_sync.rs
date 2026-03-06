@@ -1,7 +1,7 @@
 use base64::Engine;
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime};
 use chrono_tz::Tz;
 use lettre::message::Message;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
@@ -904,36 +904,34 @@ fn render_event_xml(event: jmap_client::JmapEvent, mode: &str, tz_str: &str) -> 
 
     // Avoid silently defaulting to Unix epoch on parse errors.
     // If parsing fails, log and fall back to using the original JMAP string as-is.
-    let start_str = match DateTime::parse_from_rfc3339(&event.start)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map(|dt| dt.with_timezone(&tz))
-    {
-        Ok(start_local) => start_local.format("%Y-%m-%dT%H:%M:%S").to_string(),
-        Err(e) => {
-            tracing::warn!(
-                "Invalid JMAP event start timestamp for event id {:?}: '{}' ({})",
-                event.id,
-                event.start,
-                e
-            );
-            event.start.clone()
-        }
+    let start_str = if let Ok(dt) = DateTime::parse_from_rfc3339(&event.start) {
+        dt.with_timezone(&tz)
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string()
+    } else if let Ok(naive) = NaiveDateTime::parse_from_str(&event.start, "%Y-%m-%dT%H:%M:%S") {
+        naive.format("%Y-%m-%dT%H:%M:%S").to_string()
+    } else {
+        tracing::warn!(
+            "Invalid JMAP event start timestamp for event id {:?}: '{}'",
+            event.id,
+            event.start,
+        );
+        event.start.clone()
     };
 
-    let end_str = match DateTime::parse_from_rfc3339(&event.end)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map(|dt| dt.with_timezone(&tz))
-    {
-        Ok(end_local) => end_local.format("%Y-%m-%dT%H:%M:%S").to_string(),
-        Err(e) => {
-            tracing::warn!(
-                "Invalid JMAP event end timestamp for event id {:?}: '{}' ({})",
-                event.id,
-                event.end,
-                e
-            );
-            event.end.clone()
-        }
+    let end_str = if let Ok(dt) = DateTime::parse_from_rfc3339(&event.end) {
+        dt.with_timezone(&tz)
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string()
+    } else if let Ok(naive) = NaiveDateTime::parse_from_str(&event.end, "%Y-%m-%dT%H:%M:%S") {
+        naive.format("%Y-%m-%dT%H:%M:%S").to_string()
+    } else {
+        tracing::warn!(
+            "Invalid JMAP event end timestamp for event id {:?}: '{}'",
+            event.id,
+            event.end,
+        );
+        event.end.clone()
     };
 
     let mut attendees_xml = String::new();
