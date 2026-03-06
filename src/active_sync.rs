@@ -744,17 +744,15 @@ async fn handle_sync(
         }
     };
 
-    if new_sync_key != old_sync_key {
-        db::update_sync_state(
-            config,
-            user,
-            device_id,
-            &collection_id,
-            &new_sync_key,
-            &jmap_state_to_persist,
-        )
-        .await;
-    }
+    db::update_sync_state(
+        config,
+        user,
+        device_id,
+        &collection_id,
+        &new_sync_key,
+        &jmap_state_to_persist,
+    )
+    .await;
 
     format!(
         r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands>{}</Commands></Collection></Collections></Sync>"#,
