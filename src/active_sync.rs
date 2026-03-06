@@ -249,8 +249,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             }
             Ok(Event::CData(t)) => {
                 if in_mime {
-                    mime_content
-                        .push_str(std::str::from_utf8(t.as_ref()).unwrap_or(""));
+                    mime_content.push_str(&String::from_utf8_lossy(t.as_ref()));
                 }
             }
             Ok(Event::Eof) => break,
