@@ -1026,6 +1026,7 @@ async fn process_client_commands(
                             email: att.email,
                             name: att.name,
                             status: None,
+                            participant_id: None,
                         })
                         .collect()
                 })

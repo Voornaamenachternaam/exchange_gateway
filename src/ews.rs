@@ -524,6 +524,7 @@ async fn handle_create_item(
                         email: att.mailbox.email,
                         name: att.mailbox.name.unwrap_or_default(),
                         status: None,
+                        participant_id: None,
                     })
                     .collect()
             })

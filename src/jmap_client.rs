@@ -20,9 +20,6 @@ pub enum JmapError {
 
     #[error("JMAP API error: {0}")]
     Api(String),
-
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
 }
 
 impl JmapError {
@@ -127,24 +124,39 @@ pub struct Participant {
     pub name: String,
     #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The opaque participant ID used as the map key in JSCalendar
+    /// (RFC 8984).  Preserved across round-trips so that patch paths
+    /// (`participants/<id>/…`) address the correct entry on the server.
+    #[serde(skip)]
+    pub participant_id: Option<String>,
 }
 
 /// Custom serde module to convert between `Vec<Participant>` and the JSCalendar
-/// participants map format `{ "email": { "name": "...", ... }, ... }`.
+/// participants map format (RFC 8984).
 ///
-/// In JSCalendar, participants are represented as a map keyed by email address,
-/// where the value contains the participant properties (name, status) but NOT
-/// the email (since it's already the key). This module handles that conversion.
+/// In JSCalendar the `participants` property is `Id[Participant]` — an object
+/// whose keys are opaque identifiers and whose values carry participant
+/// properties including `sendTo` (a map of method → URI, e.g.
+/// `"imip": "mailto:user@example.com"`).
+///
+/// On **serialization** we use the stored `participant_id` (or generate a UUID)
+/// as the map key and encode the email as `sendTo.imip`.
+///
+/// On **deserialization** we extract the email from `sendTo.imip` (stripping a
+/// `mailto:` prefix when present) and fall back to the map key for backward
+/// compatibility with servers that still key by email.
 mod participants_serde {
     use super::Participant;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::HashMap;
+    use uuid::Uuid;
 
-    /// Intermediate struct for serialization that excludes the email field,
-    /// since in JSCalendar format the email is used as the map key.
+    /// Intermediate struct for serialization (RFC 8984 compliant).
     #[derive(Serialize)]
     struct ParticipantValue<'a> {
         name: &'a str,
+        #[serde(rename = "sendTo")]
+        send_to: HashMap<&'a str, String>,
         #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
         status: &'a Option<String>,
     }
@@ -160,11 +172,24 @@ mod participants_serde {
             Some(participants) => {
                 let mut map = HashMap::new();
                 for p in participants {
+                    let key = p
+                        .participant_id
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_string();
+                    let key = if key.is_empty() {
+                        Uuid::new_v4().to_string()
+                    } else {
+                        key
+                    };
+                    let mut send_to = HashMap::new();
+                    send_to.insert("imip", format!("mailto:{}", p.email));
                     if map
                         .insert(
-                            p.email.as_str(),
+                            key,
                             ParticipantValue {
                                 name: &p.name,
+                                send_to,
                                 status: &p.status,
                             },
                         )
@@ -172,7 +197,7 @@ mod participants_serde {
                     {
                         tracing::warn!(
                             email = %p.email,
-                            "Duplicate participant email during serialization; \
+                            "Duplicate participant id during serialization; \
                              last entry wins"
                         );
                     }
@@ -187,23 +212,38 @@ mod participants_serde {
     where
         D: Deserializer<'de>,
     {
-        /// Intermediate struct for deserialization that captures the participant
-        /// properties from the map value. The email is set afterwards from the map key.
+        /// Intermediate struct for deserialization.
         #[derive(Deserialize)]
         struct ParticipantValue {
             #[serde(default)]
             name: String,
+            #[serde(rename = "sendTo", default)]
+            send_to: Option<HashMap<String, String>>,
             #[serde(rename = "participationStatus", default)]
             status: Option<String>,
+        }
+
+        /// Extract the email from `sendTo.imip`, stripping the `mailto:` prefix.
+        fn email_from_send_to(send_to: &Option<HashMap<String, String>>) -> Option<String> {
+            send_to.as_ref().and_then(|m| {
+                m.get("imip").map(|uri| {
+                    uri.strip_prefix("mailto:").unwrap_or(uri).to_string()
+                })
+            })
         }
 
         let opt: Option<HashMap<String, ParticipantValue>> = Option::deserialize(deserializer)?;
         Ok(opt.map(|map| {
             map.into_iter()
-                .map(|(email, p)| Participant {
-                    email,
-                    name: p.name,
-                    status: p.status,
+                .map(|(id, p)| {
+                    let email = email_from_send_to(&p.send_to)
+                        .unwrap_or_else(|| id.clone());
+                    Participant {
+                        email,
+                        name: p.name,
+                        status: p.status,
+                        participant_id: Some(id),
+                    }
                 })
                 .collect()
         }))
@@ -553,74 +593,34 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
         .ok_or_else(|| JmapError::NotFound(format!("event with uid {}", uid)))
 }
 
-/// Validate that an email address is safe for use as a JMAP patch path segment.
-///
-/// JMAP `CalendarEvent/set` update patches use RFC 6901 JSON Pointer paths
-/// like `participants/<email>/participationStatus`. The email is the literal
-/// map key on the server, so `~` and `/` in the email are escaped (`~0`, `~1`)
-/// when building the pointer. This function rejects emails that are clearly
-/// malformed or contain control characters that could cause unexpected
-/// server behaviour.
-fn is_valid_email_for_path(email: &str) -> bool {
-    if email.is_empty() || email.len() > 254 {
-        return false;
-    }
-
-    // Must have exactly one '@' separating local and domain parts
-    let parts: Vec<&str> = email.splitn(3, '@').collect();
-    if parts.len() != 2 {
-        return false;
-    }
-    let (local, domain) = (parts[0], parts[1]);
-
-    if local.is_empty() || domain.is_empty() {
-        return false;
-    }
-
-    // Reject control characters (including NUL) and backslash
-    if email.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\') {
-        return false;
-    }
-
-    // Reject local part starting/ending with '.' or containing '..'
-    if local.starts_with('.') || local.ends_with('.') || local.contains("..") {
-        return false;
-    }
-
-    // Domain must not start/end with '-' or '.' and must not contain '..'
-    if domain.starts_with('.') || domain.starts_with('-')
-        || domain.ends_with('.') || domain.ends_with('-')
-        || domain.contains("..")
-    {
-        return false;
-    }
-
-    // Domain must contain at least one dot (TLD required) and no empty labels
-    if !domain.contains('.') || domain.split('.').any(|label| label.is_empty()) {
-        return false;
-    }
-
-    true
-}
-
 pub async fn update_participant_status(
     session: &JmapSession,
     event_id: &str,
     user_email: &str,
     status: &str,
 ) -> Result<(), JmapError> {
-    if !is_valid_email_for_path(user_email) {
-        return Err(JmapError::InvalidInput(format!(
-            "invalid email for participant path: {}",
-            user_email
-        )));
-    }
+    // Fetch the event to discover the opaque participant ID that the server
+    // uses as the map key for this participant's email (RFC 8984).
+    let event = get_event_by_id(session, event_id).await?;
+    let participant_key = event
+        .participants
+        .as_ref()
+        .and_then(|ps| {
+            ps.iter().find(|p| p.email.eq_ignore_ascii_case(user_email))
+        })
+        .and_then(|p| p.participant_id.as_deref())
+        .ok_or_else(|| {
+            JmapError::NotFound(format!(
+                "participant {} not found in event {}",
+                user_email, event_id
+            ))
+        })?
+        .to_string();
+
+    let escaped_key = participant_key.replace('~', "~0").replace('/', "~1");
     let mut patch = serde_json::Map::new();
     patch.insert(
-        format!(
-            "participants/{}/participationStatus",
-            user_email.replace('~', "~0").replace('/', "~1")
-        ),
+        format!("participants/{}/participationStatus", escaped_key),
         json!(status),
     );
     patch_event(session, event_id, patch).await
