@@ -1,6 +1,6 @@
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDateTime};
 use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -210,20 +210,35 @@ async fn handle_get_item(
     ))
 }
 
-fn parse_jmap_timestamp(s: &str) -> Option<DateTime<Utc>> {
+/// Format a JMAP timestamp as a wall-clock local datetime string for EWS.
+///
+/// JMAP/JSCalendar has two timestamp shapes:
+/// - **Offset-aware** (RFC 3339, e.g. `2024-01-15T15:00:00Z`): represents an
+///   absolute instant.  We convert it to the configured timezone.
+/// - **LocalDateTime** (no offset, e.g. `2024-01-15T10:00:00`): a floating /
+///   local time with no UTC offset.  Per JSCalendar semantics this must be
+///   interpreted in the event's (or calendar's) timezone — *not* as UTC.  We
+///   therefore keep it as-is.
+fn format_jmap_localtime(s: &str, tz: Tz) -> Option<String> {
+    // Try offset-aware RFC 3339 first (e.g. "2024-01-15T15:00:00Z").
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Some(dt.with_timezone(&Utc));
+        return Some(
+            dt.with_timezone(&tz)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string(),
+        );
     }
+    // Naive / LocalDateTime – already a wall-clock time in the event timezone.
     if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return Some(naive.and_utc());
+        return Some(naive.format("%Y-%m-%dT%H:%M:%S").to_string());
     }
     None
 }
 
 fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> String {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
-    let start_local = match parse_jmap_timestamp(&event.start) {
-        Some(dt) => dt.with_timezone(&tz).format("%Y-%m-%dT%H:%M:%S").to_string(),
+    let start_local = match format_jmap_localtime(&event.start, tz) {
+        Some(s) => s,
         None => {
             tracing::warn!(
                 "Could not parse start timestamp for event {:?}: '{}'; using raw value",
@@ -233,8 +248,8 @@ fn render_ews_calendar_item(event: &jmap_client::JmapEvent, tz_str: &str) -> Str
             event.start.clone()
         }
     };
-    let end_local = match parse_jmap_timestamp(&event.end) {
-        Some(dt) => dt.with_timezone(&tz).format("%Y-%m-%dT%H:%M:%S").to_string(),
+    let end_local = match format_jmap_localtime(&event.end, tz) {
+        Some(s) => s,
         None => {
             tracing::warn!(
                 "Could not parse end timestamp for event {:?}: '{}'; using raw value",
