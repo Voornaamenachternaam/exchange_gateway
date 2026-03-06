@@ -204,7 +204,10 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         "ItemOperations" => {
             let req: ItemOpsReq = match quick_xml::de::from_str(xml) {
                 Ok(r) => r,
-                Err(_) => return error_xml(400, "BadRequest"),
+                Err(e) => {
+                    tracing::error!("ItemOperations XML Parse Error: {:?}", e);
+                    return error_xml(400, "BadRequest");
+                }
             };
             handle_item_operations(&session, req).await
         }
