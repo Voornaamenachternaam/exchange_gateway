@@ -2,7 +2,6 @@ name: Publish Docker image on release
 
 # Trigger when a GitHub Release is published (this includes the tag and release title)
 on:
-  pull_request:
   workflow_dispatch: {}
   release:
     types: [published]
