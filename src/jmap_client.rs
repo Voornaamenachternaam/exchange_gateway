@@ -227,7 +227,15 @@ mod participants_serde {
         fn email_from_send_to(send_to: &Option<HashMap<String, String>>) -> Option<String> {
             send_to.as_ref().and_then(|m| {
                 m.get("imip").map(|uri| {
-                    uri.strip_prefix("mailto:").unwrap_or(uri).to_string()
+                    if uri
+                        .as_bytes()
+                        .get(..7)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"mailto:"))
+                    {
+                        uri[7..].to_string()
+                    } else {
+                        uri.to_string()
+                    }
                 })
             })
         }
