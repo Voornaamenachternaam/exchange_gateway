@@ -510,9 +510,15 @@ async fn handle_meeting_response(
                 current_tag.clear();
             }
             Ok(Event::Text(ref t)) => {
-                let text =
-                    escape::unescape(std::str::from_utf8(t).unwrap_or("")).unwrap_or_default();
-                apply_meeting_field(&current_tag, &text, &mut uid, &mut response_code);
+                let text = String::from_utf8_lossy(t);
+                let unescaped = match escape::unescape(&text) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("MeetingResponse: failed to unescape XML text: {:?}", e);
+                        text
+                    }
+                };
+                apply_meeting_field(&current_tag, &unescaped, &mut uid, &mut response_code);
             }
             Ok(Event::CData(ref t)) => {
                 let text = String::from_utf8_lossy(t.as_ref());
