@@ -657,9 +657,17 @@ async fn handle_sync(
                     utils::escape_xml(&collection_id)
                 );
             }
+        } else {
+            tracing::warn!(
+                "Sync: missing stored SyncKey for user={}, device={}, collection={} with client SyncKey '{}' — rejecting to prevent stale/replayed command replay",
+                user, device_id, collection_id, old_sync_key
+            );
+            return format!(
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
         }
-        // If stored_state is None but old_sync_key != "0", that is handled
-        // below in the change-detection branch (falls through to full sync).
     }
 
     // Capture the JMAP state *before* processing client commands so that
