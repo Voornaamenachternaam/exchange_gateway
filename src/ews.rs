@@ -391,10 +391,15 @@ async fn handle_sync_folder_items(
     let is_initial = match (&req.sync_state, &stored) {
         (None, _) => true,
         (Some(_), None) => {
-            return soap_fault(
-                "ErrorInvalidSyncStateData",
-                "SyncState does not match; please re-sync",
+            // Server-side state was cleared (e.g. after a permanent
+            // get_calendar_changes failure).  Fall back to a full initial
+            // sync so the client can recover, consistent with
+            // handle_sync_folder_hierarchy.
+            tracing::warn!(
+                user = user, folder = %folder_id,
+                "SyncFolderItems: client sent SyncState but server state is missing; falling back to initial sync"
             );
+            true
         }
         (Some(client_token), Some(s)) => {
             if *client_token != s.sync_state {
