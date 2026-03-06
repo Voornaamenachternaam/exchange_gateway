@@ -148,9 +148,10 @@ fn extract_meta_changes(json: &serde_json::Value) -> u64 {
 }
 
 /// Atomically claim (invalidate) a SyncKey by updating the row only when the
-/// stored `sync_key` still matches `expected_key`.  Returns `true` when the
-/// claim succeeded (exactly one row was updated), and `false` when another
-/// request already consumed the key (zero rows updated).
+/// stored `sync_key` still matches `expected_key`.  Returns `Ok(true)` when
+/// the claim succeeded (exactly one row was updated), `Ok(false)` when another
+/// request already consumed the key (zero rows updated), and `Err` on
+/// transient DB / network failures.
 ///
 /// This prevents two concurrent requests carrying the same SyncKey from both
 /// passing validation: only the first one to execute the UPDATE will match.
@@ -161,7 +162,7 @@ pub async fn claim_sync_key(
     coll: &str,
     expected_key: &str,
     new_key: &str,
-) -> bool {
+) -> Result<bool, String> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "UPDATE sync_state SET sync_key = ? WHERE user_email = ? AND device_id = ? AND collection_id = ? AND sync_key = ?",
@@ -181,7 +182,7 @@ pub async fn claim_sync_key(
                 user = user, device_id = device_id, collection = coll,
                 "claim_sync_key: DB request failed: {e}"
             );
-            return false;
+            return Err(format!("DB request failed: {e}"));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -191,10 +192,10 @@ pub async fn claim_sync_key(
                 user = user, device_id = device_id, collection = coll,
                 "claim_sync_key: failed to parse DB response: {e}"
             );
-            return false;
+            return Err(format!("failed to parse DB response: {e}"));
         }
     };
-    extract_meta_changes(&json) > 0
+    Ok(extract_meta_changes(&json) > 0)
 }
 
 pub async fn update_sync_state(

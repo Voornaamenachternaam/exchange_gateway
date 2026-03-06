@@ -650,7 +650,7 @@ async fn handle_sync(
             // SyncKey issued to the client is computed later and written via
             // `update_sync_state`.
             let claim_key = Uuid::new_v4().to_string();
-            let claimed = db::claim_sync_key(
+            let claim_result = db::claim_sync_key(
                 config,
                 user,
                 device_id,
@@ -659,19 +659,36 @@ async fn handle_sync(
                 &claim_key,
             )
             .await;
-            if !claimed {
-                tracing::warn!(
-                    "Sync: SyncKey claim failed for user={}, device={}, collection={}: \
-                     client sent '{}' — another request already consumed it or the key \
-                     does not match",
-                    user, device_id, collection_id, old_sync_key
-                );
-                // Status 3 tells the client its SyncKey is invalid.
-                return format!(
-                    r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
-                    utils::escape_xml(&old_sync_key),
-                    utils::escape_xml(&collection_id)
-                );
+            match claim_result {
+                Ok(true) => { /* claim succeeded, continue */ }
+                Ok(false) => {
+                    tracing::warn!(
+                        "Sync: SyncKey claim failed for user={}, device={}, collection={}: \
+                         client sent '{}' — another request already consumed it or the key \
+                         does not match",
+                        user, device_id, collection_id, old_sync_key
+                    );
+                    // Status 3 tells the client its SyncKey is invalid.
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Sync: transient DB error during SyncKey claim for user={}, device={}, \
+                         collection={}: {} — returning server error so client retries without reset",
+                        user, device_id, collection_id, e
+                    );
+                    // Status 5 = server error — the client should retry
+                    // without discarding its local state.
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
             }
         } else {
             tracing::warn!(
