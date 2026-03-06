@@ -573,11 +573,16 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
             Ok(Event::End(_)) => {
                 current_tag.clear();
             }
-            Ok(Event::Text(t)) => {
+            Ok(Event::Text(ref t)) => {
                 if current_tag == "FreeText" {
-                    query = escape::unescape(std::str::from_utf8(&t).unwrap_or(""))
-                        .unwrap_or_default()
-                        .to_string();
+                    let text = String::from_utf8_lossy(t);
+                    query = match escape::unescape(&text) {
+                        Ok(s) => s.into_owned(),
+                        Err(e) => {
+                            tracing::warn!("Search: failed to unescape XML text: {:?}", e);
+                            text.into_owned()
+                        }
+                    };
                 }
             }
             Ok(Event::CData(t)) => {
