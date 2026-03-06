@@ -691,7 +691,7 @@ async fn handle_sync(
                 )
                 .await;
                 return format!(
-                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}</Collection></Collections></Sync>"#,
                     utils::escape_xml(&new_key),
                     utils::escape_xml(&collection_id),
                     responses_xml
