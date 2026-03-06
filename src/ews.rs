@@ -365,7 +365,16 @@ async fn handle_sync_folder_items(
         .folder_id
         .map(|f| f.id)
         .unwrap_or_else(|| "default".to_string());
-    let stored = db::get_ews_sync_state(config, user, &folder_id).await;
+    let stored = match db::get_ews_sync_state(config, user, &folder_id).await {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::error!(
+                user = user, folder = %folder_id,
+                "SyncFolderItems: failed to fetch sync state: {e}"
+            );
+            return soap_fault("ErrorInternalServerError", "Failed to read sync state");
+        }
+    };
     let current_state = match jmap_client::get_calendar_state(session).await {
         Ok(s) => s,
         Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),

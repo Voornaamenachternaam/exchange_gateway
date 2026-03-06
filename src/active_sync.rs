@@ -634,7 +634,20 @@ async fn handle_sync(
 
     // Fetch the stored sync state (SyncKey + JMAP state) *before* processing
     // client commands.  We need the JMAP state for change-detection below.
-    let stored_state = db::get_sync_state_full(config, user, device_id, &collection_id).await;
+    let stored_state = match db::get_sync_state_full(config, user, device_id, &collection_id).await {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = %collection_id,
+                "Sync: failed to fetch sync state: {e} — returning server error so client retries without reset"
+            );
+            return format!(
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
+        }
+    };
 
     // Atomically validate and claim the incoming SyncKey when the client is
     // not performing an initial sync (SyncKey "0").  The claim uses a

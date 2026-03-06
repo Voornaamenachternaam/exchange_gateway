@@ -71,13 +71,14 @@ pub struct ActiveSyncState {
 }
 
 /// Retrieve the stored JMAP state for a given user / device / collection.
-/// Returns `None` when no row exists.
+/// Returns `Ok(None)` when no row exists, `Err` on DB / network / parse
+/// failures so callers can distinguish "missing state" from transient errors.
 pub async fn get_sync_state_full(
     config: &AppConfig,
     user: &str,
     device_id: &str,
     coll: &str,
-) -> Option<ActiveSyncState> {
+) -> Result<Option<ActiveSyncState>, String> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "SELECT jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
@@ -97,7 +98,7 @@ pub async fn get_sync_state_full(
                 user = user, device_id = device_id, collection = coll,
                 "get_sync_state_full: DB request failed: {e}"
             );
-            return None;
+            return Err(format!("DB request failed: {e}"));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -107,12 +108,12 @@ pub async fn get_sync_state_full(
                 user = user, device_id = device_id, collection = coll,
                 "get_sync_state_full: failed to parse DB response: {e}"
             );
-            return None;
+            return Err(format!("failed to parse DB response: {e}"));
         }
     };
 
     match extract_first_field(&json, "jmap_state") {
-        Some(jmap_state) => Some(ActiveSyncState { jmap_state }),
+        Some(jmap_state) => Ok(Some(ActiveSyncState { jmap_state })),
         None => {
             if has_result_rows(&json) {
                 tracing::warn!(
@@ -120,7 +121,7 @@ pub async fn get_sync_state_full(
                     "get_sync_state_full: unexpected DB response format"
                 );
             }
-            None
+            Ok(None)
         }
     }
 }
@@ -255,11 +256,14 @@ pub struct EwsSyncState {
     pub jmap_state: String,
 }
 
+/// Retrieve the stored EWS sync state for a given user / folder.
+/// Returns `Ok(None)` when no row exists, `Err` on DB / network / parse
+/// failures so callers can distinguish "missing state" from transient errors.
 pub async fn get_ews_sync_state(
     config: &AppConfig,
     user: &str,
     folder: &str,
-) -> Option<EwsSyncState> {
+) -> Result<Option<EwsSyncState>, String> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "SELECT sync_state, jmap_state FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
@@ -279,7 +283,7 @@ pub async fn get_ews_sync_state(
                 user = user, folder = folder,
                 "get_ews_sync_state: DB request failed: {e}"
             );
-            return None;
+            return Err(format!("DB request failed: {e}"));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -289,24 +293,24 @@ pub async fn get_ews_sync_state(
                 user = user, folder = folder,
                 "get_ews_sync_state: failed to parse DB response: {e}"
             );
-            return None;
+            return Err(format!("failed to parse DB response: {e}"));
         }
     };
 
     let sync_state = extract_first_field(&json, "sync_state");
     let jmap_state = extract_first_field(&json, "jmap_state");
     match (sync_state, jmap_state) {
-        (Some(sync_state), Some(jmap_state)) => Some(EwsSyncState {
+        (Some(sync_state), Some(jmap_state)) => Ok(Some(EwsSyncState {
             sync_state,
             jmap_state,
-        }),
+        })),
         _ => {
             if has_result_rows(&json) {
                 tracing::warn!(
                     "get_ews_sync_state: unexpected DB response format for user and folder."
                 );
             }
-            None
+            Ok(None)
         }
     }
 }
