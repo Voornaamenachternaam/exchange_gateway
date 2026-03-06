@@ -335,11 +335,11 @@ lazy_static! {
         add!(CP_CONTACTS, 0x07, "AssistantPhoneNumber", true);
         add!(CP_CONTACTS, 0x08, "Birthday", true);
         add!(CP_CONTACTS, 0x0C, "Business2PhoneNumber", true);
-        add!(CP_CONTACTS, 0x0D, "BusinessCity", true);
-        add!(CP_CONTACTS, 0x0E, "BusinessCountry", true);
-        add!(CP_CONTACTS, 0x0F, "BusinessPostalCode", true);
-        add!(CP_CONTACTS, 0x10, "BusinessState", true);
-        add!(CP_CONTACTS, 0x11, "BusinessStreet", true);
+        add!(CP_CONTACTS, 0x0D, "BusinessAddressCity", true);
+        add!(CP_CONTACTS, 0x0E, "BusinessAddressCountry", true);
+        add!(CP_CONTACTS, 0x0F, "BusinessAddressPostalCode", true);
+        add!(CP_CONTACTS, 0x10, "BusinessAddressState", true);
+        add!(CP_CONTACTS, 0x11, "BusinessAddressStreet", true);
         add!(CP_CONTACTS, 0x12, "BusinessFaxNumber", true);
         add!(CP_CONTACTS, 0x13, "BusinessPhoneNumber", true);
         add!(CP_CONTACTS, 0x17, "CompanyName", true);
