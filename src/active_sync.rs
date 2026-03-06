@@ -241,10 +241,15 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             }
             Ok(Event::Text(t)) => {
                 if in_mime {
-                    mime_content.push_str(
-                        &escape::unescape(std::str::from_utf8(&t).unwrap_or(""))
-                            .unwrap_or_default(),
-                    );
+                    let text = String::from_utf8_lossy(&t);
+                    let unescaped = match escape::unescape(&text) {
+                        Ok(s) => s.into_owned(),
+                        Err(e) => {
+                            tracing::warn!("SendMail: failed to unescape XML text: {:?}", e);
+                            text.into_owned()
+                        }
+                    };
+                    mime_content.push_str(&unescaped);
                 }
             }
             Ok(Event::CData(t)) => {
