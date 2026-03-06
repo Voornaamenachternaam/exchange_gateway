@@ -633,22 +633,38 @@ async fn handle_sync(
     let has_client_commands = coll.commands.is_some();
 
     // Fetch the stored sync state (SyncKey + JMAP state) *before* processing
-    // client commands.  We need the stored SyncKey to validate the incoming
-    // key so that stale or replayed requests cannot mutate data.
+    // client commands.  We need the JMAP state for change-detection below.
     let stored_state = db::get_sync_state_full(config, user, device_id, &collection_id).await;
 
-    // Validate the incoming SyncKey against the server-stored SyncKey when the
-    // client is not performing an initial sync (SyncKey "0").  ActiveSync
-    // Status 3 = "Invalid or mismatched SyncKey" — the device must re-issue a
-    // SyncKey 0 (full re-sync) to recover.
+    // Atomically validate and claim the incoming SyncKey when the client is
+    // not performing an initial sync (SyncKey "0").  The claim uses a
+    // conditional UPDATE (WHERE sync_key = <expected>) so that only one
+    // concurrent request can succeed — the DB row is the single source of
+    // truth and acts as a compare-and-swap guard.
+    //
+    // ActiveSync Status 3 = "Invalid or mismatched SyncKey" — the device
+    // must re-issue a SyncKey 0 (full re-sync) to recover.
     if old_sync_key != "0" {
-        if let Some(ref ss) = stored_state {
-            if ss.sync_key != old_sync_key {
+        if stored_state.is_some() {
+            // Generate a temporary placeholder key for the claim.  The final
+            // SyncKey issued to the client is computed later and written via
+            // `update_sync_state`.
+            let claim_key = Uuid::new_v4().to_string();
+            let claimed = db::claim_sync_key(
+                config,
+                user,
+                device_id,
+                &collection_id,
+                &old_sync_key,
+                &claim_key,
+            )
+            .await;
+            if !claimed {
                 tracing::warn!(
-                    "Sync: SyncKey mismatch for user={}, device={}, collection={}: \
-                     client sent '{}' but server stored '{}' — rejecting to prevent \
-                     stale/replayed command replay",
-                    user, device_id, collection_id, old_sync_key, ss.sync_key
+                    "Sync: SyncKey claim failed for user={}, device={}, collection={}: \
+                     client sent '{}' — another request already consumed it or the key \
+                     does not match",
+                    user, device_id, collection_id, old_sync_key
                 );
                 // Status 3 tells the client its SyncKey is invalid.
                 return format!(

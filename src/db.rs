@@ -65,26 +65,13 @@ pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
         .await;
 }
 
-/// Stored ActiveSync sync state: the SyncKey issued to the client and the
-/// corresponding JMAP state used to compute deltas.
+/// Stored ActiveSync sync state: the JMAP state used to compute deltas.
 pub struct ActiveSyncState {
-    pub sync_key: String,
     pub jmap_state: String,
 }
 
-pub async fn get_sync_state(
-    config: &AppConfig,
-    user: &str,
-    device_id: &str,
-    coll: &str,
-) -> Option<String> {
-    get_sync_state_full(config, user, device_id, coll)
-        .await
-        .map(|s| s.jmap_state)
-}
-
-/// Retrieve the full sync state (SyncKey + JMAP state) for a given
-/// user / device / collection.  Returns `None` when no row exists.
+/// Retrieve the stored JMAP state for a given user / device / collection.
+/// Returns `None` when no row exists.
 pub async fn get_sync_state_full(
     config: &AppConfig,
     user: &str,
@@ -93,7 +80,7 @@ pub async fn get_sync_state_full(
 ) -> Option<ActiveSyncState> {
     let client = reqwest::Client::new();
     let body = json!({
-        "query": "SELECT sync_key, jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
+        "query": "SELECT jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
         "params": [user, device_id, coll]
     });
     let res = match client
@@ -124,14 +111,9 @@ pub async fn get_sync_state_full(
         }
     };
 
-    let sync_key = extract_first_field(&json, "sync_key");
-    let jmap_state = extract_first_field(&json, "jmap_state");
-    match (sync_key, jmap_state) {
-        (Some(sync_key), Some(jmap_state)) => Some(ActiveSyncState {
-            sync_key,
-            jmap_state,
-        }),
-        _ => {
+    match extract_first_field(&json, "jmap_state") {
+        Some(jmap_state) => Some(ActiveSyncState { jmap_state }),
+        None => {
             if has_result_rows(&json) {
                 tracing::warn!(
                     user = user, device_id = device_id, collection = coll,
@@ -141,6 +123,78 @@ pub async fn get_sync_state_full(
             None
         }
     }
+}
+
+/// Extract the `meta.changes` count from a D1 API response.  Returns `0`
+/// when the field is missing or the response format is unrecognised, so
+/// callers can safely treat the absence of the field as "no rows changed".
+fn extract_meta_changes(json: &serde_json::Value) -> u64 {
+    // New format: { "result": [ { "meta": { "changes": N } } ] }
+    if let Some(n) = json
+        .get("result")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("meta"))
+        .and_then(|m| m.get("changes"))
+        .and_then(|v| v.as_u64())
+    {
+        return n;
+    }
+    // Legacy format: [ { "meta": { "changes": N } } ]
+    json.get(0)
+        .and_then(|r| r.get("meta"))
+        .and_then(|m| m.get("changes"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+/// Atomically claim (invalidate) a SyncKey by updating the row only when the
+/// stored `sync_key` still matches `expected_key`.  Returns `true` when the
+/// claim succeeded (exactly one row was updated), and `false` when another
+/// request already consumed the key (zero rows updated).
+///
+/// This prevents two concurrent requests carrying the same SyncKey from both
+/// passing validation: only the first one to execute the UPDATE will match.
+pub async fn claim_sync_key(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    coll: &str,
+    expected_key: &str,
+    new_key: &str,
+) -> bool {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "query": "UPDATE sync_state SET sync_key = ? WHERE user_email = ? AND device_id = ? AND collection_id = ? AND sync_key = ?",
+        "params": [new_key, user, device_id, coll, expected_key]
+    });
+    let res = match client
+        .post(&config.db_api_url)
+        .bearer_auth(&config.db_auth_token)
+        .json(&body)
+        .send()
+        .await
+        .and_then(|res| res.error_for_status())
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "claim_sync_key: DB request failed: {e}"
+            );
+            return false;
+        }
+    };
+    let json: serde_json::Value = match res.json().await {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "claim_sync_key: failed to parse DB response: {e}"
+            );
+            return false;
+        }
+    };
+    extract_meta_changes(&json) > 0
 }
 
 pub async fn update_sync_state(
