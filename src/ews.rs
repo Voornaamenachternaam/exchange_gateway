@@ -20,7 +20,10 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     let (user, pass) = utils::decode_basic_auth(auth);
     let session = match jmap_client::get_session(&config.jmap_url, &user, &pass).await {
         Ok(s) => s,
-        Err(_) => return soap_fault("ErrorInternalServerError", "Auth Failed"),
+        Err(e) => {
+            tracing::error!("JMAP Auth failed: {}", e);
+            return soap_fault("ErrorInternalServerError", "Auth Failed");
+        }
     };
     let action = extract_action_name(xml);
     tracing::info!("EWS Request: {}", action);
