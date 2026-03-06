@@ -932,12 +932,15 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             continue;
         }
 
-        // Handle LITERAL (0x04), LITERAL_C (0x44), LITERAL_A (0x84), LITERAL_AC (0xC4) tokens
-        if token == 0x04 || token == 0x44 || token == 0x84 || token == 0xC4 {
+        // Reject unsupported WBXML global tokens (ENTITY, EXT_I, EXT_T, EXT, etc.)
+        // before they fall through to the tag-token handler which would misparse them.
         if matches!(token, 0x02 | 0x40..=0x43 | 0x80..=0x82 | 0xC0..=0xC2) {
             return Err(format!("Unsupported WBXML global token: 0x{:02X}", token));
         }
-        let has_content = (token & 0x40) != 0;
+
+        // Handle LITERAL (0x04), LITERAL_C (0x44), LITERAL_A (0x84), LITERAL_AC (0xC4) tokens
+        if token == 0x04 || token == 0x44 || token == 0x84 || token == 0xC4 {
+            let has_content = (token & 0x40) != 0;
             let has_attrs = (token & 0x80) != 0;
             let offset = read_mb_u_int32(data, &mut pos)?;
             let tag_name = read_strtbl_string(strtbl, offset)?;
