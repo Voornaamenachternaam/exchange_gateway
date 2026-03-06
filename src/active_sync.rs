@@ -376,13 +376,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             }
         };
 
-        let smtp_url = match url::Url::parse(&config.smtp_url) {
-            Ok(u) => u,
-            Err(e) => {
-                tracing::error!("Invalid SMTP URL: {}", e);
-                return SEND_MAIL_ERROR.to_string();
-            }
-        };
+        let smtp_url = &config.smtp_url;
 
         let smtp_host = match smtp_url.host_str() {
             Some(h) => h,
