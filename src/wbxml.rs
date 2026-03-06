@@ -1106,10 +1106,19 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 // Determine the effective page: explicit prefix wins, otherwise
                 // inherit the parent's scope page so unprefixed siblings stay in
                 // the correct namespace even after a WBXML page switch.
-                let scope_page = prefix
-                    .and_then(|p| PREFIX_TO_PAGE.get(p).copied())
-                    .or_else(|| scope_page_stack.last().copied());
-                if !encode_tag(&mut body, local, &mut current_page, true, scope_page) {
+                // If a prefix is present but unrecognized, the tag belongs to a
+                // namespace we don't have a code page for — encode as LITERAL
+                // instead of falling back to the parent scope or current page.
+                let resolved_prefix_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
+                let has_unknown_prefix = prefix.is_some() && resolved_prefix_page.is_none();
+                let scope_page = if prefix.is_some() {
+                    resolved_prefix_page
+                } else {
+                    scope_page_stack.last().copied()
+                };
+                if has_unknown_prefix
+                    || !encode_tag(&mut body, local, &mut current_page, true, scope_page)
+                {
                     encode_literal_tag(&mut body, local, true, &mut strtbl_index, &mut strtbl);
                 }
                 // Push the resolved scope page (or current_page as fallback).
@@ -1118,10 +1127,16 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
             Ok(quick_xml::events::Event::Empty(ref e)) => {
                 let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let (prefix, local) = split_prefix(&full_name);
-                let scope_page = prefix
-                    .and_then(|p| PREFIX_TO_PAGE.get(p).copied())
-                    .or_else(|| scope_page_stack.last().copied());
-                if !encode_tag(&mut body, local, &mut current_page, false, scope_page) {
+                let resolved_prefix_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
+                let has_unknown_prefix = prefix.is_some() && resolved_prefix_page.is_none();
+                let scope_page = if prefix.is_some() {
+                    resolved_prefix_page
+                } else {
+                    scope_page_stack.last().copied()
+                };
+                if has_unknown_prefix
+                    || !encode_tag(&mut body, local, &mut current_page, false, scope_page)
+                {
                     encode_literal_tag(&mut body, local, false, &mut strtbl_index, &mut strtbl);
                 }
             }
@@ -1198,5 +1213,125 @@ fn encode_tag(
         true
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that a tag with an explicitly-prefixed but *unrecognized* namespace
+    /// is encoded as a LITERAL rather than being silently resolved via the parent
+    /// scope's code page.
+    ///
+    /// Before the fix, `<FakeNS:Type>` inside a Calendar-scoped parent would
+    /// inherit the Calendar page and encode `Type` as Calendar:Type (page 4).
+    /// After the fix, the unknown prefix means `scope_page` is `None` and `Type`
+    /// (which is ambiguous across multiple code pages) cannot be resolved by
+    /// `encode_tag`, so it falls through to a LITERAL encoding.
+    #[test]
+    fn unknown_prefix_does_not_inherit_parent_scope() {
+        // Build XML: a Calendar-scoped parent wrapping a child with an unknown
+        // prefix that shares an ambiguous tag name ("Type" exists on pages 4 & 17).
+        let xml = "<Calendar:Recurrence><FakeNS:Type>5</FakeNS:Type></Calendar:Recurrence>";
+        let encoded = encode(xml).expect("encode should succeed");
+
+        // The WBXML body starts after the 4-byte header + string-table length.
+        // Find the string table length (mb_u_int32 at offset 3).
+        let mut pos = 3;
+        let mut strtbl_len: usize = 0;
+        loop {
+            let b = encoded[pos];
+            pos += 1;
+            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        let body_start = pos + strtbl_len;
+
+        // Scan the WBXML body for a LITERAL_C token (0x44), which signals the
+        // encoder used a string-table reference instead of a known code-page
+        // token for the inner "Type" tag.
+        let body = &encoded[body_start..];
+        let has_literal = body.contains(&0x44u8);
+        assert!(
+            has_literal,
+            "Expected a LITERAL_C (0x44) token for the unknown-prefixed 'Type' tag, \
+             but the encoder resolved it to a code-page token (wrong scope inheritance). \
+             Body bytes: {:02X?}",
+            body,
+        );
+    }
+
+    /// Ensure that a tag with a *known* prefix still encodes correctly when it
+    /// differs from the parent scope (regression guard for the happy path).
+    #[test]
+    fn known_prefix_overrides_parent_scope() {
+        // "Type" with AirSyncBase prefix inside a Calendar parent should switch
+        // to page 17, not stay on page 4.
+        let xml = "<Calendar:Recurrence><AirSyncBase:Type>2</AirSyncBase:Type></Calendar:Recurrence>";
+        let encoded = encode(xml).expect("encode should succeed");
+        let decoded = decode(&encoded).expect("round-trip decode should succeed");
+
+        // After round-trip, both tags must be present (unprefixed, since WBXML
+        // decoding strips namespace prefixes).
+        assert!(decoded.contains("<Recurrence>"), "decoded={}", decoded);
+        assert!(decoded.contains("<Type>"), "decoded={}", decoded);
+
+        // Verify the body contains a page switch to 17 (AirSyncBase).
+        let mut pos = 3;
+        let mut strtbl_len: usize = 0;
+        loop {
+            let b = encoded[pos];
+            pos += 1;
+            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        let body = &encoded[pos + strtbl_len..];
+
+        // Look for SWITCH_PAGE (0x00) followed by page 17 (0x11).
+        let has_page_switch = body
+            .windows(2)
+            .any(|w| w[0] == TAG_SWITCH_PAGE && w[1] == CP_AIRSYNCBASE);
+        assert!(
+            has_page_switch,
+            "Expected a page switch to AirSyncBase (page 17). Body: {:02X?}",
+            body,
+        );
+    }
+
+    /// Tags with no prefix inside a scoped parent should still inherit the
+    /// parent's page (the normal scope-inheritance path must keep working).
+    #[test]
+    fn unprefixed_child_inherits_parent_scope() {
+        let xml = "<Calendar:Recurrence><Type>1</Type></Calendar:Recurrence>";
+        let encoded = encode(xml).expect("encode should succeed");
+        let decoded = decode(&encoded).expect("round-trip decode should succeed");
+        assert!(decoded.contains("<Recurrence>"), "decoded={}", decoded);
+        assert!(decoded.contains("<Type>"), "decoded={}", decoded);
+
+        // The body should NOT contain a LITERAL_C since "Type" should resolve
+        // on the inherited Calendar page.
+        let mut pos = 3;
+        let mut strtbl_len: usize = 0;
+        loop {
+            let b = encoded[pos];
+            pos += 1;
+            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        let body = &encoded[pos + strtbl_len..];
+        let has_literal = body.contains(&0x44u8);
+        assert!(
+            !has_literal,
+            "Unprefixed 'Type' inside Calendar scope should NOT use LITERAL encoding. \
+             Body: {:02X?}",
+            body,
+        );
     }
 }
