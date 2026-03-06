@@ -785,11 +785,12 @@ async fn handle_sync(
                     //      could retry with SyncKey "0" again, replaying its
                     //      commands in a loop.
                     //
-                    // Instead, persist the pre-command JMAP state with a new
-                    // SyncKey so the client advances past SyncKey "0"
-                    // (preventing command replay).  The next sync will then
-                    // hit the initial-sync full-fetch path without client
-                    // commands, picking up all events cleanly.
+                    // Persist an empty JMAP state sentinel with a new SyncKey
+                    // so the client advances past SyncKey "0" (preventing
+                    // command replay).  The empty sentinel causes the next
+                    // sync to take the full-fetch path (see prev_state
+                    // filtering below), ensuring pre-existing calendar events
+                    // are delivered to the device.
                     let new_key = Uuid::new_v4().to_string();
                     tracing::warn!(
                         "Sync: post-command JMAP state fetch failed during initial sync \
@@ -804,7 +805,7 @@ async fn handle_sync(
                         device_id,
                         &collection_id,
                         &new_key,
-                        &pre_command_jmap_state,
+                        "",
                     )
                     .await;
                     return format!(
@@ -842,7 +843,13 @@ async fn handle_sync(
         pre_command_jmap_state.clone()
     };
 
-    let prev_state = stored_state.map(|s| s.jmap_state);
+    // Map stored JMAP state to `None` when it is the empty sentinel written
+    // after a failed post-command state fetch during initial sync.  This
+    // ensures the next sync takes the full-fetch path instead of the
+    // change-detection path, so pre-existing calendar events are delivered.
+    let prev_state = stored_state
+        .map(|s| s.jmap_state)
+        .filter(|s| !s.is_empty());
 
     // Detect changes since the last sync.  When client commands were
     // processed, the changes may include the client's own writes — this is
