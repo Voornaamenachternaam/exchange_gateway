@@ -268,13 +268,13 @@ pub async fn delete_sync_state(
     user: &str,
     device_id: &str,
     coll: &str,
-) {
+) -> Result<(), String> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "DELETE FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
         "params": [user, device_id, coll]
     });
-    match client
+    let res = match client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
@@ -282,14 +282,33 @@ pub async fn delete_sync_state(
         .await
         .and_then(|res| res.error_for_status())
     {
-        Ok(_) => {}
+        Ok(res) => res,
         Err(e) => {
             tracing::error!(
                 user = user, device_id = device_id, collection = coll,
                 "delete_sync_state failed: {e}"
             );
+            return Err(format!("DB request failed: {e}"));
         }
+    };
+    let json: serde_json::Value = match res.json().await {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "delete_sync_state: failed to parse DB response: {e}"
+            );
+            return Err(format!("failed to parse DB response: {e}"));
+        }
+    };
+    if let Err(reason) = check_db_success(&json) {
+        tracing::error!(
+            user = user, device_id = device_id, collection = coll,
+            "delete_sync_state: {reason}"
+        );
+        return Err(reason);
     }
+    Ok(())
 }
 
 /// Stored EWS sync state: the token issued to the client and the corresponding
@@ -369,13 +388,17 @@ pub async fn get_ews_sync_state(
     }
 }
 
-pub async fn delete_ews_sync_state(config: &AppConfig, user: &str, folder: &str) {
+pub async fn delete_ews_sync_state(
+    config: &AppConfig,
+    user: &str,
+    folder: &str,
+) -> Result<(), String> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "DELETE FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
         "params": [user, folder]
     });
-    match client
+    let res = match client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
@@ -383,14 +406,33 @@ pub async fn delete_ews_sync_state(config: &AppConfig, user: &str, folder: &str)
         .await
         .and_then(|res| res.error_for_status())
     {
-        Ok(_) => {}
+        Ok(res) => res,
         Err(e) => {
             tracing::error!(
                 user = user, folder = folder,
                 "delete_ews_sync_state failed: {e}"
             );
+            return Err(format!("DB request failed: {e}"));
         }
+    };
+    let json: serde_json::Value = match res.json().await {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(
+                user = user, folder = folder,
+                "delete_ews_sync_state: failed to parse DB response: {e}"
+            );
+            return Err(format!("failed to parse DB response: {e}"));
+        }
+    };
+    if let Err(reason) = check_db_success(&json) {
+        tracing::error!(
+            user = user, folder = folder,
+            "delete_ews_sync_state: {reason}"
+        );
+        return Err(reason);
     }
+    Ok(())
 }
 
 pub async fn update_ews_sync_state(

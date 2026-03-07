@@ -1537,13 +1537,16 @@ async fn handle_sync_change_error(
         tracing::error!(
             "{label} failed (non-transient), deleting sync state to force re-sync: {error}"
         );
-        db::delete_sync_state(
+        if let Err(e) = db::delete_sync_state(
             ctx.config,
             ctx.user,
             ctx.device_id,
             ctx.collection_id,
         )
-        .await;
+        .await
+        {
+            tracing::error!("{label} additionally failed to delete sync state: {e}");
+        }
     }
     error_xml(500, "CalendarChangesError")
 }

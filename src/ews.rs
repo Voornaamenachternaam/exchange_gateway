@@ -460,7 +460,9 @@ async fn handle_sync_folder_items(
                 // etc.) – clear stored state so the client's next request
                 // triggers a proper initial (full) sync.
                 tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
-                db::delete_ews_sync_state(config, user, &folder_id).await;
+                if let Err(del_err) = db::delete_ews_sync_state(config, user, &folder_id).await {
+                    tracing::error!("additionally failed to delete EWS sync state: {}", del_err);
+                }
                 return soap_fault("ErrorInvalidSyncStateData", "Sync state expired, please re-sync");
             }
         };
