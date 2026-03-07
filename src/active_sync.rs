@@ -191,7 +191,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     };
 
     match command.as_str() {
-        "FolderSync" => handle_folder_sync(&session, config, &user, device_id).await,
+        "FolderSync" => handle_folder_sync(&session, config, &user, device_id, xml).await,
         "Sync" => {
             let req: SyncRequest = match quick_xml::de::from_str(xml) {
                 Ok(r) => r,
@@ -1606,14 +1606,40 @@ async fn handle_settings(
 async fn handle_ping() -> String {
     r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
 }
+/// FolderSync request — we only need the SyncKey from the client.
+#[derive(Debug, Deserialize)]
+struct FolderSyncRequest {
+    #[serde(rename = "SyncKey")]
+    sync_key: String,
+}
+
 async fn handle_folder_sync(
     session: &jmap_client::JmapSession,
     config: &AppConfig,
     user: &str,
     device_id: &str,
+    xml: &str,
 ) -> String {
     db::register_device(config, user, device_id).await;
 
+    let incoming_key = quick_xml::de::from_str::<FolderSyncRequest>(xml)
+        .map(|r| r.sync_key)
+        .unwrap_or_default();
+
+    // The folder hierarchy is static (single calendar), so we use a fixed
+    // non-zero SyncKey.  When the client already holds this key we return an
+    // empty change set so it skips a redundant full folder re-sync.
+    const FOLDER_SYNC_KEY: &str = "1";
+
+    if incoming_key == FOLDER_SYNC_KEY {
+        // Client is up-to-date — no folder changes.
+        return format!(
+            r#"<FolderSync xmlns="AirSync:"><Status>1</Status><SyncKey>{}</SyncKey><Changes><Count>0</Count></Changes></FolderSync>"#,
+            FOLDER_SYNC_KEY
+        );
+    }
+
+    // Initial sync (SyncKey "0" or unknown) — return the full folder list.
     let cal_id = match jmap_client::get_default_calendar_id(session).await {
         Ok(id) => id,
         Err(e) => {
@@ -1623,7 +1649,8 @@ async fn handle_folder_sync(
     };
 
     format!(
-        r#"<FolderSync xmlns="AirSync:"><Status>1</Status><Collections><Collection><SyncKey>0</SyncKey><Changes><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></Collection></Collections></FolderSync>"#,
+        r#"<FolderSync xmlns="AirSync:"><Status>1</Status><SyncKey>{}</SyncKey><Changes><Count>1</Count><Add><ServerId>{}</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></FolderSync>"#,
+        FOLDER_SYNC_KEY,
         utils::escape_xml(&cal_id)
     )
 }
