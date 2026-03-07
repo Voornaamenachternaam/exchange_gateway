@@ -257,7 +257,22 @@ pub async fn claim_sync_key(
         );
         return Err(reason);
     }
-    let changes = extract_meta_changes(&json).ok_or(DbError::UnexpectedFormat)?;
+    let changes = match extract_meta_changes(&json) {
+        Some(n) => n,
+        None => {
+            // The DB confirmed the query succeeded (`check_db_success` passed)
+            // but the response lacks the `meta.changes` field.  Assume the
+            // UPDATE went through — returning an error here would cause the
+            // caller to tell the client to retry with the old SyncKey, which
+            // no longer exists in the DB, forcing an unnecessary full re-sync.
+            tracing::warn!(
+                user = user, device_id = device_id, collection = coll,
+                "claim_sync_key: meta.changes missing from successful DB response; \
+                 assuming update was applied"
+            );
+            return Ok(true);
+        }
+    };
     Ok(changes > 0)
 }
 
