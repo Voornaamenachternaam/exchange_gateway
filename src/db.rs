@@ -128,10 +128,10 @@ pub async fn get_sync_state_full(
     }
 }
 
-/// Extract the `meta.changes` count from a D1 API response.  Returns `0`
+/// Extract the `meta.changes` count from a D1 API response.  Returns `None`
 /// when the field is missing or the response format is unrecognised, so
-/// callers can safely treat the absence of the field as "no rows changed".
-fn extract_meta_changes(json: &serde_json::Value) -> u64 {
+/// callers can distinguish "no meta field" from an explicit zero.
+fn extract_meta_changes(json: &serde_json::Value) -> Option<u64> {
     // New format: { "result": [ { "meta": { "changes": N } } ] }
     if let Some(n) = json
         .get("result")
@@ -140,14 +140,13 @@ fn extract_meta_changes(json: &serde_json::Value) -> u64 {
         .and_then(|m| m.get("changes"))
         .and_then(|v| v.as_u64())
     {
-        return n;
+        return Some(n);
     }
     // Legacy format: [ { "meta": { "changes": N } } ]
     json.get(0)
         .and_then(|r| r.get("meta"))
         .and_then(|m| m.get("changes"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(0)
 }
 
 /// Atomically claim (invalidate) a SyncKey by updating the row only when the
@@ -198,18 +197,7 @@ pub async fn claim_sync_key(
             return Err(format!("failed to parse DB response: {e}"));
         }
     };
-    let changes = json
-        .get("result")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("meta"))
-        .and_then(|m| m.get("changes"))
-        .and_then(|v| v.as_u64())
-        .or_else(|| {
-            json.get(0)
-                .and_then(|r| r.get("meta"))
-                .and_then(|m| m.get("changes"))
-                .and_then(|v| v.as_u64())
-        })
+    let changes = extract_meta_changes(&json)
         .ok_or_else(|| "claim_sync_key: unexpected DB response format".to_string())?;
     Ok(changes > 0)
 }
