@@ -314,23 +314,23 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         .captures(&mime_content)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
-    let from_addr = re_from
+    let from_header = re_from
         .captures(&mime_content)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
     // Verify the From address matches the authenticated user to prevent spoofing
-    let from_addr = match from_addr {
+    let from_addr_str = match from_header {
         Some(f) => f,
         None => {
             tracing::warn!("SendMail: Missing From header");
             return SEND_MAIL_ERROR.to_string();
         }
     };
-    let from_mailbox = match from_addr.parse::<lettre::message::Mailbox>() {
+    let from_mailbox = match from_addr_str.parse::<lettre::message::Mailbox>() {
         Ok(mb) => mb,
         Err(e) => {
-            tracing::warn!("SendMail: Malformed From header '{}': {}", from_addr, e);
+            tracing::warn!("SendMail: Malformed From header '{}': {}", from_addr_str, e);
             return SEND_MAIL_ERROR.to_string();
         }
     };
@@ -357,9 +357,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         );
         return SEND_MAIL_ERROR.to_string();
     }
-    let from_addr = Some(from_mailbox);
-
-    let status = if let (Some(to), Some(from_mailbox)) = (to_addr, from_addr) {
+    let status = if let Some(to) = to_addr {
         let subject = re_subj
             .captures(&mime_content)
             .and_then(|c| c.get(1))
