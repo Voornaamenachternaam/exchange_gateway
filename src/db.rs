@@ -1,6 +1,18 @@
 use crate::config::AppConfig;
 use serde_json::json;
 
+#[derive(Debug, thiserror::Error)]
+pub enum DbError {
+    #[error("DB request failed: {0}")]
+    Request(#[from] reqwest::Error),
+    #[error("failed to parse DB response: {0}")]
+    Parse(reqwest::Error),
+    #[error("DB query failed: {0}")]
+    Query(String),
+    #[error("unexpected DB response format")]
+    UnexpectedFormat,
+}
+
 /// Extract a field from the first row of a DB API response.
 /// Supports both the Worker wrapper format `{ "result": [ { "results": [...] } ] }`
 /// and the legacy direct-array format `[ { "results": [...] } ]`.
@@ -78,7 +90,7 @@ pub async fn get_sync_state_full(
     user: &str,
     device_id: &str,
     coll: &str,
-) -> Result<Option<ActiveSyncState>, String> {
+) -> Result<Option<ActiveSyncState>, DbError> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "SELECT jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
@@ -98,7 +110,7 @@ pub async fn get_sync_state_full(
                 user = user, device_id = device_id, collection = coll,
                 "get_sync_state_full: DB request failed: {e}"
             );
-            return Err(format!("DB request failed: {e}"));
+            return Err(DbError::Request(e));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -108,7 +120,7 @@ pub async fn get_sync_state_full(
                 user = user, device_id = device_id, collection = coll,
                 "get_sync_state_full: failed to parse DB response: {e}"
             );
-            return Err(format!("failed to parse DB response: {e}"));
+            return Err(DbError::Parse(e));
         }
     };
 
@@ -128,7 +140,7 @@ pub async fn get_sync_state_full(
                     user = user, device_id = device_id, collection = coll,
                     "get_sync_state_full: unexpected DB response format"
                 );
-                Err("unexpected DB response format".to_string())
+                Err(DbError::UnexpectedFormat)
             } else {
                 Ok(None)
             }
@@ -143,7 +155,7 @@ pub async fn get_sync_state_full(
 ///
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
-fn check_db_success(json: &serde_json::Value) -> Result<(), String> {
+fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     // New format: { "success": true/false, "result": [...], ... }
     if let Some(flag) = json.get("success") {
         if flag.as_bool() != Some(true) {
@@ -154,7 +166,7 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), String> {
                 .and_then(|e| e.get("message"))
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error");
-            return Err(format!("DB query failed: {detail}"));
+            return Err(DbError::Query(detail.to_owned()));
         }
     }
     // Legacy array format – no top-level success flag; treat as OK.
@@ -164,7 +176,7 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), String> {
         .and_then(|s| s.as_bool())
         == Some(false)
     {
-        return Err("DB query failed".to_string());
+        return Err(DbError::Query("DB query failed".to_owned()));
     }
     Ok(())
 }
@@ -205,7 +217,7 @@ pub async fn claim_sync_key(
     coll: &str,
     expected_key: &str,
     new_key: &str,
-) -> Result<bool, String> {
+) -> Result<bool, DbError> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "UPDATE sync_state SET sync_key = ? WHERE user_email = ? AND device_id = ? AND collection_id = ? AND sync_key = ?",
@@ -225,7 +237,7 @@ pub async fn claim_sync_key(
                 user = user, device_id = device_id, collection = coll,
                 "claim_sync_key: DB request failed: {e}"
             );
-            return Err(format!("DB request failed: {e}"));
+            return Err(DbError::Request(e));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -235,7 +247,7 @@ pub async fn claim_sync_key(
                 user = user, device_id = device_id, collection = coll,
                 "claim_sync_key: failed to parse DB response: {e}"
             );
-            return Err(format!("failed to parse DB response: {e}"));
+            return Err(DbError::Parse(e));
         }
     };
     if let Err(reason) = check_db_success(&json) {
@@ -245,8 +257,7 @@ pub async fn claim_sync_key(
         );
         return Err(reason);
     }
-    let changes = extract_meta_changes(&json)
-        .ok_or_else(|| "claim_sync_key: unexpected DB response format".to_string())?;
+    let changes = extract_meta_changes(&json).ok_or(DbError::UnexpectedFormat)?;
     Ok(changes > 0)
 }
 
@@ -276,7 +287,7 @@ pub async fn delete_sync_state(
     user: &str,
     device_id: &str,
     coll: &str,
-) -> Result<(), String> {
+) -> Result<(), DbError> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "DELETE FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
@@ -296,7 +307,7 @@ pub async fn delete_sync_state(
                 user = user, device_id = device_id, collection = coll,
                 "delete_sync_state failed: {e}"
             );
-            return Err(format!("DB request failed: {e}"));
+            return Err(DbError::Request(e));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -306,7 +317,7 @@ pub async fn delete_sync_state(
                 user = user, device_id = device_id, collection = coll,
                 "delete_sync_state: failed to parse DB response: {e}"
             );
-            return Err(format!("failed to parse DB response: {e}"));
+            return Err(DbError::Parse(e));
         }
     };
     if let Err(reason) = check_db_success(&json) {
@@ -333,7 +344,7 @@ pub async fn get_ews_sync_state(
     config: &AppConfig,
     user: &str,
     folder: &str,
-) -> Result<Option<EwsSyncState>, String> {
+) -> Result<Option<EwsSyncState>, DbError> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "SELECT sync_state, jmap_state FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
@@ -353,7 +364,7 @@ pub async fn get_ews_sync_state(
                 user = user, folder = folder,
                 "get_ews_sync_state: DB request failed: {e}"
             );
-            return Err(format!("DB request failed: {e}"));
+            return Err(DbError::Request(e));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -363,7 +374,7 @@ pub async fn get_ews_sync_state(
                 user = user, folder = folder,
                 "get_ews_sync_state: failed to parse DB response: {e}"
             );
-            return Err(format!("failed to parse DB response: {e}"));
+            return Err(DbError::Parse(e));
         }
     };
 
@@ -388,7 +399,7 @@ pub async fn get_ews_sync_state(
                     user = user, folder = folder,
                     "get_ews_sync_state: unexpected DB response format"
                 );
-                Err("unexpected DB response format".to_string())
+                Err(DbError::UnexpectedFormat)
             } else {
                 Ok(None)
             }
@@ -400,7 +411,7 @@ pub async fn delete_ews_sync_state(
     config: &AppConfig,
     user: &str,
     folder: &str,
-) -> Result<(), String> {
+) -> Result<(), DbError> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "DELETE FROM ews_sync_state WHERE user_email = ? AND folder_id = ?",
@@ -420,7 +431,7 @@ pub async fn delete_ews_sync_state(
                 user = user, folder = folder,
                 "delete_ews_sync_state failed: {e}"
             );
-            return Err(format!("DB request failed: {e}"));
+            return Err(DbError::Request(e));
         }
     };
     let json: serde_json::Value = match res.json().await {
@@ -430,7 +441,7 @@ pub async fn delete_ews_sync_state(
                 user = user, folder = folder,
                 "delete_ews_sync_state: failed to parse DB response: {e}"
             );
-            return Err(format!("failed to parse DB response: {e}"));
+            return Err(DbError::Parse(e));
         }
     };
     if let Err(reason) = check_db_success(&json) {
@@ -449,7 +460,7 @@ pub async fn update_ews_sync_state(
     folder: &str,
     state: &str,
     jmap_state: &str,
-) -> Result<(), String> {
+) -> Result<(), DbError> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "INSERT OR REPLACE INTO ews_sync_state (user_email, folder_id, sync_state, jmap_state) VALUES (?, ?, ?, ?)",
@@ -460,13 +471,9 @@ pub async fn update_ews_sync_state(
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {e}"))?
+        .await?
         .error_for_status()
-        .map_err(|e| format!("HTTP error status: {e}"))?;
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse DB response: {e}"))?;
+        .map_err(DbError::Request)?;
+    let json: serde_json::Value = resp.json().await.map_err(DbError::Parse)?;
     check_db_success(&json)
 }
