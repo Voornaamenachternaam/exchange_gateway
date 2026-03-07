@@ -363,11 +363,15 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-        let body_start = mime_content.find("\r\n\r\n").unwrap_or(0);
+        let body_start = mime_content
+            .find("\r\n\r\n")
+            .or_else(|| mime_content.find("\n\n"))
+            .unwrap_or(0);
         let clean_body = mime_content
             .split_at(body_start)
             .1
-            .trim_start_matches("\r\n\r\n");
+            .trim_start_matches("\r\n")
+            .trim_start_matches('\n');
 
         // Parse potentially multiple To: addresses using RFC 5322 mailbox-list
         // parsing. Naive comma-splitting breaks quoted display names such as
