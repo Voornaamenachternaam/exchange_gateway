@@ -938,7 +938,11 @@ async fn handle_sync(
                             device_id,
                             &collection_id,
                             &new_key,
-                            &stored_jmap_state,
+                            if old_sync_key == "0" {
+                                ""
+                            } else {
+                                &stored_jmap_state
+                            },
                         )
                         .await;
                         return format!(
