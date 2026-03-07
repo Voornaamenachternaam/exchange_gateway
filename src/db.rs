@@ -158,6 +158,14 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), String> {
         }
     }
     // Legacy array format – no top-level success flag; treat as OK.
+    if json
+        .get(0)
+        .and_then(|r| r.get("success"))
+        .and_then(|s| s.as_bool())
+        == Some(false)
+    {
+        return Err("DB query failed".to_string());
+    }
     Ok(())
 }
 
