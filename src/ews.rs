@@ -858,6 +858,7 @@ struct CreateItemRequest {
 #[derive(Debug, Deserialize)]
 struct EwsItems {
     #[serde(rename = "CalendarItem")]
+    #[serde(default)]
     calendar_item: Option<EwsCalendarItem>,
 }
 #[derive(Debug, Deserialize)]
