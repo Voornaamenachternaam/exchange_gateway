@@ -1622,9 +1622,13 @@ async fn handle_folder_sync(
 ) -> String {
     db::register_device(config, user, device_id).await;
 
-    let incoming_key = quick_xml::de::from_str::<FolderSyncRequest>(xml)
-        .map(|r| r.sync_key)
-        .unwrap_or_default();
+    let incoming_key = match quick_xml::de::from_str::<FolderSyncRequest>(xml) {
+        Ok(r) => r.sync_key,
+        Err(e) => {
+            tracing::error!("FolderSync XML Parse Error: {:?}", e);
+            return error_xml(400, "BadRequest");
+        }
+    };
 
     // The folder hierarchy is static (single calendar), so we use a fixed
     // non-zero SyncKey.  When the client already holds this key we return an
