@@ -823,7 +823,7 @@ struct EwsMailbox {
 }
 #[derive(Debug, Deserialize)]
 struct EwsBody {
-    #[serde(rename = "$value")]
+    #[serde(rename = "$value", default)]
     content: String,
 }
 #[derive(Debug, Deserialize)]
