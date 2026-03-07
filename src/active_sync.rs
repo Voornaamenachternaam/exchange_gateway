@@ -1490,7 +1490,7 @@ async fn handle_sync_change_error(
             ctx.device_id,
             ctx.collection_id,
             &new_key,
-            ctx.prev_jmap_state,
+            ctx.post_command_jmap_state,
         )
         .await;
         return format!(
