@@ -1151,8 +1151,12 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 {
                     encode_literal_tag(&mut body, local, true, &mut strtbl_index, &mut strtbl);
                 }
-                // Push the resolved scope page (or current_page as fallback).
-                scope_page_stack.push(scope_page.unwrap_or(current_page));
+                // Push the resolved scope page. For unknown-prefix tags,
+                // inherit the parent's scope page so unprefixed descendants
+                // stay on the correct code page instead of using current_page
+                // which may have been changed by a preceding page switch.
+                let fallback = scope_page_stack.last().copied().unwrap_or(current_page);
+                scope_page_stack.push(scope_page.unwrap_or(fallback));
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
                 let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
@@ -1362,6 +1366,74 @@ mod tests {
             "Unprefixed 'Type' inside Calendar scope should NOT use LITERAL encoding. \
              Body: {:02X?}",
             body,
+        );
+    }
+
+    /// Unprefixed descendants of an unknown-prefixed tag must inherit the
+    /// *grandparent's* scope page, not `current_page` which may have been
+    /// changed by a preceding page-switch for a sibling tag.
+    ///
+    /// Scenario: Calendar:OrganizerEmail (page 4) → AirSyncBase:Type (switches
+    /// current_page to 17) → FakeNS:Foo (unknown prefix, LITERAL) →
+    /// OrganizerEmail (unprefixed, should resolve on Calendar page 4).
+    ///
+    /// Before the fix, `FakeNS:Foo` pushed `current_page` (17) into scope,
+    /// causing the inner `OrganizerEmail` to look up page 17 where it doesn't
+    /// exist, producing a LITERAL instead of the correct Calendar token.
+    #[test]
+    fn unknown_prefix_descendants_inherit_grandparent_scope() {
+        let xml = "\
+            <Calendar:OrganizerEmail>\
+                <AirSyncBase:Type>2</AirSyncBase:Type>\
+                <FakeNS:Foo>\
+                    <OrganizerEmail>test</OrganizerEmail>\
+                </FakeNS:Foo>\
+            </Calendar:OrganizerEmail>";
+        let encoded = encode(xml).expect("encode should succeed");
+
+        // Locate the WBXML body after the header and string table.
+        let mut pos = 3;
+        let mut strtbl_len: usize = 0;
+        loop {
+            let b = encoded[pos];
+            pos += 1;
+            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        let body = &encoded[pos + strtbl_len..];
+
+        // Count LITERAL / LITERAL_C tokens by walking the body so we skip
+        // over bytes that are arguments to SWITCH_PAGE (0x00).
+        let mut literal_count = 0usize;
+        let mut i = 0;
+        while i < body.len() {
+            let b = body[i];
+            if b == 0x00 {
+                // SWITCH_PAGE — next byte is the page number, skip it.
+                i += 2;
+                continue;
+            }
+            if b == 0x04 || b == 0x44 {
+                literal_count += 1;
+                // After LITERAL / LITERAL_C comes an mb_u_int32 string-table
+                // index; skip the multi-byte integer.
+                i += 1;
+                while i < body.len() && body[i] & 0x80 != 0 {
+                    i += 1;
+                }
+                i += 1; // skip final byte of mb_u_int32
+                continue;
+            }
+            i += 1;
+        }
+        assert_eq!(
+            literal_count, 1,
+            "Expected exactly 1 LITERAL token (for FakeNS:Foo), but found {}. \
+             The unprefixed OrganizerEmail should resolve on the inherited \
+             Calendar page, not fall through to LITERAL. Body: {:02X?}",
+            literal_count, body,
         );
     }
 }
