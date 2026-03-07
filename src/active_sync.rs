@@ -1497,21 +1497,20 @@ async fn handle_sync_change_error(
             ctx.responses_xml
         );
     } else {
-        // Non-transient error, no client commands — restore the original
-        // SyncKey so the client can retry with the same key instead of
-        // being forced into a full re-sync (Status 3).  The claim_sync_key
-        // earlier replaced the DB's sync_key with a temporary placeholder;
-        // reverting it here keeps the failure retryable.
+        // Non-transient error, no client commands — the JMAP state is
+        // permanently invalid (e.g. expired sinceState, parse failure).
+        // Restoring the old SyncKey would trap the client in an infinite
+        // retry loop hitting the same error.  Instead, delete the sync
+        // state so the next request is treated as an initial sync
+        // (SyncKey "0"), which lets the client recover.
         tracing::error!(
-            "{label} failed (non-transient), restoring sync state to allow retry: {error}"
+            "{label} failed (non-transient), deleting sync state to force re-sync: {error}"
         );
-        db::update_sync_state(
+        db::delete_sync_state(
             ctx.config,
             ctx.user,
             ctx.device_id,
             ctx.collection_id,
-            ctx.old_sync_key,
-            ctx.prev_jmap_state,
         )
         .await;
     }
