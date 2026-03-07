@@ -8,25 +8,49 @@ const TAG_OPAQUE: u8 = 0xC3;
 
 const MAX_DECODE_DEPTH: usize = 256;
 
-/// Validate that `name` is a legal XML element name (simplified XML 1.0 Name production).
-/// Rejects empty strings and strings containing characters that could break XML structure.
+/// Check whether `c` is a valid XML 1.0 NameStartChar.
+///
+/// Production from <https://www.w3.org/TR/xml/#NT-NameStartChar>:
+///   NameStartChar ::= ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | [#xD8-#xF6]
+///                   | [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF]
+///                   | [#x200C-#x200D] | [#x2070-#x218F] | [#x2C00-#x2FEF]
+///                   | [#x3001-#xD7FF] | [#xF900-#xFDCF] | [#xFDF0-#xFFFD]
+///                   | [#x10000-#xEFFFF]
+fn is_xml_name_start_char(c: char) -> bool {
+    matches!(c,
+        ':' | 'A'..='Z' | '_' | 'a'..='z'
+        | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
+        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}'
+        | '\u{200C}'..='\u{200D}' | '\u{2070}'..='\u{218F}'
+        | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{EFFFF}'
+    )
+}
+
+/// Check whether `c` is a valid XML 1.0 NameChar.
+///
+/// Production from <https://www.w3.org/TR/xml/#NT-NameChar>:
+///   NameChar ::= NameStartChar | "-" | "." | [0-9] | #xB7
+///              | [#x0300-#x036F] | [#x203F-#x2040]
+fn is_xml_name_char(c: char) -> bool {
+    is_xml_name_start_char(c)
+        || matches!(c,
+            '-' | '.' | '0'..='9' | '\u{B7}'
+            | '\u{0300}'..='\u{036F}' | '\u{203F}'..='\u{2040}'
+        )
+}
+
+/// Validate that `name` is a legal XML element name (XML 1.0 Name production).
+/// Rejects empty strings and strings containing characters not permitted by the spec.
 fn is_valid_xml_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         None => return false,
-        Some(c) if !(c.is_ascii_alphabetic() || c == '_' || c == ':' || !c.is_ascii()) => {
-            return false;
-        }
+        Some(c) if !is_xml_name_start_char(c) => return false,
         _ => {}
     }
-    chars.all(|c| {
-        c.is_ascii_alphanumeric()
-            || c == '_'
-            || c == ':'
-            || c == '-'
-            || c == '.'
-            || !c.is_ascii()
-    })
+    chars.all(is_xml_name_char)
 }
 
 const CP_AIRSYNC: u8 = 0;
