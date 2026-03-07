@@ -362,11 +362,11 @@ async fn handle_sync_folder_items(
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
-    // Fix: Use to_string() for default
     let folder_id = req
         .sync_folder_id
         .folder_id
         .map(|f| f.id)
+        .or(req.sync_folder_id.distinguished_id.map(|d| d.id))
         .unwrap_or_else(|| "default".to_string());
     let stored = match db::get_ews_sync_state(config, user, &folder_id).await {
         Ok(state) => state,
@@ -837,9 +837,16 @@ struct SyncFolderItemsRequest {
 struct SyncFolderId {
     #[serde(rename = "FolderId")]
     folder_id: Option<FolderId>,
+    #[serde(rename = "DistinguishedFolderId", default)]
+    distinguished_id: Option<DistinguishedFolderId>,
 }
 #[derive(Debug, Deserialize)]
 struct FolderId {
+    #[serde(rename = "@Id")]
+    id: String,
+}
+#[derive(Debug, Deserialize)]
+struct DistinguishedFolderId {
     #[serde(rename = "@Id")]
     id: String,
 }
