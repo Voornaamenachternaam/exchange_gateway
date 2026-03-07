@@ -691,14 +691,14 @@ async fn handle_sync(
                     // transport/parse error on the response).  Restore the
                     // original SyncKey so the client can retry with the
                     // same key instead of being stuck with an invalid one.
-                    if let Some(ref st) = stored_state {
-                        db::update_sync_state(
+                    if stored_state.is_some() {
+                        let _ = db::claim_sync_key(
                             config,
                             user,
                             device_id,
                             &collection_id,
+                            &claim_key,
                             &old_sync_key,
-                            &st.jmap_state,
                         )
                         .await;
                     }
