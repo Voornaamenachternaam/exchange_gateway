@@ -1367,11 +1367,26 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
                 ("fr", 32),
                 ("sa", 64),
             ];
-            let days: Vec<jmap_client::NDay> = day_bits
+            let matched: Vec<(&str, i32)> = day_bits
                 .iter()
                 .filter(|(_, mask)| (dow & mask) != 0)
+                .copied()
+                .collect();
+            // For relative types (monthly/yearly relative), nthOfPeriod on
+            // NDay means "the Nth <day> of the period" — e.g.
+            // NDay{day:"mo", nthOfPeriod:2} means "the 2nd Monday".
+            // When only one day bit is set this is correct.  When multiple
+            // day bits are set, attaching nthOfPeriod to every NDay would
+            // create one occurrence per day (e.g. "2nd Monday AND 2nd
+            // Wednesday") instead of the EAS intent of "days in the Nth
+            // week".  In the multi-day case, omit nthOfPeriod from the
+            // NDay entries and use bySetPosition instead to constrain the
+            // week (handled below).
+            let multiple_days = matched.len() > 1;
+            let days: Vec<jmap_client::NDay> = matched
+                .iter()
                 .map(|(name, _)| {
-                    let nth = if is_relative {
+                    let nth = if is_relative && !multiple_days {
                         r.week_of_month.map(|wom| if wom == 5 { -1 } else { wom })
                     } else {
                         None
@@ -1393,8 +1408,21 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
         r.day_of_month.map(|dom| vec![dom])
     };
 
-    // For non-relative types, BYSETPOS from WeekOfMonth is still meaningful
-    let by_set_position = if !is_relative {
+    // Count how many day bits are set for multi-day detection.
+    let day_count = r.day_of_week.map_or(0, |dow| {
+        [1, 2, 4, 8, 16, 32, 64]
+            .iter()
+            .filter(|&&mask| (dow & mask) != 0)
+            .count()
+    });
+
+    // Use bySetPosition to express the week-of-month constraint when:
+    //   - the rule is non-relative (original behaviour), OR
+    //   - the rule is relative but has multiple day bits (see comment above
+    //     in by_day construction).
+    // For relative rules with a single day bit, nthOfPeriod on the NDay is
+    // used instead (more precise).
+    let by_set_position = if !is_relative || day_count > 1 {
         r.week_of_month.map(|wom| {
             vec![if wom == 5 { -1 } else { wom }]
         })
