@@ -16,8 +16,8 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
             chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
             chrono::LocalResult::Ambiguous(earliest, _) => earliest.with_timezone(&Utc).to_rfc3339(),
             chrono::LocalResult::None => {
-                // DST gap: the local time does not exist. Advance by 1 hour and
-                // resolve again so we always return a valid RFC 3339 UTC string.
+                // DST gap: the local time does not exist. Advance minute by
+                // minute until we find a valid local time, then resolve to UTC.
                 let mut advanced = dt;
                 loop {
                     advanced += chrono::TimeDelta::minutes(1);
