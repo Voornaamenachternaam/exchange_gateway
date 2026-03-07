@@ -344,7 +344,13 @@ async fn handle_update_item(
             }
         }
         if !patch.is_empty() {
-            all_updates.insert(id, serde_json::json!(patch));
+            if let Some(existing) = all_updates.get_mut(&id).and_then(|v| v.as_object_mut()) {
+                for (k, v) in patch {
+                    existing.insert(k, v);
+                }
+            } else {
+                all_updates.insert(id, serde_json::json!(patch));
+            }
         }
     }
     if let Err(e) = jmap_client::patch_events(session, all_updates).await {
