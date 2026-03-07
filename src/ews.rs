@@ -305,10 +305,11 @@ async fn handle_update_item(
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
+    let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
+    let mut all_updates = serde_json::Map::new();
     for change in req.item_changes.items {
         let id = change.item_id.id;
         let mut patch = serde_json::Map::new();
-        let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
         for update in change.updates.set_fields {
             match update.field_uri.field_uri.as_str() {
                 "item:Subject" | "calendar:Subject" => {
@@ -343,11 +344,12 @@ async fn handle_update_item(
             }
         }
         if !patch.is_empty() {
-            if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
-                tracing::error!("patch_event failed for {}: {}", id, e);
-                return soap_fault("ErrorInternalServerError", "Update Failed");
-            }
+            all_updates.insert(id, serde_json::json!(patch));
         }
+    }
+    if let Err(e) = jmap_client::patch_events(session, all_updates).await {
+        tracing::error!("patch_events failed: {}", e);
+        return soap_fault("ErrorInternalServerError", "Update Failed");
     }
     soap_response(&format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,

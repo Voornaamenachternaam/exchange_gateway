@@ -523,6 +523,44 @@ pub async fn patch_event(
     Ok(())
 }
 
+/// Batch-update multiple calendar events in a single JMAP `CalendarEvent/set`
+/// call.  `updates` maps event ID → patch object.
+pub async fn patch_events(
+    session: &JmapSession,
+    updates: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), JmapError> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "update": updates }, "c0"]] });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
+    if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object()
+        && !not_updated.is_empty()
+    {
+        let ids: Vec<&str> = not_updated.keys().map(|k| k.as_str()).collect();
+        let desc = not_updated
+            .values()
+            .next()
+            .and_then(|v| v["description"].as_str())
+            .unwrap_or("unknown error");
+        return Err(JmapError::Api(format!(
+            "update failed for {}: {}",
+            ids.join(", "),
+            desc
+        )));
+    }
+    Ok(())
+}
+
 /// Destroy calendar events by ID.
 ///
 /// Returns a list of IDs that the server refused to destroy (partial
