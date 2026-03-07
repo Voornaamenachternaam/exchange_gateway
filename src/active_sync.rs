@@ -1281,6 +1281,12 @@ async fn process_client_commands(
         if let Some(b) = data.body {
             patch.insert("description".into(), serde_json::json!(b.data));
         }
+        if let Some(r) = data.recurrence {
+            patch.insert(
+                "recurrenceRules".into(),
+                serde_json::json!(vec![build_recurrence_rule(r)]),
+            );
+        }
         if !patch.is_empty() {
             if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
                 tracing::error!("ActiveSync Update failed for id {}: {}", id, e);
