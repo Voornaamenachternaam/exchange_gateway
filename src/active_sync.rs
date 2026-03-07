@@ -27,6 +27,15 @@ enum CommandFailure {
     Delete { server_id: String },
 }
 
+/// A successfully applied Add command.  The `<Responses>` element must echo
+/// the ClientId back together with the server-assigned ServerId so the device
+/// can correlate local and remote items.
+#[derive(Debug)]
+struct AddSuccess {
+    client_id: String,
+    server_id: String,
+}
+
 /// Bundles the context needed by [`handle_sync_change_error`] so the helper
 /// stays under the recommended argument limit.
 struct SyncErrorContext<'a> {
@@ -40,23 +49,31 @@ struct SyncErrorContext<'a> {
     responses_xml: &'a str,
 }
 
-/// Result of processing client commands — the list of individual failures
-/// (empty when every command succeeded).
+/// Result of processing client commands — failures and successful Add mappings.
 #[derive(Debug, Default)]
 struct CommandResults {
     failures: Vec<CommandFailure>,
+    add_successes: Vec<AddSuccess>,
 }
 
 impl CommandResults {
     /// Render the ActiveSync `<Responses>` XML fragment.
     ///
-    /// Status 6 = "Server error / object not found" — tells the device the
-    /// command was not applied and should be retried on the next Sync.
+    /// Status 1 = success, Status 6 = "Server error / object not found".
+    /// Successful Add commands include a ClientId→ServerId mapping so the
+    /// device can correlate local and remote items.
     fn to_responses_xml(&self) -> String {
-        if self.failures.is_empty() {
+        if self.failures.is_empty() && self.add_successes.is_empty() {
             return String::new();
         }
         let mut xml = String::from("<Responses>");
+        for s in &self.add_successes {
+            xml.push_str(&format!(
+                "<Add><ClientId>{}</ClientId><ServerId>{}</ServerId><Status>1</Status></Add>",
+                utils::escape_xml(&s.client_id),
+                utils::escape_xml(&s.server_id),
+            ));
+        }
         for f in &self.failures {
             match f {
                 CommandFailure::Add { client_id } => {
@@ -1189,6 +1206,7 @@ async fn process_client_commands(
 ) -> CommandResults {
     let tz: Tz = tz_str.parse().unwrap_or(chrono_tz::UTC);
     let mut failures: Vec<CommandFailure> = Vec::new();
+    let mut add_successes: Vec<AddSuccess> = Vec::new();
     if let Some(add_cmds) = cmds.add {
         let cal_id = match jmap_client::get_default_calendar_id(session).await {
             Ok(id) => Some(id),
@@ -1251,9 +1269,17 @@ async fn process_client_commands(
                 recurrence_rules: data.recurrence.map(|r| vec![build_recurrence_rule(r)]),
                 updated: None,
             };
-            if let Err(e) = jmap_client::push_event(session, event, cal_id).await {
-                tracing::error!("ActiveSync Add failed: {}", e);
-                failures.push(CommandFailure::Add { client_id });
+            match jmap_client::push_event(session, event, cal_id).await {
+                Ok(created) => {
+                    add_successes.push(AddSuccess {
+                        client_id,
+                        server_id: created.id,
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("ActiveSync Add failed: {}", e);
+                    failures.push(CommandFailure::Add { client_id });
+                }
             }
         }
     }
@@ -1313,7 +1339,7 @@ async fn process_client_commands(
             failures.len()
         );
     }
-    CommandResults { failures }
+    CommandResults { failures, add_successes }
 }
 
 fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
