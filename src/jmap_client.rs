@@ -36,8 +36,11 @@ impl JmapError {
             JmapError::Connection(e) => {
                 e.is_timeout()
                     || e.is_connect()
-                    || e.status()
-                        .is_some_and(|s| s.is_server_error())
+                    || e.status().is_some_and(|s| {
+                        s.is_server_error()
+                            || s == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || s == reqwest::StatusCode::REQUEST_TIMEOUT
+                    })
             }
             _ => false,
         }
