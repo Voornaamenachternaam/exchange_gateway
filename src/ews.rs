@@ -835,7 +835,7 @@ struct SyncFolderItemsRequest {
 }
 #[derive(Debug, Deserialize)]
 struct SyncFolderId {
-    #[serde(rename = "FolderId")]
+    #[serde(rename = "FolderId", default)]
     folder_id: Option<FolderId>,
     #[serde(rename = "DistinguishedFolderId", default)]
     distinguished_id: Option<DistinguishedFolderId>,
