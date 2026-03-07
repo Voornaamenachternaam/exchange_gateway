@@ -16,7 +16,25 @@ impl AppConfig {
             db_api_url: env::var("CF_D1_API_URL").map_err(|_| "CF_D1_API_URL missing")?,
             db_auth_token: env::var("GATEWAY_SECRET").map_err(|_| "GATEWAY_SECRET missing")?,
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
-            smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
+            smtp_url: env::var("SMTP_URL")
+                .map_err(|_| "SMTP_URL missing".to_string())?
+                .parse::<url::Url>()
+                .map_err(|e| format!("Invalid SMTP_URL: {}", e))?,
+            mail_domain: {
+                let domain = env::var("MAIL_DOMAIN")
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty());
+                if domain.is_none()
+                    && env::var("GATEWAY_HOST").ok().filter(|v| !v.trim().is_empty()).is_some() {
+                        tracing::warn!(
+                            "GATEWAY_HOST is set but MAIL_DOMAIN is not. \
+                             GATEWAY_HOST is no longer used as a mail-domain fallback. \
+                             Please set MAIL_DOMAIN to your email domain explicitly."
+                        );
+                    }
+                domain.ok_or_else(|| "MAIL_DOMAIN must be set and non-empty".to_string())?
+            },
         })
     }
 }
