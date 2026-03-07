@@ -507,7 +507,7 @@ async fn handle_meeting_response(
         return error_xml(400, "Missing UID");
     }
 
-    let event_id = match jmap_client::find_event_by_uid(session, &uid).await {
+    let event_id = match jmap_client::find_event_by_uid(session, uid).await {
         Ok(id) => id,
         Err(e) => {
             tracing::error!("Failed to find event by UID '{}': {}", uid, e);
