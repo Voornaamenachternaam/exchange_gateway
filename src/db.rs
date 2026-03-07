@@ -198,7 +198,20 @@ pub async fn claim_sync_key(
             return Err(format!("failed to parse DB response: {e}"));
         }
     };
-    Ok(extract_meta_changes(&json) > 0)
+    let changes = json
+        .get("result")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("meta"))
+        .and_then(|m| m.get("changes"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            json.get(0)
+                .and_then(|r| r.get("meta"))
+                .and_then(|m| m.get("changes"))
+                .and_then(|v| v.as_u64())
+        })
+        .ok_or_else(|| "claim_sync_key: unexpected DB response format".to_string())?;
+    Ok(changes > 0)
 }
 
 pub async fn update_sync_state(
