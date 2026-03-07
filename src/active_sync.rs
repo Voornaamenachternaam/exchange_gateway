@@ -482,22 +482,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     )
 }
 
-fn apply_meeting_field(tag: &str, text: &str, uid: &mut String, response_code: &mut i32) {
-    match tag {
-        "RequestId" => *uid = text.to_string(),
-        "UserResponse" => {
-            *response_code = match text.parse() {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!("MeetingResponse: invalid UserResponse '{}': {}", text, e);
-                    0
-                }
-            };
-        }
-        _ => {}
-    }
-}
-
 async fn handle_meeting_response(
     session: &jmap_client::JmapSession,
     config: &AppConfig,
@@ -510,41 +494,15 @@ async fn handle_meeting_response(
         format!("{}@{}", authenticated_user, config.mail_domain)
     };
 
-    let mut uid = String::new();
-    let mut response_code = 0;
-    let mut buf = Vec::new();
-    let mut current_tag = String::new();
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                current_tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-            }
-            Ok(Event::End(_)) => {
-                current_tag.clear();
-            }
-            Ok(Event::Text(ref t)) => {
-                let text = String::from_utf8_lossy(t);
-                let unescaped = match escape::unescape(&text) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!("MeetingResponse: failed to unescape XML text: {:?}", e);
-                        text
-                    }
-                };
-                apply_meeting_field(&current_tag, &unescaped, &mut uid, &mut response_code);
-            }
-            Ok(Event::CData(ref t)) => {
-                let text = String::from_utf8_lossy(t.as_ref());
-                apply_meeting_field(&current_tag, &text, &mut uid, &mut response_code);
-            }
-            Ok(Event::Eof) => break,
-            _ => {}
+    let req: MeetingResponseRequest = match quick_xml::de::from_str(xml) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("MeetingResponse: failed to parse request XML: {}", e);
+            return error_xml(400, "Missing UID");
         }
-        buf.clear();
-    }
+    };
+    let uid = &req.request.request_id;
+    let response_code = req.request.user_response;
     if uid.is_empty() {
         return error_xml(400, "Missing UID");
     }
@@ -1633,6 +1591,21 @@ async fn handle_settings(
 async fn handle_ping() -> String {
     r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
 }
+/// MeetingResponse request — the spec nests RequestId and UserResponse inside
+/// a `<Request>` element.
+#[derive(Debug, Deserialize)]
+struct MeetingResponseRequest {
+    #[serde(rename = "Request")]
+    request: MeetingResponseEntry,
+}
+#[derive(Debug, Deserialize)]
+struct MeetingResponseEntry {
+    #[serde(rename = "RequestId")]
+    request_id: String,
+    #[serde(rename = "UserResponse")]
+    user_response: i32,
+}
+
 /// FolderSync request — we only need the SyncKey from the client.
 #[derive(Debug, Deserialize)]
 struct FolderSyncRequest {
