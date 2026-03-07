@@ -323,6 +323,16 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         .to_string();
     let principals_account_id = body["primaryAccounts"]["urn:ietf:params:jmap:principals"]
         .as_str()
+        .or_else(|| {
+            body["accounts"].as_object().and_then(|accounts| {
+                accounts.iter().find_map(|(id, account)| {
+                    account
+                        .get("accountCapabilities")
+                        .and_then(|caps| caps.get("urn:ietf:params:jmap:principals"))
+                        .map(|_| id.as_str())
+                })
+            })
+        })
         .unwrap_or(&account_id)
         .to_string();
     Ok(JmapSession {
