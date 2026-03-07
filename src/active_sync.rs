@@ -295,7 +295,15 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         if let Ok(decoded_bytes) =
             base64::engine::general_purpose::STANDARD.decode(&stripped)
         {
-            mime_content = String::from_utf8_lossy(&decoded_bytes).into_owned();
+            match String::from_utf8(decoded_bytes) {
+                Ok(s) => mime_content = s,
+                Err(e) => {
+                    tracing::warn!(
+                        "SendMail: decoded base64 is not valid UTF-8, \
+                         keeping original content: {e}"
+                    );
+                }
+            }
         }
     }
 
