@@ -1322,36 +1322,54 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
     // WeekOfMonth to express nth-of-period on the NDay objects.
     let is_relative = matches!(r.r#type, 3 | 6);
 
-    let by_day = r.day_of_week.and_then(|dow| {
-        let day_bits: &[(&str, i32)] = &[
-            ("su", 1),
-            ("mo", 2),
-            ("tu", 4),
-            ("we", 8),
-            ("th", 16),
-            ("fr", 32),
-            ("sa", 64),
-        ];
-        let days: Vec<jmap_client::NDay> = day_bits
-            .iter()
-            .filter(|(_, mask)| (dow & mask) != 0)
-            .map(|(name, _)| {
-                let nth = if is_relative {
-                    r.week_of_month.map(|wom| if wom == 5 { -1 } else { wom })
-                } else {
-                    None
-                };
-                jmap_client::NDay {
-                    r#type: "NDay".to_string(),
-                    day: name.to_string(),
-                    nth_of_period: nth,
-                }
-            })
-            .collect();
-        if days.is_empty() { None } else { Some(days) }
-    });
+    // EAS encodes "last day of month" as WeekOfMonth=5 + DayOfWeek=127
+    // (all seven day-bits set). In JSCalendar this is simply byMonthDay=[-1];
+    // expanding it into seven NDay{-1,day} entries would produce up to seven
+    // occurrences per month instead of one.
+    let all_days_mask: i32 = 127; // su|mo|tu|we|th|fr|sa
+    let is_last_day_of_period = is_relative
+        && r.week_of_month == Some(5)
+        && r.day_of_week == Some(all_days_mask);
 
-    let by_month_day = r.day_of_month.map(|dom| vec![dom]);
+    let by_day = if is_last_day_of_period {
+        // Handled via byMonthDay=[-1] below.
+        None
+    } else {
+        r.day_of_week.and_then(|dow| {
+            let day_bits: &[(&str, i32)] = &[
+                ("su", 1),
+                ("mo", 2),
+                ("tu", 4),
+                ("we", 8),
+                ("th", 16),
+                ("fr", 32),
+                ("sa", 64),
+            ];
+            let days: Vec<jmap_client::NDay> = day_bits
+                .iter()
+                .filter(|(_, mask)| (dow & mask) != 0)
+                .map(|(name, _)| {
+                    let nth = if is_relative {
+                        r.week_of_month.map(|wom| if wom == 5 { -1 } else { wom })
+                    } else {
+                        None
+                    };
+                    jmap_client::NDay {
+                        r#type: "NDay".to_string(),
+                        day: name.to_string(),
+                        nth_of_period: nth,
+                    }
+                })
+                .collect();
+            if days.is_empty() { None } else { Some(days) }
+        })
+    };
+
+    let by_month_day = if is_last_day_of_period {
+        Some(vec![-1])
+    } else {
+        r.day_of_month.map(|dom| vec![dom])
+    };
 
     // For non-relative types, BYSETPOS from WeekOfMonth is still meaningful
     let by_set_position = if !is_relative {
