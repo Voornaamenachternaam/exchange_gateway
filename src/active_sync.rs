@@ -36,7 +36,6 @@ struct SyncErrorContext<'a> {
     collection_id: &'a str,
     old_sync_key: &'a str,
     prev_jmap_state: &'a str,
-    post_command_jmap_state: &'a str,
     has_client_commands: bool,
     responses_xml: &'a str,
 }
@@ -902,7 +901,6 @@ async fn handle_sync(
                 collection_id: &collection_id,
                 old_sync_key: &old_sync_key,
                 prev_jmap_state: &prev_jmap_state,
-                post_command_jmap_state: &post_command_jmap_state,
                 has_client_commands,
                 responses_xml: &responses_xml,
             };
@@ -1476,9 +1474,13 @@ async fn handle_sync_change_error(
         // Non-transient error, but client commands were already applied.
         // Preserve the sync state with a fresh SyncKey so the client
         // advances and does NOT replay the commands (which would create
-        // duplicates).  Use the post-command JMAP state so the next sync's
-        // change-detection starts *after* the client's own writes, avoiding
-        // echoing those changes back to the device.
+        // duplicates).  Use the *previous* JMAP state (not the post-command
+        // state) so the next sync's change-detection re-fetches all changes
+        // since the last successful sync — including any server-side changes
+        // that were never delivered to the device because change-detection
+        // failed this time.  The client's own writes may be echoed back,
+        // but that is harmless (the device merges/ignores duplicates) and
+        // preferable to silently skipping server changes.
         tracing::error!(
             "{label} failed (non-transient) after client commands, \
              preserving sync state to prevent command replay: {error}"
@@ -1490,7 +1492,7 @@ async fn handle_sync_change_error(
             ctx.device_id,
             ctx.collection_id,
             &new_key,
-            ctx.post_command_jmap_state,
+            ctx.prev_jmap_state,
         )
         .await;
         return format!(
