@@ -37,10 +37,133 @@ pub async fn get_sync_state(
         .await
         .ok()?;
 
-    let json: serde_json::Value = res.json().await.ok()?;
-    json[0]["results"][0]["jmap_state"]
-        .as_str()
-        .map(String::from)
+    if let Err(reason) = check_db_success(&json) {
+        tracing::error!(
+            user = user, device_id = device_id, collection = coll,
+            "get_sync_state_full: {reason}"
+        );
+        return Err(reason);
+    }
+
+    match extract_first_field(&json, "jmap_state") {
+        Some(jmap_state) => Ok(Some(ActiveSyncState { jmap_state })),
+        None => {
+            if has_result_rows(&json) {
+                tracing::warn!(
+                    user = user, device_id = device_id, collection = coll,
+                    "get_sync_state_full: unexpected DB response format"
+                );
+                Err("unexpected DB response format".to_string())
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+/// Check whether the DB API response indicates success.
+/// The Worker wrapper format includes `"success": true/false` at the top
+/// level; the legacy direct-array format has no such flag (always assumed OK
+/// because it only appears when the request actually succeeded).
+///
+/// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
+/// explicitly signals failure.
+fn check_db_success(json: &serde_json::Value) -> Result<(), String> {
+    // New format: { "success": true/false, "result": [...], ... }
+    if let Some(flag) = json.get("success")
+        && flag.as_bool() != Some(true) {
+            // Try to extract an error message from the response.
+            let detail = json
+                .get("errors")
+                .and_then(|e| e.get(0))
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            return Err(format!("DB query failed: {detail}"));
+        }
+    // Legacy array format – no top-level success flag; treat as OK.
+    Ok(())
+}
+
+/// Extract the `meta.changes` count from a D1 API response.  Returns `None`
+/// when the field is missing or the response format is unrecognised, so
+/// callers can distinguish "no meta field" from an explicit zero.
+fn extract_meta_changes(json: &serde_json::Value) -> Option<u64> {
+    // New format: { "result": [ { "meta": { "changes": N } } ] }
+    if let Some(n) = json
+        .get("result")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("meta"))
+        .and_then(|m| m.get("changes"))
+        .and_then(|v| v.as_u64())
+    {
+        return Some(n);
+    }
+    // Legacy format: [ { "meta": { "changes": N } } ]
+    json.get(0)
+        .and_then(|r| r.get("meta"))
+        .and_then(|m| m.get("changes"))
+        .and_then(|v| v.as_u64())
+}
+
+/// Atomically claim (invalidate) a SyncKey by updating the row only when the
+/// stored `sync_key` still matches `expected_key`.  Returns `Ok(true)` when
+/// the claim succeeded (exactly one row was updated), `Ok(false)` when another
+/// request already consumed the key (zero rows updated), and `Err` on
+/// transient DB / network failures.
+///
+/// This prevents two concurrent requests carrying the same SyncKey from both
+/// passing validation: only the first one to execute the UPDATE will match.
+pub async fn claim_sync_key(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    coll: &str,
+    expected_key: &str,
+    new_key: &str,
+) -> Result<bool, String> {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "query": "UPDATE sync_state SET sync_key = ? WHERE user_email = ? AND device_id = ? AND collection_id = ? AND sync_key = ?",
+        "params": [new_key, user, device_id, coll, expected_key]
+    });
+    let res = match client
+        .post(&config.db_api_url)
+        .bearer_auth(&config.db_auth_token)
+        .json(&body)
+        .send()
+        .await
+        .and_then(|res| res.error_for_status())
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "claim_sync_key: DB request failed: {e}"
+            );
+            return Err(format!("DB request failed: {e}"));
+        }
+    };
+    let json: serde_json::Value = match res.json().await {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = coll,
+                "claim_sync_key: failed to parse DB response: {e}"
+            );
+            return Err(format!("failed to parse DB response: {e}"));
+        }
+    };
+    if let Err(reason) = check_db_success(&json) {
+        tracing::error!(
+            user = user, device_id = device_id, collection = coll,
+            "claim_sync_key: {reason}"
+        );
+        return Err(reason);
+    }
+    let changes = extract_meta_changes(&json)
+        .ok_or_else(|| "claim_sync_key: unexpected DB response format".to_string())?;
+    Ok(changes > 0)
 }
 
 pub async fn update_sync_state(
