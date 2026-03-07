@@ -1428,8 +1428,8 @@ async fn render_changes(
 /// * **Transient** errors preserve the existing sync state.  If the client
 ///   already sent commands that were applied successfully, we return a success
 ///   response with a fresh SyncKey so the device does NOT replay them.
-/// * **Non-transient** errors invalidate the sync state so the next sync
-///   starts from scratch.
+/// * **Non-transient** errors restore the original SyncKey so the client
+///   can retry with the same key without being forced into a full re-sync.
 async fn handle_sync_change_error(
     label: &str,
     error: &jmap_client::JmapError,
@@ -1497,8 +1497,23 @@ async fn handle_sync_change_error(
             ctx.responses_xml
         );
     } else {
-        tracing::error!("{label} failed, invalidating sync state: {error}");
-        db::delete_sync_state(ctx.config, ctx.user, ctx.device_id, ctx.collection_id).await;
+        // Non-transient error, no client commands — restore the original
+        // SyncKey so the client can retry with the same key instead of
+        // being forced into a full re-sync (Status 3).  The claim_sync_key
+        // earlier replaced the DB's sync_key with a temporary placeholder;
+        // reverting it here keeps the failure retryable.
+        tracing::error!(
+            "{label} failed (non-transient), restoring sync state to allow retry: {error}"
+        );
+        db::update_sync_state(
+            ctx.config,
+            ctx.user,
+            ctx.device_id,
+            ctx.collection_id,
+            ctx.old_sync_key,
+            ctx.prev_jmap_state,
+        )
+        .await;
     }
     error_xml(500, "CalendarChangesError")
 }
