@@ -297,7 +297,14 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         .send()
         .await?;
     if !res.status().is_success() {
-        return Err(JmapError::Auth(format!("HTTP {}", res.status())));
+        let status = res.status();
+        return Err(if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            JmapError::Auth(format!("HTTP {}", status))
+        } else {
+            JmapError::Api(format!("HTTP {}", status))
+        });
     }
     let body: serde_json::Value = res.json().await?;
     let account_id = body["primaryAccounts"]["urn:ietf:params:jmap:calendars"]
