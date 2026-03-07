@@ -299,12 +299,15 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
     let body: serde_json::Value = res.json().await?;
     let account_id = body["primaryAccounts"]["urn:ietf:params:jmap:calendars"]
         .as_str()
-        .or_else(|| body["primaryAccounts"]["urn:ietf:params:jmap:core"].as_str())
         .or_else(|| {
-            body["accounts"]
-                .as_object()
-                .and_then(|m| m.keys().next())
-                .map(|s| s.as_str())
+            body["accounts"].as_object().and_then(|accounts| {
+                accounts.iter().find_map(|(id, account)| {
+                    account
+                        .get("accountCapabilities")
+                        .and_then(|caps| caps.get("urn:ietf:params:jmap:calendars"))
+                        .map(|_| id.as_str())
+                })
+            })
         })
         .ok_or_else(|| JmapError::Parse("no usable account in JMAP session".into()))?
         .to_string();
