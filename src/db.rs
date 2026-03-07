@@ -112,6 +112,14 @@ pub async fn get_sync_state_full(
         }
     };
 
+    if let Err(reason) = check_db_success(&json) {
+        tracing::error!(
+            user = user, device_id = device_id, collection = coll,
+            "get_sync_state_full: {reason}"
+        );
+        return Err(reason);
+    }
+
     match extract_first_field(&json, "jmap_state") {
         Some(jmap_state) => Ok(Some(ActiveSyncState { jmap_state })),
         None => {
@@ -126,6 +134,31 @@ pub async fn get_sync_state_full(
             }
         }
     }
+}
+
+/// Check whether the DB API response indicates success.
+/// The Worker wrapper format includes `"success": true/false` at the top
+/// level; the legacy direct-array format has no such flag (always assumed OK
+/// because it only appears when the request actually succeeded).
+///
+/// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
+/// explicitly signals failure.
+fn check_db_success(json: &serde_json::Value) -> Result<(), String> {
+    // New format: { "success": true/false, "result": [...], ... }
+    if let Some(flag) = json.get("success") {
+        if flag.as_bool() != Some(true) {
+            // Try to extract an error message from the response.
+            let detail = json
+                .get("errors")
+                .and_then(|e| e.get(0))
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            return Err(format!("DB query failed: {detail}"));
+        }
+    }
+    // Legacy array format – no top-level success flag; treat as OK.
+    Ok(())
 }
 
 /// Extract the `meta.changes` count from a D1 API response.  Returns `None`
@@ -197,6 +230,13 @@ pub async fn claim_sync_key(
             return Err(format!("failed to parse DB response: {e}"));
         }
     };
+    if let Err(reason) = check_db_success(&json) {
+        tracing::error!(
+            user = user, device_id = device_id, collection = coll,
+            "claim_sync_key: {reason}"
+        );
+        return Err(reason);
+    }
     let changes = extract_meta_changes(&json)
         .ok_or_else(|| "claim_sync_key: unexpected DB response format".to_string())?;
     Ok(changes > 0)
@@ -299,6 +339,14 @@ pub async fn get_ews_sync_state(
             return Err(format!("failed to parse DB response: {e}"));
         }
     };
+
+    if let Err(reason) = check_db_success(&json) {
+        tracing::error!(
+            user = user, folder = folder,
+            "get_ews_sync_state: {reason}"
+        );
+        return Err(reason);
+    }
 
     let sync_state = extract_first_field(&json, "sync_state");
     let jmap_state = extract_first_field(&json, "jmap_state");
