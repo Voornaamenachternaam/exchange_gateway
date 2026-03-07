@@ -399,16 +399,24 @@ pub async fn update_ews_sync_state(
     folder: &str,
     state: &str,
     jmap_state: &str,
-) {
+) -> Result<(), String> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "INSERT OR REPLACE INTO ews_sync_state (user_email, folder_id, sync_state, jmap_state) VALUES (?, ?, ?, ?)",
         "params": [user, folder, state, jmap_state]
     });
-    let _ = client
+    let resp = client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
-        .await;
+        .await
+        .map_err(|e| format!("HTTP request failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("HTTP error status: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse DB response: {e}"))?;
+    check_db_success(&json)
 }

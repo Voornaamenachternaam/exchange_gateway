@@ -433,7 +433,13 @@ async fn handle_sync_folder_items(
             // Persist the new sync token so the client's next request
             // maps back to the current JMAP state (avoids an unnecessary
             // full re-sync if the stored token were to drift).
-            db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await;
+            if let Err(e) = db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await {
+                tracing::error!(
+                    user = user, folder = %folder_id,
+                    "SyncFolderItems: failed to persist sync state: {e}"
+                );
+                return soap_fault("ErrorInternalServerError", "Failed to persist sync state");
+            }
             return soap_response(&format!(
                 r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes /></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
                 NS_M,
@@ -499,7 +505,13 @@ async fn handle_sync_folder_items(
         }
         (xml, true, resulting_state)
     };
-    db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &jmap_state_to_persist).await;
+    if let Err(e) = db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &jmap_state_to_persist).await {
+        tracing::error!(
+            user = user, folder = %folder_id,
+            "SyncFolderItems: failed to persist sync state: {e}"
+        );
+        return soap_fault("ErrorInternalServerError", "Failed to persist sync state");
+    }
     soap_response(&format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
         NS_M,
