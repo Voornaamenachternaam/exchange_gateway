@@ -270,7 +270,7 @@ pub async fn claim_sync_key(
                 "claim_sync_key: meta.changes missing from successful DB response; \
                  assuming update was applied"
             );
-            return Err(DbError::UnexpectedFormat);
+            return Ok(true);
         }
     };
     Ok(changes > 0)
