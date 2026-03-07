@@ -20,7 +20,7 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
                 // resolve again so we always return a valid RFC 3339 UTC string.
                 let mut advanced = dt;
                 loop {
-                    advanced += chrono::TimeDelta::hours(1);
+                    advanced += chrono::TimeDelta::minutes(1);
                     match tz.from_local_datetime(&advanced) {
                         chrono::LocalResult::Single(dt) => break dt.with_timezone(&Utc).to_rfc3339(),
                         chrono::LocalResult::Ambiguous(earliest, _) => {
