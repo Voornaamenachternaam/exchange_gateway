@@ -686,6 +686,22 @@ async fn handle_sync(
                          collection={}: {} — returning server error so client retries without reset",
                         user, device_id, collection_id, e
                     );
+                    // The claim may have partially succeeded (the DB
+                    // UPDATE could have gone through even though we got a
+                    // transport/parse error on the response).  Restore the
+                    // original SyncKey so the client can retry with the
+                    // same key instead of being stuck with an invalid one.
+                    if let Some(ref st) = stored_state {
+                        db::update_sync_state(
+                            config,
+                            user,
+                            device_id,
+                            &collection_id,
+                            &old_sync_key,
+                            &st.jmap_state,
+                        )
+                        .await;
+                    }
                     // Status 5 = server error — the client should retry
                     // without discarding its local state.
                     return format!(
