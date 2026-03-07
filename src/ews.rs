@@ -139,9 +139,12 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
         resolutions.push_str(&format!(r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Resolution>"#, utils::escape_xml(&p.name), utils::escape_xml(&p.email)));
     }
     soap_response(&format!(
-        r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
+        r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="{}"><m:ResponseCode>{}</m:ResponseCode>{}<m:ResolutionSet TotalItemsInView="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
         NS_M,
         NS_T,
+        if results.len() > 1 { "Warning" } else { "Success" },
+        if results.len() > 1 { "ErrorNameResolutionMultipleResults" } else { "NoError" },
+        if results.len() > 1 { "<m:MessageText>Multiple results were found.</m:MessageText>" } else { "" },
         results.len(),
         resolutions
     ))
