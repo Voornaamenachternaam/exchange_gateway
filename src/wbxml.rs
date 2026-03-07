@@ -1149,7 +1149,13 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 if has_unknown_prefix
                     || !encode_tag(&mut body, local, &mut current_page, true, scope_page)
                 {
-                    encode_literal_tag(&mut body, local, true, &mut strtbl_index, &mut strtbl);
+                    // When the tag has an unknown prefix, store the full
+                    // prefixed name (e.g. "FakeNS:Type") in the string table
+                    // so the prefix survives the round-trip.  For tags that
+                    // simply aren't in the code-page map the local name is
+                    // sufficient (there is no prefix to preserve).
+                    let literal_name = if has_unknown_prefix { &full_name } else { local };
+                    encode_literal_tag(&mut body, literal_name, true, &mut strtbl_index, &mut strtbl);
                 }
                 // Push the resolved scope page. For unknown-prefix tags,
                 // inherit the parent's scope page so unprefixed descendants
@@ -1171,7 +1177,8 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 if has_unknown_prefix
                     || !encode_tag(&mut body, local, &mut current_page, false, scope_page)
                 {
-                    encode_literal_tag(&mut body, local, false, &mut strtbl_index, &mut strtbl);
+                    let literal_name = if has_unknown_prefix { &full_name } else { local };
+                    encode_literal_tag(&mut body, literal_name, false, &mut strtbl_index, &mut strtbl);
                 }
             }
             Ok(quick_xml::events::Event::End(_)) => {
@@ -1434,6 +1441,39 @@ mod tests {
              The unprefixed OrganizerEmail should resolve on the inherited \
              Calendar page, not fall through to LITERAL. Body: {:02X?}",
             literal_count, body,
+        );
+    }
+
+    /// Round-tripping a tag with an unknown namespace prefix must preserve the
+    /// full prefixed name (e.g. `FakeNS:Type` → LITERAL → `FakeNS:Type`), not
+    /// strip the prefix and emit just the local name.
+    #[test]
+    fn unknown_prefix_round_trips_with_prefix_preserved() {
+        let xml = "<Calendar:Recurrence><FakeNS:Type>5</FakeNS:Type></Calendar:Recurrence>";
+        let encoded = encode(xml).expect("encode should succeed");
+        let decoded = decode(&encoded).expect("decode should succeed");
+
+        assert!(
+            decoded.contains("<FakeNS:Type>"),
+            "Expected the unknown-prefixed tag 'FakeNS:Type' to survive the round-trip, \
+             but decoded XML was: {}",
+            decoded,
+        );
+    }
+
+    /// An empty (self-closing) tag with an unknown prefix must also preserve
+    /// the prefix through encode → decode.
+    #[test]
+    fn unknown_prefix_empty_tag_round_trips() {
+        let xml = "<Calendar:Recurrence><FakeNS:Marker/></Calendar:Recurrence>";
+        let encoded = encode(xml).expect("encode should succeed");
+        let decoded = decode(&encoded).expect("decode should succeed");
+
+        assert!(
+            decoded.contains("FakeNS:Marker"),
+            "Expected the unknown-prefixed empty tag 'FakeNS:Marker' to survive \
+             the round-trip, but decoded XML was: {}",
+            decoded,
         );
     }
 }
