@@ -286,11 +286,20 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     // WBXML opaque data is base64-encoded by wbxml::decode. Only attempt
     // to decode when the content does not already look like raw MIME text,
     // so that plain-text MIME arriving via XML is not accidentally corrupted.
-    let dominated_by_mime_headers = mime_content
-        .lines()
-        .take(5)
-        .any(|l| l.starts_with("From:") || l.starts_with("To:") || l.starts_with("MIME-Version:"));
-    if !dominated_by_mime_headers {
+    // We detect raw MIME by looking for RFC 822-style header lines
+    // (e.g. "Header-Name: value") anywhere in the first 10 lines. This
+    // covers messages that start with Received:, Date:, Subject:, etc.
+    let looks_like_mime = mime_content.lines().take(10).any(|l| {
+        let Some((name, _)) = l.split_once(':') else {
+            return false;
+        };
+        // RFC 5322 field names: printable ASCII except colon, at least 1 char
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_graphic() && b != b':')
+    });
+    if !looks_like_mime {
         let stripped: String = mime_content.chars().filter(|c| !c.is_ascii_whitespace()).collect();
         if let Ok(decoded_bytes) =
             base64::engine::general_purpose::STANDARD.decode(&stripped)
