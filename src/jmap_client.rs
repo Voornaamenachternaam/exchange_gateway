@@ -595,6 +595,9 @@ pub async fn destroy_events(
     session: &JmapSession,
     ids: Vec<String>,
 ) -> Result<Vec<String>, JmapError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "destroy": ids }, "c0"]] });
     let res = session
         .client
