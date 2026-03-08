@@ -406,10 +406,17 @@ pub async fn get_calendar_events(session: &JmapSession) -> Result<Vec<JmapEvent>
         .send()
         .await?
         .error_for_status()?;
-    let json: serde_json::Value = res.json().await?;
+    let mut json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
+    let list = json
+        .get_mut("methodResponses")
+        .and_then(|v| v.get_mut(0))
+        .and_then(|v| v.get_mut(1))
+        .and_then(|v| v.get_mut("list"))
+        .map(serde_json::Value::take)
+        .unwrap_or_default();
     let events: Vec<JmapEvent> =
-        serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
+        serde_json::from_value(list)
             .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
     Ok(events)
 }
@@ -430,10 +437,17 @@ pub async fn get_events_by_ids(
         .send()
         .await?
         .error_for_status()?;
-    let json: serde_json::Value = res.json().await?;
+    let mut json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
+    let list = json
+        .get_mut("methodResponses")
+        .and_then(|v| v.get_mut(0))
+        .and_then(|v| v.get_mut(1))
+        .and_then(|v| v.get_mut("list"))
+        .map(serde_json::Value::take)
+        .unwrap_or_default();
     let events: Vec<JmapEvent> =
-        serde_json::from_value(json["methodResponses"][0][1]["list"].clone())
+        serde_json::from_value(list)
             .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
     Ok(events)
 }
@@ -635,9 +649,15 @@ pub async fn get_calendar_changes(
         .send()
         .await?
         .error_for_status()?;
-    let json: serde_json::Value = res.json().await?;
+    let mut json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
-    serde_json::from_value(json["methodResponses"][0][1].clone())
+    let changes_val = json
+        .get_mut("methodResponses")
+        .and_then(|v| v.get_mut(0))
+        .and_then(|v| v.get_mut(1))
+        .map(serde_json::Value::take)
+        .unwrap_or_default();
+    serde_json::from_value(changes_val)
         .map_err(|e| JmapError::Parse(format!("changes: {}", e)))
 }
 
