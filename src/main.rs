@@ -114,7 +114,7 @@ async fn handle_active_sync(
     } else if body.is_empty() {
         // Allow empty bodies through — some ActiveSync commands (e.g. Ping,
         // Provision) legitimately send no body. Let process_request decide.
-        return (StatusCode::BAD_REQUEST, "Unable to decode request body".to_string()).into_response();
+        (String::new(), false)
     } else {
         // No Content-Type: sniff by first meaningful byte — WBXML never starts with '<'
         // Strip UTF-8 BOM and leading whitespace before checking
