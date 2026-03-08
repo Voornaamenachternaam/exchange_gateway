@@ -94,7 +94,7 @@ async fn handle_active_sync(
         })
         .unwrap_or(false);
 
-    let (xml_body, _is_wbxml) = if is_explicit_xml {
+    let (xml_body, is_wbxml) = if is_explicit_xml {
         // Explicitly marked as XML — parse as UTF-8 text
         match std::str::from_utf8(&body) {
             Ok(s) => (s.to_string(), false),
@@ -149,28 +149,40 @@ async fn handle_active_sync(
     let query_cmd = query.get("Cmd").cloned().unwrap_or_default();
     let response_xml = active_sync::process_request(&config, &xml_body, &headers, &query_cmd).await;
 
-    match wbxml::encode(&response_xml) {
-        Ok(wbxml_data) => (
-            StatusCode::OK,
-            [
-                ("content-type", "application/vnd.ms-sync.wbxml"),
-                ("MS-Server-ActiveSync", "15.0"),
-            ],
-            wbxml_data,
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!("WBXML Encode Error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
+    if is_wbxml {
+        match wbxml::encode(&response_xml) {
+            Ok(wbxml_data) => (
+                StatusCode::OK,
                 [
-                    ("content-type", "text/plain; charset=utf-8"),
+                    ("content-type", "application/vnd.ms-sync.wbxml"),
                     ("MS-Server-ActiveSync", "15.0"),
                 ],
-                "WBXML Encode Error".to_string(),
+                wbxml_data,
             )
-                .into_response()
+                .into_response(),
+            Err(e) => {
+                tracing::error!("WBXML Encode Error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [
+                        ("content-type", "text/plain; charset=utf-8"),
+                        ("MS-Server-ActiveSync", "15.0"),
+                    ],
+                    "WBXML Encode Error".to_string(),
+                )
+                    .into_response()
+            }
         }
+    } else {
+        (
+            StatusCode::OK,
+            [
+                ("content-type", "application/xml; charset=utf-8"),
+                ("MS-Server-ActiveSync", "15.0"),
+            ],
+            response_xml,
+        )
+            .into_response()
     }
 }
 
