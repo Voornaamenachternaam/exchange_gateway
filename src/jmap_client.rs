@@ -1161,23 +1161,6 @@ pub async fn update_participant_status(
 }
 
 pub async fn get_blob(session: &JmapSession, blob_id: &str) -> Result<Vec<u8>, JmapError> {
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:blob"], "methodCalls": [["Blob/get", { "accountId": session.account_id, "ids": [blob_id], "properties": ["data:asBase64"] }, "c0"]] });
-    let res = session
-        .client
-        .post(&session.api_url)
-        .header("Authorization", format!("Basic {}", session.access_token))
-        .json(&body)
-        .send()
-        .await?
-        .error_for_status()?;
-    let json: serde_json::Value = res.json().await?;
-    check_jmap_method_error(&json)?;
-    if let Some(b64) = json["methodResponses"][0][1]["list"][0]["data:asBase64"].as_str() {
-        return base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-            .map_err(|e| JmapError::Parse(format!("base64 decode: {}", e)));
-    }
-    if let Some(text) = json["methodResponses"][0][1]["list"][0]["data:asText"].as_str() {
-        return Ok(text.as_bytes().to_vec());
-    }
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:blob"], "methodCalls": [["Blob/get", { "accountId": session.account_id, "ids": [blob_id], "properties": ["data:asBase64", "data:asText"] }, "c0"]] });
     Err(JmapError::NotFound(format!("blob {}", blob_id)))
 }
