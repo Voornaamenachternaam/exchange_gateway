@@ -310,7 +310,57 @@ async fn handle_send_mail(
 
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
 
-        match mailer.send(&email) {
+        let mut builder = {
+            let b = match scheme.as_str() {
+                "smtps" => {
+                    // Implicit TLS (port 465): relay() configures TLS::Wrapper internally.
+                    match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to create SMTP relay transport: {}", e);
+                            return SEND_MAIL_ERROR.to_string();
+                        }
+                    }
+                }
+                "smtp" => {
+                    // Plain SMTP (port 25): use builder_dangerous for unencrypted connections.
+                    AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+                }
+                _ => {
+                    // Default to STARTTLS (port 587).
+                    match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                            return SEND_MAIL_ERROR.to_string();
+                        }
+                    }
+                }
+            };
+            b.port(port)
+        };
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        // URL components are percent-encoded, so decode before use as credentials.
+        let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
+        if scheme == "smtp" && !user.is_empty() && smtp_url.password().is_some() {
+            tracing::error!("SMTP credentials require TLS; use smtps:// or starttls://");
+            return SEND_MAIL_ERROR.to_string();
+        }
+        if !user.is_empty()
+            && let Some(pass) = smtp_url.password() {
+                let pass = percent_decode_str(pass).decode_utf8_lossy();
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.into_owned(),
+                    pass.into_owned(),
+                ));
+            }
+
+        let mailer = builder.build();
+
+        // Send the full raw MIME content to preserve multipart structure,
+        // Content-Type headers, attachments, and all other MIME headers.
+        match mailer.send_raw(&envelope, &mime_content).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
@@ -399,14 +449,370 @@ async fn handle_sync(
     let coll = req.collections.collection;
     let old_sync_key = coll.sync_key.clone();
 
-    if let Some(cmds) = coll.commands {
-        process_client_commands(session, cmds, &config.timezone).await;
+    // Fetch the stored sync state (SyncKey + JMAP state) *before* processing
+    // client commands.  We need the JMAP state for change-detection below.
+    let stored_state = match db::get_sync_state_full(config, user, device_id, &collection_id).await {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = %collection_id,
+                "Sync: failed to fetch sync state: {e} — returning server error so client retries without reset"
+            );
+            return format!(
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
+        }
+    };
+
+    // Atomically validate and claim the incoming SyncKey when the client is
+    // not performing an initial sync (SyncKey "0").  The claim uses a
+    // conditional UPDATE (WHERE sync_key = <expected>) so that only one
+    // concurrent request can succeed — the DB row is the single source of
+    // truth and acts as a compare-and-swap guard.
+    //
+    // ActiveSync Status 3 = "Invalid or mismatched SyncKey" — the device
+    // must re-issue a SyncKey 0 (full re-sync) to recover.
+    if old_sync_key != "0" {
+        if stored_state.is_some() {
+            // Generate a temporary placeholder key for the claim.  The final
+            // SyncKey issued to the client is computed later and written via
+            // `update_sync_state`.
+            let claim_key = Uuid::new_v4().to_string();
+            let claim_result = db::claim_sync_key(
+                config,
+                user,
+                device_id,
+                &collection_id,
+                &old_sync_key,
+                &claim_key,
+            )
+            .await;
+            match claim_result {
+                Ok(true) => { /* claim succeeded, continue */ }
+                Ok(false) => {
+                    tracing::warn!(
+                        "Sync: SyncKey claim failed for user={}, device={}, collection={}: \
+                         client sent '{}' — another request already consumed it or the key \
+                         does not match",
+                        user, device_id, collection_id, old_sync_key
+                    );
+                    // Status 3 tells the client its SyncKey is invalid.
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Sync: transient DB error during SyncKey claim for user={}, device={}, \
+                         collection={}: {} — returning server error so client retries without reset",
+                        user, device_id, collection_id, e
+                    );
+                    // The claim may have partially succeeded (the DB
+                    // UPDATE could have gone through even though we got a
+                    // transport/parse error on the response).  Restore the
+                    // original SyncKey so the client can retry with the
+                    // same key instead of being stuck with an invalid one.
+                    if stored_state.is_some()
+                        && let Err(rollback_err) = db::claim_sync_key(
+                            config,
+                            user,
+                            device_id,
+                            &collection_id,
+                            &claim_key,
+                            &old_sync_key,
+                        )
+                        .await
+                        {
+                            tracing::error!(
+                                "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
+                                 collection={}: {} — the stored SyncKey may be stuck on an \
+                                 unreachable claim key; manual intervention or a client re-sync \
+                                 (SyncKey 0) may be required",
+                                user, device_id, collection_id, rollback_err
+                            );
+                        }
+                    // Status 5 = server error — the client should retry
+                    // without discarding its local state.
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Sync: missing stored SyncKey for user={}, device={}, collection={} with client SyncKey '{}' — rejecting to prevent stale/replayed command replay",
+                user, device_id, collection_id, old_sync_key
+            );
+            return format!(
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
+        }
     }
 
-    let current_jmap_state = match jmap_client::get_calendar_state(
-        &session.api_url,
-        &session.access_token,
-        &session.account_id,
+    // Capture the JMAP state *before* processing client commands so that
+    // change-detection (below) only returns true server-side changes and
+    // does not echo the client's own modifications back to the device.
+    let pre_command_jmap_state = match jmap_client::get_calendar_state(session).await {
+        Ok(s) => s,
+        Err(_e) => {
+            // Restore the old SyncKey so the client can retry without being
+            // forced into a full resync.  No commands have been processed yet,
+            // so replaying the request is safe.
+            if old_sync_key != "0"
+                && let Some(ref st) = stored_state
+            {
+                db::update_sync_state(
+                    config,
+                    user,
+                    device_id,
+                    &collection_id,
+                    &old_sync_key,
+                    &st.jmap_state,
+                )
+                .await;
+            }
+            return error_xml(500, "JMAPStateError");
+        }
+    };
+
+    // On partial failure, fall through to the normal change-detection
+    // path.  The SyncKey will advance and the post-command JMAP state
+    // will reflect any successfully-applied operations.  The device
+    // moves forward and will not replay succeeded commands.
+    //
+    // Failed commands are reported individually via <Responses> so
+    // the device knows which ones to retry.
+    let cmd_results = if let Some(cmds) = coll.commands {
+        process_client_commands(session, cmds, &config.timezone).await
+    } else {
+        CommandResults::default()
+    };
+    let responses_xml = cmd_results.to_responses_xml();
+
+    // After client commands have been applied, re-fetch the state so the
+    // value stored in the DB reflects the post-command server state.  If no
+    // client commands were sent, the state has not changed.
+    let post_command_jmap_state = if has_client_commands {
+        match jmap_client::get_calendar_state(session).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to get post-command JMAP state: {}", e);
+                if old_sync_key == "0" {
+                    // Initial sync with client commands: commands have already
+                    // been applied (e.g. calendar events created) but the
+                    // post-command state fetch failed.  We must NOT fall
+                    // through to the full event fetch because:
+                    //   1. The full fetch would include events just created by
+                    //      the client commands, sending them back as Add and
+                    //      causing duplicate events on the device.
+                    //   2. Since SyncKey "0" has no claim guard, the client
+                    //      could retry with SyncKey "0" again, replaying its
+                    //      commands in a loop.
+                    //
+                    // Persist an empty JMAP state sentinel with a new SyncKey
+                    // so the client advances past SyncKey "0" (preventing
+                    // command replay).  The empty sentinel causes the next
+                    // sync to take the full-fetch path (see prev_state
+                    // filtering below), ensuring pre-existing calendar events
+                    // are delivered to the device.
+                    let new_key = Uuid::new_v4().to_string();
+                    tracing::warn!(
+                        "Sync: post-command JMAP state fetch failed during initial sync \
+                         (SyncKey \"0\") with client commands for user={}, device={}, \
+                         collection={} — advancing SyncKey to prevent command replay; \
+                         full event fetch deferred to next sync",
+                        user, device_id, collection_id
+                    );
+                    db::update_sync_state(
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &new_key,
+                        "",
+                    )
+                    .await;
+                    return format!(
+                        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&new_key),
+                        utils::escape_xml(&collection_id),
+                        responses_xml
+                    );
+                } else {
+                    // Non-initial sync: the post-command state fetch failed,
+                    // but client commands may have already been applied.
+                    // Persist the pre-command JMAP state with a new SyncKey so
+                    // the client advances (avoiding command replay) and the
+                    // next sync picks up changes via normal change-detection.
+                    let new_key = Uuid::new_v4().to_string();
+                    db::update_sync_state(
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &new_key,
+                        &pre_command_jmap_state,
+                    )
+                    .await;
+                    return format!(
+                        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&new_key),
+                        utils::escape_xml(&collection_id),
+                        responses_xml
+                    );
+                }
+            }
+        }
+    } else {
+        pre_command_jmap_state.clone()
+    };
+
+    // Map stored JMAP state to `None` when it is the empty sentinel written
+    // after a failed post-command state fetch during initial sync.  This
+    // ensures the next sync takes the full-fetch path instead of the
+    // change-detection path, so pre-existing calendar events are delivered.
+    let stored_jmap_state = stored_state
+        .as_ref()
+        .map(|s| s.jmap_state.clone())
+        .unwrap_or_default();
+    let prev_state = stored_state
+        .map(|s| s.jmap_state)
+        .filter(|s| !s.is_empty());
+
+    // Detect changes since the last sync.  When client commands were
+    // processed, the changes may include the client's own writes — this is
+    // preferable to silently dropping concurrent server-side changes.
+    let (items_xml, new_sync_key, jmap_state_to_persist) = match prev_state {
+        Some(prev_jmap_state) if old_sync_key != "0" => {
+            if prev_jmap_state == pre_command_jmap_state
+                && pre_command_jmap_state == post_command_jmap_state
+            {
+                // No server-side changes and no client-originated changes —
+                // nothing to send.  Still advance the SyncKey so the client
+                // sees a successful round-trip (ActiveSync requires the key
+                // to change on every response).
+                let new_key = Uuid::new_v4().to_string();
+                db::update_sync_state(
+                    config,
+                    user,
+                    device_id,
+                    &collection_id,
+                    &new_key,
+                    &prev_jmap_state,
+                )
+                .await;
+                return format!(
+                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                    utils::escape_xml(&new_key),
+                    utils::escape_xml(&collection_id),
+                    responses_xml
+                );
+            }
+            // Fetch changes since the last persisted state.  When client
+            // commands were processed, this may include the client's own
+            // writes echoed back (harmless — the device will merge/ignore
+            // duplicates), but it also ensures any concurrent server-side
+            // changes are not silently dropped.
+            let err_ctx = SyncErrorContext {
+                config,
+                user,
+                device_id,
+                collection_id: &collection_id,
+                old_sync_key: &old_sync_key,
+                prev_jmap_state: &prev_jmap_state,
+                has_client_commands,
+                responses_xml: &responses_xml,
+            };
+            let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return handle_sync_change_error("get_calendar_changes", &e, &err_ctx)
+                        .await;
+                }
+            };
+            match render_changes(session, changes, &config.timezone).await {
+                Ok(result) => result,
+                Err(e) => {
+                    return handle_sync_change_error("render_changes", &e, &err_ctx).await;
+                }
+            }
+        }
+        _ => {
+            // Either prev_state is None, or old_sync_key is "0" (client reset)
+            let events = match jmap_client::get_calendar_events(session).await {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!("Failed to fetch calendar events: {}", e);
+                    // Client commands were already applied — advance the
+                    // SyncKey to prevent command replay on retry.  This must
+                    // happen regardless of whether old_sync_key is "0"
+                    // (initial sync) or not; otherwise the client will resend
+                    // the same commands on the next attempt.
+                    if has_client_commands {
+                        let new_key = Uuid::new_v4().to_string();
+                        db::update_sync_state(
+                            config,
+                            user,
+                            device_id,
+                            &collection_id,
+                            &new_key,
+                            if old_sync_key == "0" {
+                                ""
+                            } else {
+                                &stored_jmap_state
+                            },
+                        )
+                        .await;
+                        return format!(
+                            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                            utils::escape_xml(&new_key),
+                            utils::escape_xml(&collection_id),
+                            responses_xml
+                        );
+                    }
+                    // When old_sync_key != "0", claim_sync_key already replaced
+                    // the DB's sync_key with a temporary placeholder.  Restore
+                    // the original SyncKey so the client can retry with the
+                    // same key instead of hitting Status 3 (invalid key).
+                    if old_sync_key != "0" {
+                        db::update_sync_state(
+                            config,
+                            user,
+                            device_id,
+                            &collection_id,
+                            &old_sync_key,
+                            &stored_jmap_state,
+                        )
+                        .await;
+                    }
+                    return error_xml(500, "CalendarEventsError");
+                }
+            };
+            let mut xml = String::new();
+            let new_key = Uuid::new_v4().to_string();
+            for event in events {
+                xml.push_str(&render_event_xml(event, "Add", &config.timezone));
+            }
+            (xml, new_key, post_command_jmap_state)
+        }
+    };
+
+    db::update_sync_state(
+        config,
+        user,
+        device_id,
+        &collection_id,
+        &new_sync_key,
+        &jmap_state_to_persist,
     )
     .await
     {
