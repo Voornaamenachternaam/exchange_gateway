@@ -789,7 +789,7 @@ async fn handle_sync(
     // does not echo the client's own modifications back to the device.
     let pre_command_jmap_state = match jmap_client::get_calendar_state(session).await {
         Ok(s) => s,
-        Err(e) => {            tracing::error!("Failed to get pre-command JMAP state: {}", e);            // Restore the old SyncKey so the client can retry without being            // forced into a full resync.  No commands have been processed yet,            // so replaying the request is safe.            if old_sync_key != "0"                && let Some(ref st) = stored_state            {                db::update_sync_state(                    config,                    user,                    device_id,                    &collection_id,                    &old_sync_key,                    &st.jmap_state,                )                .await;            }            return error_xml(500, "JMAPStateError");        }
+        Err(e) => {
             // Restore the old SyncKey so the client can retry without being
             // forced into a full resync.  No commands have been processed yet,
             // so replaying the request is safe.
