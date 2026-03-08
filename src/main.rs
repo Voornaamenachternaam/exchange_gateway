@@ -104,12 +104,16 @@ async fn handle_active_sync(
         }
     } else if is_explicit_wbxml {
         // Explicit WBXML content-type — decode must succeed or return 400
-        match wbxml::decode(&body) {
-            Ok(xml) => (xml, true),
-            Err(e) => {
-                tracing::error!("WBXML decode error: {:?}", e);
+        if body.is_empty() {
+            (String::new(), true)
+        } else {
+            match wbxml::decode(&body) {
+                Ok(xml) => (xml, true),
+                Err(e) => {
+                    tracing::error!("WBXML decode error: {:?}", e);
                     return (StatusCode::BAD_REQUEST, "Unable to decode request body".to_string())
-                    .into_response();
+                        .into_response();
+                }
             }
         }
     } else if body.is_empty() {
