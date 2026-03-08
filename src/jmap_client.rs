@@ -95,6 +95,10 @@ pub struct RecurrenceRule {
     pub by_month: Option<Vec<String>>,
     #[serde(rename = "bySetPosition", skip_serializing_if = "Option::is_none")]
     pub by_set_position: Option<Vec<i32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 
 fn recurrence_rule_type_default() -> String {
