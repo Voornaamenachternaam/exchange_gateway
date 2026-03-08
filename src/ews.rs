@@ -448,7 +448,10 @@ async fn handle_sync_folder_items(
         }
         (xml, true, current_state)
     } else {
-        let Some(ref stored_state) = stored else { unreachable!("is_initial is false but stored is None") };
+        let Some(ref stored_state) = stored else {
+            tracing::error!("is_initial is false but stored is None — logic error");
+            return soap_fault("ErrorInternalServerError", "Internal sync state error");
+        };
         let prev_jmap_state = &stored_state.jmap_state;
         if *prev_jmap_state == current_state {
             // Persist the new sync token so the client's next request
