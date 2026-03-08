@@ -118,8 +118,10 @@ async fn handle_active_sync(
         }
     } else if body.is_empty() {
         // Allow empty bodies through — some ActiveSync commands (e.g. Ping,
-        // Provision) legitimately send no body. Let process_request decide.
-        (String::new(), false)
+        // Provision) legitimately send no body. Per MS-ASCMD, all commands
+        // except Autodiscover use WBXML encoding, so the response must be
+        // WBXML even when the request body is absent.
+        (String::new(), true)
     } else {
         // No Content-Type: sniff by first meaningful byte — WBXML never starts with '<'
         // Strip UTF-8 BOM and leading whitespace before checking
