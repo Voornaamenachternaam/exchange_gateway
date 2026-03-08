@@ -159,9 +159,7 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     if json.get("result").is_some() {
         // New format: check for explicit failure flag
         if json
-            .get("result")
-            .and_then(|r| r.get(0))
-            .and_then(|r| r.get("success"))
+            .get("success")
             .and_then(|s| s.as_bool())
             == Some(false)
         {
