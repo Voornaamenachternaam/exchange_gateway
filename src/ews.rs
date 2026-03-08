@@ -395,7 +395,13 @@ async fn handle_sync_folder_items(
     };
     let current_state = match jmap_client::get_calendar_state(session).await {
         Ok(s) => s,
-        Err(_) => return soap_fault("ErrorInternalServerError", "State Error"),
+        Err(e) => {
+            tracing::error!(
+                user = user, folder = %folder_id,
+                "SyncFolderItems: get_calendar_state failed: {e}"
+            );
+            return soap_fault("ErrorInternalServerError", "State Error");
+        }
     };
     let new_sync_token = Uuid::new_v4().to_string();
 
