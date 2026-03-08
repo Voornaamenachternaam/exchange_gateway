@@ -256,7 +256,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap,
 }
 
 async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &str) -> String {
-    let mut mime_content = String::new();
+    let mut mime_text = String::new();
     let mut buf = Vec::new();
     let mut in_mime = false;
     let mut reader = Reader::from_str(xml);
@@ -283,12 +283,12 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                             text.into_owned()
                         }
                     };
-                    mime_content.push_str(&unescaped);
+                    mime_text.push_str(&unescaped);
                 }
             }
             Ok(Event::CData(t)) => {
                 if in_mime {
-                    mime_content.push_str(&String::from_utf8_lossy(t.as_ref()));
+                    mime_text.push_str(&String::from_utf8_lossy(t.as_ref()));
                 }
             }
             Ok(Event::Eof) => break,
@@ -302,7 +302,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     // We detect raw MIME by looking for RFC 822-style header lines
     // (e.g. "Header-Name: value") anywhere in the first 10 lines. This
     // covers messages that start with Received:, Date:, Subject:, etc.
-    let looks_like_mime = mime_content.lines().take(10).any(|l| {
+    let looks_like_mime = mime_text.lines().take(10).any(|l| {
         let Some((name, _)) = l.split_once(':') else {
             return false;
         };
@@ -312,38 +312,50 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                 .bytes()
                 .all(|b| b.is_ascii_graphic() && b != b':')
     });
-    if !looks_like_mime {
-        let stripped: String = mime_content.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-        if let Ok(decoded_bytes) =
-            base64::engine::general_purpose::STANDARD.decode(&stripped)
-        {
-            match String::from_utf8(decoded_bytes) {
-                Ok(s) => mime_content = s,
-                Err(e) => {
-                    let bytes = e.into_bytes();
-                    tracing::warn!(
-                        "SendMail: decoded base64 is not valid UTF-8, \
-                         using lossy UTF-8 conversion"
-                    );
-                    mime_content = String::from_utf8_lossy(&bytes).into_owned();
-                }
-            }
+    // Use Vec<u8> for the final MIME payload to avoid corrupting non-UTF-8
+    // bytes (e.g. binary attachments) via lossy UTF-8 conversion.
+    let mime_content: Vec<u8> = if !looks_like_mime {
+        let stripped: String = mime_text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        match base64::engine::general_purpose::STANDARD.decode(&stripped) {
+            Ok(decoded_bytes) => decoded_bytes,
+            Err(_) => mime_text.into_bytes(),
         }
-    }
+    } else {
+        mime_text.into_bytes()
+    };
 
     if mime_content.is_empty() {
         return SEND_MAIL_ERROR.to_string();
     }
 
+    // Extract the RFC 5322 header section for To/From parsing.  Headers are
+    // always ASCII, so we only need the bytes up to the first blank line
+    // (the header/body separator).  Using lossy conversion here is safe
+    // because the header section cannot contain non-ASCII in well-formed
+    // MIME, and we only need it for address extraction — the raw bytes are
+    // sent to SMTP intact.
+    let header_end = mime_content
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 4)
+        .or_else(|| {
+            mime_content
+                .windows(2)
+                .position(|w| w == b"\n\n")
+                .map(|p| p + 2)
+        })
+        .unwrap_or(mime_content.len());
+    let header_section = String::from_utf8_lossy(&mime_content[..header_end]);
+
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     let re_from = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
 
     let to_addr = re_to
-        .captures(&mime_content)
+        .captures(&header_section)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
     let from_header = re_from
-        .captures(&mime_content)
+        .captures(&header_section)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
@@ -485,7 +497,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
 
         // Send the full raw MIME content to preserve multipart structure,
         // Content-Type headers, attachments, and all other MIME headers.
-        match mailer.send_raw(&envelope, mime_content.as_bytes()).await {
+        match mailer.send_raw(&envelope, &mime_content).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
