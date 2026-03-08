@@ -324,7 +324,10 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         let stripped: String = mime_text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
         match base64::engine::general_purpose::STANDARD.decode(&stripped) {
             Ok(decoded_bytes) => decoded_bytes,
-            Err(_) => mime_text.into_bytes(),
+            Err(e) => {
+                tracing::warn!("SendMail: base64 decode failed, using raw text: {e}");
+                mime_text.into_bytes()
+            }
         }
     } else {
         mime_text.into_bytes()
