@@ -155,19 +155,6 @@ pub async fn get_sync_state_full(
 ///
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
-fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
-    // New format: { "success": true/false, "result": [...], ... }
-    if let Some(flag) = json.get("success") {
-        if flag.as_bool() != Some(true) {
-            // Try to extract an error message from the response.
-            let detail = json
-                .get("errors")
-                .and_then(|e| e.get(0))
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            return Err(DbError::Query(detail.to_owned()));
-        }
         if json
             .get("result")
             .and_then(|r| r.get(0))
@@ -177,17 +164,13 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
         {
             return Err(DbError::Query("DB query failed".to_owned()));
         }
+    } else if !json.is_array() {
+        return Err(DbError::UnexpectedFormat);
     }
     // Legacy array format – no top-level success flag; treat as OK.
     if json
         .get(0)
         .and_then(|r| r.get("success"))
-        .and_then(|s| s.as_bool())
-        == Some(false)
-    {
-        return Err(DbError::Query("DB query failed".to_owned()));
-    }
-    Ok(())
 }
 
 /// Extract the `meta.changes` count from a D1 API response.  Returns `None`
