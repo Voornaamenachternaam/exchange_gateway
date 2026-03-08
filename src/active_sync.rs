@@ -3,6 +3,7 @@ use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use chrono::{DateTime, NaiveDateTime};
 use chrono_tz::Tz;
+use lazy_static::lazy_static;
 use lettre::address::Envelope;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use percent_encoding::percent_decode_str;
@@ -12,6 +13,11 @@ use quick_xml::events::Event;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+lazy_static! {
+    static ref RE_TO: Regex = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    static ref RE_FROM: Regex = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+}
 
 const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#;
 
@@ -347,14 +353,11 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         .unwrap_or(mime_content.len());
     let header_section = String::from_utf8_lossy(&mime_content[..header_end]);
 
-    let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
-    let re_from = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
-
-    let to_addr = re_to
+    let to_addr = RE_TO
         .captures(&header_section)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
-    let from_header = re_from
+    let from_header = RE_FROM
         .captures(&header_section)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
