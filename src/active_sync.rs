@@ -298,11 +298,14 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             match String::from_utf8(decoded_bytes) {
                 Ok(s) => mime_content = s,
                 Err(e) => {
+                    let bytes = e.into_bytes();
                     tracing::warn!(
                         "SendMail: decoded base64 is not valid UTF-8, \
-                         keeping original content: {e}"
+                         using lossy UTF-8 conversion"
                     );
+                    mime_content = String::from_utf8_lossy(&bytes).into_owned();
                 }
+            }
             }
         }
     }
