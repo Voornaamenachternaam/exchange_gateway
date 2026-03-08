@@ -637,20 +637,29 @@ async fn handle_delete_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
-    match jmap_client::destroy_events(session, ids).await {
-        Ok(not_destroyed) if !not_destroyed.is_empty() => {
-            tracing::error!("destroy_events partially failed for ids: {:?}", not_destroyed);
-            return soap_fault("ErrorInternalServerError", "Delete Failed");
-        }
+    let not_destroyed = match jmap_client::destroy_events(session, ids.clone()).await {
+        Ok(nd) => nd,
         Err(e) => {
             tracing::error!("destroy_events failed: {}", e);
             return soap_fault("ErrorInternalServerError", "Delete Failed");
         }
-        _ => {}
+    };
+    let mut msgs = String::new();
+    for id in &ids {
+        if not_destroyed.contains(id) {
+            msgs.push_str(&format!(
+                r#"<m:DeleteItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:MessageText>Failed to delete item {}</m:MessageText></m:DeleteItemResponseMessage>"#,
+                utils::escape_xml(id)
+            ));
+        } else {
+            msgs.push_str(
+                r#"<m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage>"#,
+            );
+        }
     }
     soap_response(&format!(
-        r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
-        NS_M, NS_T
+        r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:DeleteItemResponse>"#,
+        NS_M, NS_T, msgs
     ))
 }
 
