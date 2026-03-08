@@ -1338,7 +1338,10 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
         1 => "weekly",
         2 | 3 => "monthly",
         5 | 6 => "yearly",
-        _ => "daily",
+        unknown => {
+            tracing::warn!("Unknown EAS recurrence type '{}', defaulting to 'daily'", unknown);
+            "daily"
+        },
     }
     .to_string();
 
