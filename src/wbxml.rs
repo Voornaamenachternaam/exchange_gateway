@@ -736,6 +736,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         while end < strtbl.len() && strtbl[end] != 0 {
             end += 1;
         }
+        if end >= strtbl.len() {
+            return Err("Unterminated string in string table".into());
+        }
         let s = std::str::from_utf8(&strtbl[offset..end])
             .map_err(|_| "Invalid UTF-8 in string table".to_string())?
             .to_string();
@@ -1515,6 +1518,70 @@ mod tests {
             "Expected the known-prefixed but untokenizable empty tag 'Calendar:NoSuchTag' \
              to preserve its prefix through the round-trip, but decoded XML was: {}",
             decoded,
+        );
+    }
+
+    /// `read_strtbl_string` must reject an entry that is not NUL-terminated
+    /// (i.e. runs to the end of the table without a 0x00 byte).
+    #[test]
+    fn unterminated_strtbl_entry_is_rejected() {
+        // Craft minimal WBXML with a 5-byte string table containing "hello"
+        // but NO NUL terminator, then a body that references it via STR_T.
+        //
+        // Header: version=0x03, publicid=0x01, charset=0x6A, strtbl_len=5
+        // String table: b"hello" (no NUL)
+        // Body: STR_T (0x83) offset 0x00
+        let wbxml: Vec<u8> = vec![
+            0x03, // version
+            0x01, // public ID
+            0x6A, // charset (UTF-8)
+            0x05, // string table length = 5
+            b'h', b'e', b'l', b'l', b'o', // unterminated string
+            0x83, 0x00, // STR_T, offset 0
+        ];
+        let result = decode(&wbxml);
+        assert!(
+            result.is_err(),
+            "Expected an error for unterminated string table entry, got: {:?}",
+            result,
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("nterminated"),
+            "Error message should mention unterminated string, got: {}",
+            err,
+        );
+    }
+
+    /// `read_strtbl_string` must accept a properly NUL-terminated entry
+    /// when referenced via STR_T.
+    #[test]
+    fn terminated_strtbl_entry_is_accepted() {
+        // Same structure but string table is "hi\0" (properly terminated).
+        // Body: a known tag with content, STR_T referencing offset 0, END.
+        //
+        // Use AirSync:Sync (page 0, token 0x05) with content bit → 0x45.
+        let wbxml: Vec<u8> = vec![
+            0x03, // version
+            0x01, // public ID
+            0x6A, // charset (UTF-8)
+            0x03, // string table length = 3
+            b'h', b'i', 0x00, // "hi\0"
+            0x45, // tag Sync with content (page 0, token 0x05 | 0x40)
+            0x83, 0x00, // STR_T, offset 0
+            0x01, // END
+        ];
+        let result = decode(&wbxml);
+        assert!(
+            result.is_ok(),
+            "Expected decode to succeed for terminated string table entry, got: {:?}",
+            result,
+        );
+        let xml = result.unwrap();
+        assert!(
+            xml.contains("hi"),
+            "Expected decoded XML to contain 'hi', got: {}",
+            xml,
         );
     }
 }
