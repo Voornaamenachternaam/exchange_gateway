@@ -261,16 +261,19 @@ pub async fn claim_sync_key(
         Some(n) => n,
         None => {
             // The DB confirmed the query succeeded (`check_db_success` passed)
-            // but the response lacks the `meta.changes` field.  Assume the
-            // UPDATE went through — returning an error here would cause the
-            // caller to tell the client to retry with the old SyncKey, which
-            // no longer exists in the DB, forcing an unnecessary full re-sync.
-            tracing::warn!(
+            // but the response lacks the `meta.changes` field.  Without the
+            // row-count we cannot tell whether the UPDATE matched (claim
+            // succeeded) or not (invalid/replayed SyncKey).  Treating this as
+            // success would silently accept bad keys, so return an error
+            // instead.  The caller's `Err` handler restores the original
+            // SyncKey and returns a transient server error (Status 5), letting
+            // the client retry safely.
+            tracing::error!(
                 user = user, device_id = device_id, collection = coll,
-                "claim_sync_key: meta.changes missing from successful DB response; \
-                 assuming update was applied"
+                "claim_sync_key: meta.changes missing from DB response; \
+                 cannot confirm SyncKey claim — treating as transient error"
             );
-            return Ok(true);
+            return Err(DbError::UnexpectedFormat);
         }
     };
     Ok(changes > 0)
