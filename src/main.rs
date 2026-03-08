@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     body::Bytes,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
@@ -66,6 +66,7 @@ async fn handle_activesync_options() -> impl IntoResponse {
 
 async fn handle_active_sync(
     State(config): State<Arc<AppConfig>>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
@@ -141,7 +142,8 @@ async fn handle_active_sync(
         }
     };
 
-    let response_xml = active_sync::process_request(&config, &xml_body, &headers).await;
+    let query_cmd = query.get("Cmd").cloned().unwrap_or_default();
+    let response_xml = active_sync::process_request(&config, &xml_body, &headers, &query_cmd).await;
 
     if is_wbxml {
         match wbxml::encode(&response_xml) {

@@ -165,7 +165,7 @@ struct Attendee {
     name: String,
 }
 
-pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap) -> String {
+pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap, query_cmd: &str) -> String {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
@@ -186,6 +186,21 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
             }
             _ => {}
         }
+    }
+
+    // When the XML body is empty (no root element), fall back to the Cmd
+    // query parameter from the URL.  ActiveSync clients may legitimately
+    // send no body for commands like Ping and Provision.
+    if command.is_empty() && !query_cmd.is_empty() {
+        command = query_cmd.to_string();
+    }
+
+    // Commands that do not require a JMAP session — handle them early to
+    // avoid an unnecessary network round-trip.
+    match command.as_str() {
+        "Ping" => return handle_ping().await,
+        "Provision" => return handle_provision().await,
+        _ => {}
     }
 
     let auth = match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
@@ -232,9 +247,7 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
         "MeetingResponse" => handle_meeting_response(&session, config, xml, &user).await,
         "SendMail" => handle_send_mail(config, xml, &user).await,
         "Settings" => handle_settings(&session, config, &user, device_id).await,
-        "Provision" => handle_provision().await,
         "Search" => handle_search(&session, xml).await,
-        "Ping" => handle_ping().await,
         _ => {
             tracing::warn!("Unsupported EAS Command: {}", command);
             error_xml(400, "UnsupportedCommand")
