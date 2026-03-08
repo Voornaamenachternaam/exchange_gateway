@@ -489,6 +489,12 @@ pub async fn push_event(
         let updated = val["updated"].as_str().map(String::from);
         return Ok(CreatedEvent { id, updated });
     }
+    if let Some(not_created) = json["methodResponses"][0][1]["notCreated"].as_object()
+        && let Some((_, err)) = not_created.into_iter().next()
+    {
+        let desc = err["description"].as_str().unwrap_or("unknown error");
+        return Err(JmapError::Api(format!("create failed: {}", desc)));
+    }
     Err(JmapError::Api("create failed".into()))
 }
 
