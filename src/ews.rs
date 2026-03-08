@@ -471,7 +471,7 @@ async fn handle_sync_folder_items(
                 return soap_fault("ErrorInternalServerError", "Temporary error, please retry");
             }
             Err(e) => {
-                // Permanent error (expired/invalid sinceState, parse failure,
+                // Permanent error (expired/invalid sinceState, auth failure,
                 // etc.) – clear stored state so the client's next request
                 // triggers a proper initial (full) sync.
                 tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);

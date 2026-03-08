@@ -24,13 +24,15 @@ pub enum JmapError {
 
 impl JmapError {
     /// Returns `true` for transient errors (network / connection / server
-    /// issues) where retrying later is likely to succeed and cached state
-    /// should be preserved.
+    /// issues, or ambiguous parse failures) where retrying later is likely
+    /// to succeed and cached state should be preserved.
     ///
     /// Inspects the underlying `reqwest::Error` to distinguish genuinely
     /// transient conditions (timeouts, connection resets, DNS failures,
-    /// HTTP 5xx server errors) from non-transient ones (e.g. response-body
-    /// deserialization failures that would recur on every retry).
+    /// HTTP 5xx server errors) from non-transient ones.  Parse errors are
+    /// also treated as transient because they can result from temporary
+    /// server issues (e.g. malformed responses under load); the safe
+    /// default is to preserve sync state rather than force a full re-sync.
     pub fn is_transient(&self) -> bool {
         match self {
             JmapError::Connection(e) => {
@@ -42,6 +44,12 @@ impl JmapError {
                             || s == reqwest::StatusCode::REQUEST_TIMEOUT
                     })
             }
+            // Parse errors (malformed / missing methodResponses, unexpected
+            // response shape) can be caused by transient server issues.
+            // Treating them as transient avoids unnecessarily nuking sync
+            // state and forcing a full re-sync; if the error is truly
+            // permanent, retries will fail again without data loss.
+            JmapError::Parse(_) => true,
             _ => false,
         }
     }
