@@ -49,6 +49,16 @@ impl JmapError {
                             || s == reqwest::StatusCode::REQUEST_TIMEOUT
                     })
             }
+            // JMAP method-level errors (RFC 8620 §3.6.1) embed the error
+            // type as a "[type]" prefix.  The transient types are:
+            //   serverFail          — unexpected/transient internal error
+            //   serverUnavailable   — temporarily unavailable
+            //   serverPartialFail   — some calls may have succeeded
+            JmapError::Api(msg) => {
+                msg.starts_with("[serverFail]")
+                    || msg.starts_with("[serverUnavailable]")
+                    || msg.starts_with("[serverPartialFail]")
+            }
             _ => false,
         }
     }
@@ -700,12 +710,16 @@ fn check_jmap_method_error(json: &serde_json::Value) -> Result<(), JmapError> {
         }
         for resp in responses {
             if resp.get(0).and_then(|v| v.as_str()) == Some("error") {
-                let desc = resp
-                    .get(1)
+                let error_obj = resp.get(1);
+                let error_type = error_obj
+                    .and_then(|e| e.get("type"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("unknownError");
+                let desc = error_obj
                     .and_then(|e| e.get("description"))
                     .and_then(|d| d.as_str())
                     .unwrap_or("unknown JMAP error");
-                return Err(JmapError::Api(desc.to_string()));
+                return Err(JmapError::Api(format!("[{}] {}", error_type, desc)));
             }
         }
     } else {
