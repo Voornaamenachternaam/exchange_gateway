@@ -574,54 +574,53 @@ async fn handle_meeting_response(
 }
 
 async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String {
-    let mut query = String::new();
-    let mut range_start: usize = 0;
-    let mut range_max: usize = 100;
-    let mut buf = Vec::new();
-    let mut current_tag = String::new();
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    #[derive(Debug, Deserialize)]
+    struct SearchRequest {
+        #[serde(rename = "Store")]
+        store: SearchStore,
+    }
 
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                current_tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-            }
-            Ok(Event::End(_)) => {
-                current_tag.clear();
-            }
-            Ok(Event::Text(ref t)) => {
-                if current_tag == "FreeText" {
-                    let text = String::from_utf8_lossy(t);
-                    query = match escape::unescape(&text) {
-                        Ok(s) => s.into_owned(),
-                        Err(e) => {
-                            tracing::warn!("Search: failed to unescape XML text: {:?}", e);
-                            text.into_owned()
-                        }
-                    };
-                } else if current_tag == "Range" {
-                    // ActiveSync Range format: "M-N" (inclusive), e.g. "0-19" = 20 results
-                    let text = String::from_utf8_lossy(t);
-                    if let Some((start, end)) = text.split_once('-')
-                        && let Ok(m) = start.trim().parse::<usize>()
-                        && let Ok(n) = end.trim().parse::<usize>()
-                    {
-                        // M-N: zero-based inclusive range; count = N - M + 1
-                        range_start = m;
-                        range_max = n.saturating_sub(m).saturating_add(1).min(1000);
-                    }
-                }
-            }
-            Ok(Event::CData(t)) => {
-                if current_tag == "FreeText" {
-                    query = String::from_utf8_lossy(t.as_ref()).to_string();
-                }
-            }
-            Ok(Event::Eof) => break,
-            _ => {}
+    #[derive(Debug, Deserialize)]
+    struct SearchStore {
+        #[serde(rename = "Name", default)]
+        name: Option<String>,
+        #[serde(rename = "Query", default)]
+        query: Option<SearchQuery>,
+        #[serde(rename = "Options", default)]
+        options: Option<SearchOptions>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SearchQuery {
+        #[serde(rename = "FreeText", default)]
+        free_text: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SearchOptions {
+        #[serde(rename = "Range", default)]
+        range: Option<String>,
+    }
+
+    let req: SearchRequest = match quick_xml::de::from_str(xml) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Search XML Parse Error: {:?}", e);
+            return error_xml(400, "BadRequest");
         }
-        buf.clear();
+    };
+
+    let query = req.store.query.and_then(|q| q.free_text).unwrap_or_default();
+    let (mut range_start, mut range_max) = (0, 100);
+
+    if let Some(range_str) = req.store.options.and_then(|o| o.range) {
+        if let Some((start, end)) = range_str.split_once('-')
+            && let Ok(m) = start.trim().parse::<usize>()
+            && let Ok(n) = end.trim().parse::<usize>()
+        {
+            range_start = m;
+            range_max = n.saturating_sub(m).saturating_add(1).min(1000);
+        }
     }
     let results = match jmap_client::search_principals(session, &query).await {
         Ok(results) => results,
