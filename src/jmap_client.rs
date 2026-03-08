@@ -61,6 +61,9 @@ pub struct JmapSession {
     pub account_id: String,
     pub principals_account_id: String,
     pub client: Client,
+    /// Server-advertised `maxObjectsInSet` from `urn:ietf:params:jmap:core`
+    /// capabilities.  Defaults to 500 when the server omits the value.
+    pub max_objects_in_set: usize,
 }
 
 /// JSCalendar NDay object (RFC 8984 Section 4.3.2) used inside
@@ -341,12 +344,20 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         find_account_for_capability(&body, "urn:ietf:params:jmap:principals")
             .unwrap_or(&account_id)
             .to_string();
+    let max_objects_in_set = body
+        .get("capabilities")
+        .and_then(|c| c.get("urn:ietf:params:jmap:core"))
+        .and_then(|core| core.get("maxObjectsInSet"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(500);
     Ok(JmapSession {
         api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
         access_token: token,
         account_id,
         principals_account_id,
         client,
+        max_objects_in_set,
     })
 }
 
@@ -518,7 +529,9 @@ pub struct BatchCreateResult {
     pub not_created: Vec<(String, String)>,
 }
 
-/// Create multiple calendar events in a single JMAP `CalendarEvent/set` call.
+/// Create multiple calendar events via JMAP `CalendarEvent/set`, splitting
+/// the batch into chunks that respect `session.max_objects_in_set` so that
+/// large sync uploads do not exceed the server limit.
 ///
 /// `events` is a list of `(creation_id, JmapEvent)` pairs.  The `creation_id`
 /// is an opaque caller-chosen key used to correlate results back to the input
@@ -538,11 +551,9 @@ pub async fn push_events(
         });
     }
 
-    let mut create_map = serde_json::Map::new();
-    // Map from JMAP creation ID (UUID) → caller creation ID so we can
-    // correlate the response back.
-    let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
+    // Prepare (jmap_creation_id, caller_id, event_json) triples up-front so
+    // we can chunk them without re-serialising.
+    let mut prepared: Vec<(String, String, serde_json::Value)> = Vec::with_capacity(events.len());
     for (caller_id, mut event) in events {
         if event.uid.is_none() {
             event.uid = Some(Uuid::new_v4().to_string());
@@ -553,68 +564,79 @@ pub async fn push_events(
             obj.insert("calendarIds".to_string(), json!({ (calendar_id): true }));
         }
         let jmap_creation_id = Uuid::new_v4().to_string();
-        id_map.insert(jmap_creation_id.clone(), caller_id);
-        create_map.insert(jmap_creation_id, event_json);
+        prepared.push((jmap_creation_id, caller_id, event_json));
     }
-
-    let body = json!({
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
-        "methodCalls": [["CalendarEvent/set", {
-            "accountId": session.account_id,
-            "create": create_map
-        }, "c0"]]
-    });
-    let res = session
-        .client
-        .post(&session.api_url)
-        .header("Authorization", format!("Basic {}", session.access_token))
-        .json(&body)
-        .send()
-        .await?
-        .error_for_status()?;
-    let json: serde_json::Value = res.json().await?;
-    check_jmap_method_error(&json)?;
 
     let mut result = BatchCreateResult {
         created: Vec::new(),
         not_created: Vec::new(),
     };
 
-    if let Some(created) = json["methodResponses"][0][1]["created"].as_object() {
-        for (jmap_id, val) in created {
-            if let Some(caller_id) = id_map.remove(jmap_id) {
-                let Some(server_id) = val["id"].as_str() else {
+    // Send chunks that stay within the server's maxObjectsInSet limit.
+    let chunk_size = session.max_objects_in_set.max(1);
+    for chunk in prepared.chunks(chunk_size) {
+        let mut create_map = serde_json::Map::new();
+        let mut id_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (jmap_creation_id, caller_id, event_json) in chunk {
+            id_map.insert(jmap_creation_id.clone(), caller_id.clone());
+            create_map.insert(jmap_creation_id.clone(), event_json.clone());
+        }
+
+        let body = json!({
+            "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+            "methodCalls": [["CalendarEvent/set", {
+                "accountId": session.account_id,
+                "create": create_map
+            }, "c0"]]
+        });
+        let res = session
+            .client
+            .post(&session.api_url)
+            .header("Authorization", format!("Basic {}", session.access_token))
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?;
+        let json: serde_json::Value = res.json().await?;
+        check_jmap_method_error(&json)?;
+
+        if let Some(created) = json["methodResponses"][0][1]["created"].as_object() {
+            for (jmap_id, val) in created {
+                if let Some(caller_id) = id_map.remove(jmap_id) {
+                    let Some(server_id) = val["id"].as_str() else {
+                        result
+                            .not_created
+                            .push((caller_id, "create succeeded but missing server id".to_string()));
+                        continue;
+                    };
+                    let updated = val["updated"].as_str().map(String::from);
                     result
-                        .not_created
-                        .push((caller_id, "create succeeded but missing server id".to_string()));
-                    continue;
-                };
-                let updated = val["updated"].as_str().map(String::from);
-                result
-                    .created
-                    .push((caller_id, CreatedEvent { id: server_id.to_string(), updated }));
+                        .created
+                        .push((caller_id, CreatedEvent { id: server_id.to_string(), updated }));
+                }
             }
         }
-    }
 
-    if let Some(not_created) = json["methodResponses"][0][1]["notCreated"].as_object() {
-        for (jmap_id, err) in not_created {
-            if let Some(caller_id) = id_map.remove(jmap_id) {
-                let desc = err["description"]
-                    .as_str()
-                    .unwrap_or("unknown error")
-                    .to_string();
-                result.not_created.push((caller_id, desc));
+        if let Some(not_created) = json["methodResponses"][0][1]["notCreated"].as_object() {
+            for (jmap_id, err) in not_created {
+                if let Some(caller_id) = id_map.remove(jmap_id) {
+                    let desc = err["description"]
+                        .as_str()
+                        .unwrap_or("unknown error")
+                        .to_string();
+                    result.not_created.push((caller_id, desc));
+                }
             }
         }
-    }
 
-    // Any remaining IDs in id_map were neither created nor explicitly rejected
-    // — treat them as failures.
-    for (_, caller_id) in id_map {
-        result
-            .not_created
-            .push((caller_id, "no response from server".to_string()));
+        // Any remaining IDs in id_map were neither created nor explicitly
+        // rejected — treat them as failures.
+        for (_, caller_id) in id_map {
+            result
+                .not_created
+                .push((caller_id, "no response from server".to_string()));
+        }
     }
 
     Ok(result)
