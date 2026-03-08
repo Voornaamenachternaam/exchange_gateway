@@ -310,7 +310,57 @@ async fn handle_send_mail(
 
         let mailer = SmtpTransport::builder_dangerous(host).port(port).build();
 
-        match mailer.send(&email) {
+        let mut builder = {
+            let b = match scheme.as_str() {
+                "smtps" => {
+                    // Implicit TLS (port 465): relay() configures TLS::Wrapper internally.
+                    match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to create SMTP relay transport: {}", e);
+                            return SEND_MAIL_ERROR.to_string();
+                        }
+                    }
+                }
+                "smtp" => {
+                    // Plain SMTP (port 25): use builder_dangerous for unencrypted connections.
+                    AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+                }
+                _ => {
+                    // Default to STARTTLS (port 587).
+                    match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                            return SEND_MAIL_ERROR.to_string();
+                        }
+                    }
+                }
+            };
+            b.port(port)
+        };
+
+        // Optional basic auth from URL: smtp://user:pass@host:port
+        // URL components are percent-encoded, so decode before use as credentials.
+        let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
+        if scheme == "smtp" && !user.is_empty() && smtp_url.password().is_some() {
+            tracing::error!("SMTP credentials require TLS; use smtps:// or starttls://");
+            return SEND_MAIL_ERROR.to_string();
+        }
+        if !user.is_empty()
+            && let Some(pass) = smtp_url.password() {
+                let pass = percent_decode_str(pass).decode_utf8_lossy();
+                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                    user.into_owned(),
+                    pass.into_owned(),
+                ));
+            }
+
+        let mailer = builder.build();
+
+        // Send the full raw MIME content to preserve multipart structure,
+        // Content-Type headers, attachments, and all other MIME headers.
+        match mailer.send_raw(&envelope, &mime_content).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
@@ -399,8 +449,112 @@ async fn handle_sync(
     let coll = req.collections.collection;
     let old_sync_key = coll.sync_key.clone();
 
-    if let Some(cmds) = coll.commands {
-        process_client_commands(session, cmds, &config.timezone).await;
+    // Fetch the stored sync state (SyncKey + JMAP state) *before* processing
+    // client commands.  We need the JMAP state for change-detection below.
+    let stored_state = match db::get_sync_state_full(config, user, device_id, &collection_id).await {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::error!(
+                user = user, device_id = device_id, collection = %collection_id,
+                "Sync: failed to fetch sync state: {e} — returning server error so client retries without reset"
+            );
+            return format!(
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
+        }
+    };
+
+    // Atomically validate and claim the incoming SyncKey when the client is
+    // not performing an initial sync (SyncKey "0").  The claim uses a
+    // conditional UPDATE (WHERE sync_key = <expected>) so that only one
+    // concurrent request can succeed — the DB row is the single source of
+    // truth and acts as a compare-and-swap guard.
+    //
+    // ActiveSync Status 3 = "Invalid or mismatched SyncKey" — the device
+    // must re-issue a SyncKey 0 (full re-sync) to recover.
+    if old_sync_key != "0" {
+        if stored_state.is_some() {
+            // Generate a temporary placeholder key for the claim.  The final
+            // SyncKey issued to the client is computed later and written via
+            // `update_sync_state`.
+            let claim_key = Uuid::new_v4().to_string();
+            let claim_result = db::claim_sync_key(
+                config,
+                user,
+                device_id,
+                &collection_id,
+                &old_sync_key,
+                &claim_key,
+            )
+            .await;
+            match claim_result {
+                Ok(true) => { /* claim succeeded, continue */ }
+                Ok(false) => {
+                    tracing::warn!(
+                        "Sync: SyncKey claim failed for user={}, device={}, collection={}: \
+                         client sent '{}' — another request already consumed it or the key \
+                         does not match",
+                        user, device_id, collection_id, old_sync_key
+                    );
+                    // Status 3 tells the client its SyncKey is invalid.
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Sync: transient DB error during SyncKey claim for user={}, device={}, \
+                         collection={}: {} — returning server error so client retries without reset",
+                        user, device_id, collection_id, e
+                    );
+                    // The claim may have partially succeeded (the DB
+                    // UPDATE could have gone through even though we got a
+                    // transport/parse error on the response).  Restore the
+                    // original SyncKey so the client can retry with the
+                    // same key instead of being stuck with an invalid one.
+                    if stored_state.is_some()
+                        && let Err(rollback_err) = db::claim_sync_key(
+                            config,
+                            user,
+                            device_id,
+                            &collection_id,
+                            &claim_key,
+                            &old_sync_key,
+                        )
+                        .await
+                        {
+                            tracing::error!(
+                                "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
+                                 collection={}: {} — the stored SyncKey may be stuck on an \
+                                 unreachable claim key; manual intervention or a client re-sync \
+                                 (SyncKey 0) may be required",
+                                user, device_id, collection_id, rollback_err
+                            );
+                        }
+                    // Status 5 = server error — the client should retry
+                    // without discarding its local state.
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Sync: missing stored SyncKey for user={}, device={}, collection={} with client SyncKey '{}' — rejecting to prevent stale/replayed command replay",
+                user, device_id, collection_id, old_sync_key
+            );
+            return format!(
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
+                utils::escape_xml(&old_sync_key),
+                utils::escape_xml(&collection_id)
+            );
+        }
     }
 
     let current_jmap_state = match jmap_client::get_calendar_state(
