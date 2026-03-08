@@ -897,43 +897,132 @@ pub async fn batch_patch_events(
     Ok(result)
 }
 
-/// Destroy calendar events by ID.
+/// Result of a batch destroy: tracks which event IDs were successfully
+/// destroyed and which were rejected by the server.
+pub struct BatchDestroyResult {
+    pub destroyed: Vec<String>,
+    pub not_destroyed: Vec<(String, String)>,
+    /// If a transport or JMAP method-level error interrupted the batch mid-way,
+    /// it is captured here.  Earlier successful chunks are still available in
+    /// `destroyed` / `not_destroyed` so the caller can correctly account for them.
+    pub chunk_error: Option<JmapError>,
+}
+
+/// Destroy calendar events by ID, splitting the batch into chunks that respect
+/// `session.max_objects_in_set`.
 ///
-/// Returns a list of `(id, jmap_error_type)` pairs for IDs the server refused
-/// to destroy (partial failures).  An empty vector means every ID was destroyed
-/// successfully.  Transport-level and method-level errors still surface as
-/// `Err`.
+/// Returns a [`BatchDestroyResult`] with per-event outcomes.  Transport-level
+/// and method-level errors still surface as `Err`.
 pub async fn destroy_events(
     session: &JmapSession,
     ids: Vec<String>,
-) -> Result<Vec<(String, String)>, JmapError> {
+) -> Result<BatchDestroyResult, JmapError> {
     if ids.is_empty() {
-        return Ok(Vec::new());
+        return Ok(BatchDestroyResult {
+            destroyed: Vec::new(),
+            not_destroyed: Vec::new(),
+            chunk_error: None,
+        });
     }
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["CalendarEvent/set", { "accountId": session.account_id, "destroy": ids }, "c0"]] });
-    let res = session
-        .client
-        .post(&session.api_url)
-        .header("Authorization", format!("Basic {}", session.access_token))
-        .json(&body)
-        .send()
-        .await?
-        .error_for_status()?;
-    let json: serde_json::Value = res.json().await?;
-    check_jmap_method_error(&json)?;
-    if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object()
-        && !not_destroyed.is_empty()
-    {
-        let failed: Vec<(String, String)> = not_destroyed
-            .iter()
-            .map(|(id, err)| {
+
+    let mut result = BatchDestroyResult {
+        destroyed: Vec::new(),
+        not_destroyed: Vec::new(),
+        chunk_error: None,
+    };
+
+    let chunk_size = session.max_objects_in_set.max(1);
+    for chunk in ids.chunks(chunk_size) {
+        let chunk_ids: Vec<&String> = chunk.iter().collect();
+
+        let body = json!({
+            "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+            "methodCalls": [["CalendarEvent/set", {
+                "accountId": session.account_id,
+                "destroy": chunk_ids
+            }, "c0"]]
+        });
+
+        let chunk_result: Result<serde_json::Value, JmapError> = async {
+            let res = session
+                .client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?;
+            let json: serde_json::Value = res.json().await?;
+            check_jmap_method_error(&json)?;
+            Ok(json)
+        }
+        .await;
+
+        let json = match chunk_result {
+            Ok(json) => json,
+            Err(e) => {
+                for id in chunk {
+                    result
+                        .not_destroyed
+                        .push((id.clone(), format!("chunk request failed: {}", e)));
+                }
+                result.chunk_error = Some(e);
+                break;
+            }
+        };
+
+        // Collect IDs the server explicitly confirmed as destroyed.
+        let confirmed: std::collections::HashSet<String> =
+            json["methodResponses"][0][1]["destroyed"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+        // Collect IDs the server explicitly rejected.
+        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(not_destroyed) =
+            json["methodResponses"][0][1]["notDestroyed"].as_object()
+        {
+            for (id, err) in not_destroyed {
+                failed.insert(id.clone());
                 let err_type = err["type"].as_str().unwrap_or("serverFail").to_string();
-                (id.clone(), err_type)
-            })
-            .collect();
-        return Ok(failed);
+                result.not_destroyed.push((id.clone(), err_type));
+            }
+        }
+
+        for id in chunk {
+            if confirmed.contains(id) {
+                result.destroyed.push(id.clone());
+            } else if !failed.contains(id) {
+                result
+                    .not_destroyed
+                    .push((id.clone(), "server did not confirm destroy".to_string()));
+            }
+        }
     }
-    Ok(Vec::new())
+
+    // Mark items from unsent chunks as failed when a chunk error occurred.
+    if result.chunk_error.is_some() {
+        let accounted: std::collections::HashSet<String> = result
+            .destroyed
+            .iter()
+            .cloned()
+            .chain(result.not_destroyed.iter().map(|(id, _)| id.clone()))
+            .collect();
+        for id in &ids {
+            if !accounted.contains(id) {
+                result
+                    .not_destroyed
+                    .push((id.clone(), "chunk request failed (unsent)".to_string()));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 pub async fn get_calendar_changes(

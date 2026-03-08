@@ -721,16 +721,20 @@ async fn handle_delete_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let ids: Vec<String> = req.item_ids.items.into_iter().map(|i| i.id).collect();
-    let not_destroyed = match jmap_client::destroy_events(session, ids.clone()).await {
-        Ok(nd) => nd,
+    let destroy_result = match jmap_client::destroy_events(session, ids.clone()).await {
+        Ok(r) => r,
         Err(e) => {
             tracing::error!("destroy_events failed: {}", e);
             return soap_fault("ErrorInternalServerError", "Delete Failed");
         }
     };
+    if let Some(ref e) = destroy_result.chunk_error {
+        tracing::error!("destroy_events chunk error: {}", e);
+    }
     let mut msgs = String::new();
     for id in &ids {
-        if let Some((_, jmap_err)) = not_destroyed.iter().find(|(fid, _)| fid == id) {
+        if let Some((_, jmap_err)) = destroy_result.not_destroyed.iter().find(|(fid, _)| fid == id)
+        {
             let ews_code = match jmap_err.as_str() {
                 "notFound" => "ErrorItemNotFound",
                 "forbidden" | "accountReadOnly" => "ErrorAccessDenied",
