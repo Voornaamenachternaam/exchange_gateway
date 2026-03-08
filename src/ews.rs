@@ -310,7 +310,7 @@ async fn handle_update_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
-    let mut all_updates = serde_json::Map::new();
+    let mut response_messages = String::new();
     for change in req.item_changes.items {
         let id = change.item_id.id;
         let mut patch = serde_json::Map::new();
@@ -347,23 +347,23 @@ async fn handle_update_item(
                 _ => {}
             }
         }
-        if !patch.is_empty() {
-            if let Some(existing) = all_updates.get_mut(&id).and_then(|v| v.as_object_mut()) {
-                for (k, v) in patch {
-                    existing.insert(k, v);
-                }
-            } else {
-                all_updates.insert(id, serde_json::json!(patch));
+        if patch.is_empty() {
+            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+            continue;
+        }
+        match jmap_client::patch_event(session, &id, patch).await {
+            Ok(()) => {
+                response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+            }
+            Err(e) => {
+                tracing::error!("patch_event failed for {}: {}", id, e);
+                response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
             }
         }
     }
-    if let Err(e) = jmap_client::patch_events(session, all_updates).await {
-        tracing::error!("patch_events failed: {}", e);
-        return soap_fault("ErrorInternalServerError", "Update Failed");
-    }
     soap_response(&format!(
-        r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
-        NS_M, NS_T
+        r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:UpdateItemResponse>"#,
+        NS_M, NS_T, response_messages
     ))
 }
 
