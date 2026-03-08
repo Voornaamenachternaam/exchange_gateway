@@ -511,6 +511,113 @@ pub async fn push_event(
     Err(JmapError::Api("create failed".into()))
 }
 
+/// Result of a batch create: maps each creation ID to either a successfully
+/// created event or an error description.
+pub struct BatchCreateResult {
+    pub created: Vec<(String, CreatedEvent)>,
+    pub not_created: Vec<(String, String)>,
+}
+
+/// Create multiple calendar events in a single JMAP `CalendarEvent/set` call.
+///
+/// `events` is a list of `(creation_id, JmapEvent)` pairs.  The `creation_id`
+/// is an opaque caller-chosen key used to correlate results back to the input
+/// (typically the ActiveSync ClientId).
+///
+/// Returns a [`BatchCreateResult`] with per-event outcomes.  Transport-level
+/// and method-level errors still surface as `Err`.
+pub async fn push_events(
+    session: &JmapSession,
+    events: Vec<(String, JmapEvent)>,
+    calendar_id: &str,
+) -> Result<BatchCreateResult, JmapError> {
+    if events.is_empty() {
+        return Ok(BatchCreateResult {
+            created: Vec::new(),
+            not_created: Vec::new(),
+        });
+    }
+
+    let mut create_map = serde_json::Map::new();
+    // Map from JMAP creation ID (UUID) → caller creation ID so we can
+    // correlate the response back.
+    let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for (caller_id, mut event) in events {
+        if event.uid.is_none() {
+            event.uid = Some(Uuid::new_v4().to_string());
+        }
+        let mut event_json = serde_json::to_value(&event)
+            .map_err(|e| JmapError::Parse(format!("serialize failed: {}", e)))?;
+        if let Some(obj) = event_json.as_object_mut() {
+            obj.insert("calendarIds".to_string(), json!({ (calendar_id): true }));
+        }
+        let jmap_creation_id = Uuid::new_v4().to_string();
+        id_map.insert(jmap_creation_id.clone(), caller_id);
+        create_map.insert(jmap_creation_id, event_json);
+    }
+
+    let body = json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+        "methodCalls": [["CalendarEvent/set", {
+            "accountId": session.account_id,
+            "create": create_map
+        }, "c0"]]
+    });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let json: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json)?;
+
+    let mut result = BatchCreateResult {
+        created: Vec::new(),
+        not_created: Vec::new(),
+    };
+
+    if let Some(created) = json["methodResponses"][0][1]["created"].as_object() {
+        for (jmap_id, val) in created {
+            if let Some(caller_id) = id_map.remove(jmap_id) {
+                let server_id = val["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let updated = val["updated"].as_str().map(String::from);
+                result
+                    .created
+                    .push((caller_id, CreatedEvent { id: server_id, updated }));
+            }
+        }
+    }
+
+    if let Some(not_created) = json["methodResponses"][0][1]["notCreated"].as_object() {
+        for (jmap_id, err) in not_created {
+            if let Some(caller_id) = id_map.remove(jmap_id) {
+                let desc = err["description"]
+                    .as_str()
+                    .unwrap_or("unknown error")
+                    .to_string();
+                result.not_created.push((caller_id, desc));
+            }
+        }
+    }
+
+    // Any remaining IDs in id_map were neither created nor explicitly rejected
+    // — treat them as failures.
+    for (_, caller_id) in id_map {
+        result
+            .not_created
+            .push((caller_id, "no response from server".to_string()));
+    }
+
+    Ok(result)
+}
+
 fn check_jmap_method_error(json: &serde_json::Value) -> Result<(), JmapError> {
     if let Some(responses) = json.get("methodResponses").and_then(|v| v.as_array()) {
         if responses.is_empty() {

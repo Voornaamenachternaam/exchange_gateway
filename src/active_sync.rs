@@ -1245,9 +1245,13 @@ async fn process_client_commands(
                 None
             }
         };
+        // Collect valid events for a single batched JMAP CalendarEvent/set
+        // call instead of issuing one network round-trip per Add command.
+        let mut batch: Vec<(String, jmap_client::JmapEvent)> = Vec::new();
+        let mut batch_client_ids: Vec<String> = Vec::new();
         for add_cmd in add_cmds {
             let client_id = add_cmd.client_id;
-            let Some(ref cal_id) = cal_id else {
+            let Some(ref _cal_id) = cal_id else {
                 // Calendar ID lookup failed — mark every Add as failed so
                 // the device retries them on the next Sync.
                 failures.push(CommandFailure::Add { client_id });
@@ -1296,16 +1300,30 @@ async fn process_client_commands(
                 recurrence_rules: data.recurrence.map(|r| vec![build_recurrence_rule(r)]),
                 updated: None,
             };
-            match jmap_client::push_event(session, event, cal_id).await {
-                Ok(created) => {
-                    add_successes.push(AddSuccess {
-                        client_id,
-                        server_id: created.id,
-                    });
+            batch_client_ids.push(client_id.clone());
+            batch.push((client_id, event));
+        }
+        if let Some(ref cal_id) = cal_id
+            && !batch.is_empty()
+        {
+            match jmap_client::push_events(session, batch, cal_id).await {
+                Ok(result) => {
+                    for (client_id, created) in result.created {
+                        add_successes.push(AddSuccess {
+                            client_id,
+                            server_id: created.id,
+                        });
+                    }
+                    for (client_id, desc) in result.not_created {
+                        tracing::error!("ActiveSync Add failed for client_id {}: {}", client_id, desc);
+                        failures.push(CommandFailure::Add { client_id });
+                    }
                 }
                 Err(e) => {
-                    tracing::error!("ActiveSync Add failed: {}", e);
-                    failures.push(CommandFailure::Add { client_id });
+                    tracing::error!("ActiveSync batch Add failed: {}", e);
+                    for client_id in batch_client_ids {
+                        failures.push(CommandFailure::Add { client_id });
+                    }
                 }
             }
         }
@@ -1495,6 +1513,8 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
         by_month_day,
         by_month,
         by_set_position,
+        count: None,
+        until: None,
     }
 }
 
