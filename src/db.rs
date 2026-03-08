@@ -155,10 +155,6 @@ pub async fn get_sync_state_full(
 ///
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
-fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
-    if json.get("result").and_then(|r| r.as_array()).is_some() {
-        if json
-            .get("result")
             .and_then(|r| r.get(0))
             .and_then(|r| r.get("success"))
             .and_then(|s| s.as_bool())
