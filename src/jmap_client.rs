@@ -673,14 +673,14 @@ pub async fn push_events(
     // iterator so we cannot easily know where we stopped; instead we
     // collect the caller IDs that were never placed into `result` at all.
     if result.chunk_error.is_some() {
-        let accounted: std::collections::HashSet<&str> = result
+        let accounted: std::collections::HashSet<String> = result
             .created
             .iter()
-            .map(|(id, _)| id.as_str())
-            .chain(result.not_created.iter().map(|(id, _)| id.as_str()))
+            .map(|(id, _)| id.clone())
+            .chain(result.not_created.iter().map(|(id, _)| id.clone()))
             .collect();
         for (_, caller_id, _) in &prepared {
-            if !accounted.contains(caller_id.as_str()) {
+            if !accounted.contains(caller_id) {
                 result
                     .not_created
                     .push((caller_id.clone(), "chunk request failed (unsent)".to_string()));
