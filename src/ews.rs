@@ -310,9 +310,16 @@ async fn handle_update_item(
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
     let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
-    let mut response_messages = String::new();
+
+    // Build patches for all item changes up-front so we can send them in a
+    // single JMAP batch request instead of one network round-trip per item.
+    let mut ordered_ids: Vec<String> = Vec::with_capacity(req.item_changes.items.len());
+    let mut patches: Vec<(String, serde_json::Map<String, serde_json::Value>)> = Vec::new();
+    let mut no_op_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for change in req.item_changes.items {
         let id = change.item_id.id;
+        ordered_ids.push(id.clone());
         let mut patch = serde_json::Map::new();
         for update in change.updates.set_fields {
             match update.field_uri.field_uri.as_str() {
@@ -348,17 +355,62 @@ async fn handle_update_item(
             }
         }
         if patch.is_empty() {
-            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
-            continue;
+            no_op_ids.insert(id);
+        } else {
+            patches.push((id, patch));
         }
-        match jmap_client::patch_event(session, &id, patch).await {
-            Ok(()) => {
-                response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+    }
+
+    // Send all non-empty patches in a single batch request.
+    let batch_result = if patches.is_empty() {
+        None
+    } else {
+        match jmap_client::batch_patch_events(session, patches).await {
+            Ok(result) => {
+                if let Some(ref e) = result.chunk_error {
+                    tracing::error!(
+                        "batch_patch_events partially failed: {}; {} updated, {} not updated",
+                        e,
+                        result.updated.len(),
+                        result.not_updated.len()
+                    );
+                }
+                Some(result)
             }
             Err(e) => {
-                tracing::error!("patch_event failed for {}: {}", id, e);
-                response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
+                tracing::error!("batch_patch_events failed: {}", e);
+                // Total failure — every non-no-op item failed.
+                let mut response_messages = String::new();
+                for id in &ordered_ids {
+                    if no_op_ids.contains(id) {
+                        response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+                    } else {
+                        response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
+                    }
+                }
+                return soap_response(&format!(
+                    r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:UpdateItemResponse>"#,
+                    NS_M, NS_T, response_messages
+                ));
             }
+        }
+    };
+
+    // Build per-item response messages in the original request order.
+    let not_updated: std::collections::HashMap<String, String> = batch_result
+        .as_ref()
+        .map(|r| r.not_updated.iter().cloned().collect())
+        .unwrap_or_default();
+
+    let mut response_messages = String::new();
+    for id in &ordered_ids {
+        if no_op_ids.contains(id) {
+            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+        } else if let Some(desc) = not_updated.get(id) {
+            tracing::error!("patch_event failed for {}: {}", id, desc);
+            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
+        } else {
+            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
         }
     }
     soap_response(&format!(
