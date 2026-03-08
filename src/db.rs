@@ -4,7 +4,7 @@ use serde_json::json;
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("DB request failed: {0}")]
-    Request(#[from] reqwest::Error),
+    Request(reqwest::Error),
     #[error("failed to parse DB response: {0}")]
     Parse(reqwest::Error),
     #[error("DB query failed: {0}")]
@@ -489,7 +489,8 @@ pub async fn update_ews_sync_state(
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
-        .await?
+        .await
+        .map_err(DbError::Request)?
         .error_for_status()
         .map_err(DbError::Request)?;
     let json: serde_json::Value = resp.json().await.map_err(DbError::Parse)?;
