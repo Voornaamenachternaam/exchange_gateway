@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 lazy_static! {
-    static ref RE_TO: Regex = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
-    static ref RE_FROM: Regex = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    static ref RE_TO: Regex = Regex::new(r"(?im)^to:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    static ref RE_FROM: Regex = Regex::new(r"(?im)^from:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
 }
 
 const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#;
