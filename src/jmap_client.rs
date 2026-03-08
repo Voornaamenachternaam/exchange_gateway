@@ -292,6 +292,22 @@ pub struct JmapChanges {
     pub destroyed: Vec<String>,
 }
 
+/// Look up the account ID for a given JMAP capability URN, first checking
+/// `primaryAccounts` and falling back to scanning `accounts` for a matching
+/// `accountCapabilities` entry.
+fn find_account_for_capability<'a>(body: &'a serde_json::Value, capability: &str) -> Option<&'a str> {
+    body["primaryAccounts"][capability].as_str().or_else(|| {
+        body["accounts"].as_object().and_then(|accounts| {
+            accounts.iter().find_map(|(id, account)| {
+                account
+                    .get("accountCapabilities")
+                    .and_then(|caps| caps.get(capability))
+                    .map(|_| id.as_str())
+            })
+        })
+    })
+}
+
 pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapSession, JmapError> {
     let client = Client::new();
     let token = base64::Engine::encode(
@@ -314,34 +330,13 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         });
     }
     let body: serde_json::Value = res.json().await?;
-    let account_id = body["primaryAccounts"]["urn:ietf:params:jmap:calendars"]
-        .as_str()
-        .or_else(|| {
-            body["accounts"].as_object().and_then(|accounts| {
-                accounts.iter().find_map(|(id, account)| {
-                    account
-                        .get("accountCapabilities")
-                        .and_then(|caps| caps.get("urn:ietf:params:jmap:calendars"))
-                        .map(|_| id.as_str())
-                })
-            })
-        })
+    let account_id = find_account_for_capability(&body, "urn:ietf:params:jmap:calendars")
         .ok_or_else(|| JmapError::Parse("no usable account in JMAP session".into()))?
         .to_string();
-    let principals_account_id = body["primaryAccounts"]["urn:ietf:params:jmap:principals"]
-        .as_str()
-        .or_else(|| {
-            body["accounts"].as_object().and_then(|accounts| {
-                accounts.iter().find_map(|(id, account)| {
-                    account
-                        .get("accountCapabilities")
-                        .and_then(|caps| caps.get("urn:ietf:params:jmap:principals"))
-                        .map(|_| id.as_str())
-                })
-            })
-        })
-        .unwrap_or(&account_id)
-        .to_string();
+    let principals_account_id =
+        find_account_for_capability(&body, "urn:ietf:params:jmap:principals")
+            .unwrap_or(&account_id)
+            .to_string();
     Ok(JmapSession {
         api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
         access_token: token,
