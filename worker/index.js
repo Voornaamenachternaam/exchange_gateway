@@ -49,7 +49,7 @@ async function handleApiRequest(request, env) {
     
     return Response.json({
       result: [
-        { results: result.results }
+        { results: result.results, meta: result.meta }
       ]
     });
   } catch (e) {
