@@ -200,15 +200,6 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap,
         None => return error_xml(401, "Unauthorized"),
     };
 
-    // Commands that do not require a JMAP session — handle them after
-    // authentication to avoid an unnecessary network round-trip while
-    // still rejecting unauthenticated requests.
-    match command.as_str() {
-        "Ping" => return handle_ping().await,
-        "Provision" => return handle_provision().await,
-        _ => {}
-    }
-
     let (user, pass) = utils::decode_basic_auth(auth);
     let device_id = headers
         .get("X-MS-DeviceId")
@@ -222,6 +213,14 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap,
             return error_xml(500, "AuthFailed");
         }
     };
+
+    // Commands that do not require a JMAP session — handle them after
+    // credentials have been fully validated via the JMAP session above.
+    match command.as_str() {
+        "Ping" => return handle_ping().await,
+        "Provision" => return handle_provision().await,
+        _ => {}
+    }
 
     match command.as_str() {
         "FolderSync" => handle_folder_sync(&session, config, &user, device_id, xml).await,
