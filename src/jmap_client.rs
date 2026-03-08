@@ -737,13 +737,14 @@ pub async fn patch_events(
 
 /// Destroy calendar events by ID.
 ///
-/// Returns a list of IDs that the server refused to destroy (partial
-/// failures).  An empty vector means every ID was destroyed successfully.
-/// Transport-level and method-level errors still surface as `Err`.
+/// Returns a list of `(id, jmap_error_type)` pairs for IDs the server refused
+/// to destroy (partial failures).  An empty vector means every ID was destroyed
+/// successfully.  Transport-level and method-level errors still surface as
+/// `Err`.
 pub async fn destroy_events(
     session: &JmapSession,
     ids: Vec<String>,
-) -> Result<Vec<String>, JmapError> {
+) -> Result<Vec<(String, String)>, JmapError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -761,8 +762,14 @@ pub async fn destroy_events(
     if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object()
         && !not_destroyed.is_empty()
     {
-        let failed_ids: Vec<String> = not_destroyed.keys().cloned().collect();
-        return Ok(failed_ids);
+        let failed: Vec<(String, String)> = not_destroyed
+            .iter()
+            .map(|(id, err)| {
+                let err_type = err["type"].as_str().unwrap_or("serverFail").to_string();
+                (id.clone(), err_type)
+            })
+            .collect();
+        return Ok(failed);
     }
     Ok(Vec::new())
 }

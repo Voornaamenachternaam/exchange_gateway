@@ -658,9 +658,15 @@ async fn handle_delete_item(
     };
     let mut msgs = String::new();
     for id in &ids {
-        if not_destroyed.contains(id) {
+        if let Some((_, jmap_err)) = not_destroyed.iter().find(|(fid, _)| fid == id) {
+            let ews_code = match jmap_err.as_str() {
+                "notFound" => "ErrorItemNotFound",
+                "forbidden" | "accountReadOnly" => "ErrorAccessDenied",
+                _ => "ErrorInternalServerError",
+            };
             msgs.push_str(&format!(
-                r#"<m:DeleteItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:MessageText>Failed to delete item {}</m:MessageText></m:DeleteItemResponseMessage>"#,
+                r#"<m:DeleteItemResponseMessage ResponseClass="Error"><m:ResponseCode>{}</m:ResponseCode><m:MessageText>Failed to delete item {}</m:MessageText></m:DeleteItemResponseMessage>"#,
+                ews_code,
                 utils::escape_xml(id)
             ));
         } else {
