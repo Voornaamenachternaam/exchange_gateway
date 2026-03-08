@@ -583,14 +583,16 @@ pub async fn push_events(
     if let Some(created) = json["methodResponses"][0][1]["created"].as_object() {
         for (jmap_id, val) in created {
             if let Some(caller_id) = id_map.remove(jmap_id) {
-                let server_id = val["id"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
+                let Some(server_id) = val["id"].as_str() else {
+                    result
+                        .not_created
+                        .push((caller_id, "create succeeded but missing server id".to_string()));
+                    continue;
+                };
                 let updated = val["updated"].as_str().map(String::from);
                 result
                     .created
-                    .push((caller_id, CreatedEvent { id: server_id, updated }));
+                    .push((caller_id, CreatedEvent { id: server_id.to_string(), updated }));
             }
         }
     }
