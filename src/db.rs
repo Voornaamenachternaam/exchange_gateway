@@ -168,6 +168,15 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
                 .unwrap_or("unknown error");
             return Err(DbError::Query(detail.to_owned()));
         }
+        if json
+            .get("result")
+            .and_then(|r| r.get(0))
+            .and_then(|r| r.get("success"))
+            .and_then(|s| s.as_bool())
+            == Some(false)
+        {
+            return Err(DbError::Query("DB query failed".to_owned()));
+        }
     }
     // Legacy array format – no top-level success flag; treat as OK.
     if json
