@@ -313,13 +313,24 @@ async fn handle_update_item(
 
     // Build patches for all item changes up-front so we can send them in a
     // single JMAP batch request instead of one network round-trip per item.
-    let mut ordered_ids: Vec<String> = Vec::with_capacity(req.item_changes.items.len());
-    let mut patches: Vec<(String, serde_json::Map<String, serde_json::Value>)> = Vec::new();
-    let mut no_op_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    //
+    // Multiple ItemChange entries may reference the same ItemId (e.g. one
+    // updates the subject, another updates the start time).  We merge their
+    // patches into a single JMAP update per ID and track each *position* as
+    // either a no-op or linked to a patched ID so that the per-position
+    // response is correct.
+    let item_count = req.item_changes.items.len();
+
+    // Per-position tracking: (id, is_no_op).
+    let mut positions: Vec<(String, bool)> = Vec::with_capacity(item_count);
+
+    // Merged patches keyed by item ID.  We use a HashMap to accumulate fields
+    // across all occurrences of a given ID.
+    let mut merged: std::collections::HashMap<String, serde_json::Map<String, serde_json::Value>> =
+        std::collections::HashMap::new();
 
     for change in req.item_changes.items {
         let id = change.item_id.id;
-        ordered_ids.push(id.clone());
         let mut patch = serde_json::Map::new();
         for update in change.updates.set_fields {
             match update.field_uri.field_uri.as_str() {
@@ -355,11 +366,20 @@ async fn handle_update_item(
             }
         }
         if patch.is_empty() {
-            no_op_ids.insert(id);
+            positions.push((id, true));
         } else {
-            patches.push((id, patch));
+            // Merge fields into the existing patch for this ID (if any).
+            merged
+                .entry(id.clone())
+                .or_default()
+                .extend(patch);
+            positions.push((id, false));
         }
     }
+
+    // Flatten the merged map into the Vec expected by batch_patch_events.
+    let patches: Vec<(String, serde_json::Map<String, serde_json::Value>)> =
+        merged.into_iter().collect();
 
     // Send all non-empty patches in a single batch request.
     let batch_result = if patches.is_empty() {
@@ -381,8 +401,8 @@ async fn handle_update_item(
                 tracing::error!("batch_patch_events failed: {}", e);
                 // Total failure — every non-no-op item failed.
                 let mut response_messages = String::new();
-                for id in &ordered_ids {
-                    if no_op_ids.contains(id) {
+                for (_, is_no_op) in &positions {
+                    if *is_no_op {
                         response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
                     } else {
                         response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
@@ -403,8 +423,8 @@ async fn handle_update_item(
         .unwrap_or_default();
 
     let mut response_messages = String::new();
-    for id in &ordered_ids {
-        if no_op_ids.contains(id) {
+    for (id, is_no_op) in &positions {
+        if *is_no_op {
             response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
         } else if let Some(desc) = not_updated.get(id) {
             tracing::error!("patch_event failed for {}: {}", id, desc);
