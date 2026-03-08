@@ -760,6 +760,129 @@ pub async fn patch_event(
     Ok(())
 }
 
+/// Result of a batch update: tracks which event IDs were successfully updated
+/// and which were rejected by the server.
+pub struct BatchUpdateResult {
+    pub updated: Vec<String>,
+    pub not_updated: Vec<(String, String)>,
+    /// If a transport or JMAP method-level error interrupted the batch mid-way,
+    /// it is captured here.  Earlier successful chunks are still available in
+    /// `updated` / `not_updated` so the caller can correctly account for them.
+    pub chunk_error: Option<JmapError>,
+}
+
+/// Update multiple calendar events via JMAP `CalendarEvent/set`, splitting the
+/// batch into chunks that respect `session.max_objects_in_set`.
+///
+/// `patches` is a list of `(event_id, patch)` pairs where each patch is a
+/// JSON object of JMAP property updates.
+///
+/// Returns a [`BatchUpdateResult`] with per-event outcomes.
+pub async fn batch_patch_events(
+    session: &JmapSession,
+    patches: Vec<(String, serde_json::Map<String, serde_json::Value>)>,
+) -> Result<BatchUpdateResult, JmapError> {
+    if patches.is_empty() {
+        return Ok(BatchUpdateResult {
+            updated: Vec::new(),
+            not_updated: Vec::new(),
+            chunk_error: None,
+        });
+    }
+
+    let mut result = BatchUpdateResult {
+        updated: Vec::new(),
+        not_updated: Vec::new(),
+        chunk_error: None,
+    };
+
+    let chunk_size = session.max_objects_in_set.max(1);
+    for chunk in patches.chunks(chunk_size) {
+        let mut update_map = serde_json::Map::new();
+        let mut ids_in_chunk: Vec<String> = Vec::with_capacity(chunk.len());
+        for (id, patch) in chunk {
+            ids_in_chunk.push(id.clone());
+            update_map.insert(id.clone(), serde_json::Value::Object(patch.clone()));
+        }
+
+        let body = json!({
+            "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+            "methodCalls": [["CalendarEvent/set", {
+                "accountId": session.account_id,
+                "update": update_map
+            }, "c0"]]
+        });
+
+        let chunk_result: Result<serde_json::Value, JmapError> = async {
+            let res = session
+                .client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?;
+            let json: serde_json::Value = res.json().await?;
+            check_jmap_method_error(&json)?;
+            Ok(json)
+        }
+        .await;
+
+        let json = match chunk_result {
+            Ok(json) => json,
+            Err(e) => {
+                for id in ids_in_chunk {
+                    result
+                        .not_updated
+                        .push((id, format!("chunk request failed: {}", e)));
+                }
+                result.chunk_error = Some(e);
+                break;
+            }
+        };
+
+        // Collect IDs that the server explicitly rejected.
+        let mut failed_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object() {
+            for (id, err) in not_updated {
+                failed_ids.insert(id.clone());
+                let desc = err["description"]
+                    .as_str()
+                    .unwrap_or("unknown error")
+                    .to_string();
+                result.not_updated.push((id.clone(), desc));
+            }
+        }
+
+        // Everything not in notUpdated is considered updated.
+        for id in ids_in_chunk {
+            if !failed_ids.contains(&id) {
+                result.updated.push(id);
+            }
+        }
+    }
+
+    // Mark items from unsent chunks as failed when a chunk error occurred.
+    if result.chunk_error.is_some() {
+        let accounted: std::collections::HashSet<String> = result
+            .updated
+            .iter()
+            .cloned()
+            .chain(result.not_updated.iter().map(|(id, _)| id.clone()))
+            .collect();
+        for (id, _) in &patches {
+            if !accounted.contains(id) {
+                result
+                    .not_updated
+                    .push((id.clone(), "chunk request failed (unsent)".to_string()));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 /// Destroy calendar events by ID.
 ///
 /// Returns a list of `(id, jmap_error_type)` pairs for IDs the server refused

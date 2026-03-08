@@ -1337,6 +1337,8 @@ async fn process_client_commands(
             }
         }
     }
+    let mut change_patches: Vec<(String, serde_json::Map<String, serde_json::Value>)> =
+        Vec::new();
     for change_cmd in cmds.change.unwrap_or_default() {
         let id = change_cmd.server_id;
         let data = change_cmd.application_data;
@@ -1366,11 +1368,32 @@ async fn process_client_commands(
             );
         }
         if !patch.is_empty() {
-            if let Err(e) = jmap_client::patch_event(session, &id, patch).await {
-                tracing::error!("ActiveSync Update failed for id {}: {}", id, e);
-                failures.push(CommandFailure::Change {
-                    server_id: id.clone(),
-                });
+            change_patches.push((id, patch));
+        }
+    }
+    if !change_patches.is_empty() {
+        let change_ids: Vec<String> = change_patches.iter().map(|(id, _)| id.clone()).collect();
+        match jmap_client::batch_patch_events(session, change_patches).await {
+            Ok(result) => {
+                if let Some(ref e) = result.chunk_error {
+                    tracing::error!(
+                        "ActiveSync batch Change partially failed: {}; \
+                         {} updated, {} not updated",
+                        e,
+                        result.updated.len(),
+                        result.not_updated.len()
+                    );
+                }
+                for (server_id, desc) in result.not_updated {
+                    tracing::error!("ActiveSync Update failed for id {}: {}", server_id, desc);
+                    failures.push(CommandFailure::Change { server_id });
+                }
+            }
+            Err(e) => {
+                tracing::error!("ActiveSync batch Change failed: {}", e);
+                for server_id in change_ids {
+                    failures.push(CommandFailure::Change { server_id });
+                }
             }
         }
     }
