@@ -841,6 +841,13 @@ pub async fn batch_patch_events(
             }
         };
 
+        // Collect IDs that the server explicitly confirmed as updated.
+        let confirmed_ids: std::collections::HashSet<String> =
+            json["methodResponses"][0][1]["updated"]
+                .as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default();
+
         // Collect IDs that the server explicitly rejected.
         let mut failed_ids: std::collections::HashSet<String> =
             std::collections::HashSet::new();
@@ -855,10 +862,17 @@ pub async fn batch_patch_events(
             }
         }
 
-        // Everything not in notUpdated is considered updated.
+        // Only mark IDs as updated if the server explicitly confirmed them.
+        // IDs absent from both `updated` and `notUpdated` are treated as
+        // failures since the server did not confirm the update.
         for id in ids_in_chunk {
-            if !failed_ids.contains(&id) {
+            if confirmed_ids.contains(&id) {
                 result.updated.push(id);
+            } else if !failed_ids.contains(&id) {
+                result.not_updated.push((
+                    id,
+                    "server did not confirm update".to_string(),
+                ));
             }
         }
     }
