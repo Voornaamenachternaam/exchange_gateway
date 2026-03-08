@@ -527,6 +527,10 @@ pub async fn push_event(
 pub struct BatchCreateResult {
     pub created: Vec<(String, CreatedEvent)>,
     pub not_created: Vec<(String, String)>,
+    /// If a transport or JMAP method-level error interrupted the batch mid-way,
+    /// it is captured here.  Earlier successful chunks are still available in
+    /// `created` / `not_created` so the caller can correctly account for them.
+    pub chunk_error: Option<JmapError>,
 }
 
 /// Create multiple calendar events via JMAP `CalendarEvent/set`, splitting
@@ -548,6 +552,7 @@ pub async fn push_events(
         return Ok(BatchCreateResult {
             created: Vec::new(),
             not_created: Vec::new(),
+            chunk_error: None,
         });
     }
 
@@ -570,6 +575,7 @@ pub async fn push_events(
     let mut result = BatchCreateResult {
         created: Vec::new(),
         not_created: Vec::new(),
+        chunk_error: None,
     };
 
     // Send chunks that stay within the server's maxObjectsInSet limit.
@@ -590,16 +596,39 @@ pub async fn push_events(
                 "create": create_map
             }, "c0"]]
         });
-        let res = session
-            .client
-            .post(&session.api_url)
-            .header("Authorization", format!("Basic {}", session.access_token))
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
-        let json: serde_json::Value = res.json().await?;
-        check_jmap_method_error(&json)?;
+
+        // Instead of using `?` (which would discard results from earlier
+        // successful chunks), we catch transport / method-level errors,
+        // mark the remaining items in this chunk as failed, record the
+        // error, and stop processing further chunks.
+        let chunk_result: Result<serde_json::Value, JmapError> = async {
+            let res = session
+                .client
+                .post(&session.api_url)
+                .header("Authorization", format!("Basic {}", session.access_token))
+                .json(&body)
+                .send()
+                .await?
+                .error_for_status()?;
+            let json: serde_json::Value = res.json().await?;
+            check_jmap_method_error(&json)?;
+            Ok(json)
+        }
+        .await;
+
+        let json = match chunk_result {
+            Ok(json) => json,
+            Err(e) => {
+                // Record all items in this (and any subsequent) chunk as failed.
+                for (_, caller_id) in id_map {
+                    result
+                        .not_created
+                        .push((caller_id, format!("chunk request failed: {}", e)));
+                }
+                result.chunk_error = Some(e);
+                break;
+            }
+        };
 
         if let Some(created) = json["methodResponses"][0][1]["created"].as_object() {
             for (jmap_id, val) in created {
@@ -636,6 +665,26 @@ pub async fn push_events(
             result
                 .not_created
                 .push((caller_id, "no response from server".to_string()));
+        }
+    }
+
+    // When a chunk error interrupted the loop, mark items from any
+    // remaining (unsent) chunks as failed too.  `prepared.chunks()` is an
+    // iterator so we cannot easily know where we stopped; instead we
+    // collect the caller IDs that were never placed into `result` at all.
+    if result.chunk_error.is_some() {
+        let accounted: std::collections::HashSet<&str> = result
+            .created
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .chain(result.not_created.iter().map(|(id, _)| id.as_str()))
+            .collect();
+        for (_, caller_id, _) in &prepared {
+            if !accounted.contains(caller_id.as_str()) {
+                result
+                    .not_created
+                    .push((caller_id.clone(), "chunk request failed (unsent)".to_string()));
+            }
         }
     }
 

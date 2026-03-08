@@ -1308,6 +1308,15 @@ async fn process_client_commands(
         {
             match jmap_client::push_events(session, batch, cal_id).await {
                 Ok(result) => {
+                    if let Some(ref e) = result.chunk_error {
+                        tracing::error!(
+                            "ActiveSync batch Add partially failed: {}; \
+                             {} created, {} not created",
+                            e,
+                            result.created.len(),
+                            result.not_created.len()
+                        );
+                    }
                     for (client_id, created) in result.created {
                         add_successes.push(AddSuccess {
                             client_id,
