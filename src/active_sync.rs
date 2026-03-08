@@ -19,7 +19,7 @@ lazy_static! {
     static ref RE_FROM: Regex = Regex::new(r"(?im)^from:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
 }
 
-const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="AirSync:"><Status>2</Status></SendMail>"#;
+const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="ComposeMail:"><Status>2</Status></SendMail>"#;
 
 /// Per-command failure reported back in the `<Responses>` element of the Sync
 /// response so the client knows which commands failed and can retry them.
@@ -519,7 +519,7 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     };
 
     format!(
-        r#"<SendMail xmlns="AirSync:"><Status>{}</Status></SendMail>"#,
+        r#"<SendMail xmlns="ComposeMail:"><Status>{}</Status></SendMail>"#,
         status
     )
 }
