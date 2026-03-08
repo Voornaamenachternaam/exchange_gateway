@@ -3,7 +3,7 @@ use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use chrono::{DateTime, NaiveDateTime};
 use chrono_tz::Tz;
-use lettre::message::Message;
+use lettre::address::Envelope;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use percent_encoding::percent_decode_str;
 use quick_xml::Reader;
@@ -337,7 +337,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
 
     let re_to = Regex::new(r"(?m)^To:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     let re_from = Regex::new(r"(?m)^From:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
-    let re_subj = Regex::new(r"(?m)^Subject:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
 
     let to_addr = re_to
         .captures(&mime_content)
@@ -387,21 +386,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         return SEND_MAIL_ERROR.to_string();
     }
     let status = if let Some(to) = to_addr {
-        let subject = re_subj
-            .captures(&mime_content)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        let clean_body = if let Some(pos) = mime_content.find("\r\n\r\n") {
-            &mime_content[pos + 4..]
-        } else if let Some(pos) = mime_content.find("\n\n") {
-            &mime_content[pos + 2..]
-        } else {
-            // No header/body separator found — treat as header-only message
-            // to avoid duplicating headers into the body.
-            ""
-        };
-
         // Parse potentially multiple To: addresses using RFC 5322 mailbox-list
         // parsing. Naive comma-splitting breaks quoted display names such as
         // "Doe, John" <john@example.com>.
@@ -420,15 +404,17 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             return SEND_MAIL_ERROR.to_string();
         }
 
-        let mut builder = Message::builder().from(from_mailbox);
-        for mb in to_mailboxes {
-            builder = builder.to(mb);
-        }
-
-        let email = match builder.subject(subject).body(clean_body.to_string()) {
-            Ok(e) => e,
+        // Build an SMTP envelope from the validated addresses.  The full raw
+        // MIME content is sent as-is so that multipart structure, Content-Type
+        // headers, attachments, and any other MIME headers are preserved.
+        let to_addresses: Vec<lettre::Address> = to_mailboxes
+            .into_iter()
+            .map(|mb| mb.email)
+            .collect();
+        let envelope = match Envelope::new(Some(from_mailbox.email), to_addresses) {
+            Ok(env) => env,
             Err(e) => {
-                tracing::error!("Email build error: {}", e);
+                tracing::error!("Failed to build SMTP envelope: {}", e);
                 return SEND_MAIL_ERROR.to_string();
             }
         };
@@ -497,7 +483,9 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
 
         let mailer = builder.build();
 
-        match mailer.send(email).await {
+        // Send the full raw MIME content to preserve multipart structure,
+        // Content-Type headers, attachments, and all other MIME headers.
+        match mailer.send_raw(&envelope, mime_content.as_bytes()).await {
             Ok(_) => "1",
             Err(e) => {
                 tracing::error!("SMTP Error: {}", e);
