@@ -424,6 +424,18 @@ async fn handle_sync_folder_items(
         }
         (Some(client_token), Some(s)) => {
             if *client_token != s.sync_state {
+                // Clear the stored state so the client's next request sees
+                // `stored = None` and falls back to a full initial sync,
+                // consistent with the permanent-error path in
+                // get_calendar_changes.
+                if let Err(del_err) =
+                    db::delete_ews_sync_state(config, user, &folder_id).await
+                {
+                    tracing::error!(
+                        user = user, folder = %folder_id,
+                        "SyncFolderItems: failed to delete stale sync state: {del_err}"
+                    );
+                }
                 return soap_fault(
                     "ErrorInvalidSyncStateData",
                     "SyncState does not match; please re-sync",
