@@ -830,7 +830,8 @@ async fn handle_sync(
     let post_command_jmap_state = if has_client_commands {
         match jmap_client::get_calendar_state(session).await {
             Ok(s) => s,
-            Err(_) => {
+            Err(e) => {
+                tracing::error!("Failed to get post-command JMAP state: {}", e);
                 if old_sync_key == "0" {
                     // Initial sync with client commands: commands have already
                     // been applied (e.g. calendar events created) but the
