@@ -357,7 +357,7 @@ async fn handle_update_item(
             }
             Err(e) => {
                 tracing::error!("patch_event failed for {}: {}", id, e);
-                response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
+                response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
             }
         }
     }
