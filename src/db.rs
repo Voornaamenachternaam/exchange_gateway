@@ -149,12 +149,14 @@ pub async fn get_sync_state_full(
 }
 
 /// Check whether the DB API response indicates success.
-/// The Worker wrapper format includes `"success": true/false` at the top
+/// The Worker wrapper format includes "success": true/false` at the top
 /// level; the legacy direct-array format has no such flag (always assumed OK
 /// because it only appears when the request actually succeeded).
 ///
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
+fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
+    if json.get("result").is_some() {
         if json
             .get("result")
             .and_then(|r| r.get(0))
@@ -168,9 +170,7 @@ pub async fn get_sync_state_full(
         return Err(DbError::UnexpectedFormat);
     }
     // Legacy array format – no top-level success flag; treat as OK.
-    if json
-        .get(0)
-        .and_then(|r| r.get("success"))
+    Ok(())
 }
 
 /// Extract the `meta.changes` count from a D1 API response.  Returns `None`
