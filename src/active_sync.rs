@@ -600,7 +600,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
                     {
                         // M-N: zero-based inclusive range; count = N - M + 1
                         range_start = m;
-                        range_max = (n.saturating_sub(m) + 1).min(1000);
+                        range_max = n.saturating_sub(m).saturating_add(1).min(1000);
                     }
                 }
             }
