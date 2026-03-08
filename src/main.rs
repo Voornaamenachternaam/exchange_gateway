@@ -128,7 +128,7 @@ async fn handle_active_sync(
             .unwrap_or(&body);
         let first_meaningful = trimmed.iter().find(|b| !b.is_ascii_whitespace());
         if first_meaningful == Some(&b'<') {
-            match std::str::from_utf8(&body) {
+            match std::str::from_utf8(trimmed) {
                 Ok(s) => (s.to_string(), false),
                 Err(_) => {
                     return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response();
