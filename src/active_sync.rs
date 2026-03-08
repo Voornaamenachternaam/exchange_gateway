@@ -455,27 +455,30 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         };
         let port = smtp_url.port().unwrap_or(default_port);
 
-        let mut builder = if scheme == "smtps" {
-            // Implicit TLS (port 465): relay() already configures TLS::Wrapper internally.
-            let b = match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("Failed to create SMTP relay transport: {}", e);
-                    return SEND_MAIL_ERROR.to_string();
+        let mut builder = {
+            let b = match scheme.as_str() {
+                "smtps" => {
+                    // Implicit TLS (port 465): relay() configures TLS::Wrapper internally.
+                    match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to create SMTP relay transport: {}", e);
+                            return SEND_MAIL_ERROR.to_string();
+                        }
+                    }
                 }
-            };
-            b.port(port)
-        } else {
-            // Plain SMTP (port 25) or STARTTLS: use builder_dangerous to allow
-            // unencrypted connections, restoring compatibility with smtp:// URLs.
-            let b = if scheme == "smtp" {
-                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
-            } else {
-                match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
-                        return SEND_MAIL_ERROR.to_string();
+                "smtp" => {
+                    // Plain SMTP (port 25): use builder_dangerous for unencrypted connections.
+                    AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+                }
+                _ => {
+                    // Default to STARTTLS (port 587).
+                    match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                            return SEND_MAIL_ERROR.to_string();
+                        }
                     }
                 }
             };
