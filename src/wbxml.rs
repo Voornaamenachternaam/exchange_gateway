@@ -1194,6 +1194,11 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 body.push(0x00);
             }
             Ok(quick_xml::events::Event::Eof) => break,
+            Ok(quick_xml::events::Event::CData(ref e)) => {
+                body.push(TAG_STR_I);
+                body.extend_from_slice(e.as_ref());
+                body.push(0x00);
+            }
             Ok(_) => {}
             Err(e) => return Err(format!("XML parsing error: {}", e)),
         }
