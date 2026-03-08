@@ -813,16 +813,16 @@ pub async fn update_participant_status(
     user_email: &str,
     status: &str,
 ) -> Result<(), JmapError> {
-    // Fetch only the participants property to discover the opaque participant
+    // Fetch only the properties needed to discover the opaque participant
     // ID that the server uses as the map key for this email (RFC 8984).
-    // Requesting just ["id", "participants"] avoids transferring the full
-    // event payload (description, recurrence rules, etc.).
+    // We include "start" and "end" because the response is deserialized
+    // into JmapEvent which requires those fields.
     let body = json!({
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
         "methodCalls": [["CalendarEvent/get", {
             "accountId": session.account_id,
             "ids": [event_id],
-            "properties": ["id", "participants"]
+            "properties": ["id", "start", "end", "participants"]
         }, "c0"]]
     });
     let res = session
