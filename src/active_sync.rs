@@ -544,6 +544,7 @@ async fn handle_meeting_response(
 
 async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String {
     let mut query = String::new();
+    let mut range_start: usize = 0;
     let mut range_max: usize = 100;
     let mut buf = Vec::new();
     let mut current_tag = String::new();
@@ -571,11 +572,13 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
                 } else if current_tag == "Range" {
                     // ActiveSync Range format: "M-N" (inclusive), e.g. "0-19" = 20 results
                     let text = String::from_utf8_lossy(t);
-                    if let Some((_, end)) = text.split_once('-')
+                    if let Some((start, end)) = text.split_once('-')
+                        && let Ok(m) = start.trim().parse::<usize>()
                         && let Ok(n) = end.trim().parse::<usize>()
                     {
-                        // N is a zero-based inclusive upper bound; limit count = N + 1
-                        range_max = (n + 1).min(1000);
+                        // M-N: zero-based inclusive range; count = N - M + 1
+                        range_start = m;
+                        range_max = (n.saturating_sub(m) + 1).min(1000);
                     }
                 }
             }
@@ -596,7 +599,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
             Vec::new()
         }
     };
-    let results: Vec<_> = results.into_iter().take(range_max).collect();
+    let results: Vec<_> = results.into_iter().skip(range_start).take(range_max).collect();
     let mut results_xml = String::new();
     for p in results {
         results_xml.push_str(&format!(r#"<Result><Properties><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress></Properties></Result>"#, utils::escape_xml(&p.name), utils::escape_xml(&p.email)));
