@@ -813,9 +813,40 @@ pub async fn update_participant_status(
     user_email: &str,
     status: &str,
 ) -> Result<(), JmapError> {
-    // Fetch the event to discover the opaque participant ID that the server
-    // uses as the map key for this participant's email (RFC 8984).
-    let event = get_event_by_id(session, event_id).await?;
+    // Fetch only the participants property to discover the opaque participant
+    // ID that the server uses as the map key for this email (RFC 8984).
+    // Requesting just ["id", "participants"] avoids transferring the full
+    // event payload (description, recurrence rules, etc.).
+    let body = json!({
+        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"],
+        "methodCalls": [["CalendarEvent/get", {
+            "accountId": session.account_id,
+            "ids": [event_id],
+            "properties": ["id", "participants"]
+        }, "c0"]]
+    });
+    let res = session
+        .client
+        .post(&session.api_url)
+        .header("Authorization", format!("Basic {}", session.access_token))
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut json_resp: serde_json::Value = res.json().await?;
+    check_jmap_method_error(&json_resp)?;
+    let list = json_resp
+        .get_mut("methodResponses")
+        .and_then(|v| v.get_mut(0))
+        .and_then(|v| v.get_mut(1))
+        .and_then(|v| v.get_mut("list"))
+        .map(serde_json::Value::take)
+        .unwrap_or_default();
+    let events: Vec<JmapEvent> = serde_json::from_value(list)
+        .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
+    let event = events.into_iter().next().ok_or_else(|| {
+        JmapError::NotFound(format!("event {}", event_id))
+    })?;
     let participant_key = event
         .participants
         .as_ref()
