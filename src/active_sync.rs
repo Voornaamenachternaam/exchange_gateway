@@ -195,18 +195,19 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap,
         command = query_cmd.to_string();
     }
 
-    // Commands that do not require a JMAP session — handle them early to
-    // avoid an unnecessary network round-trip.
+    let auth = match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
+        Some(a) => a,
+        None => return error_xml(401, "Unauthorized"),
+    };
+
+    // Commands that do not require a JMAP session — handle them after
+    // authentication to avoid an unnecessary network round-trip while
+    // still rejecting unauthenticated requests.
     match command.as_str() {
         "Ping" => return handle_ping().await,
         "Provision" => return handle_provision().await,
         _ => {}
     }
-
-    let auth = match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
-        Some(a) => a,
-        None => return error_xml(401, "Unauthorized"),
-    };
 
     let (user, pass) = utils::decode_basic_auth(auth);
     let device_id = headers
