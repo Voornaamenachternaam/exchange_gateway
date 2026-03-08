@@ -643,9 +643,13 @@ async fn handle_create_item(
     };
     if let Some(item) = req.items.calendar_item {
         let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
-        let cal_id = jmap_client::get_default_calendar_id(session)
-            .await
-            .unwrap_or("default".into());
+        let cal_id = match jmap_client::get_default_calendar_id(session).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("CreateItem: failed to get default calendar ID: {e}");
+                return soap_fault("ErrorInternalServerError", "Failed to get calendar");
+            }
+        };
         let raw_start = match item.start {
             Some(s) if !s.is_empty() => s,
             _ => return soap_fault("ErrorMissingArgument", "Start is required"),
