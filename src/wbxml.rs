@@ -1149,12 +1149,11 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 if has_unknown_prefix
                     || !encode_tag(&mut body, local, &mut current_page, true, scope_page)
                 {
-                    // When the tag has an unknown prefix, store the full
-                    // prefixed name (e.g. "FakeNS:Type") in the string table
-                    // so the prefix survives the round-trip.  For tags that
-                    // simply aren't in the code-page map the local name is
-                    // sufficient (there is no prefix to preserve).
-                    let literal_name = if has_unknown_prefix { &full_name } else { local };
+                    // When the tag carries any prefix, store the full
+                    // prefixed name (e.g. "AirSync:Type") in the string table
+                    // so the prefix survives the round-trip.  For unprefixed
+                    // tags the local name alone is sufficient.
+                    let literal_name = if prefix.is_some() { &full_name } else { local };
                     encode_literal_tag(&mut body, literal_name, true, &mut strtbl_index, &mut strtbl);
                 }
                 // Push the resolved scope page. For unknown-prefix tags,
@@ -1177,7 +1176,7 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 if has_unknown_prefix
                     || !encode_tag(&mut body, local, &mut current_page, false, scope_page)
                 {
-                    let literal_name = if has_unknown_prefix { &full_name } else { local };
+                    let literal_name = if prefix.is_some() { &full_name } else { local };
                     encode_literal_tag(&mut body, literal_name, false, &mut strtbl_index, &mut strtbl);
                 }
             }
@@ -1473,6 +1472,43 @@ mod tests {
             decoded.contains("FakeNS:Marker"),
             "Expected the unknown-prefixed empty tag 'FakeNS:Marker' to survive \
              the round-trip, but decoded XML was: {}",
+            decoded,
+        );
+    }
+
+    /// A tag with a *known* prefix whose local name is not in the
+    /// corresponding code page must fall back to LITERAL encoding **with the
+    /// full `prefix:local` name preserved** so that the prefix survives the
+    /// round-trip. Before the fix, only the local name was stored in the
+    /// string table, silently dropping the prefix.
+    #[test]
+    fn known_prefix_literal_fallback_preserves_prefix() {
+        // "Calendar" is a known prefix (page 4), but "NoSuchTag" does not
+        // exist in any code page, so encode_tag will fail and we fall back
+        // to LITERAL encoding.
+        let xml = "<Calendar:Recurrence><Calendar:NoSuchTag>v</Calendar:NoSuchTag></Calendar:Recurrence>";
+        let encoded = encode(xml).expect("encode should succeed");
+        let decoded = decode(&encoded).expect("decode should succeed");
+
+        assert!(
+            decoded.contains("<Calendar:NoSuchTag>"),
+            "Expected the known-prefixed but untokenizable tag 'Calendar:NoSuchTag' \
+             to preserve its prefix through the round-trip, but decoded XML was: {}",
+            decoded,
+        );
+    }
+
+    /// Same as above but for self-closing (empty) tags.
+    #[test]
+    fn known_prefix_empty_literal_fallback_preserves_prefix() {
+        let xml = "<Calendar:Recurrence><Calendar:NoSuchTag/></Calendar:Recurrence>";
+        let encoded = encode(xml).expect("encode should succeed");
+        let decoded = decode(&encoded).expect("decode should succeed");
+
+        assert!(
+            decoded.contains("Calendar:NoSuchTag"),
+            "Expected the known-prefixed but untokenizable empty tag 'Calendar:NoSuchTag' \
+             to preserve its prefix through the round-trip, but decoded XML was: {}",
             decoded,
         );
     }

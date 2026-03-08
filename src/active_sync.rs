@@ -306,7 +306,6 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
                     mime_content = String::from_utf8_lossy(&bytes).into_owned();
                 }
             }
-            }
         }
     }
 
