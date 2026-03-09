@@ -80,10 +80,14 @@ async fn handle_active_sync(
 
         return (
             StatusCode::UNAUTHORIZED,
+    if !auth_header.to_ascii_lowercase().starts_with("basic ") {
+        return (
+            StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, r#"Basic realm="exchange_gateway""#)],
             "Unauthorized".to_string(),
         )
             .into_response();
+    }
 
     let content_type = headers
         .get(header::CONTENT_TYPE)
