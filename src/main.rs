@@ -59,9 +59,12 @@ async fn handle_activesync_options() -> impl IntoResponse {
         [
             ("MS-Server-ActiveSync", "15.0"),
             ("Allow", "OPTIONS,POST"),
+            ("MS-ASProtocolVersions", "2.5,12.0,14.0,14.1,15.0"),
+            ("MS-ASProtocolCommands", "Sync,SendMail,SmartForward,SmartReply,Ping,FolderSync,GetAttachment,Move,Add,Delete,Change,Search"),
         ],
         "",
     )
+}
 }
 
 async fn handle_active_sync(
