@@ -258,7 +258,7 @@ pub async fn process_request(
                 Ok(r) => r,
                 Err(e) => {
                     tracing::error!("Sync XML Parse Error: {:?}", e);
-                    return error_xml(400, "BadRequest");
+                    return bad_request_xml("Sync");
                 }
             };
             handle_sync(&session, config, &user, device_id, req).await
@@ -268,7 +268,7 @@ pub async fn process_request(
                 Ok(r) => r,
                 Err(e) => {
                     tracing::error!("ItemOperations XML Parse Error: {:?}", e);
-                    return error_xml(400, "BadRequest");
+                    return bad_request_xml("ItemOperations");
                 }
             };
             handle_item_operations(&session, req).await
@@ -634,7 +634,7 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Search XML Parse Error: {:?}", e);
-            return error_xml(400, "BadRequest");
+            return bad_request_xml("Search");
         }
     };
 
@@ -1838,6 +1838,18 @@ fn extract_provision_policy_key(xml: &str) -> Option<String> {
     None
 }
 
+fn bad_request_xml(command: &str) -> String {
+    match command {
+        "Sync" => r#"<Sync xmlns="AirSync:"><Collections><Collection><Status>4</Status></Collection></Collections></Sync>"#.to_string(),
+        "FolderSync" => r#"<FolderSync xmlns="AirSync:"><Status>4</Status></FolderSync>"#.to_string(),
+        "ItemOperations" => r#"<ItemOperations xmlns="ItemOperations:"><Status>4</Status></ItemOperations>"#.to_string(),
+        "MeetingResponse" => r#"<MeetingResponse xmlns="MeetingResponse:"><Result><Status>4</Status></Result></MeetingResponse>"#.to_string(),
+        "SendMail" => r#"<SendMail xmlns="ComposeMail:"><Status>2</Status></SendMail>"#.to_string(),
+        "Search" => r#"<Search xmlns="Search:"><Status>4</Status></Search>"#.to_string(),
+        _ => r#"<Status xmlns="AirSync:">4</Status>"#.to_string(),
+    }
+}
+
 fn unsupported_command_xml(command: &str) -> String {
     match command {
         "GetItemEstimate" => r#"<GetItemEstimate xmlns="GetItemEstimate:"><Status>3</Status></GetItemEstimate>"#.to_string(),
@@ -2012,7 +2024,7 @@ async fn handle_folder_sync(
         Ok(r) => r.sync_key,
         Err(e) => {
             tracing::error!("FolderSync XML Parse Error: {:?}", e);
-            return error_xml(400, "BadRequest");
+            return bad_request_xml("FolderSync");
         }
     };
 
@@ -2043,4 +2055,29 @@ async fn handle_folder_sync(
         FOLDER_SYNC_KEY,
         utils::escape_xml(&cal_id)
     )
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn extract_provision_policy_key_reads_value() {
+        let xml = r#"<Provision xmlns="Provision:"><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><PolicyKey>123</PolicyKey></Policy></Policies></Provision>"#;
+        assert_eq!(extract_provision_policy_key(xml).as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn unsupported_command_xml_is_command_shaped() {
+        let x = unsupported_command_xml("MoveItems");
+        assert!(x.contains("<MoveItems"));
+        assert!(x.contains("<Status>3</Status>"));
+    }
+
+    #[test]
+    fn bad_request_xml_is_command_shaped() {
+        let x = bad_request_xml("Sync");
+        assert!(x.contains("<Sync"));
+        assert!(x.contains("<Status>4</Status>"));
+    }
 }
