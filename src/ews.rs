@@ -668,7 +668,7 @@ async fn handle_create_item(
                         name: att.mailbox.name.unwrap_or_default(),
                         status: None,
                         participant_id: None,
-                    result.not_created.push((caller_id, format!("{}: {}", error_type, desc)));
+                    })
                     .collect()
             })
             .unwrap_or_default();
