@@ -886,10 +886,11 @@ async fn handle_sync(
                         "",
                     )
                     .await;
-        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#, // Use empty Commands
-        utils::escape_xml(&new_key),
-        utils::escape_xml(&collection_id),
-        responses_xml
+                    return format!(
+                        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&new_key),
+                        utils::escape_xml(&collection_id),
+                        responses_xml
                     );
                 } else {
                     // Non-initial sync: the post-command state fetch failed,
