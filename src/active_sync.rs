@@ -277,9 +277,14 @@ pub async fn process_request(
         "SendMail" => handle_send_mail(config, xml, &user).await,
         "Settings" => handle_settings(&session, config, &user, device_id).await,
         "Search" => handle_search(&session, xml).await,
+        "GetItemEstimate" | "MoveItems" | "FolderCreate" | "FolderDelete" | "FolderUpdate"
+        | "ResolveRecipients" | "ValidateCert" | "SmartForward" | "SmartReply" => {
+            tracing::warn!("Known but unimplemented EAS Command: {}", command);
+            unsupported_command_xml(&command)
+        }
         _ => {
             tracing::warn!("Unsupported EAS Command: {}", command);
-            error_xml(400, "UnsupportedCommand")
+            unsupported_command_xml(&command)
         }
     }
 }
@@ -1833,6 +1838,20 @@ fn extract_provision_policy_key(xml: &str) -> Option<String> {
     None
 }
 
+fn unsupported_command_xml(command: &str) -> String {
+    match command {
+        "GetItemEstimate" => r#"<GetItemEstimate xmlns="GetItemEstimate:"><Status>3</Status></GetItemEstimate>"#.to_string(),
+        "MoveItems" => r#"<MoveItems xmlns="Move:"><Status>3</Status></MoveItems>"#.to_string(),
+        "FolderCreate" => r#"<FolderCreate xmlns="FolderHierarchy:"><Status>3</Status></FolderCreate>"#.to_string(),
+        "FolderDelete" => r#"<FolderDelete xmlns="FolderHierarchy:"><Status>3</Status></FolderDelete>"#.to_string(),
+        "FolderUpdate" => r#"<FolderUpdate xmlns="FolderHierarchy:"><Status>3</Status></FolderUpdate>"#.to_string(),
+        "ResolveRecipients" => r#"<ResolveRecipients xmlns="ResolveRecipients:"><Status>3</Status></ResolveRecipients>"#.to_string(),
+        "ValidateCert" => r#"<ValidateCert xmlns="ValidateCert:"><Status>3</Status></ValidateCert>"#.to_string(),
+        "SmartForward" | "SmartReply" => r#"<Status xmlns="ComposeMail:">3</Status>"#.to_string(),
+        _ => r#"<Status xmlns="AirSync:">3</Status>"#.to_string(),
+    }
+}
+
 fn policy_error_xml(command: &str) -> String {
     match command {
         "Sync" => r#"<Sync xmlns="AirSync:"><Collections><Collection><Status>142</Status></Collection></Collections></Sync>"#.to_string(),
@@ -1927,12 +1946,12 @@ async fn enforce_policy_if_needed(
         }
     };
 
-    // If device has never provisioned, allow request for compatibility.
+    // Require successful provisioning before policy-bound commands proceed.
     let Some(st) = state else {
-        return None;
+        return Some(policy_error_xml(command));
     };
     let Some(current_key) = st.current_policy_key else {
-        return None;
+        return Some(policy_error_xml(command));
     };
 
     let header_key = headers
