@@ -153,7 +153,10 @@ pub struct JmapEvent {
 pub struct Participant {
     pub email: String,
     pub name: String,
-    #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "participationStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub status: Option<String>,
     /// The opaque participant ID used as the map key in JSCalendar
     /// (RFC 8984).  Preserved across round-trips so that patch paths
@@ -188,14 +191,14 @@ mod participants_serde {
         name: &'a str,
         #[serde(rename = "sendTo")]
         send_to: HashMap<&'a str, String>,
-        #[serde(rename = "participationStatus", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "participationStatus",
+            skip_serializing_if = "Option::is_none"
+        )]
         status: &'a Option<String>,
     }
 
-    pub fn serialize<S>(
-        value: &Option<Vec<Participant>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &Option<Vec<Participant>>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -203,11 +206,7 @@ mod participants_serde {
             Some(participants) => {
                 let mut map = HashMap::new();
                 for p in participants {
-                    let key = p
-                        .participant_id
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_string();
+                    let key = p.participant_id.as_deref().unwrap_or("").to_string();
                     let key = if key.is_empty() {
                         Uuid::new_v4().to_string()
                     } else {
@@ -275,8 +274,7 @@ mod participants_serde {
         Ok(opt.map(|map| {
             map.into_iter()
                 .map(|(id, p)| {
-                    let email = email_from_send_to(&p.send_to)
-                        .unwrap_or_else(|| id.clone());
+                    let email = email_from_send_to(&p.send_to).unwrap_or_else(|| id.clone());
                     Participant {
                         email,
                         name: p.name,
@@ -312,7 +310,10 @@ pub struct JmapChanges {
 /// Look up the account ID for a given JMAP capability URN, first checking
 /// `primaryAccounts` and falling back to scanning `accounts` for a matching
 /// `accountCapabilities` entry.
-fn find_account_for_capability<'a>(body: &'a serde_json::Value, capability: &str) -> Option<&'a str> {
+fn find_account_for_capability<'a>(
+    body: &'a serde_json::Value,
+    capability: &str,
+) -> Option<&'a str> {
     body["primaryAccounts"][capability].as_str().or_else(|| {
         body["accounts"].as_object().and_then(|accounts| {
             accounts.iter().find_map(|(id, account)| {
@@ -338,13 +339,15 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         .await?;
     if !res.status().is_success() {
         let status = res.status();
-        return Err(if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-        {
-            JmapError::Auth(format!("HTTP {}", status))
-        } else {
-            JmapError::Api(format!("HTTP {}", status))
-        });
+        return Err(
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
+                JmapError::Auth(format!("HTTP {}", status))
+            } else {
+                JmapError::Api(format!("HTTP {}", status))
+            },
+        );
     }
     let body: serde_json::Value = res.json().await?;
     let account_id = find_account_for_capability(&body, "urn:ietf:params:jmap:calendars")
@@ -436,9 +439,8 @@ pub async fn get_calendar_events(session: &JmapSession) -> Result<Vec<JmapEvent>
         .and_then(|v| v.get_mut("list"))
         .map(serde_json::Value::take)
         .unwrap_or_default();
-    let events: Vec<JmapEvent> =
-        serde_json::from_value(list)
-            .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
+    let events: Vec<JmapEvent> = serde_json::from_value(list)
+        .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
     Ok(events)
 }
 
@@ -467,9 +469,8 @@ pub async fn get_events_by_ids(
         .and_then(|v| v.get_mut("list"))
         .map(serde_json::Value::take)
         .unwrap_or_default();
-    let events: Vec<JmapEvent> =
-        serde_json::from_value(list)
-            .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
+    let events: Vec<JmapEvent> = serde_json::from_value(list)
+        .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
     Ok(events)
 }
 
@@ -496,8 +497,8 @@ pub async fn push_event(
     if event.uid.is_none() {
         event.uid = Some(Uuid::new_v4().to_string());
     }
-    let mut event_json =
-        serde_json::to_value(&event).map_err(|e| JmapError::Parse(format!("serialize failed: {}", e)))?;
+    let mut event_json = serde_json::to_value(&event)
+        .map_err(|e| JmapError::Parse(format!("serialize failed: {}", e)))?;
     if let Some(obj) = event_json.as_object_mut() {
         obj.insert("calendarIds".to_string(), json!({ (calendar_id): true }));
     }
@@ -631,9 +632,11 @@ pub async fn push_events(
             Err(e) => {
                 // Record all items in this (and any subsequent) chunk as failed.
                 for (_, caller_id) in id_map {
-                    result
-                        .not_created
-                        .push((caller_id, format!("chunk request failed: {}", e)));
+                    result.not_created.push((
+                        caller_id,
+                        "transportError".to_string(),
+                        format!("chunk request failed: {}", e),
+                    ));
                 }
                 result.chunk_error = Some(e);
                 break;
@@ -644,15 +647,21 @@ pub async fn push_events(
             for (jmap_id, val) in created {
                 if let Some(caller_id) = id_map.remove(jmap_id) {
                     let Some(server_id) = val["id"].as_str() else {
-                        result
-                            .not_created
-                            .push((caller_id, "create succeeded but missing server id".to_string()));
+                        result.not_created.push((
+                            caller_id,
+                            "invalidResult".to_string(),
+                            "create succeeded but missing server id".to_string(),
+                        ));
                         continue;
                     };
                     let updated = val["updated"].as_str().map(String::from);
-                    result
-                        .created
-                        .push((caller_id, CreatedEvent { id: server_id.to_string(), updated }));
+                    result.created.push((
+                        caller_id,
+                        CreatedEvent {
+                            id: server_id.to_string(),
+                            updated,
+                        },
+                    ));
                 }
             }
         }
@@ -660,10 +669,7 @@ pub async fn push_events(
         if let Some(not_created) = json["methodResponses"][0][1]["notCreated"].as_object() {
             for (jmap_id, err) in not_created {
                 if let Some(caller_id) = id_map.remove(jmap_id) {
-                    let error_type = err["type"]
-                        .as_str()
-                        .unwrap_or("unknown")
-                        .to_string();
+                    let error_type = err["type"].as_str().unwrap_or("unknown").to_string();
                     let desc = err["description"]
                         .as_str()
                         .unwrap_or("unknown error")
@@ -671,17 +677,15 @@ pub async fn push_events(
                     result.not_created.push((caller_id, error_type, desc));
                 }
             }
-
-                }
-            }
         }
-
         // Any remaining IDs in id_map were neither created nor explicitly
         // rejected — treat them as failures.
         for (_, caller_id) in id_map {
-            result
-                .not_created
-                .push((caller_id, "no response from server".to_string()));
+            result.not_created.push((
+                caller_id,
+                "invalidResult".to_string(),
+                "no response from server".to_string(),
+            ));
         }
     }
 
@@ -698,9 +702,11 @@ pub async fn push_events(
             .collect();
         for (_, caller_id, _) in &prepared {
             if !accounted.contains(caller_id) {
-                result
-                    .not_created
-                    .push((caller_id.clone(), "chunk request failed (unsent)".to_string()));
+                result.not_created.push((
+                    caller_id.clone(),
+                    "transportError".to_string(),
+                    "chunk request failed (unsent)".to_string(),
+                ));
             }
         }
     }
@@ -856,8 +862,7 @@ pub async fn batch_patch_events(
                 .unwrap_or_default();
 
         // Collect IDs that the server explicitly rejected.
-        let mut failed_ids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut failed_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let Some(not_updated) = json["methodResponses"][0][1]["notUpdated"].as_object() {
             for (id, err) in not_updated {
                 failed_ids.insert(id.clone());
@@ -876,10 +881,9 @@ pub async fn batch_patch_events(
             if confirmed_ids.contains(&id) {
                 result.updated.push(id);
             } else if !failed_ids.contains(&id) {
-                result.not_updated.push((
-                    id,
-                    "server did not confirm update".to_string(),
-                ));
+                result
+                    .not_updated
+                    .push((id, "server did not confirm update".to_string()));
             }
         }
     }
@@ -991,9 +995,7 @@ pub async fn destroy_events(
 
         // Collect IDs the server explicitly rejected.
         let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let Some(not_destroyed) =
-            json["methodResponses"][0][1]["notDestroyed"].as_object()
-        {
+        if let Some(not_destroyed) = json["methodResponses"][0][1]["notDestroyed"].as_object() {
             for (id, err) in not_destroyed {
                 failed.insert(id.clone());
                 let err_type = err["type"].as_str().unwrap_or("serverFail").to_string();
@@ -1053,8 +1055,7 @@ pub async fn get_calendar_changes(
         .and_then(|v| v.get_mut(1))
         .map(serde_json::Value::take)
         .unwrap_or_default();
-    serde_json::from_value(changes_val)
-        .map_err(|e| JmapError::Parse(format!("changes: {}", e)))
+    serde_json::from_value(changes_val).map_err(|e| JmapError::Parse(format!("changes: {}", e)))
 }
 
 pub async fn search_principals(
@@ -1140,15 +1141,14 @@ pub async fn update_participant_status(
         .unwrap_or_default();
     let events: Vec<JmapEvent> = serde_json::from_value(list)
         .map_err(|e| JmapError::Parse(format!("event deserialization failed: {}", e)))?;
-    let event = events.into_iter().next().ok_or_else(|| {
-        JmapError::NotFound(format!("event {}", event_id))
-    })?;
+    let event = events
+        .into_iter()
+        .next()
+        .ok_or_else(|| JmapError::NotFound(format!("event {}", event_id)))?;
     let participant_key = event
         .participants
         .as_ref()
-        .and_then(|ps| {
-            ps.iter().find(|p| p.email.eq_ignore_ascii_case(user_email))
-        })
+        .and_then(|ps| ps.iter().find(|p| p.email.eq_ignore_ascii_case(user_email)))
         .and_then(|p| p.participant_id.as_deref())
         .ok_or_else(|| {
             JmapError::NotFound(format!(

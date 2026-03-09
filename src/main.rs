@@ -25,7 +25,9 @@ use crate::config::AppConfig;
 async fn main() {
     let env_filter = match tracing_subscriber::EnvFilter::try_from_default_env() {
         Ok(filter) => filter,
-        Err(_) => "info,exchange_gateway=debug".parse().expect("valid default filter"),
+        Err(_) => "info,exchange_gateway=debug"
+            .parse()
+            .expect("valid default filter"),
     };
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -40,7 +42,10 @@ async fn main() {
     info!("Exchange Gateway v{} started", env!("CARGO_PKG_VERSION"));
 
     let app = Router::new()
-        .route("/Microsoft-Server-ActiveSync", post(handle_active_sync).options(handle_activesync_options))
+        .route(
+            "/Microsoft-Server-ActiveSync",
+            post(handle_active_sync).options(handle_activesync_options),
+        )
         .route("/EWS/Exchange.asmx", post(handle_ews))
         .route("/health", get(|| async { "OK" }))
         .layer(TraceLayer::new_for_http())
@@ -53,22 +58,33 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn handle_provision() -> String {
-    r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into()
-}
-async fn handle_settings(
-    _session: &jmap_client::JmapSession,
-    config: &AppConfig,
-    user: &str,
-    device_id: &str,
-) -> String {
-    db::register_device(config, user, device_id).await;
-    r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into()
-}
-async fn handle_ping() -> String {
-    r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
-}
-}
+async fn handle_activesync_options() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            (header::ALLOW, "OPTIONS, POST"),
+            (header::PUBLIC, "OPTIONS, POST"),
+            (
+                header::HeaderName::from_static("ms-server-activesync"),
+                "15.0",
+            ),
+            (
+                header::HeaderName::from_static("ms-asprotocolversions"),
+                "12.0,12.1,14.0,14.1,16.0,16.1",
+            ),
+            (
+                header::HeaderName::from_static("ms-asprotocolcommands"),
+                "Sync,SendMail,SmartForward,SmartReply,GetAttachment,FolderSync,FolderCreate,FolderDelete,FolderUpdate,MoveItems,ItemOperations,GetItemEstimate,Ping,MeetingResponse,Search,Settings,Provision,ResolveRecipients,ValidateCert",
+            ),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            (header::ACCESS_CONTROL_ALLOW_METHODS, "OPTIONS, POST"),
+            (
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                "Authorization, Content-Type, MS-ASProtocolVersion, X-MS-PolicyKey, User-Agent",
+            ),
+        ],
+        "",
+    )
 }
 
 async fn handle_active_sync(
@@ -82,12 +98,13 @@ async fn handle_active_sync(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-        return (
-            StatusCode::UNAUTHORIZED,
     if !auth_header.to_ascii_lowercase().starts_with("basic ") {
         return (
             StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, r#"Basic realm="exchange_gateway""#)],
+            [(
+                header::WWW_AUTHENTICATE,
+                r#"Basic realm="exchange_gateway""#,
+            )],
             "Unauthorized".to_string(),
         )
             .into_response();
@@ -109,7 +126,6 @@ async fn handle_active_sync(
         .unwrap_or(false);
 
     let (xml_body, is_wbxml) = if is_explicit_xml {
-        // Explicitly marked as XML — parse as UTF-8 text
         match std::str::from_utf8(&body) {
             Ok(s) => (s.to_string(), false),
             Err(_) => {
@@ -117,7 +133,6 @@ async fn handle_active_sync(
             }
         }
     } else if is_explicit_wbxml {
-        // Explicit WBXML content-type — decode must succeed or return 400
         if body.is_empty() {
             (String::new(), true)
         } else {
@@ -125,23 +140,18 @@ async fn handle_active_sync(
                 Ok(xml) => (xml, true),
                 Err(e) => {
                     tracing::error!("WBXML decode error: {:?}", e);
-                    return (StatusCode::BAD_REQUEST, "Unable to decode request body".to_string())
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "Unable to decode request body".to_string(),
+                    )
                         .into_response();
                 }
             }
         }
     } else if body.is_empty() {
-        // Allow empty bodies through — some ActiveSync commands (e.g. Ping,
-        // Provision) legitimately send no body. Per MS-ASCMD, all commands
-        // except Autodiscover use WBXML encoding, so the response must be
-        // WBXML even when the request body is absent.
         (String::new(), true)
     } else {
-        // No Content-Type: sniff by first meaningful byte — WBXML never starts with '<'
-        // Strip UTF-8 BOM and leading whitespace before checking
-        let trimmed = body
-            .strip_prefix(b"\xEF\xBB\xBF")
-            .unwrap_or(&body);
+        let trimmed = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&body);
         let first_meaningful = trimmed.iter().find(|b| !b.is_ascii_whitespace());
         if first_meaningful == Some(&b'<') {
             match std::str::from_utf8(trimmed) {
@@ -155,7 +165,10 @@ async fn handle_active_sync(
                 Ok(xml) => (xml, true),
                 Err(e) => {
                     tracing::error!("WBXML decode error: {:?}", e);
-                    return (StatusCode::BAD_REQUEST, "Unable to decode request body".to_string())
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "Unable to decode request body".to_string(),
+                    )
                         .into_response();
                 }
             }
@@ -222,7 +235,6 @@ async fn handle_ews(
 
     let xml_body = match std::str::from_utf8(&body) {
         Ok(s) => s,
-        // Fix: Match the tuple structure of the success branch (Status, Header, Body)
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,

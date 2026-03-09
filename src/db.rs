@@ -107,7 +107,9 @@ pub async fn get_sync_state_full(
         Ok(res) => res,
         Err(e) => {
             tracing::error!(
-                user = user, device_id = device_id, collection = coll,
+                user = user,
+                device_id = device_id,
+                collection = coll,
                 "get_sync_state_full: DB request failed: {e}"
             );
             return Err(DbError::Request(e));
@@ -117,7 +119,9 @@ pub async fn get_sync_state_full(
         Ok(json) => json,
         Err(e) => {
             tracing::error!(
-                user = user, device_id = device_id, collection = coll,
+                user = user,
+                device_id = device_id,
+                collection = coll,
                 "get_sync_state_full: failed to parse DB response: {e}"
             );
             return Err(DbError::Parse(e));
@@ -126,7 +130,9 @@ pub async fn get_sync_state_full(
 
     if let Err(reason) = check_db_success(&json) {
         tracing::error!(
-            user = user, device_id = device_id, collection = coll,
+            user = user,
+            device_id = device_id,
+            collection = coll,
             "get_sync_state_full: {reason}"
         );
         return Err(reason);
@@ -137,7 +143,9 @@ pub async fn get_sync_state_full(
         None => {
             if has_result_rows(&json) {
                 tracing::warn!(
-                    user = user, device_id = device_id, collection = coll,
+                    user = user,
+                    device_id = device_id,
+                    collection = coll,
                     "get_sync_state_full: unexpected DB response format"
                 );
                 Err(DbError::UnexpectedFormat)
@@ -158,11 +166,7 @@ pub async fn get_sync_state_full(
 fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     if json.get("result").is_some() {
         // New format: check for explicit failure flag
-        if json
-            .get("success")
-            .and_then(|s| s.as_bool())
-            == Some(false)
-        {
+        if json.get("success").and_then(|s| s.as_bool()) == Some(false) {
             return Err(DbError::Query("DB query failed".to_owned()));
         }
     } else if !json.is_array() {
@@ -225,7 +229,9 @@ pub async fn claim_sync_key(
         Ok(res) => res,
         Err(e) => {
             tracing::error!(
-                user = user, device_id = device_id, collection = coll,
+                user = user,
+                device_id = device_id,
+                collection = coll,
                 "claim_sync_key: DB request failed: {e}"
             );
             return Err(DbError::Request(e));
@@ -235,7 +241,9 @@ pub async fn claim_sync_key(
         Ok(json) => json,
         Err(e) => {
             tracing::error!(
-                user = user, device_id = device_id, collection = coll,
+                user = user,
+                device_id = device_id,
+                collection = coll,
                 "claim_sync_key: failed to parse DB response: {e}"
             );
             return Err(DbError::Parse(e));
@@ -243,7 +251,9 @@ pub async fn claim_sync_key(
     };
     if let Err(reason) = check_db_success(&json) {
         tracing::error!(
-            user = user, device_id = device_id, collection = coll,
+            user = user,
+            device_id = device_id,
+            collection = coll,
             "claim_sync_key: {reason}"
         );
         return Err(reason);
@@ -260,7 +270,9 @@ pub async fn claim_sync_key(
             // SyncKey and returns a transient server error (Status 5), letting
             // the client retry safely.
             tracing::error!(
-                user = user, device_id = device_id, collection = coll,
+                user = user,
+                device_id = device_id,
+                collection = coll,
                 "claim_sync_key: meta.changes missing from DB response; \
                  cannot confirm SyncKey claim — treating as transient error"
             );
@@ -313,7 +325,9 @@ pub async fn delete_sync_state(
         Ok(res) => res,
         Err(e) => {
             tracing::error!(
-                user = user, device_id = device_id, collection = coll,
+                user = user,
+                device_id = device_id,
+                collection = coll,
                 "delete_sync_state failed: {e}"
             );
             return Err(DbError::Request(e));
@@ -323,7 +337,9 @@ pub async fn delete_sync_state(
         Ok(json) => json,
         Err(e) => {
             tracing::error!(
-                user = user, device_id = device_id, collection = coll,
+                user = user,
+                device_id = device_id,
+                collection = coll,
                 "delete_sync_state: failed to parse DB response: {e}"
             );
             return Err(DbError::Parse(e));
@@ -331,7 +347,9 @@ pub async fn delete_sync_state(
     };
     if let Err(reason) = check_db_success(&json) {
         tracing::error!(
-            user = user, device_id = device_id, collection = coll,
+            user = user,
+            device_id = device_id,
+            collection = coll,
             "delete_sync_state: {reason}"
         );
         return Err(reason);
@@ -370,7 +388,8 @@ pub async fn get_ews_sync_state(
         Ok(res) => res,
         Err(e) => {
             tracing::error!(
-                user = user, folder = folder,
+                user = user,
+                folder = folder,
                 "get_ews_sync_state: DB request failed: {e}"
             );
             return Err(DbError::Request(e));
@@ -380,7 +399,8 @@ pub async fn get_ews_sync_state(
         Ok(json) => json,
         Err(e) => {
             tracing::error!(
-                user = user, folder = folder,
+                user = user,
+                folder = folder,
                 "get_ews_sync_state: failed to parse DB response: {e}"
             );
             return Err(DbError::Parse(e));
@@ -388,10 +408,7 @@ pub async fn get_ews_sync_state(
     };
 
     if let Err(reason) = check_db_success(&json) {
-        tracing::error!(
-            user = user, folder = folder,
-            "get_ews_sync_state: {reason}"
-        );
+        tracing::error!(user = user, folder = folder, "get_ews_sync_state: {reason}");
         return Err(reason);
     }
 
@@ -405,7 +422,8 @@ pub async fn get_ews_sync_state(
         _ => {
             if has_result_rows(&json) {
                 tracing::warn!(
-                    user = user, folder = folder,
+                    user = user,
+                    folder = folder,
                     "get_ews_sync_state: unexpected DB response format"
                 );
                 Err(DbError::UnexpectedFormat)
@@ -437,7 +455,8 @@ pub async fn delete_ews_sync_state(
         Ok(res) => res,
         Err(e) => {
             tracing::error!(
-                user = user, folder = folder,
+                user = user,
+                folder = folder,
                 "delete_ews_sync_state failed: {e}"
             );
             return Err(DbError::Request(e));
@@ -447,7 +466,8 @@ pub async fn delete_ews_sync_state(
         Ok(json) => json,
         Err(e) => {
             tracing::error!(
-                user = user, folder = folder,
+                user = user,
+                folder = folder,
                 "delete_ews_sync_state: failed to parse DB response: {e}"
             );
             return Err(DbError::Parse(e));
@@ -455,7 +475,8 @@ pub async fn delete_ews_sync_state(
     };
     if let Err(reason) = check_db_success(&json) {
         tracing::error!(
-            user = user, folder = folder,
+            user = user,
+            folder = folder,
             "delete_ews_sync_state: {reason}"
         );
         return Err(reason);

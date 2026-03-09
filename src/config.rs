@@ -27,7 +27,7 @@ impl AppConfig {
                     _ => {
                         return Err(
                             "SMTP_URL must use smtp://, smtps://, or starttls://".to_string()
-                        )
+                        );
                     }
                 }
                 if smtp_url.host_str().is_none() {
@@ -41,7 +41,11 @@ impl AppConfig {
                     .map(|v| v.trim().to_string())
                     .filter(|v| !v.is_empty());
                 if domain.is_none() {
-                    if env::var("GATEWAY_HOST").ok().filter(|v| !v.trim().is_empty()).is_some() {
+                    if env::var("GATEWAY_HOST")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .is_some()
+                    {
                         tracing::warn!(
                             "GATEWAY_HOST is set but MAIL_DOMAIN is not. \
                              GATEWAY_HOST is no longer used as a mail-domain fallback. \

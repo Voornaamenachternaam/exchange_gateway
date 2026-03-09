@@ -1,6 +1,6 @@
-use base64::Engine;
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
+use base64::Engine;
 use chrono::{DateTime, NaiveDateTime};
 use chrono_tz::Tz;
 use lazy_static::lazy_static;
@@ -115,11 +115,23 @@ struct Recurrence {
     interval: i32,
     #[serde(rename = "DayOfWeek", skip_serializing_if = "Option::is_none")]
     day_of_week: Option<i32>,
-    #[serde(rename = "DayOfMonth", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "DayOfMonth",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     day_of_month: Option<i32>,
-    #[serde(rename = "WeekOfMonth", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "WeekOfMonth",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     week_of_month: Option<i32>,
-    #[serde(rename = "MonthOfYear", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "MonthOfYear",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     month_of_year: Option<i32>,
 }
 
@@ -171,7 +183,12 @@ struct Attendee {
     name: String,
 }
 
-pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap, query_cmd: &str) -> String {
+pub async fn process_request(
+    config: &AppConfig,
+    xml: &str,
+    headers: &HeaderMap,
+    query_cmd: &str,
+) -> String {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
@@ -313,15 +330,15 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
             return false;
         };
         // RFC 5322 field names: printable ASCII except colon, at least 1 char
-        !name.is_empty()
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_graphic() && b != b':')
+        !name.is_empty() && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
     });
     // Use Vec<u8> for the final MIME payload to avoid corrupting non-UTF-8
     // bytes (e.g. binary attachments) via lossy UTF-8 conversion.
     let mime_content: Vec<u8> = if !looks_like_mime {
-        let stripped: String = mime_text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        let stripped: String = mime_text
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
         match base64::engine::general_purpose::STANDARD.decode(&stripped) {
             Ok(decoded_bytes) => decoded_bytes,
             Err(e) => {
@@ -407,15 +424,14 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         // Parse potentially multiple To: addresses using RFC 5322 mailbox-list
         // parsing. Naive comma-splitting breaks quoted display names such as
         // "Doe, John" <john@example.com>.
-        let to_mailboxes: Vec<lettre::message::Mailbox> = match to
-            .parse::<lettre::message::Mailboxes>()
-        {
-            Ok(mbs) => mbs.into(),
-            Err(e) => {
-                tracing::warn!("SendMail: invalid To address in '{}': {}", to, e);
-                Vec::new()
-            }
-        };
+        let to_mailboxes: Vec<lettre::message::Mailbox> =
+            match to.parse::<lettre::message::Mailboxes>() {
+                Ok(mbs) => mbs.into(),
+                Err(e) => {
+                    tracing::warn!("SendMail: invalid To address in '{}': {}", to, e);
+                    Vec::new()
+                }
+            };
 
         if to_mailboxes.is_empty() {
             tracing::warn!("SendMail: no valid To addresses in '{}'", to);
@@ -425,10 +441,8 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         // Build an SMTP envelope from the validated addresses.  The full raw
         // MIME content is sent as-is so that multipart structure, Content-Type
         // headers, attachments, and any other MIME headers are preserved.
-        let to_addresses: Vec<lettre::Address> = to_mailboxes
-            .into_iter()
-            .map(|mb| mb.email)
-            .collect();
+        let to_addresses: Vec<lettre::Address> =
+            to_mailboxes.into_iter().map(|mb| mb.email).collect();
         let envelope = match Envelope::new(Some(from_mailbox.email), to_addresses) {
             Ok(env) => env,
             Err(e) => {
@@ -495,10 +509,11 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         if !user.is_empty() {
             if let Some(pass) = smtp_url.password() {
                 let pass = percent_decode_str(pass).decode_utf8_lossy();
-                builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
-                    user.into_owned(),
-                    pass.into_owned(),
-                ));
+                builder =
+                    builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                        user.into_owned(),
+                        pass.into_owned(),
+                    ));
             }
         }
 
@@ -562,7 +577,9 @@ async fn handle_meeting_response(
         3 => "declined",
         _ => "needs-action",
     };
-    if let Err(e) = jmap_client::update_participant_status(session, &event_id, &user_email, status_str).await {
+    if let Err(e) =
+        jmap_client::update_participant_status(session, &event_id, &user_email, status_str).await
+    {
         tracing::error!("MeetingResponse update failed: {}", e);
         return error_xml(500, "ParticipantUpdateFailed");
     }
@@ -610,7 +627,11 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
         }
     };
 
-    let query = req.store.query.and_then(|q| q.free_text).unwrap_or_default();
+    let query = req
+        .store
+        .query
+        .and_then(|q| q.free_text)
+        .unwrap_or_default();
     let (mut range_start, mut range_max) = (0, 100);
 
     if let Some(range_str) = req.store.options.and_then(|o| o.range) {
@@ -629,7 +650,11 @@ async fn handle_search(session: &jmap_client::JmapSession, xml: &str) -> String 
             Vec::new()
         }
     };
-    let results: Vec<_> = results.into_iter().skip(range_start).take(range_max).collect();
+    let results: Vec<_> = results
+        .into_iter()
+        .skip(range_start)
+        .take(range_max)
+        .collect();
     let mut results_xml = String::new();
     for p in results {
         results_xml.push_str(&format!(r#"<Result><Properties><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress></Properties></Result>"#, utils::escape_xml(&p.name), utils::escape_xml(&p.email)));
@@ -676,7 +701,8 @@ async fn handle_sync(
 
     // Fetch the stored sync state (SyncKey + JMAP state) *before* processing
     // client commands.  We need the JMAP state for change-detection below.
-    let stored_state = match db::get_sync_state_full(config, user, device_id, &collection_id).await {
+    let stored_state = match db::get_sync_state_full(config, user, device_id, &collection_id).await
+    {
         Ok(state) => state,
         Err(e) => {
             tracing::error!(
@@ -721,7 +747,10 @@ async fn handle_sync(
                         "Sync: SyncKey claim failed for user={}, device={}, collection={}: \
                          client sent '{}' — another request already consumed it or the key \
                          does not match",
-                        user, device_id, collection_id, old_sync_key
+                        user,
+                        device_id,
+                        collection_id,
+                        old_sync_key
                     );
                     // Status 3 tells the client its SyncKey is invalid.
                     return format!(
@@ -734,7 +763,10 @@ async fn handle_sync(
                     tracing::error!(
                         "Sync: transient DB error during SyncKey claim for user={}, device={}, \
                          collection={}: {} — returning server error so client retries without reset",
-                        user, device_id, collection_id, e
+                        user,
+                        device_id,
+                        collection_id,
+                        e
                     );
                     // The claim may have partially succeeded (the DB
                     // UPDATE could have gone through even though we got a
@@ -756,27 +788,11 @@ async fn handle_sync(
                              collection={}: {} — the stored SyncKey may be stuck on an \
                              unreachable claim key; manual intervention or a client re-sync \
                              (SyncKey 0) may be required",
-                            user, device_id, collection_id, rollback_err
-                        );
-                    }
-                        if let Err(rollback_err) = db::claim_sync_key(
-                            config,
                             user,
                             device_id,
-                            &collection_id,
-                            &claim_key,
-                            &old_sync_key,
-                        )
-                        .await
-                        {
-                            tracing::error!(
-                                "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
-                                 collection={}: {} — the stored SyncKey may be stuck on an \
-                                 unreachable claim key; manual intervention or a client re-sync \
-                                 (SyncKey 0) may be required",
-                                user, device_id, collection_id, rollback_err
-                            );
-                        }
+                            collection_id,
+                            rollback_err
+                        );
                     }
                     // Status 5 = server error — the client should retry
                     // without discarding its local state.
@@ -790,7 +806,10 @@ async fn handle_sync(
         } else {
             tracing::warn!(
                 "Sync: missing stored SyncKey for user={}, device={}, collection={} with client SyncKey '{}' — rejecting to prevent stale/replayed command replay",
-                user, device_id, collection_id, old_sync_key
+                user,
+                device_id,
+                collection_id,
+                old_sync_key
             );
             return format!(
                 r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection></Collections></Sync>"#,
@@ -872,23 +891,18 @@ async fn handle_sync(
                          (SyncKey \"0\") with client commands for user={}, device={}, \
                          collection={} — advancing SyncKey to prevent command replay; \
                          full event fetch deferred to next sync",
-                        user, device_id, collection_id
-                    );
-                    db::update_sync_state(
-                        config,
                         user,
                         device_id,
-                        &collection_id,
-                        &new_key,
-                        "",
-                    )
-                    .await;
+                        collection_id
+                    );
+                    db::update_sync_state(config, user, device_id, &collection_id, &new_key, "")
+                        .await;
                     return format!(
-        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands>{}</Collection></Collections></Sync>"#,
-        utils::escape_xml(&new_sync_key),
-        utils::escape_xml(&collection_id),
-        items_xml,
-        responses_xml
+                        r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands>{}</Collection></Collections></Sync>"#,
+                        utils::escape_xml(&new_sync_key),
+                        utils::escape_xml(&collection_id),
+                        items_xml,
+                        responses_xml
                     );
                 } else {
                     // Non-initial sync: the post-command state fetch failed,
@@ -927,9 +941,7 @@ async fn handle_sync(
         .as_ref()
         .map(|s| s.jmap_state.clone())
         .unwrap_or_default();
-    let prev_state = stored_state
-        .map(|s| s.jmap_state)
-        .filter(|s| !s.is_empty());
+    let prev_state = stored_state.map(|s| s.jmap_state).filter(|s| !s.is_empty());
 
     // Detect changes since the last sync.  When client commands were
     // processed, the changes may include the client's own writes — this is
@@ -975,12 +987,10 @@ async fn handle_sync(
                 has_client_commands,
                 responses_xml: &responses_xml,
             };
-            let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await
-            {
+            let changes = match jmap_client::get_calendar_changes(session, &prev_jmap_state).await {
                 Ok(c) => c,
                 Err(e) => {
-                    return handle_sync_change_error("get_calendar_changes", &e, &err_ctx)
-                        .await;
+                    return handle_sync_change_error("get_calendar_changes", &e, &err_ctx).await;
                 }
             };
             match render_changes(session, changes, &config.timezone).await {
@@ -1189,10 +1199,7 @@ fn recurrence_rule_to_eas(rule: &jmap_client::RecurrenceRule) -> String {
         week_of_month = Some(if pos == -1 { 5 } else { pos });
     }
 
-    let day_of_month: Option<i32> = rule
-        .by_month_day
-        .as_ref()
-        .and_then(|v| v.first().copied());
+    let day_of_month: Option<i32> = rule.by_month_day.as_ref().and_then(|v| v.first().copied());
 
     let month_of_year: Option<i32> = rule
         .by_month
@@ -1209,10 +1216,18 @@ fn recurrence_rule_to_eas(rule: &jmap_client::RecurrenceRule) -> String {
         "daily" => "0",
         "weekly" => "1",
         "monthly" => {
-            if has_byday { "3" } else { "2" }
+            if has_byday {
+                "3"
+            } else {
+                "2"
+            }
         }
         "yearly" => {
-            if has_byday { "6" } else { "5" }
+            if has_byday {
+                "6"
+            } else {
+                "5"
+            }
         }
         _ => "0",
     };
@@ -1351,7 +1366,11 @@ async fn process_client_commands(
                         });
                     }
                     for (client_id, desc) in result.not_created {
-                        tracing::error!("ActiveSync Add failed for client_id {}: {}", client_id, desc);
+                        tracing::error!(
+                            "ActiveSync Add failed for client_id {}: {}",
+                            client_id,
+                            desc
+                        );
                         failures.push(CommandFailure::Add { client_id });
                     }
                 }
@@ -1364,8 +1383,7 @@ async fn process_client_commands(
             }
         }
     }
-    let mut change_patches: Vec<(String, serde_json::Map<String, serde_json::Value>)> =
-        Vec::new();
+    let mut change_patches: Vec<(String, serde_json::Map<String, serde_json::Value>)> = Vec::new();
     for change_cmd in cmds.change.unwrap_or_default() {
         let id = change_cmd.server_id;
         let data = change_cmd.application_data;
@@ -1383,7 +1401,10 @@ async fn process_client_commands(
             );
         }
         if let Some(e) = data.end {
-            patch.insert("end".into(), serde_json::json!(utils::parse_local_to_utc(&e, tz)));
+            patch.insert(
+                "end".into(),
+                serde_json::json!(utils::parse_local_to_utc(&e, tz)),
+            );
         }
         if let Some(b) = data.body {
             patch.insert("description".into(), serde_json::json!(b.data));
@@ -1452,7 +1473,10 @@ async fn process_client_commands(
             failures.len()
         );
     }
-    CommandResults { failures, add_successes }
+    CommandResults {
+        failures,
+        add_successes,
+    }
 }
 
 fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
@@ -1462,9 +1486,12 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
         2 | 3 => "monthly",
         5 | 6 => "yearly",
         unknown => {
-            tracing::warn!("Unknown EAS recurrence type '{}', defaulting to 'daily'", unknown);
+            tracing::warn!(
+                "Unknown EAS recurrence type '{}', defaulting to 'daily'",
+                unknown
+            );
             "daily"
-        },
+        }
     }
     .to_string();
 
@@ -1483,9 +1510,8 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
     // expanding it into seven NDay{-1,day} entries would produce up to seven
     // occurrences per month instead of one.
     let all_days_mask: i32 = 127; // su|mo|tu|we|th|fr|sa
-    let is_last_day_of_period = is_relative
-        && r.week_of_month == Some(5)
-        && r.day_of_week == Some(all_days_mask);
+    let is_last_day_of_period =
+        is_relative && r.week_of_month == Some(5) && r.day_of_week == Some(all_days_mask);
 
     let by_day = if is_last_day_of_period {
         // Handled via byMonthDay=[-1] below.
@@ -1557,9 +1583,8 @@ fn build_recurrence_rule(r: Recurrence) -> jmap_client::RecurrenceRule {
     // For relative rules with a single day bit, nthOfPeriod on the NDay is
     // used instead (more precise).
     let by_set_position = if !is_relative || day_count > 1 {
-        r.week_of_month.map(|wom| {
-            vec![if wom == 5 { -1 } else { wom }]
-        })
+        r.week_of_month
+            .map(|wom| vec![if wom == 5 { -1 } else { wom }])
     } else {
         None
     };
@@ -1701,13 +1726,8 @@ async fn handle_sync_change_error(
         tracing::error!(
             "{label} failed (non-transient), deleting sync state to force re-sync: {error}"
         );
-        if let Err(e) = db::delete_sync_state(
-            ctx.config,
-            ctx.user,
-            ctx.device_id,
-            ctx.collection_id,
-        )
-        .await
+        if let Err(e) =
+            db::delete_sync_state(ctx.config, ctx.user, ctx.device_id, ctx.collection_id).await
         {
             tracing::error!("{label} additionally failed to delete sync state: {e}");
         }
