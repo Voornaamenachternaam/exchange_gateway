@@ -741,7 +741,24 @@ async fn handle_sync(
                     // transport/parse error on the response).  Restore the
                     // original SyncKey so the client can retry with the
                     // same key instead of being stuck with an invalid one.
-                    if stored_state.is_some() {
+                    if let Err(rollback_err) = db::claim_sync_key(
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &claim_key,
+                        &old_sync_key,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
+                             collection={}: {} — the stored SyncKey may be stuck on an \
+                             unreachable claim key; manual intervention or a client re-sync \
+                             (SyncKey 0) may be required",
+                            user, device_id, collection_id, rollback_err
+                        );
+                    }
                         if let Err(rollback_err) = db::claim_sync_key(
                             config,
                             user,
