@@ -1009,8 +1009,10 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
         let has_content = (token & 0x40) != 0;
         let has_attrs = (token & 0x80) != 0;
+        let token_id = token & 0x3F;
         if has_attrs {
-            return Err("Attributes on known tags are not supported".into());
+            skip_wbxml_attributes(data, &mut pos)?;
+        }
         }
         let token_id = token & 0x3F;
 
