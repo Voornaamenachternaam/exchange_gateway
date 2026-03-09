@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub timezone: String,
     pub smtp_url: url::Url,
     pub mail_domain: String,
+    pub gateway_external_url: Option<String>,
 }
 
 impl AppConfig {
@@ -55,6 +56,10 @@ impl AppConfig {
                 }
                 domain.ok_or_else(|| "MAIL_DOMAIN must be set and non-empty".to_string())?
             },
+            gateway_external_url: env::var("GATEWAY_EXTERNAL_URL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
         })
     }
 }

@@ -16,10 +16,16 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use quick_xml::Reader;
+use quick_xml::events::Event;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::config::AppConfig;
+
+const ACTIVE_SYNC_PROTOCOL_VERSIONS: &str = "12.0,12.1,14.0,14.1,16.0,16.1";
+const ACTIVE_SYNC_PROTOCOL_COMMANDS: &str =
+    "Sync,SendMail,FolderSync,ItemOperations,Ping,MeetingResponse,Search,Settings,Provision";
 
 #[tokio::main]
 async fn main() {
@@ -47,6 +53,8 @@ async fn main() {
             post(handle_active_sync).options(handle_activesync_options),
         )
         .route("/EWS/Exchange.asmx", post(handle_ews))
+        .route("/autodiscover/autodiscover.xml", post(handle_autodiscover))
+        .route("/Autodiscover/Autodiscover.xml", post(handle_autodiscover))
         .route("/health", get(|| async { "OK" }))
         .layer(TraceLayer::new_for_http())
         .with_state(config.clone());
@@ -70,11 +78,11 @@ async fn handle_activesync_options() -> impl IntoResponse {
             ),
             (
                 header::HeaderName::from_static("ms-asprotocolversions"),
-                "12.0,12.1,14.0,14.1,16.0,16.1",
+                ACTIVE_SYNC_PROTOCOL_VERSIONS,
             ),
             (
                 header::HeaderName::from_static("ms-asprotocolcommands"),
-                "Sync,SendMail,SmartForward,SmartReply,GetAttachment,FolderSync,FolderCreate,FolderDelete,FolderUpdate,MoveItems,ItemOperations,GetItemEstimate,Ping,MeetingResponse,Search,Settings,Provision,ResolveRecipients,ValidateCert",
+                ACTIVE_SYNC_PROTOCOL_COMMANDS,
             ),
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::ACCESS_CONTROL_ALLOW_METHODS, "OPTIONS, POST"),
@@ -84,6 +92,13 @@ async fn handle_activesync_options() -> impl IntoResponse {
             ),
         ],
         "",
+    )
+}
+
+fn is_supported_as_protocol_version(v: &str) -> bool {
+    matches!(
+        v.trim(),
+        "12.0" | "12.1" | "14.0" | "14.1" | "16.0" | "16.1"
     )
 }
 
@@ -106,6 +121,29 @@ async fn handle_active_sync(
                 r#"Basic realm="exchange_gateway""#,
             )],
             "Unauthorized".to_string(),
+        )
+            .into_response();
+    }
+
+    if let Some(ver) = headers
+        .get("MS-ASProtocolVersion")
+        .and_then(|h| h.to_str().ok())
+        && !is_supported_as_protocol_version(ver)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (
+                    header::HeaderName::from_static("ms-asprotocolversions"),
+                    ACTIVE_SYNC_PROTOCOL_VERSIONS,
+                ),
+                (
+                    header::HeaderName::from_static("ms-server-activesync"),
+                    "15.0",
+                ),
+            ],
+            format!("Unsupported MS-ASProtocolVersion: {}", ver),
         )
             .into_response();
     }
@@ -215,6 +253,108 @@ async fn handle_active_sync(
     }
 }
 
+fn extract_autodiscover_email(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_email = false;
+
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                in_email = e
+                    .local_name()
+                    .as_ref()
+                    .eq_ignore_ascii_case(b"EMailAddress");
+            }
+            Ok(Event::End(_)) => in_email = false,
+            Ok(Event::Text(t)) if in_email => {
+                return Some(String::from_utf8_lossy(&t).trim().to_string());
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    None
+}
+
+async fn handle_autodiscover(
+    State(config): State<Arc<AppConfig>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    if !auth_header.to_ascii_lowercase().starts_with("basic ") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(
+                header::WWW_AUTHENTICATE,
+                r#"Basic realm="exchange_gateway""#,
+            )],
+            "Unauthorized".to_string(),
+        );
+    }
+
+    let xml_body = match std::str::from_utf8(&body) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "Invalid UTF-8".to_string(),
+            );
+        }
+    };
+
+    let email = extract_autodiscover_email(xml_body).unwrap_or_default();
+    let external_base = config
+        .gateway_external_url
+        .as_deref()
+        .unwrap_or("https://mail.example.invalid");
+    let eas_url = format!(
+        "{}/Microsoft-Server-ActiveSync",
+        external_base.trim_end_matches('/')
+    );
+
+    let response = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006">
+    <Culture>en:us</Culture>
+    <User>
+      <DisplayName>{}</DisplayName>
+      <EMailAddress>{}</EMailAddress>
+    </User>
+    <Action>
+      <Settings>
+        <Server>
+          <Type>MobileSync</Type>
+          <Url>{}</Url>
+          <Name>{}</Name>
+        </Server>
+      </Settings>
+    </Action>
+  </Response>
+</Autodiscover>"#,
+        utils::escape_xml(&email),
+        utils::escape_xml(&email),
+        utils::escape_xml(&eas_url),
+        utils::escape_xml(&config.mail_domain)
+    );
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
+        response,
+    )
+}
+
 async fn handle_ews(
     State(config): State<Arc<AppConfig>>,
     headers: HeaderMap,
@@ -228,7 +368,13 @@ async fn handle_ews(
     if !auth_header.to_ascii_lowercase().starts_with("basic ") {
         return (
             StatusCode::UNAUTHORIZED,
-            [(header::CONTENT_TYPE, "text/plain")],
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (
+                    header::WWW_AUTHENTICATE,
+                    r#"Basic realm="exchange_gateway""#,
+                ),
+            ],
             "Unauthorized".to_string(),
         );
     }
