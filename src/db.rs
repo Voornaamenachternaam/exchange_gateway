@@ -508,3 +508,92 @@ pub async fn update_ews_sync_state(
     let json: serde_json::Value = resp.json().await.map_err(DbError::Parse)?;
     check_db_success(&json)
 }
+
+pub struct DevicePolicyState {
+    pub current_policy_key: Option<String>,
+    pub pending_policy_key: Option<String>,
+}
+
+pub async fn get_device_policy_state(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+) -> Result<Option<DevicePolicyState>, DbError> {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "query": "SELECT current_policy_key, pending_policy_key FROM device_policy WHERE user_email = ? AND device_id = ?",
+        "params": [user, device_id]
+    });
+    let resp = client
+        .post(&config.db_api_url)
+        .bearer_auth(&config.db_auth_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(DbError::Request)?
+        .error_for_status()
+        .map_err(DbError::Request)?;
+    let json: serde_json::Value = resp.json().await.map_err(DbError::Parse)?;
+    check_db_success(&json)?;
+
+    let current_policy_key = extract_first_field(&json, "current_policy_key");
+    let pending_policy_key = extract_first_field(&json, "pending_policy_key");
+
+    if current_policy_key.is_none() && pending_policy_key.is_none() && !has_result_rows(&json) {
+        return Ok(None);
+    }
+
+    Ok(Some(DevicePolicyState {
+        current_policy_key,
+        pending_policy_key,
+    }))
+}
+
+pub async fn set_pending_policy_key(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    pending_key: &str,
+) -> Result<(), DbError> {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "query": "INSERT OR REPLACE INTO device_policy (user_email, device_id, current_policy_key, pending_policy_key, updated_at) VALUES (?, ?, COALESCE((SELECT current_policy_key FROM device_policy WHERE user_email = ? AND device_id = ?), NULL), ?, CURRENT_TIMESTAMP)",
+        "params": [user, device_id, user, device_id, pending_key]
+    });
+    let resp = client
+        .post(&config.db_api_url)
+        .bearer_auth(&config.db_auth_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(DbError::Request)?
+        .error_for_status()
+        .map_err(DbError::Request)?;
+    let json: serde_json::Value = resp.json().await.map_err(DbError::Parse)?;
+    check_db_success(&json)
+}
+
+pub async fn activate_pending_policy_key(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    expected_pending_key: &str,
+) -> Result<bool, DbError> {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "query": "UPDATE device_policy SET current_policy_key = pending_policy_key, pending_policy_key = NULL, updated_at = CURRENT_TIMESTAMP WHERE user_email = ? AND device_id = ? AND pending_policy_key = ?",
+        "params": [user, device_id, expected_pending_key]
+    });
+    let resp = client
+        .post(&config.db_api_url)
+        .bearer_auth(&config.db_auth_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(DbError::Request)?
+        .error_for_status()
+        .map_err(DbError::Request)?;
+    let json: serde_json::Value = resp.json().await.map_err(DbError::Parse)?;
+    check_db_success(&json)?;
+    Ok(extract_meta_changes(&json).unwrap_or(0) > 0)
+}

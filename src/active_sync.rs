@@ -241,8 +241,14 @@ pub async fn process_request(
     // credentials have been fully validated via the JMAP session above.
     match command.as_str() {
         "Ping" => return handle_ping().await,
-        "Provision" => return handle_provision().await,
+        "Provision" => return handle_provision(config, &user, device_id, xml).await,
         _ => {}
+    }
+
+    if let Some(policy_error) =
+        enforce_policy_if_needed(config, &user, device_id, &command, headers).await
+    {
+        return policy_error;
     }
 
     match command.as_str() {
@@ -1804,8 +1810,141 @@ struct ItemOpsFetch {
     file_reference: Option<String>,
 }
 
-async fn handle_provision() -> String {
-    r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into()
+fn extract_provision_policy_key(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_key = false;
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                in_key = e.local_name().as_ref().eq_ignore_ascii_case(b"PolicyKey")
+            }
+            Ok(Event::End(_)) => in_key = false,
+            Ok(Event::Text(t)) if in_key => {
+                return Some(String::from_utf8_lossy(&t).trim().to_string());
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn policy_error_xml(command: &str) -> String {
+    match command {
+        "Sync" => r#"<Sync xmlns="AirSync:"><Collections><Collection><Status>142</Status></Collection></Collections></Sync>"#.to_string(),
+        "FolderSync" => r#"<FolderSync xmlns="AirSync:"><Status>142</Status></FolderSync>"#.to_string(),
+        "ItemOperations" => r#"<ItemOperations xmlns="ItemOperations:"><Status>142</Status></ItemOperations>"#.to_string(),
+        "MeetingResponse" => r#"<MeetingResponse xmlns="MeetingResponse:"><Result><Status>142</Status></Result></MeetingResponse>"#.to_string(),
+        "SendMail" => r#"<SendMail xmlns="ComposeMail:"><Status>142</Status></SendMail>"#.to_string(),
+        "Search" => r#"<Search xmlns="Search:"><Status>142</Status></Search>"#.to_string(),
+        _ => r#"<Status xmlns="AirSync:">142</Status>"#.to_string(),
+    }
+}
+
+async fn handle_provision(config: &AppConfig, user: &str, device_id: &str, xml: &str) -> String {
+    db::register_device(config, user, device_id).await;
+
+    let incoming_key = extract_provision_policy_key(xml).unwrap_or_else(|| "0".to_string());
+    let state = match db::get_device_policy_state(config, user, device_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Provision: failed to load policy state: {}", e);
+            return r#"<Provision xmlns="Provision:"><Status>5</Status></Provision>"#.to_string();
+        }
+    };
+
+    // Phase 1 (initial): issue pending policy key
+    if incoming_key.is_empty() || incoming_key == "0" {
+        let pending = Uuid::new_v4().to_string();
+        if let Err(e) = db::set_pending_policy_key(config, user, device_id, &pending).await {
+            tracing::error!("Provision: failed to persist pending key: {}", e);
+            return r#"<Provision xmlns="Provision:"><Status>5</Status></Provision>"#.to_string();
+        }
+        return format!(
+            r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>{}</PolicyKey></Policy></Policies></Provision>"#,
+            utils::escape_xml(&pending)
+        );
+    }
+
+    // Phase 2 (ack): incoming key must match pending key
+    let pending_key = state.as_ref().and_then(|s| s.pending_policy_key.clone());
+    if pending_key.as_deref() == Some(incoming_key.as_str()) {
+        match db::activate_pending_policy_key(config, user, device_id, &incoming_key).await {
+            Ok(true) => {
+                return format!(
+                    r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>{}</PolicyKey></Policy></Policies></Provision>"#,
+                    utils::escape_xml(&incoming_key)
+                );
+            }
+            Ok(false) => {
+                return r#"<Provision xmlns="Provision:"><Status>142</Status></Provision>"#
+                    .to_string();
+            }
+            Err(e) => {
+                tracing::error!("Provision: activate key failed: {}", e);
+                return r#"<Provision xmlns="Provision:"><Status>5</Status></Provision>"#
+                    .to_string();
+            }
+        }
+    }
+
+    // Already provisioned with current key: acknowledge success idempotently.
+    if state
+        .as_ref()
+        .and_then(|s| s.current_policy_key.as_ref())
+        .map(|k| k == &incoming_key)
+        .unwrap_or(false)
+    {
+        return format!(
+            r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>{}</PolicyKey></Policy></Policies></Provision>"#,
+            utils::escape_xml(&incoming_key)
+        );
+    }
+
+    r#"<Provision xmlns="Provision:"><Status>142</Status></Provision>"#.to_string()
+}
+
+async fn enforce_policy_if_needed(
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+    command: &str,
+    headers: &HeaderMap,
+) -> Option<String> {
+    if matches!(command, "Provision" | "Ping" | "Settings") {
+        return None;
+    }
+
+    let state = match db::get_device_policy_state(config, user, device_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Policy lookup failed for {} / {}: {}", user, device_id, e);
+            return Some(policy_error_xml(command));
+        }
+    };
+
+    // If device has never provisioned, allow request for compatibility.
+    let Some(st) = state else {
+        return None;
+    };
+    let Some(current_key) = st.current_policy_key else {
+        return None;
+    };
+
+    let header_key = headers
+        .get("X-MS-PolicyKey")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("0");
+
+    if header_key == current_key {
+        None
+    } else {
+        Some(policy_error_xml(command))
+    }
 }
 async fn handle_settings(
     _session: &jmap_client::JmapSession,
