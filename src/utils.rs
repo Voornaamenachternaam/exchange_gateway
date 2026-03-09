@@ -18,12 +18,6 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
             chrono::LocalResult::None => {
                 // DST gap: the local time does not exist. Advance minute by
                 // minute until we find a valid local time, then resolve to UTC.
-            chrono::LocalResult::None => {
-                // DST gap: the local time does not exist. Advance minute by
-                // minute until we find a valid local time, then resolve to UTC.
-            chrono::LocalResult::None => {
-                // DST gap: the local time does not exist. Advance minute by
-                // minute until we find a valid local time, then resolve to UTC.
                 let mut advanced = dt;
                 for _ in 0..(24 * 60) {
                     advanced = match advanced.checked_add_signed(chrono::TimeDelta::minutes(1)) {
@@ -39,7 +33,6 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
                     }
                 }
                 local_str.to_string()
-            }
             }
         };
     }
