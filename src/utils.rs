@@ -19,8 +19,11 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
                 // DST gap: the local time does not exist. Advance minute by
                 // minute until we find a valid local time, then resolve to UTC.
                 let mut advanced = dt;
-                loop {
-                    advanced += chrono::TimeDelta::minutes(1);
+                for _ in 0..(24 * 60) {
++                    advanced = match advanced.checked_add_signed(chrono::TimeDelta::minutes(1)) {
++                        Some(next) => next,
++                        None => return local_str.to_string(),
++                    };
                     match tz.from_local_datetime(&advanced) {
                         chrono::LocalResult::Single(dt) => break dt.with_timezone(&Utc).to_rfc3339(),
                         chrono::LocalResult::Ambiguous(earliest, _) => {
