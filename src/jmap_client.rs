@@ -668,7 +668,7 @@ pub async fn push_events(
                         .as_str()
                         .unwrap_or("unknown error")
                         .to_string();
-                    result.not_created.push((caller_id, error_type, desc));
+                    result.not_created.push((caller_id, format!("{}: {}", error_type, desc)));
                 }
             }
 
