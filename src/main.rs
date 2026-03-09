@@ -68,6 +68,20 @@ async fn handle_settings(
 async fn handle_ping() -> String {
     r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
 }
+    r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into()
+}
+async fn handle_settings(
+    _session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+) -> String {
+    db::register_device(config, user, device_id).await;
+    r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into()
+}
+async fn handle_ping() -> String {
+    r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
+}
 }
 }
 
