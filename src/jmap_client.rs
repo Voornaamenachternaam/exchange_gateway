@@ -536,7 +536,7 @@ pub async fn push_event(
 /// created event or an error description.
 pub struct BatchCreateResult {
     pub created: Vec<(String, CreatedEvent)>,
-    pub not_created: Vec<(String, String)>,
+    pub not_created: Vec<(String, String, String)>,
     /// If a transport or JMAP method-level error interrupted the batch mid-way,
     /// it is captured here.  Earlier successful chunks are still available in
     /// `created` / `not_created` so the caller can correctly account for them.
