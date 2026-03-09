@@ -751,6 +751,24 @@ async fn handle_sync(
                     )
                     .await
                     {
+                        tracing::error(
+                            "Sync: SyncKey rollback ALSO failed for user={}, device={}, \n
+                             collection={}: {} — the stored SyncKey may be stuck on an \n
+                             unreachable claim key; manual intervention or a client re-sync \n
+                             (SyncKey 0) may be required",
+                            user, device_id, collection_id, rollback_err
+                        );
+                    }
+
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &claim_key,
+                        &old_sync_key,
+                    )
+                    .await
+                    {
                         tracing::error!(
                             "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
                              collection={}: {} — the stored SyncKey may be stuck on an \
