@@ -660,11 +660,18 @@ pub async fn push_events(
         if let Some(not_created) = json["methodResponses"][0][1]["notCreated"].as_object() {
             for (jmap_id, err) in not_created {
                 if let Some(caller_id) = id_map.remove(jmap_id) {
+                    let error_type = err["type"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string();
                     let desc = err["description"]
                         .as_str()
                         .unwrap_or("unknown error")
                         .to_string();
-                    result.not_created.push((caller_id, desc));
+                    result.not_created.push((caller_id, error_type, desc));
+                }
+            }
+
                 }
             }
         }
