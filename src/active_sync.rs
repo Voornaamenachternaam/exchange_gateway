@@ -751,15 +751,13 @@ async fn handle_sync(
                     )
                     .await
                     {
-                        tracing::error(
-                            "Sync: SyncKey rollback ALSO failed for user={}, device={}, \n
-                             collection={}: {} — the stored SyncKey may be stuck on an \n
-                             unreachable claim key; manual intervention or a client re-sync \n
-                             (SyncKey 0) may be required",
-                            user, device_id, collection_id, rollback_err
-                        );
-                    }
-
+                Err(e) => {
+                    tracing::error!(
+                        "Sync: transient DB error during SyncKey claim for user={}, device={}, \
+                         collection={}: {} — returning server error so client retries without reset",
+                        user, device_id, collection_id, e
+                    );
+                    if let Err(rollback_err) = db::claim_sync_key(
                         config,
                         user,
                         device_id,
@@ -777,25 +775,12 @@ async fn handle_sync(
                             user, device_id, collection_id, rollback_err
                         );
                     }
-                        if let Err(rollback_err) = db::claim_sync_key(
-                            config,
-                            user,
-                            device_id,
-                            &collection_id,
-                            &claim_key,
-                            &old_sync_key,
-                        )
-                        .await
-                        {
-                            tracing::error!(
-                                "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
-                                 collection={}: {} — the stored SyncKey may be stuck on an \
-                                 unreachable claim key; manual intervention or a client re-sync \
-                                 (SyncKey 0) may be required",
-                                user, device_id, collection_id, rollback_err
-                            );
-                        }
-                    }
+                    return format!(
+                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
+                        utils::escape_xml(&old_sync_key),
+                        utils::escape_xml(&collection_id)
+                    );
+                }
                     // Status 5 = server error — the client should retry
                     // without discarding its local state.
                     return format!(
