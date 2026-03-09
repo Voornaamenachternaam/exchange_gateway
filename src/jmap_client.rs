@@ -694,7 +694,7 @@ pub async fn push_events(
             .created
             .iter()
             .map(|(id, _)| id.clone())
-            .chain(result.not_created.iter().map(|(id, _)| id.clone()))
+            .chain(result.not_created.iter().map(|(id, _, _)| id.clone()))
             .collect();
         for (_, caller_id, _) in &prepared {
             if !accounted.contains(caller_id) {
