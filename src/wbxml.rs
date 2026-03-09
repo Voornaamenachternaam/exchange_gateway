@@ -1013,8 +1013,6 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         if has_attrs {
             skip_wbxml_attributes(data, &mut pos)?;
         }
-        }
-        let token_id = token & 0x3F;
 
         if let Some(tag_def) = TAG_MAP.get(&(current_page, token_id)) {
             if pending_tag.is_some() {
