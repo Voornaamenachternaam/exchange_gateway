@@ -53,17 +53,21 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn handle_activesync_options() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [
-            ("MS-Server-ActiveSync", "15.0"),
-            ("Allow", "OPTIONS,POST"),
-            ("MS-ASProtocolVersions", "2.5,12.0,14.0,14.1,15.0"),
-            ("MS-ASProtocolCommands", "Sync,SendMail,SmartForward,SmartReply,Ping,FolderSync,GetAttachment,Move,Add,Delete,Change,Search"),
-        ],
-        "",
-    )
+async fn handle_provision() -> String {
+    r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into()
+}
+async fn handle_settings(
+    _session: &jmap_client::JmapSession,
+    config: &AppConfig,
+    user: &str,
+    device_id: &str,
+) -> String {
+    db::register_device(config, user, device_id).await;
+    r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into()
+}
+async fn handle_ping() -> String {
+    r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
+}
 }
 }
 
