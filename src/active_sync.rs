@@ -741,6 +741,15 @@ async fn handle_sync(
                     // transport/parse error on the response).  Restore the
                     // original SyncKey so the client can retry with the
                     // same key instead of being stuck with an invalid one.
+                    if let Err(rollback_err) = db::update_sync_state(
+                        config,
+                        user,
+                        device_id,
+                        &collection_id,
+                        &old_sync_key,
+                        &stored_jmap_state,
+                    )
+                    .await
                     {
                         tracing::error!(
                             "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
@@ -749,6 +758,7 @@ async fn handle_sync(
                              (SyncKey 0) may be required",
                             user, device_id, collection_id, rollback_err
                         );
+                    }
                     }
                     // Status 5 = server error — the client should retry
                     // without discarding its local state.
