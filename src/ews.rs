@@ -51,9 +51,13 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
     };
-    let cal_id = jmap_client::get_default_calendar_id(session)
-        .await
-        .unwrap_or("default".into());
+    let cal_id = match jmap_client::get_default_calendar_id(session).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("SyncFolderHierarchy: failed to get default calendar ID: {}", e);
+            return soap_fault("ErrorInternalServerError", "Failed to get calendar");
+        }
+    };
 
     // Generate a stable sync state from the calendar ID so clients can
     // distinguish initial from subsequent syncs.
