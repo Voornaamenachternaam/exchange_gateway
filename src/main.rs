@@ -137,8 +137,17 @@ async fn handle_active_sync(
                 }
             }
         } else {
-        } else {
             match wbxml::decode(trimmed) {
+                Ok(xml) => (xml, true),
+                Err(e) => {
+                    tracing::error!("WBXML decode error: {:?}", e);
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "Unable to decode request body".to_string(),
+                    )
+                        .into_response();
+                }
+            }
         }
     };
 
@@ -239,3 +248,4 @@ async fn handle_ews(
         response_xml,
     )
         .into_response()
+}
