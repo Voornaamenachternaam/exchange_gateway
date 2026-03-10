@@ -54,7 +54,10 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
     let cal_id = match jmap_client::get_default_calendar_id(session).await {
         Ok(id) => id,
         Err(e) => {
-            tracing::error!("SyncFolderHierarchy: failed to get default calendar ID: {}", e);
+            tracing::error!(
+                "SyncFolderHierarchy: failed to get default calendar ID: {}",
+                e
+            );
             return soap_fault("ErrorInternalServerError", "Failed to get calendar");
         }
     };
@@ -78,7 +81,9 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
             // Stale or unrecognised sync state (e.g. server restart, calendar
             // ID change).  Fall back to an initial sync so the client can
             // recover, consistent with handle_sync_folder_items.
-            tracing::warn!("SyncFolderHierarchy: client SyncState does not match; falling back to initial sync");
+            tracing::warn!(
+                "SyncFolderHierarchy: client SyncState does not match; falling back to initial sync"
+            );
             format!(
                 r#"<t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create>"#,
                 utils::escape_xml(&cal_id)
@@ -134,8 +139,7 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
     if results.is_empty() {
         return soap_response(&format!(
             r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorNameResolutionNoResults</m:ResponseCode><m:MessageText>No results were found.</m:MessageText></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
-            NS_M,
-            NS_T,
+            NS_M, NS_T,
         ));
     }
     let mut resolutions = String::new();
@@ -146,9 +150,21 @@ async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> 
         r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="{}"><m:ResponseCode>{}</m:ResponseCode>{}<m:ResolutionSet TotalItemsInView="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
         NS_M,
         NS_T,
-        if results.len() > 1 { "Warning" } else { "Success" },
-        if results.len() > 1 { "ErrorNameResolutionMultipleResults" } else { "NoError" },
-        if results.len() > 1 { "<m:MessageText>Multiple results were found.</m:MessageText>" } else { "" },
+        if results.len() > 1 {
+            "Warning"
+        } else {
+            "Success"
+        },
+        if results.len() > 1 {
+            "ErrorNameResolutionMultipleResults"
+        } else {
+            "NoError"
+        },
+        if results.len() > 1 {
+            "<m:MessageText>Multiple results were found.</m:MessageText>"
+        } else {
+            ""
+        },
         results.len(),
         resolutions
     ))
@@ -367,7 +383,10 @@ async fn handle_update_item(
                 }
                 "calendar:End" => {
                     if let Some(e) = update.calendar_item.end {
-                        patch.insert("end".into(), serde_json::json!(utils::parse_local_to_utc(&e, tz)));
+                        patch.insert(
+                            "end".into(),
+                            serde_json::json!(utils::parse_local_to_utc(&e, tz)),
+                        );
                     }
                 }
                 _ => {}
@@ -377,10 +396,7 @@ async fn handle_update_item(
             positions.push((id, true));
         } else {
             // Merge fields into the existing patch for this ID (if any).
-            merged
-                .entry(id.clone())
-                .or_default()
-                .extend(patch);
+            merged.entry(id.clone()).or_default().extend(patch);
             positions.push((id, false));
         }
     }
@@ -508,9 +524,7 @@ async fn handle_sync_folder_items(
                 // `stored = None` and falls back to a full initial sync,
                 // consistent with the permanent-error path in
                 // get_calendar_changes.
-                if let Err(del_err) =
-                    db::delete_ews_sync_state(config, user, &folder_id).await
-                {
+                if let Err(del_err) = db::delete_ews_sync_state(config, user, &folder_id).await {
                     tracing::error!(
                         user = user, folder = %folder_id,
                         "SyncFolderItems: failed to delete stale sync state: {del_err}"
@@ -549,7 +563,10 @@ async fn handle_sync_folder_items(
             // Persist the new sync token so the client's next request
             // maps back to the current JMAP state (avoids an unnecessary
             // full re-sync if the stored token were to drift).
-            if let Err(e) = db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state).await {
+            if let Err(e) =
+                db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &current_state)
+                    .await
+            {
                 tracing::error!(
                     user = user, folder = %folder_id,
                     "SyncFolderItems: failed to persist sync state: {e}"
@@ -575,11 +592,17 @@ async fn handle_sync_folder_items(
                 // Permanent error (expired/invalid sinceState, auth failure,
                 // etc.) – clear stored state so the client's next request
                 // triggers a proper initial (full) sync.
-                tracing::warn!("get_calendar_changes failed, invalidating sync state: {}", e);
+                tracing::warn!(
+                    "get_calendar_changes failed, invalidating sync state: {}",
+                    e
+                );
                 if let Err(del_err) = db::delete_ews_sync_state(config, user, &folder_id).await {
                     tracing::error!("additionally failed to delete EWS sync state: {}", del_err);
                 }
-                return soap_fault("ErrorInvalidSyncStateData", "Sync state expired, please re-sync");
+                return soap_fault(
+                    "ErrorInvalidSyncStateData",
+                    "Sync state expired, please re-sync",
+                );
             }
         };
         // Capture the resulting JMAP state from /changes *before* consuming
@@ -623,7 +646,15 @@ async fn handle_sync_folder_items(
         }
         (xml, true, resulting_state)
     };
-    if let Err(e) = db::update_ews_sync_state(config, user, &folder_id, &new_sync_token, &jmap_state_to_persist).await {
+    if let Err(e) = db::update_ews_sync_state(
+        config,
+        user,
+        &folder_id,
+        &new_sync_token,
+        &jmap_state_to_persist,
+    )
+    .await
+    {
         tracing::error!(
             user = user, folder = %folder_id,
             "SyncFolderItems: failed to persist sync state: {e}"
@@ -745,7 +776,10 @@ async fn handle_delete_item(
     }
     let mut msgs = String::new();
     for id in &ids {
-        if let Some((_, jmap_err)) = destroy_result.not_destroyed.iter().find(|(fid, _)| fid == id)
+        if let Some((_, jmap_err)) = destroy_result
+            .not_destroyed
+            .iter()
+            .find(|(fid, _)| fid == id)
         {
             let ews_code = match jmap_err.as_str() {
                 "notFound" => "ErrorItemNotFound",
@@ -866,7 +900,8 @@ fn soap_response(content: &str) -> String {
 fn soap_fault(code: &str, msg: &str) -> String {
     soap_response(&format!(
         r#"<soap:Fault><faultcode>soap:Client</faultcode><faultstring>{}: {}</faultstring></soap:Fault>"#,
-        utils::escape_xml(code), utils::escape_xml(msg)
+        utils::escape_xml(code),
+        utils::escape_xml(msg)
     ))
 }
 #[derive(Debug, Deserialize)]
