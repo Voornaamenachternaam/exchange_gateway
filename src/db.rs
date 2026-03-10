@@ -166,7 +166,6 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     } else if !json.is_array() {
         return Err(DbError::UnexpectedFormat);
     }
-    }
     // Legacy array format – no top-level success flag; treat as OK.
     Ok(())
 }
