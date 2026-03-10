@@ -229,7 +229,7 @@ async fn handle_ews(
     if !auth_header.to_ascii_lowercase().starts_with("basic ") {
         return (
             StatusCode::UNAUTHORIZED,
-            [(header::CONTENT_TYPE, "text/plain")],
+            [(header::WWW_AUTHENTICATE, r#"Basic realm="exchange_gateway""#)],
             "Unauthorized".to_string(),
         );
     }
