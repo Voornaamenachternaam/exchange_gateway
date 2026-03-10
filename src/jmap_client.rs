@@ -672,10 +672,6 @@ pub async fn push_events(
                 }
             }
 
-                }
-            }
-        }
-
         // Any remaining IDs in id_map were neither created nor explicitly
         // rejected — treat them as failures.
         for (_, caller_id) in id_map {
