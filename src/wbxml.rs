@@ -736,6 +736,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
         while end < strtbl.len() && strtbl[end] != 0 {
             end += 1;
         }
+        if end == strtbl.len() {
+            return Err("Unterminated string table entry".into());
+        }
                 0x43 => {
                     // PI tokens are not nested in attributes, so they should not affect the attribute list's depth.
                     // The internal structure of a PI token is skipped without modifying the attribute list's depth counter.
