@@ -10,7 +10,9 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
         return match tz.from_local_datetime(&dt) {
             chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
-            chrono::LocalResult::Ambiguous(earliest, _) => earliest.with_timezone(&Utc).to_rfc3339(),
+            chrono::LocalResult::Ambiguous(earliest, _) => {
+                earliest.with_timezone(&Utc).to_rfc3339()
+            }
             chrono::LocalResult::None => {
                 // DST gap: the local time does not exist. Advance minute by
                 // minute until we find a valid local time, then resolve to UTC.
@@ -21,7 +23,9 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
                         None => return local_str.to_string(),
                     };
                     match tz.from_local_datetime(&advanced) {
-                        chrono::LocalResult::Single(dt) => return dt.with_timezone(&Utc).to_rfc3339(),
+                        chrono::LocalResult::Single(dt) => {
+                            return dt.with_timezone(&Utc).to_rfc3339();
+                        }
                         chrono::LocalResult::Ambiguous(earliest, _) => {
                             return earliest.with_timezone(&Utc).to_rfc3339();
                         }
