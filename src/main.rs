@@ -239,4 +239,3 @@ async fn handle_ews(
         response_xml,
     )
         .into_response()
-}
