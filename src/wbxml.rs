@@ -858,7 +858,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
     // Read string table
     let strtbl_start = pos;
-    let strtbl_end = strtbl_start.checked_add(strtbl_len)
+    let strtbl_end = strtbl_start
+        .checked_add(strtbl_len)
         .ok_or_else(|| "String table end overflow".to_string())?;
     if strtbl_end > data.len() {
         return Err("String table exceeds data length".into());
@@ -925,7 +926,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
 
         if token == TAG_OPAQUE {
             let len = read_mb_u_int32(data, &mut pos)?;
-            let end = pos.checked_add(len).ok_or_else(|| "Opaque overflow".to_string())?;
+            let end = pos
+                .checked_add(len)
+                .ok_or_else(|| "Opaque overflow".to_string())?;
             if end > data.len() {
                 return Err("Opaque overflow".into());
             }
@@ -936,7 +939,8 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 xml.push('>');
                 stack.push(tag);
             }
-            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, content);
+            let encoded =
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, content);
             xml.push_str(&encoded);
             continue;
         }
@@ -1157,7 +1161,13 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                     // so the prefix survives the round-trip.  For unprefixed
                     // tags the local name alone is sufficient.
                     let literal_name = if prefix.is_some() { &full_name } else { local };
-                    encode_literal_tag(&mut body, literal_name, true, &mut strtbl_index, &mut strtbl);
+                    encode_literal_tag(
+                        &mut body,
+                        literal_name,
+                        true,
+                        &mut strtbl_index,
+                        &mut strtbl,
+                    );
                 }
                 // Push the resolved scope page. For unknown-prefix tags,
                 // inherit the parent's scope page so unprefixed descendants
@@ -1180,7 +1190,13 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                     || !encode_tag(&mut body, local, &mut current_page, false, scope_page)
                 {
                     let literal_name = if prefix.is_some() { &full_name } else { local };
-                    encode_literal_tag(&mut body, literal_name, false, &mut strtbl_index, &mut strtbl);
+                    encode_literal_tag(
+                        &mut body,
+                        literal_name,
+                        false,
+                        &mut strtbl_index,
+                        &mut strtbl,
+                    );
                 }
             }
             Ok(quick_xml::events::Event::End(_)) => {
@@ -1318,7 +1334,8 @@ mod tests {
     fn known_prefix_overrides_parent_scope() {
         // "Type" with AirSyncBase prefix inside a Calendar parent should switch
         // to page 17, not stay on page 4.
-        let xml = "<Calendar:Recurrence><AirSyncBase:Type>2</AirSyncBase:Type></Calendar:Recurrence>";
+        let xml =
+            "<Calendar:Recurrence><AirSyncBase:Type>2</AirSyncBase:Type></Calendar:Recurrence>";
         let encoded = encode(xml).expect("encode should succeed");
         let decoded = decode(&encoded).expect("round-trip decode should succeed");
 
@@ -1494,7 +1511,8 @@ mod tests {
         // "Calendar" is a known prefix (page 4), but "NoSuchTag" does not
         // exist in any code page, so encode_tag will fail and we fall back
         // to LITERAL encoding.
-        let xml = "<Calendar:Recurrence><Calendar:NoSuchTag>v</Calendar:NoSuchTag></Calendar:Recurrence>";
+        let xml =
+            "<Calendar:Recurrence><Calendar:NoSuchTag>v</Calendar:NoSuchTag></Calendar:Recurrence>";
         let encoded = encode(xml).expect("encode should succeed");
         let decoded = decode(&encoded).expect("decode should succeed");
 
