@@ -759,7 +759,6 @@ async fn handle_sync(
                             user, device_id, collection_id, rollback_err
                         );
                     }
-                    }
                     // Status 5 = server error — the client should retry
                     // without discarding its local state.
                     return format!(
