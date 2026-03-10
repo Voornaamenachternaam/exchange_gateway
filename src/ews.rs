@@ -179,7 +179,10 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
             }
             Err(e) => {
                 tracing::error!("get_blob failed for attachment {}: {}", id_str, e);
-                return soap_fault("ErrorInternalServerError", "GetAttachment Failed");
+                response_messages.push_str(&format!(
+                    r#"<m:GetAttachmentResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Failed to get attachment {}</m:MessageText><m:Attachments><t:FileAttachment><t:AttachmentId Id="{}"/></t:FileAttachment></m:Attachments></m:GetAttachmentResponseMessage>"#,
+                    utils::escape_xml(id_str), utils::escape_xml(id_str)
+                ));
             }
         }
     }
