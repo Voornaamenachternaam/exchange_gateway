@@ -1,9 +1,5 @@
 pub fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    quick_xml::escape::escape(s).into_owned()
 }
 
 pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
