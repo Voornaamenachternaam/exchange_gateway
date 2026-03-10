@@ -56,6 +56,7 @@ async fn main() {
 async fn handle_provision() -> String {
     r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into()
 }
+
 async fn handle_settings(
     _session: &jmap_client::JmapSession,
     config: &AppConfig,
@@ -65,24 +66,9 @@ async fn handle_settings(
     db::register_device(config, user, device_id).await;
     r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into()
 }
+
 async fn handle_ping() -> String {
     r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
-}
-    r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>12345</PolicyKey></Policy></Policies></Provision>"#.into()
-}
-async fn handle_settings(
-    _session: &jmap_client::JmapSession,
-    config: &AppConfig,
-    user: &str,
-    device_id: &str,
-) -> String {
-    db::register_device(config, user, device_id).await;
-    r#"<Settings xmlns="Settings:"><Status>1</Status></Settings>"#.into()
-}
-async fn handle_ping() -> String {
-    r#"<Ping xmlns="Ping:"><Status>1</Status></Ping>"#.into()
-}
-}
 }
 
 async fn handle_active_sync(
@@ -96,15 +82,13 @@ async fn handle_active_sync(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-        return (
-            StatusCode::UNAUTHORIZED,
     if !auth_header.to_ascii_lowercase().starts_with("basic ") {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, r#"Basic realm="exchange_gateway""#)],
             "Unauthorized".to_string(),
         )
-            .into_response();
+        .into_response();
     }
 
     let content_type = headers
@@ -145,14 +129,10 @@ async fn handle_active_sync(
             }
         }
     } else if body.is_empty() {
-        // Allow empty bodies through — some ActiveSync commands (e.g. Ping,
-        // Provision) legitimately send no body. Per MS-ASCMD, all commands
-        // except Autodiscover use WBXML encoding, so the response must be
-        // WBXML even when the request body is absent.
+        // Allow empty bodies through — some ActiveSync commands legitimately send no body.
         (String::new(), true)
     } else {
         // No Content-Type: sniff by first meaningful byte — WBXML never starts with '<'
-        // Strip UTF-8 BOM and leading whitespace before checking
         let trimmed = body
             .strip_prefix(b"\xEF\xBB\xBF")
             .unwrap_or(&body);
@@ -189,7 +169,7 @@ async fn handle_active_sync(
                 ],
                 wbxml_data,
             )
-                .into_response(),
+            .into_response(),
             Err(e) => {
                 tracing::error!("WBXML Encode Error: {}", e);
                 (
@@ -200,7 +180,7 @@ async fn handle_active_sync(
                     ],
                     "WBXML Encode Error".to_string(),
                 )
-                    .into_response()
+                .into_response()
             }
         }
     } else {
@@ -212,9 +192,9 @@ async fn handle_active_sync(
             ],
             response_xml,
         )
-            .into_response()
+        .into_response()
     }
-}
+} // <- end handle_active_sync
 
 async fn handle_ews(
     State(config): State<Arc<AppConfig>>,
@@ -231,18 +211,19 @@ async fn handle_ews(
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, r#"Basic realm="exchange_gateway""#)],
             "Unauthorized".to_string(),
-        );
+        )
+        .into_response();
     }
 
     let xml_body = match std::str::from_utf8(&body) {
         Ok(s) => s,
-        // Fix: Match the tuple structure of the success branch (Status, Header, Body)
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "text/plain")],
                 "Invalid UTF-8".to_string(),
-            );
+            )
+            .into_response();
         }
     };
 
@@ -252,4 +233,5 @@ async fn handle_ews(
         [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
         response_xml,
     )
+    .into_response()
 }
