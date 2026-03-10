@@ -156,16 +156,30 @@ pub async fn get_sync_state_full(
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
 fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
+fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     if json.get("result").is_some() {
         // New format: require an explicit boolean success flag
         match json.get("success").and_then(|s| s.as_bool()) {
             Some(true) => {}
-            Some(false) => return Err(DbError::Query("DB query failed".to_owned())),
+            Some(false) => {
+                let msg = json.get("errors")
+                    .and_then(|e| e.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("DB query failed")
+                    .to_owned();
+                return Err(DbError::Query(msg));
+            }
             None => return Err(DbError::UnexpectedFormat),
         }
-    } else if !json.is_array() {
+    } else if json.is_array() {
+        // Legacy array format – no top-level success flag; treat as OK.
+    } else {
         return Err(DbError::UnexpectedFormat);
     }
+    Ok(())
+}
     // Legacy array format – no top-level success flag; treat as OK.
     Ok(())
 }
