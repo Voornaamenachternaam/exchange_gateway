@@ -742,9 +742,22 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 0x43 => {
                     // PI tokens are not nested in attributes, so they should not affect the attribute list's depth.
                     // The internal structure of a PI token is skipped without modifying the attribute list's depth counter.
-                }
-        let s = std::str::from_utf8(&strtbl[offset..end])
+    fn read_strtbl_string(strtbl: &[u8], pos: &mut usize) -> Result<String, String> {
+        if *pos >= strtbl.len() {
+            return Err("String table offset out of bounds".into());
+        }
+        let mut end = *pos;
+        while end < strtbl.len() && strtbl[end] != 0 {
+            end += 1;
+        }
+        if end == strtbl.len() {
+            return Err("Unterminated string table entry".into());
+        }
+        let s = std::str::from_utf8(&strtbl[*pos..end])
             .map_err(|_| "Invalid UTF-8 in string table".to_string())?
+            .to_string();
+        Ok(s)
+    }
             .to_string();
         Ok(s)
     }
