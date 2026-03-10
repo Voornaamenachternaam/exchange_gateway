@@ -162,6 +162,7 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
     let mut response_messages = String::new();
     for attachment_id in req.attachment_ids.items {
         let id_str = &attachment_id.id;
+        match jmap_client::get_blob(session, id_str).await {
             Ok(data) => {
                 let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
                 response_messages.push_str(&format!(
