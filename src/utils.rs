@@ -51,11 +51,10 @@ pub fn decode_basic_auth(auth: &str) -> (String, String) {
         Ok(s) => s,
         Err(_) => return (String::new(), String::new()),
     };
-    let mut creds = decoded_str.splitn(2, ':');
-    (
-        creds.next().unwrap_or_default().to_string(),
-        creds.next().unwrap_or_default().to_string(),
-    )
+    let Some((username, password)) = decoded_str.split_once(':') else {
+        return (String::new(), String::new());
+    };
+    (username.to_string(), password.to_string())
 }
 
 #[cfg(test)]
