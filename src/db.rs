@@ -156,7 +156,6 @@ pub async fn get_sync_state_full(
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
 fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
-fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     if json.get("result").is_some() {
         // New format: require an explicit boolean success flag
         match json.get("success").and_then(|s| s.as_bool()) {
@@ -178,9 +177,6 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     } else {
         return Err(DbError::UnexpectedFormat);
     }
-    Ok(())
-}
-    // Legacy array format – no top-level success flag; treat as OK.
     Ok(())
 }
 
