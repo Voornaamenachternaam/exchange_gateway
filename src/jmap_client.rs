@@ -336,17 +336,13 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         .header("Authorization", format!("Basic {}", token))
         .send()
         .await?;
-    if !res.status().is_success() {
-        let status = res.status();
-        return Err(if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-        {
-            JmapError::Auth(format!("HTTP {}", status))
-        } else {
-            JmapError::Api(format!("HTTP {}", status))
-        });
+    let status = res.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        return Err(JmapError::Auth(format!("HTTP {}", status)));
     }
-    let body: serde_json::Value = res.json().await?;
+    let body: serde_json::Value = res.error_for_status()?.json().await?;
     let account_id = find_account_for_capability(&body, "urn:ietf:params:jmap:calendars")
         .ok_or_else(|| JmapError::Parse("no usable account in JMAP session".into()))?
         .to_string();
