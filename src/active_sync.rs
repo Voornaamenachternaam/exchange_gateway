@@ -747,7 +747,7 @@ async fn handle_sync(
                         device_id,
                         &collection_id,
                         &old_sync_key,
-                        &stored_jmap_state,
+                        &stored_state.as_ref().map(|s| s.jmap_state.as_str()).unwrap_or(""),
                     )
                     .await
                     {
