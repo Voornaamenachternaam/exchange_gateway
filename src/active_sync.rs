@@ -741,31 +741,6 @@ async fn handle_sync(
                     // transport/parse error on the response).  Restore the
                     // original SyncKey so the client can retry with the
                     // same key instead of being stuck with an invalid one.
-                    if let Err(rollback_err) = db::claim_sync_key(
-                        config,
-                        user,
-                        device_id,
-                        &collection_id,
-                        &claim_key,
-                        &old_sync_key,
-                    )
-                    .await
-                    {
-                Err(e) => {
-                    tracing::error!(
-                        "Sync: transient DB error during SyncKey claim for user={}, device={}, \
-                         collection={}: {} — returning server error so client retries without reset",
-                        user, device_id, collection_id, e
-                    );
-                    if let Err(rollback_err) = db::claim_sync_key(
-                        config,
-                        user,
-                        device_id,
-                        &collection_id,
-                        &claim_key,
-                        &old_sync_key,
-                    )
-                    .await
                     {
                         tracing::error!(
                             "Sync: SyncKey rollback ALSO failed for user={}, device={}, \
@@ -775,12 +750,6 @@ async fn handle_sync(
                             user, device_id, collection_id, rollback_err
                         );
                     }
-                    return format!(
-                        r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection></Collections></Sync>"#,
-                        utils::escape_xml(&old_sync_key),
-                        utils::escape_xml(&collection_id)
-                    );
-                }
                     // Status 5 = server error — the client should retry
                     // without discarding its local state.
                     return format!(
