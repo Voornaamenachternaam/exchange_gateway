@@ -157,16 +157,15 @@ pub async fn get_sync_state_full(
 /// explicitly signals failure.
 fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     if json.get("result").is_some() {
-        // New format: check for explicit failure flag
-        if json
-            .get("success")
-            .and_then(|s| s.as_bool())
-            == Some(false)
-        {
-            return Err(DbError::Query("DB query failed".to_owned()));
+        // New format: require an explicit boolean success flag
+        match json.get("success").and_then(|s| s.as_bool()) {
+            Some(true) => {}
+            Some(false) => return Err(DbError::Query("DB query failed".to_owned())),
+            None => return Err(DbError::UnexpectedFormat),
         }
     } else if !json.is_array() {
         return Err(DbError::UnexpectedFormat);
+    }
     }
     // Legacy array format – no top-level success flag; treat as OK.
     Ok(())
