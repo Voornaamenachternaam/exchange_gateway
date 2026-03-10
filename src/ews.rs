@@ -162,12 +162,12 @@ async fn handle_get_attachment(session: &jmap_client::JmapSession, xml: &str) ->
     let mut response_messages = String::new();
     for attachment_id in req.attachment_ids.items {
         let id_str = &attachment_id.id;
-        match jmap_client::get_blob(session, id_str).await {
             Ok(data) => {
                 let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
                 response_messages.push_str(&format!(
                     r#"<m:GetAttachmentResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Attachments><t:FileAttachment><t:AttachmentId Id="{}"/><t:Content>{}</t:Content></t:FileAttachment></m:Attachments></m:GetAttachmentResponseMessage>"#,
-                    utils::escape_xml(id_str), utils::escape_xml(&b64)
+                    utils::escape_xml(id_str),
+                    b64
                 ));
             }
             Err(jmap_client::JmapError::NotFound(_)) => {
