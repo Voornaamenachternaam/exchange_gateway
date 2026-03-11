@@ -201,7 +201,6 @@ async fn handle_activesync_options() -> impl IntoResponse {
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
                 "Authorization, Content-Type, X-MS-DeviceId",
             ),
-            (header::ACCESS_CONTROL_MAX_AGE, "86400"),
             (header::ACCESS_CONTROL_MAX_AGE, "86400")
         ],
         "",
