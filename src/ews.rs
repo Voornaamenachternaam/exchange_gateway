@@ -453,7 +453,8 @@ async fn handle_update_item(
                         }
                         ResponsePlaceholder::Pending { id } => {
                             response_messages.push_str(&format!(
-                                r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#,
+                                r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed for item {}</m:MessageText></m:UpdateItemResponseMessage>"#,
+                                utils::escape_xml(&id)
                             ));
                         }
                     }
