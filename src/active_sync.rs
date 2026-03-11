@@ -374,7 +374,9 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
         .unwrap_or(mime_content.len());
     let header_section = String::from_utf8_lossy(&mime_content[..header_end]);
 
-    let to_addr = RE_TO
+        .captures(&header_section)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_string());
         .captures(&header_section)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
