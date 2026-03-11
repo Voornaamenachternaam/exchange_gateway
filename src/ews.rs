@@ -17,8 +17,10 @@ pub async fn process_request(config: &AppConfig, xml: &str, headers: &HeaderMap)
     let auth = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
         None => return soap_fault("ErrorAccessDenied", "Missing Authorization"),
+    let (user, pass) = match utils::decode_basic_auth(auth) {
+        Some(creds) => creds,
+        None => return soap_fault("ErrorAccessDenied", "Invalid Authorization header"),
     };
-    let (user, pass) = utils::decode_basic_auth(auth);
     let session = match jmap_client::get_session(&config.jmap_url, &user, &pass).await {
         Ok(s) => s,
         Err(e) => {
