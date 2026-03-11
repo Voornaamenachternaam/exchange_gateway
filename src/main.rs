@@ -191,6 +191,10 @@ async fn handle_active_sync(
     }
 }
 
+async fn handle_activesync_options() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
             (header::ALLOW, "POST, OPTIONS"),
             (header::ACCESS_CONTROL_ALLOW_METHODS, "POST, OPTIONS"),
             (
@@ -198,9 +202,11 @@ async fn handle_active_sync(
                 "Authorization, Content-Type, X-MS-DeviceId",
             ),
             (header::ACCESS_CONTROL_MAX_AGE, "86400"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*",),
+        ],
         "",
     )
+}
 }
 
 async fn handle_ews(
