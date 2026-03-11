@@ -374,6 +374,7 @@ async fn handle_update_item(
 
         // Build patch from SetItemField entries
         let mut patch = serde_json::Map::new();
+        let mut unsupported_set_field = false;  
         for update in change.updates.set_fields {
             match update.field_uri.field_uri.as_str() {
                 "item:Subject" | "calendar:Subject" => {
@@ -407,10 +408,16 @@ async fn handle_update_item(
                         );
                     }
                 }
-                _ => {}
+                _ => unsupported_set_field = true,
             }
         }
-        if patch.is_empty() {
+        if unsupported_set_field {
+            placeholders.push(ResponsePlaceholder::ImmediateError {
+                id,
+                code: "ErrorInternalServerError",
+                message: "Unsupported update operation",
+            });
+        } else if patch.is_empty() {
             placeholders.push(ResponsePlaceholder::ImmediateSuccess);
         } else {
             merged.entry(id.clone()).or_default().extend(patch);
