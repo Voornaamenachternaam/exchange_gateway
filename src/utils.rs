@@ -39,26 +39,51 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
     local_str.to_string()
 }
 
-pub fn decode_basic_auth(auth: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = auth.split_whitespace().collect();
-    if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("Basic") {
-        return None;
+```suggestion
+        } else {
+            return error_xml(401, "Unauthorized");
+        }
+    };
+
++    // Commands that do not require a JMAP session — handle them after
++    // credentials have been fully validated via the JMAP session above.
+    match command.as_str() {
+        "Ping" => return handle_ping().await,
+        "Provision" => return handle_provision().await,
+        _ => {}
     }
 
-    let decoded = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[1])
-    {
-        Ok(d) => d,
-        Err(_) => return None,
-    };
-
-    let decoded_str = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    let Some((username, password)) = decoded_str.split_once(':') else {
-        return None;
-    };
-    Some((username.to_string(), password.to_string()))
+    match command.as_str() {
+        "FolderSync" => handle_folder_sync(&session, config, &user, device_id, xml).await,
+        "Sync" => {
+            let req: SyncRequest = match quick_xml::de::from_str(xml) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("Sync XML Parse Error: {:?}", e);
+                    return error_xml(400, "BadRequest");
+                }
+            };
+            handle_sync(&session, config, &user, device_id, req).await
+        }
+        "ItemOperations" => {
+            let req: ItemOpsReq = match quick_xml::de::from_str(xml) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("ItemOperations XML Parse Error: {:?}", e);
+                    return error_xml(400, "BadRequest");
+                }
+            };
+            handle_item_operations(&session, req).await
+        }
+        "MeetingResponse" => handle_meeting_response(&session, config, xml, &user).await,
+        "SendMail" => handle_send_mail(config, xml, &user).await,
+        "Settings" => handle_settings(&session, config, &user, device_id).await,
+        "Search" => handle_search(&session, xml).await,
+        _ => {
+            tracing::warn!("Unsupported EAS Command: {}", command);
+            error_xml(400, "UnsupportedCommand")
+        }
+    }
 }
 
 #[cfg(test)]
