@@ -57,6 +57,9 @@ pub fn decode_basic_auth(auth_header: &str) -> Option<(String, String)> {
     let mut parts = trimmed.split_whitespace();
     let scheme = parts.next()?;
     let encoded = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
 
     // Scheme must be "Basic" (case‑insensitive)
     if !scheme.eq_ignore_ascii_case("basic") {
