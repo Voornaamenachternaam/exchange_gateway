@@ -8,51 +8,6 @@ const TAG_OPAQUE: u8 = 0xC3;
 
 const MAX_DECODE_DEPTH: usize = 256;
 
-/// Check whether `c` is a valid XML 1.0 NameStartChar.
-///
-/// Production from <https://www.w3.org/TR/xml/#NT-NameStartChar>:
-///   NameStartChar ::= ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | [#xD8-#xF6]
-///                   | [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF]
-///                   | [#x200C-#x200D] | [#x2070-#x218F] | [#x2C00-#x2FEF]
-///                   | [#x3001-#xD7FF] | [#xF900-#xFDCF] | [#xFDF0-#xFFFD]
-///                   | [#x10000-#xEFFFF]
-fn is_xml_name_start_char(c: char) -> bool {
-    matches!(c,
-        ':' | 'A'..='Z' | '_' | 'a'..='z'
-        | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
-        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}'
-        | '\u{200C}'..='\u{200D}' | '\u{2070}'..='\u{218F}'
-        | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
-        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}'
-        | '\u{10000}'..='\u{EFFFF}'
-    )
-}
-
-/// Check whether `c` is a valid XML 1.0 NameChar.
-///
-/// Production from <https://www.w3.org/TR/xml/#NT-NameChar>:
-///   NameChar ::= NameStartChar | "-" | "." | [0-9] | #xB7
-///              | [#x0300-#x036F] | [#x203F-#x2040]
-fn is_xml_name_char(c: char) -> bool {
-    is_xml_name_start_char(c)
-        || matches!(c,
-            '-' | '.' | '0'..='9' | '\u{B7}'
-            | '\u{0300}'..='\u{036F}' | '\u{203F}'..='\u{2040}'
-        )
-}
-
-/// Validate that `name` is a legal XML element name (XML 1.0 Name production).
-/// Rejects empty strings and strings containing characters not permitted by the spec.
-fn is_valid_xml_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        None => return false,
-        Some(c) if !is_xml_name_start_char(c) => return false,
-        _ => {}
-    }
-    chars.all(is_xml_name_char)
-}
-
 const CP_AIRSYNC: u8 = 0;
 const CP_CONTACTS: u8 = 1;
 const CP_EMAIL: u8 = 2;
@@ -77,6 +32,7 @@ const CP_COMPOSEMAIL: u8 = 21;
 const CP_EMAIL2: u8 = 22;
 const CP_NOTES: u8 = 23;
 const CP_RIGHTSMANAGEMENT: u8 = 24;
+const CP_FIND: u8 = 25;
 
 #[derive(Debug, Clone)]
 struct Tag {
@@ -85,7 +41,7 @@ struct Tag {
 }
 
 lazy_static! {
-    /// Maps ActiveSync-style namespace prefixes to WBXML code pages.
+    /// Maps ActiveSync‑style namespace prefixes to WBXML code pages.
     static ref PREFIX_TO_PAGE: HashMap<&'static str, u8> = {
         let mut m = HashMap::new();
         m.insert("AirSync", CP_AIRSYNC);
@@ -112,583 +68,664 @@ lazy_static! {
         m.insert("Email2", CP_EMAIL2);
         m.insert("Notes", CP_NOTES);
         m.insert("RightsManagement", CP_RIGHTSMANAGEMENT);
+        m.insert("Find", CP_FIND);
         m
     };
 
+    /// Maps (code page, token) to the corresponding tag name.
     static ref TAG_MAP: HashMap<(u8, u8), Tag> = {
         let mut m = HashMap::new();
         macro_rules! add {
-            ($page:expr, $token:expr, $name:expr, $content:expr) => {
-                m.insert(($page, $token), Tag { name: $name, _has_content: $content });
+            ($page:expr, $token:expr, $name:expr) => {
+                m.insert(($page, $token), Tag { name: $name, _has_content: true });
             };
         }
-        // AirSync (0) – per MS-ASWBXML spec
-        add!(CP_AIRSYNC, 0x05, "Sync", true);
-        add!(CP_AIRSYNC, 0x06, "Responses", true);
-        add!(CP_AIRSYNC, 0x07, "Add", true);
-        add!(CP_AIRSYNC, 0x08, "Change", true);
-        add!(CP_AIRSYNC, 0x09, "Delete", true);
-        add!(CP_AIRSYNC, 0x0A, "Fetch", true);
-        add!(CP_AIRSYNC, 0x0B, "SyncKey", true);
-        add!(CP_AIRSYNC, 0x0C, "ClientId", true);
-        add!(CP_AIRSYNC, 0x0D, "ServerId", true);
-        add!(CP_AIRSYNC, 0x0E, "Status", true);
-        add!(CP_AIRSYNC, 0x0F, "Collection", true);
-        add!(CP_AIRSYNC, 0x10, "Class", true);
-        add!(CP_AIRSYNC, 0x12, "CollectionId", true);
-        add!(CP_AIRSYNC, 0x13, "GetChanges", true);
-        add!(CP_AIRSYNC, 0x14, "MoreAvailable", true);
-        add!(CP_AIRSYNC, 0x15, "WindowSize", true);
-        add!(CP_AIRSYNC, 0x16, "Commands", true);
-        add!(CP_AIRSYNC, 0x17, "Options", true);
-        add!(CP_AIRSYNC, 0x18, "FilterType", true);
-        add!(CP_AIRSYNC, 0x19, "Truncation", true);
-        add!(CP_AIRSYNC, 0x1B, "Conflict", true);
-        add!(CP_AIRSYNC, 0x1C, "Collections", true);
-        add!(CP_AIRSYNC, 0x1D, "ApplicationData", true);
-        add!(CP_AIRSYNC, 0x1E, "DeletesAsMoves", true);
-        add!(CP_AIRSYNC, 0x20, "Supported", true);
-        add!(CP_AIRSYNC, 0x21, "SoftDelete", true);
-        add!(CP_AIRSYNC, 0x22, "MIMESupport", true);
-        add!(CP_AIRSYNC, 0x23, "MIMETruncation", true);
-        add!(CP_AIRSYNC, 0x24, "Wait", true);
-        add!(CP_AIRSYNC, 0x25, "Limit", true);
-        add!(CP_AIRSYNC, 0x26, "Partial", true);
-        add!(CP_AIRSYNC, 0x27, "ConversationMode", true);
-        add!(CP_AIRSYNC, 0x28, "MaxItems", true);
-        add!(CP_AIRSYNC, 0x29, "HeartbeatInterval", true);
 
-        // Calendar (4) – per MS-ASWBXML spec
-        add!(CP_CALENDAR, 0x05, "TimeZone", true);
-        add!(CP_CALENDAR, 0x06, "AllDayEvent", true);
-        add!(CP_CALENDAR, 0x07, "Attendees", true);
-        add!(CP_CALENDAR, 0x08, "Attendee", true);
-        add!(CP_CALENDAR, 0x09, "Email", true);
-        add!(CP_CALENDAR, 0x0A, "Name", true);
-        add!(CP_CALENDAR, 0x0D, "BusyStatus", true);
-        add!(CP_CALENDAR, 0x0E, "Categories", true);
-        add!(CP_CALENDAR, 0x0F, "Category", true);
-        add!(CP_CALENDAR, 0x11, "DtStamp", true);
-        add!(CP_CALENDAR, 0x12, "EndTime", true);
-        add!(CP_CALENDAR, 0x13, "Exception", true);
-        add!(CP_CALENDAR, 0x14, "Exceptions", true);
-        add!(CP_CALENDAR, 0x15, "Deleted", true);
-        add!(CP_CALENDAR, 0x16, "ExceptionStartTime", true);
-        add!(CP_CALENDAR, 0x17, "Location", true);
-        add!(CP_CALENDAR, 0x18, "MeetingStatus", true);
-        add!(CP_CALENDAR, 0x19, "OrganizerEmail", true);
-        add!(CP_CALENDAR, 0x1A, "OrganizerName", true);
-        add!(CP_CALENDAR, 0x1B, "Recurrence", true);
-        add!(CP_CALENDAR, 0x1C, "Type", true);
-        add!(CP_CALENDAR, 0x1D, "Until", true);
-        add!(CP_CALENDAR, 0x1E, "Occurrences", true);
-        add!(CP_CALENDAR, 0x1F, "Interval", true);
-        add!(CP_CALENDAR, 0x20, "DayOfWeek", true);
-        add!(CP_CALENDAR, 0x21, "DayOfMonth", true);
-        add!(CP_CALENDAR, 0x22, "WeekOfMonth", true);
-        add!(CP_CALENDAR, 0x23, "MonthOfYear", true);
-        add!(CP_CALENDAR, 0x24, "Reminder", true);
-        add!(CP_CALENDAR, 0x25, "Sensitivity", true);
-        add!(CP_CALENDAR, 0x26, "Subject", true);
-        add!(CP_CALENDAR, 0x27, "StartTime", true);
-        add!(CP_CALENDAR, 0x28, "UID", true);
-        add!(CP_CALENDAR, 0x29, "AttendeeStatus", true);
-        add!(CP_CALENDAR, 0x2A, "AttendeeType", true);
-        add!(CP_CALENDAR, 0x33, "DisallowNewTimeProposal", true);
-        add!(CP_CALENDAR, 0x34, "ResponseRequested", true);
+        // AirSync (0) – MS-ASWBXML §2.1.2.1.1
+        add!(CP_AIRSYNC, 0x05, "Sync");
+        add!(CP_AIRSYNC, 0x06, "Responses");
+        add!(CP_AIRSYNC, 0x07, "Add");
+        add!(CP_AIRSYNC, 0x08, "Change");
+        add!(CP_AIRSYNC, 0x09, "Delete");
+        add!(CP_AIRSYNC, 0x0A, "Fetch");
+        add!(CP_AIRSYNC, 0x0B, "SyncKey");
+        add!(CP_AIRSYNC, 0x0C, "ClientId");
+        add!(CP_AIRSYNC, 0x0D, "ServerId");
+        add!(CP_AIRSYNC, 0x0E, "Status");
+        add!(CP_AIRSYNC, 0x0F, "Collection");
+        add!(CP_AIRSYNC, 0x10, "Class");
+        add!(CP_AIRSYNC, 0x12, "CollectionId");
+        add!(CP_AIRSYNC, 0x13, "GetChanges");
+        add!(CP_AIRSYNC, 0x14, "MoreAvailable");
+        add!(CP_AIRSYNC, 0x15, "WindowSize");
+        add!(CP_AIRSYNC, 0x16, "Commands");
+        add!(CP_AIRSYNC, 0x17, "Options");
+        add!(CP_AIRSYNC, 0x18, "FilterType");
+        add!(CP_AIRSYNC, 0x19, "Truncation");
+        add!(CP_AIRSYNC, 0x1B, "Conflict");
+        add!(CP_AIRSYNC, 0x1C, "Collections");
+        add!(CP_AIRSYNC, 0x1D, "ApplicationData");
+        add!(CP_AIRSYNC, 0x1E, "DeletesAsMoves");
+        add!(CP_AIRSYNC, 0x20, "Supported");
+        add!(CP_AIRSYNC, 0x21, "SoftDelete");
+        add!(CP_AIRSYNC, 0x22, "MIMESupport");
+        add!(CP_AIRSYNC, 0x23, "MIMETruncation");
+        add!(CP_AIRSYNC, 0x24, "Wait");
+        add!(CP_AIRSYNC, 0x25, "Limit");
+        add!(CP_AIRSYNC, 0x26, "Partial");
+        add!(CP_AIRSYNC, 0x27, "ConversationMode");
+        add!(CP_AIRSYNC, 0x28, "MaxItems");
+        add!(CP_AIRSYNC, 0x29, "HeartbeatInterval");
 
-        // AirSyncBase (17) – per MS-ASWBXML spec
-        add!(CP_AIRSYNCBASE, 0x05, "BodyPreference", true);
-        add!(CP_AIRSYNCBASE, 0x06, "Type", true);
-        add!(CP_AIRSYNCBASE, 0x07, "TruncationSize", true);
-        add!(CP_AIRSYNCBASE, 0x08, "AllOrNone", true);
-        add!(CP_AIRSYNCBASE, 0x0A, "Body", true);
-        add!(CP_AIRSYNCBASE, 0x0B, "Data", true);
-        add!(CP_AIRSYNCBASE, 0x0C, "EstimatedDataSize", true);
-        add!(CP_AIRSYNCBASE, 0x0D, "Truncated", true);
-        add!(CP_AIRSYNCBASE, 0x0E, "Attachments", true);
-        add!(CP_AIRSYNCBASE, 0x0F, "Attachment", true);
-        add!(CP_AIRSYNCBASE, 0x10, "DisplayName", true);
-        add!(CP_AIRSYNCBASE, 0x11, "FileReference", true);
-        add!(CP_AIRSYNCBASE, 0x12, "Method", true);
-        add!(CP_AIRSYNCBASE, 0x13, "ContentId", true);
-        add!(CP_AIRSYNCBASE, 0x14, "ContentLocation", true);
-        add!(CP_AIRSYNCBASE, 0x15, "IsInline", true);
-        add!(CP_AIRSYNCBASE, 0x16, "NativeBodyType", true);
-        add!(CP_AIRSYNCBASE, 0x17, "ContentType", true);
-        add!(CP_AIRSYNCBASE, 0x18, "Preview", true);
-        add!(CP_AIRSYNCBASE, 0x19, "BodyPartPreference", true);
-        add!(CP_AIRSYNCBASE, 0x1A, "BodyPart", true);
-        add!(CP_AIRSYNCBASE, 0x1B, "Status", true);
+        // Contacts (1) – MS-ASWBXML §2.1.2.1.2
+        add!(CP_CONTACTS, 0x05, "Anniversary");
+        add!(CP_CONTACTS, 0x06, "AssistantName");
+        add!(CP_CONTACTS, 0x07, "AssistantPhoneNumber");
+        add!(CP_CONTACTS, 0x08, "Birthday");
+        add!(CP_CONTACTS, 0x09, "Body");
+        add!(CP_CONTACTS, 0x0A, "BodySize");
+        add!(CP_CONTACTS, 0x0B, "BodyTruncated");
+        add!(CP_CONTACTS, 0x0C, "Business2PhoneNumber");
+        add!(CP_CONTACTS, 0x0D, "BusinessAddressCity");
+        add!(CP_CONTACTS, 0x0E, "BusinessAddressCountry");
+        add!(CP_CONTACTS, 0x0F, "BusinessAddressPostalCode");
+        add!(CP_CONTACTS, 0x10, "BusinessAddressState");
+        add!(CP_CONTACTS, 0x11, "BusinessAddressStreet");
+        add!(CP_CONTACTS, 0x12, "BusinessFaxNumber");
+        add!(CP_CONTACTS, 0x13, "BusinessPhoneNumber");
+        add!(CP_CONTACTS, 0x14, "CarPhoneNumber");
+        add!(CP_CONTACTS, 0x15, "Categories");
+        add!(CP_CONTACTS, 0x16, "Category");
+        add!(CP_CONTACTS, 0x17, "Children");
+        add!(CP_CONTACTS, 0x18, "Child");
+        add!(CP_CONTACTS, 0x19, "CompanyName");
+        add!(CP_CONTACTS, 0x1A, "Department");
+        add!(CP_CONTACTS, 0x1B, "Email1Address");
+        add!(CP_CONTACTS, 0x1C, "Email2Address");
+        add!(CP_CONTACTS, 0x1D, "Email3Address");
+        add!(CP_CONTACTS, 0x1E, "FileAs");
+        add!(CP_CONTACTS, 0x1F, "FirstName");
+        add!(CP_CONTACTS, 0x20, "Home2PhoneNumber");
+        add!(CP_CONTACTS, 0x21, "HomeAddressCity");
+        add!(CP_CONTACTS, 0x22, "HomeAddressCountry");
+        add!(CP_CONTACTS, 0x23, "HomeAddressPostalCode");
+        add!(CP_CONTACTS, 0x24, "HomeAddressState");
+        add!(CP_CONTACTS, 0x25, "HomeAddressStreet");
+        add!(CP_CONTACTS, 0x26, "HomeFaxNumber");
+        add!(CP_CONTACTS, 0x27, "HomePhoneNumber");
+        add!(CP_CONTACTS, 0x28, "JobTitle");
+        add!(CP_CONTACTS, 0x29, "LastName");
+        add!(CP_CONTACTS, 0x2A, "MiddleName");
+        add!(CP_CONTACTS, 0x2B, "MobilePhoneNumber");
+        add!(CP_CONTACTS, 0x2C, "OfficeLocation");
+        add!(CP_CONTACTS, 0x2F, "PagerNumber");
+        add!(CP_CONTACTS, 0x31, "Spouse");
+        add!(CP_CONTACTS, 0x32, "Suffix");
+        add!(CP_CONTACTS, 0x33, "Title");
+        add!(CP_CONTACTS, 0x34, "WebPage");
+        add!(CP_CONTACTS, 0x35, "YomiCompanyName");
+        add!(CP_CONTACTS, 0x36, "YomiFirstName");
+        add!(CP_CONTACTS, 0x37, "YomiLastName");
+        add!(CP_CONTACTS, 0x3C, "Picture");
+        add!(CP_CONTACTS, 0x3D, "Alias");
+        add!(CP_CONTACTS, 0x3E, "WeightedRank");
 
-        // Settings (18) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_SETTINGS, 0x05, "Settings", true);
-        add!(CP_SETTINGS, 0x06, "Status", true);
-        add!(CP_SETTINGS, 0x07, "Get", true);
-        add!(CP_SETTINGS, 0x08, "Set", true);
-        add!(CP_SETTINGS, 0x09, "Oof", true);
-        add!(CP_SETTINGS, 0x0A, "OofState", true);
-        add!(CP_SETTINGS, 0x0B, "StartTime", true);
-        add!(CP_SETTINGS, 0x0C, "EndTime", true);
-        add!(CP_SETTINGS, 0x0D, "OofMessage", true);
-        add!(CP_SETTINGS, 0x0E, "AppliesToInternal", true);
-        add!(CP_SETTINGS, 0x0F, "AppliesToExternalKnown", true);
-        add!(CP_SETTINGS, 0x10, "AppliesToExternalUnknown", true);
-        add!(CP_SETTINGS, 0x11, "Enabled", true);
-        add!(CP_SETTINGS, 0x12, "ReplyMessage", true);
-        add!(CP_SETTINGS, 0x13, "BodyType", true);
-        add!(CP_SETTINGS, 0x14, "Password", true);
-        add!(CP_SETTINGS, 0x15, "DevicePassword", true);
-        add!(CP_SETTINGS, 0x16, "DeviceInformation", true);
-        add!(CP_SETTINGS, 0x17, "Model", true);
-        add!(CP_SETTINGS, 0x18, "IMEI", true);
-        add!(CP_SETTINGS, 0x19, "FriendlyName", true);
-        add!(CP_SETTINGS, 0x1A, "OS", true);
-        add!(CP_SETTINGS, 0x1B, "OSLanguage", true);
-        add!(CP_SETTINGS, 0x1C, "PhoneNumber", true);
-        add!(CP_SETTINGS, 0x1D, "UserInformation", true);
-        add!(CP_SETTINGS, 0x1E, "EmailAddresses", true);
-        add!(CP_SETTINGS, 0x1F, "SmtpAddress", true);
-        add!(CP_SETTINGS, 0x20, "UserAgent", true);
-        add!(CP_SETTINGS, 0x21, "EnableOutboundSMS", true);
-        add!(CP_SETTINGS, 0x22, "MobileOperator", true);
+        // Email (2) – MS-ASWBXML §2.1.2.1.3
+        add!(CP_EMAIL, 0x05, "Attachment");
+        add!(CP_EMAIL, 0x06, "Attachments");
+        add!(CP_EMAIL, 0x07, "AttName");
+        add!(CP_EMAIL, 0x08, "AttSize");
+        add!(CP_EMAIL, 0x09, "Att0Id");
+        add!(CP_EMAIL, 0x0A, "AttMethod");
+        // 0x0B unused
+        add!(CP_EMAIL, 0x0C, "Body");
+        add!(CP_EMAIL, 0x0D, "BodySize");
+        add!(CP_EMAIL, 0x0E, "BodyTruncated");
+        add!(CP_EMAIL, 0x0F, "DateReceived");
+        add!(CP_EMAIL, 0x10, "DisplayName");
+        add!(CP_EMAIL, 0x11, "DisplayTo");
+        add!(CP_EMAIL, 0x12, "Importance");
+        add!(CP_EMAIL, 0x13, "MessageClass");
+        add!(CP_EMAIL, 0x14, "Subject");
+        add!(CP_EMAIL, 0x15, "Read");
+        add!(CP_EMAIL, 0x16, "To");
+        add!(CP_EMAIL, 0x17, "Cc");
+        add!(CP_EMAIL, 0x18, "From");
+        add!(CP_EMAIL, 0x19, "ReplyTo");
+        add!(CP_EMAIL, 0x1A, "AllDayEvent");
+        add!(CP_EMAIL, 0x1B, "Categories");
+        add!(CP_EMAIL, 0x1C, "Category");
+        add!(CP_EMAIL, 0x1D, "DtStamp");
+        add!(CP_EMAIL, 0x1E, "EndTime");
+        add!(CP_EMAIL, 0x1F, "InstanceType");
+        add!(CP_EMAIL, 0x20, "BusyStatus");
+        add!(CP_EMAIL, 0x21, "Location");
+        add!(CP_EMAIL, 0x22, "MeetingRequest");
+        add!(CP_EMAIL, 0x23, "Organizer");
+        add!(CP_EMAIL, 0x24, "RecurrenceId");
+        add!(CP_EMAIL, 0x25, "Reminder");
+        add!(CP_EMAIL, 0x26, "ResponseRequested");
+        add!(CP_EMAIL, 0x27, "Recurrences");
+        add!(CP_EMAIL, 0x28, "Recurrence");
+        add!(CP_EMAIL, 0x29, "Type");
+        add!(CP_EMAIL, 0x2A, "Until");
+        add!(CP_EMAIL, 0x2B, "Occurrences");
+        add!(CP_EMAIL, 0x2C, "Interval");
+        add!(CP_EMAIL, 0x2D, "DayOfWeek");
+        add!(CP_EMAIL, 0x2E, "DayOfMonth");
+        add!(CP_EMAIL, 0x2F, "WeekOfMonth");
+        add!(CP_EMAIL, 0x30, "MonthOfYear");
+        add!(CP_EMAIL, 0x31, "StartTime");
+        add!(CP_EMAIL, 0x32, "Sensitivity");
+        add!(CP_EMAIL, 0x33, "TimeZone");
+        add!(CP_EMAIL, 0x34, "GlobalObjId");
+        add!(CP_EMAIL, 0x35, "ThreadTopic");
+        add!(CP_EMAIL, 0x36, "MIMEData");
+        add!(CP_EMAIL, 0x37, "MIMETruncated");
+        add!(CP_EMAIL, 0x38, "MIMESize");
+        add!(CP_EMAIL, 0x39, "InternetCPID");
+        add!(CP_EMAIL, 0x3A, "Flag");
+        add!(CP_EMAIL, 0x3B, "Status");
+        add!(CP_EMAIL, 0x3C, "ContentClass");
+        add!(CP_EMAIL, 0x3D, "FlagType");
+        add!(CP_EMAIL, 0x3E, "CompleteTime");
+        add!(CP_EMAIL, 0x3F, "DisallowNewTimeProposal");
 
-        // ItemOperations (20) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_ITEMOPERATIONS, 0x05, "ItemOperations", true);
-        add!(CP_ITEMOPERATIONS, 0x06, "Fetch", true);
-        add!(CP_ITEMOPERATIONS, 0x07, "Store", true);
-        add!(CP_ITEMOPERATIONS, 0x08, "Options", true);
-        add!(CP_ITEMOPERATIONS, 0x09, "Range", true);
-        add!(CP_ITEMOPERATIONS, 0x0A, "Total", true);
-        add!(CP_ITEMOPERATIONS, 0x0B, "Properties", true);
-        add!(CP_ITEMOPERATIONS, 0x0C, "Data", true);
-        add!(CP_ITEMOPERATIONS, 0x0D, "Status", true);
-        add!(CP_ITEMOPERATIONS, 0x0E, "Response", true);
-        add!(CP_ITEMOPERATIONS, 0x0F, "Move", true);
-        add!(CP_ITEMOPERATIONS, 0x10, "DstFldId", true);
-        add!(CP_ITEMOPERATIONS, 0x11, "ConversationId", true);
-        add!(CP_ITEMOPERATIONS, 0x12, "MoveAlways", true);
+        // Calendar (4) – MS-ASWBXML §2.1.2.1.5
+        add!(CP_CALENDAR, 0x05, "TimeZone");
+        add!(CP_CALENDAR, 0x06, "AllDayEvent");
+        add!(CP_CALENDAR, 0x07, "Attendees");
+        add!(CP_CALENDAR, 0x08, "Attendee");
+        add!(CP_CALENDAR, 0x09, "Email");
+        add!(CP_CALENDAR, 0x0A, "Name");
+        add!(CP_CALENDAR, 0x0D, "BusyStatus");
+        add!(CP_CALENDAR, 0x0E, "Categories");
+        add!(CP_CALENDAR, 0x0F, "Category");
+        add!(CP_CALENDAR, 0x11, "DtStamp");
+        add!(CP_CALENDAR, 0x12, "EndTime");
+        add!(CP_CALENDAR, 0x13, "Exception");
+        add!(CP_CALENDAR, 0x14, "Exceptions");
+        add!(CP_CALENDAR, 0x15, "Deleted");
+        add!(CP_CALENDAR, 0x16, "ExceptionStartTime");
+        add!(CP_CALENDAR, 0x17, "Location");
+        add!(CP_CALENDAR, 0x18, "MeetingStatus");
+        add!(CP_CALENDAR, 0x19, "OrganizerEmail");
+        add!(CP_CALENDAR, 0x1A, "OrganizerName");
+        add!(CP_CALENDAR, 0x1B, "Recurrence");
+        add!(CP_CALENDAR, 0x1C, "Type");
+        add!(CP_CALENDAR, 0x1D, "Until");
+        add!(CP_CALENDAR, 0x1E, "Occurrences");
+        add!(CP_CALENDAR, 0x1F, "Interval");
+        add!(CP_CALENDAR, 0x20, "DayOfWeek");
+        add!(CP_CALENDAR, 0x21, "DayOfMonth");
+        add!(CP_CALENDAR, 0x22, "WeekOfMonth");
+        add!(CP_CALENDAR, 0x23, "MonthOfYear");
+        add!(CP_CALENDAR, 0x24, "Reminder");
+        add!(CP_CALENDAR, 0x25, "Sensitivity");
+        add!(CP_CALENDAR, 0x26, "Subject");
+        add!(CP_CALENDAR, 0x27, "StartTime");
+        add!(CP_CALENDAR, 0x28, "UID");
+        add!(CP_CALENDAR, 0x29, "AttendeeStatus");
+        add!(CP_CALENDAR, 0x2A, "AttendeeType");
+        add!(CP_CALENDAR, 0x33, "DisallowNewTimeProposal");
+        add!(CP_CALENDAR, 0x34, "ResponseRequested");
+        add!(CP_CALENDAR, 0x35, "AppointmentReplyTime");
+        add!(CP_CALENDAR, 0x36, "ResponseType");
+        add!(CP_CALENDAR, 0x37, "CalendarType");
+        add!(CP_CALENDAR, 0x38, "IsLeapMonth");
+        add!(CP_CALENDAR, 0x39, "FirstDayOfWeek");
+        add!(CP_CALENDAR, 0x3A, "OnlineMeetingConfLink");
+        add!(CP_CALENDAR, 0x3B, "OnlineMeetingExternalLink");
+        add!(CP_CALENDAR, 0x3C, "ClientUid");
 
-        // Search (15) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_SEARCH, 0x05, "Search", true);
-        add!(CP_SEARCH, 0x07, "Store", true);
-        add!(CP_SEARCH, 0x08, "Name", true);
-        add!(CP_SEARCH, 0x09, "Query", true);
-        add!(CP_SEARCH, 0x0A, "Options", true);
-        add!(CP_SEARCH, 0x0B, "Range", true);
-        add!(CP_SEARCH, 0x0C, "Status", true);
-        add!(CP_SEARCH, 0x0D, "Response", true);
-        add!(CP_SEARCH, 0x0E, "Result", true);
-        add!(CP_SEARCH, 0x0F, "Properties", true);
-        add!(CP_SEARCH, 0x10, "Total", true);
-        add!(CP_SEARCH, 0x11, "EqualTo", true);
-        add!(CP_SEARCH, 0x12, "Value", true);
-        add!(CP_SEARCH, 0x13, "And", true);
-        add!(CP_SEARCH, 0x14, "Or", true);
-        add!(CP_SEARCH, 0x15, "FreeText", true);
-        add!(CP_SEARCH, 0x17, "DeepTraversal", true);
-        add!(CP_SEARCH, 0x18, "LongId", true);
-        add!(CP_SEARCH, 0x19, "RebuildResults", true);
-        add!(CP_SEARCH, 0x1A, "LessThan", true);
-        add!(CP_SEARCH, 0x1B, "GreaterThan", true);
-        add!(CP_SEARCH, 0x1E, "UserName", true);
-        add!(CP_SEARCH, 0x1F, "Password", true);
-        add!(CP_SEARCH, 0x20, "ConversationId", true);
-        add!(CP_SEARCH, 0x21, "Picture", true);
-        add!(CP_SEARCH, 0x22, "MaxSize", true);
-        add!(CP_SEARCH, 0x23, "MaxPictures", true);
+        // Move (5) – MS-ASWBXML §2.1.2.1.6
+        add!(CP_MOVE, 0x05, "MoveItems");
+        add!(CP_MOVE, 0x06, "Move");
+        add!(CP_MOVE, 0x07, "SrcMsgId");
+        add!(CP_MOVE, 0x08, "SrcFldId");
+        add!(CP_MOVE, 0x09, "DstFldId");
+        add!(CP_MOVE, 0x0A, "Response");
+        add!(CP_MOVE, 0x0B, "Status");
+        add!(CP_MOVE, 0x0C, "DstMsgId");
 
-        // Provision (14) – per MS-ASPROV / MS-ASWBXML spec
-        add!(CP_PROVISION, 0x05, "Provision", true);
-        add!(CP_PROVISION, 0x06, "Policies", true);
-        add!(CP_PROVISION, 0x07, "Policy", true);
-        add!(CP_PROVISION, 0x08, "PolicyType", true);
-        add!(CP_PROVISION, 0x09, "PolicyKey", true);
-        add!(CP_PROVISION, 0x0A, "Data", true);
-        add!(CP_PROVISION, 0x0B, "Status", true);
-        add!(CP_PROVISION, 0x0C, "RemoteWipe", true);
-        add!(CP_PROVISION, 0x0D, "EASProvisionDoc", true);
-        add!(CP_PROVISION, 0x0E, "DevicePasswordEnabled", true);
-        add!(CP_PROVISION, 0x0F, "AlphanumericDevicePasswordRequired", true);
-        add!(CP_PROVISION, 0x10, "RequireStorageCardEncryption", true);
-        add!(CP_PROVISION, 0x11, "PasswordRecoveryEnabled", true);
-        add!(CP_PROVISION, 0x13, "AttachmentsEnabled", true);
-        add!(CP_PROVISION, 0x14, "MinDevicePasswordLength", true);
-        add!(CP_PROVISION, 0x15, "MaxInactivityTimeDeviceLock", true);
-        add!(CP_PROVISION, 0x16, "MaxDevicePasswordFailedAttempts", true);
-        add!(CP_PROVISION, 0x17, "MaxAttachmentSize", true);
-        add!(CP_PROVISION, 0x18, "AllowSimpleDevicePassword", true);
-        add!(CP_PROVISION, 0x19, "DevicePasswordExpiration", true);
-        add!(CP_PROVISION, 0x1A, "DevicePasswordHistory", true);
-        add!(CP_PROVISION, 0x1B, "AllowStorageCard", true);
-        add!(CP_PROVISION, 0x1C, "AllowCamera", true);
-        add!(CP_PROVISION, 0x1D, "RequireDeviceEncryption", true);
-        add!(CP_PROVISION, 0x1E, "AllowUnsignedApplications", true);
-        add!(CP_PROVISION, 0x1F, "AllowUnsignedInstallationPackages", true);
-        add!(CP_PROVISION, 0x20, "MinDevicePasswordComplexCharacters", true);
-        add!(CP_PROVISION, 0x21, "AllowWiFi", true);
-        add!(CP_PROVISION, 0x22, "AllowTextMessaging", true);
-        add!(CP_PROVISION, 0x23, "AllowPOPIMAPEmail", true);
-        add!(CP_PROVISION, 0x24, "AllowBluetooth", true);
-        add!(CP_PROVISION, 0x25, "AllowIrDA", true);
-        add!(CP_PROVISION, 0x26, "RequireManualSyncWhenRoaming", true);
-        add!(CP_PROVISION, 0x27, "AllowDesktopSync", true);
-        add!(CP_PROVISION, 0x28, "MaxCalendarAgeFilter", true);
-        add!(CP_PROVISION, 0x29, "AllowHTMLEmail", true);
-        add!(CP_PROVISION, 0x2A, "MaxEmailAgeFilter", true);
-        add!(CP_PROVISION, 0x2B, "MaxEmailBodyTruncationSize", true);
-        add!(CP_PROVISION, 0x2C, "MaxEmailHTMLBodyTruncationSize", true);
-        add!(CP_PROVISION, 0x2D, "RequireSignedSMIMEMessages", true);
-        add!(CP_PROVISION, 0x2E, "RequireEncryptedSMIMEMessages", true);
-        add!(CP_PROVISION, 0x2F, "RequireSignedSMIMEAlgorithm", true);
-        add!(CP_PROVISION, 0x30, "RequireEncryptionSMIMEAlgorithm", true);
-        add!(CP_PROVISION, 0x31, "AllowSMIMEEncryptionAlgorithmNegotiation", true);
-        add!(CP_PROVISION, 0x32, "AllowSMIMESoftCerts", true);
-        add!(CP_PROVISION, 0x33, "AllowBrowser", true);
-        add!(CP_PROVISION, 0x34, "AllowConsumerEmail", true);
-        add!(CP_PROVISION, 0x35, "AllowRemoteDesktop", true);
-        add!(CP_PROVISION, 0x36, "AllowInternetSharing", true);
-        add!(CP_PROVISION, 0x37, "UnapprovedInROMApplicationList", true);
-        add!(CP_PROVISION, 0x38, "ApplicationName", true);
-        add!(CP_PROVISION, 0x39, "ApprovedApplicationList", true);
-        add!(CP_PROVISION, 0x3A, "Hash", true);
+        // GetItemEstimate (6) – MS-ASWBXML §2.1.2.1.7
+        add!(CP_GETITEMESTIMATE, 0x05, "GetItemEstimate");
+        add!(CP_GETITEMESTIMATE, 0x06, "Version");
+        add!(CP_GETITEMESTIMATE, 0x07, "Collections");
+        add!(CP_GETITEMESTIMATE, 0x08, "Collection");
+        add!(CP_GETITEMESTIMATE, 0x09, "Class");
+        add!(CP_GETITEMESTIMATE, 0x0A, "CollectionId");
+        add!(CP_GETITEMESTIMATE, 0x0B, "DateTime");
+        add!(CP_GETITEMESTIMATE, 0x0C, "Estimate");
+        add!(CP_GETITEMESTIMATE, 0x0D, "Response");
+        add!(CP_GETITEMESTIMATE, 0x0E, "Status");
 
-        // Contacts (1) – per MS-ASCNTC / MS-ASWBXML spec
-        add!(CP_CONTACTS, 0x05, "Anniversary", true);
-        add!(CP_CONTACTS, 0x06, "AssistantName", true);
-        add!(CP_CONTACTS, 0x07, "AssistantPhoneNumber", true);
-        add!(CP_CONTACTS, 0x08, "Birthday", true);
-        add!(CP_CONTACTS, 0x0C, "Business2PhoneNumber", true);
-        add!(CP_CONTACTS, 0x0D, "BusinessAddressCity", true);
-        add!(CP_CONTACTS, 0x0E, "BusinessAddressCountry", true);
-        add!(CP_CONTACTS, 0x0F, "BusinessAddressPostalCode", true);
-        add!(CP_CONTACTS, 0x10, "BusinessAddressState", true);
-        add!(CP_CONTACTS, 0x11, "BusinessAddressStreet", true);
-        add!(CP_CONTACTS, 0x12, "BusinessFaxNumber", true);
-        add!(CP_CONTACTS, 0x13, "BusinessPhoneNumber", true);
-        add!(CP_CONTACTS, 0x17, "CompanyName", true);
-        add!(CP_CONTACTS, 0x19, "Department", true);
-        add!(CP_CONTACTS, 0x1A, "Email1Address", true);
-        add!(CP_CONTACTS, 0x1B, "Email2Address", true);
-        add!(CP_CONTACTS, 0x1C, "Email3Address", true);
-        add!(CP_CONTACTS, 0x1D, "FileAs", true);
-        add!(CP_CONTACTS, 0x1F, "FirstName", true);
-        add!(CP_CONTACTS, 0x20, "Home2PhoneNumber", true);
-        add!(CP_CONTACTS, 0x21, "HomeAddressCity", true);
-        add!(CP_CONTACTS, 0x22, "HomeAddressCountry", true);
-        add!(CP_CONTACTS, 0x23, "HomeAddressPostalCode", true);
-        add!(CP_CONTACTS, 0x24, "HomeAddressState", true);
-        add!(CP_CONTACTS, 0x25, "HomeAddressStreet", true);
-        add!(CP_CONTACTS, 0x26, "HomeFaxNumber", true);
-        add!(CP_CONTACTS, 0x27, "HomePhoneNumber", true);
-        add!(CP_CONTACTS, 0x28, "JobTitle", true);
-        add!(CP_CONTACTS, 0x29, "LastName", true);
-        add!(CP_CONTACTS, 0x2A, "MiddleName", true);
-        add!(CP_CONTACTS, 0x2B, "MobilePhoneNumber", true);
-        add!(CP_CONTACTS, 0x2C, "OfficeLocation", true);
-        add!(CP_CONTACTS, 0x2F, "PagerNumber", true);
-        add!(CP_CONTACTS, 0x31, "Spouse", true);
-        add!(CP_CONTACTS, 0x32, "Suffix", true);
-        add!(CP_CONTACTS, 0x33, "Title", true);
-        add!(CP_CONTACTS, 0x34, "WebPage", true);
-        add!(CP_CONTACTS, 0x35, "YomiCompanyName", true);
-        add!(CP_CONTACTS, 0x36, "YomiFirstName", true);
-        add!(CP_CONTACTS, 0x37, "YomiLastName", true);
-        add!(CP_CONTACTS, 0x3C, "Picture", true);
-        add!(CP_CONTACTS, 0x3D, "Alias", true);
-        add!(CP_CONTACTS, 0x3E, "WeightedRank", true);
+        // FolderHierarchy (7) – MS-ASWBXML §2.1.2.1.8
+        add!(CP_FOLDERHIERARCHY, 0x05, "Folders");
+        add!(CP_FOLDERHIERARCHY, 0x06, "Folder");
+        add!(CP_FOLDERHIERARCHY, 0x07, "DisplayName");
+        add!(CP_FOLDERHIERARCHY, 0x08, "ServerId");
+        add!(CP_FOLDERHIERARCHY, 0x09, "ParentId");
+        add!(CP_FOLDERHIERARCHY, 0x0A, "Type");
+        add!(CP_FOLDERHIERARCHY, 0x0C, "Status");
+        add!(CP_FOLDERHIERARCHY, 0x0D, "ContentClass");
+        add!(CP_FOLDERHIERARCHY, 0x0E, "Changes");
+        add!(CP_FOLDERHIERARCHY, 0x0F, "Add");
+        add!(CP_FOLDERHIERARCHY, 0x10, "Delete");
+        add!(CP_FOLDERHIERARCHY, 0x11, "Update");
+        add!(CP_FOLDERHIERARCHY, 0x12, "SyncKey");
+        add!(CP_FOLDERHIERARCHY, 0x13, "FolderCreate");
+        add!(CP_FOLDERHIERARCHY, 0x14, "FolderDelete");
+        add!(CP_FOLDERHIERARCHY, 0x15, "FolderUpdate");
+        add!(CP_FOLDERHIERARCHY, 0x16, "FolderSync");
+        add!(CP_FOLDERHIERARCHY, 0x17, "Count");
 
-        // Email (2) – per MS-ASEMAIL / MS-ASWBXML spec
-        add!(CP_EMAIL, 0x05, "Attachment", true);
-        add!(CP_EMAIL, 0x06, "Attachments", true);
-        add!(CP_EMAIL, 0x07, "AttName", true);
-        add!(CP_EMAIL, 0x08, "AttSize", true);
-        add!(CP_EMAIL, 0x09, "Att0Id", true);
-        add!(CP_EMAIL, 0x0A, "AttMethod", true);
-        // 0x0B is not assigned in the spec
-        add!(CP_EMAIL, 0x0C, "Body", true);
-        add!(CP_EMAIL, 0x0D, "BodySize", true);
-        add!(CP_EMAIL, 0x0E, "BodyTruncated", true);
-        add!(CP_EMAIL, 0x0F, "DateReceived", true);
-        add!(CP_EMAIL, 0x10, "DisplayName", true);
-        add!(CP_EMAIL, 0x11, "DisplayTo", true);
-        add!(CP_EMAIL, 0x12, "Importance", true);
-        add!(CP_EMAIL, 0x13, "MessageClass", true);
-        add!(CP_EMAIL, 0x14, "Subject", true);
-        add!(CP_EMAIL, 0x15, "Read", true);
-        add!(CP_EMAIL, 0x16, "To", true);
-        add!(CP_EMAIL, 0x17, "Cc", true);
-        add!(CP_EMAIL, 0x18, "From", true);
-        add!(CP_EMAIL, 0x19, "ReplyTo", true);
-        add!(CP_EMAIL, 0x1A, "AllDayEvent", true);
-        add!(CP_EMAIL, 0x1B, "Categories", true);
-        add!(CP_EMAIL, 0x1C, "Category", true);
-        add!(CP_EMAIL, 0x1D, "DtStamp", true);
-        add!(CP_EMAIL, 0x1E, "EndTime", true);
-        add!(CP_EMAIL, 0x1F, "InstanceType", true);
-        add!(CP_EMAIL, 0x20, "BusyStatus", true);
-        add!(CP_EMAIL, 0x21, "Location", true);
-        add!(CP_EMAIL, 0x22, "MeetingRequest", true);
-        add!(CP_EMAIL, 0x23, "Organizer", true);
-        add!(CP_EMAIL, 0x24, "RecurrenceId", true);
-        add!(CP_EMAIL, 0x25, "Reminder", true);
-        add!(CP_EMAIL, 0x26, "ResponseRequested", true);
-        add!(CP_EMAIL, 0x27, "Recurrences", true);
-        add!(CP_EMAIL, 0x28, "Recurrence", true);
-        add!(CP_EMAIL, 0x29, "Type", true);
-        add!(CP_EMAIL, 0x2A, "Until", true);
-        add!(CP_EMAIL, 0x2B, "Occurrences", true);
-        add!(CP_EMAIL, 0x2C, "Interval", true);
-        add!(CP_EMAIL, 0x2D, "DayOfWeek", true);
-        add!(CP_EMAIL, 0x2E, "DayOfMonth", true);
-        add!(CP_EMAIL, 0x2F, "WeekOfMonth", true);
-        add!(CP_EMAIL, 0x30, "MonthOfYear", true);
-        add!(CP_EMAIL, 0x31, "StartTime", true);
-        add!(CP_EMAIL, 0x32, "Sensitivity", true);
-        add!(CP_EMAIL, 0x33, "TimeZone", true);
-        add!(CP_EMAIL, 0x34, "GlobalObjId", true);
-        add!(CP_EMAIL, 0x35, "ThreadTopic", true);
-        add!(CP_EMAIL, 0x36, "MIMEData", true);
-        add!(CP_EMAIL, 0x37, "MIMETruncated", true);
-        add!(CP_EMAIL, 0x38, "MIMESize", true);
-        add!(CP_EMAIL, 0x39, "InternetCPID", true);
-        add!(CP_EMAIL, 0x3A, "Flag", true);
-        add!(CP_EMAIL, 0x3B, "Status", true);
-        add!(CP_EMAIL, 0x3C, "ContentClass", true);
-        add!(CP_EMAIL, 0x3D, "FlagType", true);
-        add!(CP_EMAIL, 0x3E, "CompleteTime", true);
-        add!(CP_EMAIL, 0x3F, "DisallowNewTimeProposal", true);
+        // MeetingResponse (8) – MS-ASWBXML §2.1.2.1.9
+        add!(CP_MEETINGRESPONSE, 0x05, "CalendarId");
+        add!(CP_MEETINGRESPONSE, 0x06, "CollectionId");
+        add!(CP_MEETINGRESPONSE, 0x07, "MeetingResponse");
+        add!(CP_MEETINGRESPONSE, 0x08, "RequestId");
+        add!(CP_MEETINGRESPONSE, 0x09, "Request");
+        add!(CP_MEETINGRESPONSE, 0x0A, "Result");
+        add!(CP_MEETINGRESPONSE, 0x0B, "Status");
+        add!(CP_MEETINGRESPONSE, 0x0C, "UserResponse");
+        add!(CP_MEETINGRESPONSE, 0x0E, "InstanceId");
+        add!(CP_MEETINGRESPONSE, 0x10, "ProposedStartTime");
+        add!(CP_MEETINGRESPONSE, 0x11, "ProposedEndTime");
+        add!(CP_MEETINGRESPONSE, 0x12, "SendResponse");
 
-        // Move (5) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_MOVE, 0x05, "MoveItems", true);
-        add!(CP_MOVE, 0x06, "Move", true);
-        add!(CP_MOVE, 0x07, "SrcMsgId", true);
-        add!(CP_MOVE, 0x08, "SrcFldId", true);
-        add!(CP_MOVE, 0x09, "DstFldId", true);
-        add!(CP_MOVE, 0x0A, "Response", true);
-        add!(CP_MOVE, 0x0B, "Status", true);
-        add!(CP_MOVE, 0x0C, "DstMsgId", true);
+        // Tasks (9) – MS-ASWBXML §2.1.2.1.10
+        add!(CP_TASKS, 0x08, "Categories");
+        add!(CP_TASKS, 0x09, "Category");
+        add!(CP_TASKS, 0x0A, "Complete");
+        add!(CP_TASKS, 0x0B, "DateCompleted");
+        add!(CP_TASKS, 0x0C, "DueDate");
+        add!(CP_TASKS, 0x0D, "UtcDueDate");
+        add!(CP_TASKS, 0x0E, "Importance");
+        add!(CP_TASKS, 0x0F, "Recurrence");
+        add!(CP_TASKS, 0x10, "Type");
+        add!(CP_TASKS, 0x11, "Start");
+        add!(CP_TASKS, 0x12, "Until");
+        add!(CP_TASKS, 0x13, "Occurrences");
+        add!(CP_TASKS, 0x14, "Interval");
+        add!(CP_TASKS, 0x15, "DayOfMonth");
+        add!(CP_TASKS, 0x16, "DayOfWeek");
+        add!(CP_TASKS, 0x17, "WeekOfMonth");
+        add!(CP_TASKS, 0x18, "MonthOfYear");
+        add!(CP_TASKS, 0x19, "Regenerate");
+        add!(CP_TASKS, 0x1A, "DeadOccur");
+        add!(CP_TASKS, 0x1B, "ReminderSet");
+        add!(CP_TASKS, 0x1C, "ReminderTime");
+        add!(CP_TASKS, 0x1D, "Sensitivity");
+        add!(CP_TASKS, 0x1E, "StartDate");
+        add!(CP_TASKS, 0x1F, "UtcStartDate");
+        add!(CP_TASKS, 0x20, "Subject");
+        add!(CP_TASKS, 0x22, "OrdinalDate");
+        add!(CP_TASKS, 0x23, "SubOrdinalDate");
+        add!(CP_TASKS, 0x24, "CalendarType");
+        add!(CP_TASKS, 0x25, "IsLeapMonth");
+        add!(CP_TASKS, 0x26, "FirstDayOfWeek");
 
-        // GetItemEstimate (6) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_GETITEMESTIMATE, 0x05, "GetItemEstimate", true);
-        add!(CP_GETITEMESTIMATE, 0x06, "Version", true);
-        add!(CP_GETITEMESTIMATE, 0x07, "Collections", true);
-        add!(CP_GETITEMESTIMATE, 0x08, "Collection", true);
-        add!(CP_GETITEMESTIMATE, 0x09, "Class", true);
-        add!(CP_GETITEMESTIMATE, 0x0A, "CollectionId", true);
-        add!(CP_GETITEMESTIMATE, 0x0B, "DateTime", true);
-        add!(CP_GETITEMESTIMATE, 0x0C, "Estimate", true);
-        add!(CP_GETITEMESTIMATE, 0x0D, "Response", true);
-        add!(CP_GETITEMESTIMATE, 0x0E, "Status", true);
+        // ResolveRecipients (10) – MS-ASWBXML §2.1.2.1.11
+        add!(CP_RESOLVERECIPIENTS, 0x05, "ResolveRecipients");
+        add!(CP_RESOLVERECIPIENTS, 0x06, "Response");
+        add!(CP_RESOLVERECIPIENTS, 0x07, "Status");
+        add!(CP_RESOLVERECIPIENTS, 0x08, "Type");
+        add!(CP_RESOLVERECIPIENTS, 0x09, "Recipient");
+        add!(CP_RESOLVERECIPIENTS, 0x0A, "DisplayName");
+        add!(CP_RESOLVERECIPIENTS, 0x0B, "EmailAddress");
+        add!(CP_RESOLVERECIPIENTS, 0x0C, "Certificates");
+        add!(CP_RESOLVERECIPIENTS, 0x0D, "Certificate");
+        add!(CP_RESOLVERECIPIENTS, 0x0E, "MiniCertificate");
+        add!(CP_RESOLVERECIPIENTS, 0x0F, "Options");
+        add!(CP_RESOLVERECIPIENTS, 0x10, "To");
+        add!(CP_RESOLVERECIPIENTS, 0x11, "CertificateRetrieval");
+        add!(CP_RESOLVERECIPIENTS, 0x12, "RecipientCount");
+        add!(CP_RESOLVERECIPIENTS, 0x13, "MaxCertificates");
+        add!(CP_RESOLVERECIPIENTS, 0x14, "MaxAmbiguousRecipients");
+        add!(CP_RESOLVERECIPIENTS, 0x15, "CertificateCount");
+        add!(CP_RESOLVERECIPIENTS, 0x16, "Availability");
+        add!(CP_RESOLVERECIPIENTS, 0x17, "StartTime");
+        add!(CP_RESOLVERECIPIENTS, 0x18, "EndTime");
+        add!(CP_RESOLVERECIPIENTS, 0x19, "MergedFreeBusy");
+        add!(CP_RESOLVERECIPIENTS, 0x1A, "Picture");
+        add!(CP_RESOLVERECIPIENTS, 0x1B, "MaxSize");
+        add!(CP_RESOLVERECIPIENTS, 0x1C, "Data");
+        add!(CP_RESOLVERECIPIENTS, 0x1D, "MaxPictures");
 
-        // FolderHierarchy (7) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_FOLDERHIERARCHY, 0x05, "Folders", true);
-        add!(CP_FOLDERHIERARCHY, 0x06, "Folder", true);
-        add!(CP_FOLDERHIERARCHY, 0x07, "DisplayName", true);
-        add!(CP_FOLDERHIERARCHY, 0x08, "ServerId", true);
-        add!(CP_FOLDERHIERARCHY, 0x09, "ParentId", true);
-        add!(CP_FOLDERHIERARCHY, 0x0A, "Type", true);
-        add!(CP_FOLDERHIERARCHY, 0x0C, "Status", true);
-        add!(CP_FOLDERHIERARCHY, 0x0D, "ContentClass", true);
-        add!(CP_FOLDERHIERARCHY, 0x0E, "Changes", true);
-        add!(CP_FOLDERHIERARCHY, 0x0F, "Add", true);
-        add!(CP_FOLDERHIERARCHY, 0x10, "Delete", true);
-        add!(CP_FOLDERHIERARCHY, 0x11, "Update", true);
-        add!(CP_FOLDERHIERARCHY, 0x12, "SyncKey", true);
-        add!(CP_FOLDERHIERARCHY, 0x13, "FolderCreate", true);
-        add!(CP_FOLDERHIERARCHY, 0x14, "FolderDelete", true);
-        add!(CP_FOLDERHIERARCHY, 0x15, "FolderUpdate", true);
-        add!(CP_FOLDERHIERARCHY, 0x16, "FolderSync", true);
-        add!(CP_FOLDERHIERARCHY, 0x17, "Count", true);
+        // ValidateCert (11) – MS-ASWBXML §2.1.2.1.12
+        add!(CP_VALIDATECERT, 0x05, "ValidateCert");
+        add!(CP_VALIDATECERT, 0x06, "Certificates");
+        add!(CP_VALIDATECERT, 0x07, "Certificate");
+        add!(CP_VALIDATECERT, 0x08, "CertificateChain");
+        add!(CP_VALIDATECERT, 0x09, "CheckCRL");
+        add!(CP_VALIDATECERT, 0x0A, "Status");
 
-        // MeetingResponse (8) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_MEETINGRESPONSE, 0x05, "CalendarId", true);
-        add!(CP_MEETINGRESPONSE, 0x06, "CollectionId", true);
-        add!(CP_MEETINGRESPONSE, 0x07, "MeetingResponse", true);
-        add!(CP_MEETINGRESPONSE, 0x08, "RequestId", true);
-        add!(CP_MEETINGRESPONSE, 0x09, "Request", true);
-        add!(CP_MEETINGRESPONSE, 0x0A, "Result", true);
-        add!(CP_MEETINGRESPONSE, 0x0B, "Status", true);
-        add!(CP_MEETINGRESPONSE, 0x0C, "UserResponse", true);
-        add!(CP_MEETINGRESPONSE, 0x0E, "InstanceId", true);
+        // Contacts2 (12) – MS-ASWBXML §2.1.2.1.13
+        add!(CP_CONTACTS2, 0x05, "CustomerId");
+        add!(CP_CONTACTS2, 0x06, "GovernmentId");
+        add!(CP_CONTACTS2, 0x07, "IMAddress");
+        add!(CP_CONTACTS2, 0x08, "IMAddress2");
+        add!(CP_CONTACTS2, 0x09, "IMAddress3");
+        add!(CP_CONTACTS2, 0x0A, "ManagerName");
+        add!(CP_CONTACTS2, 0x0B, "CompanyMainPhone");
+        add!(CP_CONTACTS2, 0x0C, "AccountName");
+        add!(CP_CONTACTS2, 0x0D, "NickName");
+        add!(CP_CONTACTS2, 0x0E, "MMS");
 
-        // Tasks (9) – per MS-ASTASK / MS-ASWBXML spec
-        add!(CP_TASKS, 0x08, "Categories", true);
-        add!(CP_TASKS, 0x09, "Category", true);
-        add!(CP_TASKS, 0x0A, "Complete", true);
-        add!(CP_TASKS, 0x0B, "DateCompleted", true);
-        add!(CP_TASKS, 0x0C, "DueDate", true);
-        add!(CP_TASKS, 0x0D, "UtcDueDate", true);
-        add!(CP_TASKS, 0x0E, "Importance", true);
-        add!(CP_TASKS, 0x0F, "Recurrence", true);
-        add!(CP_TASKS, 0x10, "Type", true);
-        add!(CP_TASKS, 0x11, "Start", true);
-        add!(CP_TASKS, 0x12, "Until", true);
-        add!(CP_TASKS, 0x13, "Occurrences", true);
-        add!(CP_TASKS, 0x14, "Interval", true);
-        add!(CP_TASKS, 0x15, "DayOfMonth", true);
-        add!(CP_TASKS, 0x16, "DayOfWeek", true);
-        add!(CP_TASKS, 0x17, "WeekOfMonth", true);
-        add!(CP_TASKS, 0x18, "MonthOfYear", true);
-        add!(CP_TASKS, 0x19, "Regenerate", true);
-        add!(CP_TASKS, 0x1A, "DeadOccur", true);
-        add!(CP_TASKS, 0x1B, "ReminderSet", true);
-        add!(CP_TASKS, 0x1C, "ReminderTime", true);
-        add!(CP_TASKS, 0x1D, "Sensitivity", true);
-        add!(CP_TASKS, 0x1E, "StartDate", true);
-        add!(CP_TASKS, 0x1F, "UtcStartDate", true);
-        add!(CP_TASKS, 0x20, "Subject", true);
-        add!(CP_TASKS, 0x22, "OrdinalDate", true);
-        add!(CP_TASKS, 0x23, "SubOrdinalDate", true);
-        add!(CP_TASKS, 0x24, "CalendarType", true);
-        add!(CP_TASKS, 0x25, "IsLeapMonth", true);
-        add!(CP_TASKS, 0x26, "FirstDayOfWeek", true);
+        // Ping (13) – MS-ASWBXML §2.1.2.1.14
+        add!(CP_PING, 0x05, "Ping");
+        add!(CP_PING, 0x07, "Status");
+        add!(CP_PING, 0x08, "HeartbeatInterval");
+        add!(CP_PING, 0x09, "Folders");
+        add!(CP_PING, 0x0A, "Folder");
+        add!(CP_PING, 0x0B, "Id");
+        add!(CP_PING, 0x0C, "Class");
+        add!(CP_PING, 0x0D, "MaxFolders");
 
-        // ResolveRecipients (10) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_RESOLVERECIPIENTS, 0x05, "ResolveRecipients", true);
-        add!(CP_RESOLVERECIPIENTS, 0x06, "Response", true);
-        add!(CP_RESOLVERECIPIENTS, 0x07, "Status", true);
-        add!(CP_RESOLVERECIPIENTS, 0x08, "Type", true);
-        add!(CP_RESOLVERECIPIENTS, 0x09, "Recipient", true);
-        add!(CP_RESOLVERECIPIENTS, 0x0A, "DisplayName", true);
-        add!(CP_RESOLVERECIPIENTS, 0x0B, "EmailAddress", true);
-        add!(CP_RESOLVERECIPIENTS, 0x0C, "Certificates", true);
-        add!(CP_RESOLVERECIPIENTS, 0x0D, "Certificate", true);
-        add!(CP_RESOLVERECIPIENTS, 0x0E, "MiniCertificate", true);
-        add!(CP_RESOLVERECIPIENTS, 0x0F, "Options", true);
-        add!(CP_RESOLVERECIPIENTS, 0x10, "To", true);
-        add!(CP_RESOLVERECIPIENTS, 0x11, "CertificateRetrieval", true);
-        add!(CP_RESOLVERECIPIENTS, 0x12, "RecipientCount", true);
-        add!(CP_RESOLVERECIPIENTS, 0x13, "MaxCertificates", true);
-        add!(CP_RESOLVERECIPIENTS, 0x14, "MaxAmbiguousRecipients", true);
-        add!(CP_RESOLVERECIPIENTS, 0x15, "CertificateCount", true);
-        add!(CP_RESOLVERECIPIENTS, 0x16, "Availability", true);
-        add!(CP_RESOLVERECIPIENTS, 0x17, "StartTime", true);
-        add!(CP_RESOLVERECIPIENTS, 0x18, "EndTime", true);
-        add!(CP_RESOLVERECIPIENTS, 0x19, "MergedFreeBusy", true);
-        add!(CP_RESOLVERECIPIENTS, 0x1A, "Picture", true);
-        add!(CP_RESOLVERECIPIENTS, 0x1B, "MaxSize", true);
-        add!(CP_RESOLVERECIPIENTS, 0x1C, "Data", true);
-        add!(CP_RESOLVERECIPIENTS, 0x1D, "MaxPictures", true);
+        // Provision (14) – MS-ASWBXML §2.1.2.1.15
+        add!(CP_PROVISION, 0x05, "Provision");
+        add!(CP_PROVISION, 0x06, "Policies");
+        add!(CP_PROVISION, 0x07, "Policy");
+        add!(CP_PROVISION, 0x08, "PolicyType");
+        add!(CP_PROVISION, 0x09, "PolicyKey");
+        add!(CP_PROVISION, 0x0A, "Data");
+        add!(CP_PROVISION, 0x0B, "Status");
+        add!(CP_PROVISION, 0x0C, "RemoteWipe");
+        add!(CP_PROVISION, 0x0D, "EASProvisionDoc");
+        add!(CP_PROVISION, 0x0E, "DevicePasswordEnabled");
+        add!(CP_PROVISION, 0x0F, "AlphanumericDevicePasswordRequired");
+        add!(CP_PROVISION, 0x10, "RequireStorageCardEncryption");
+        add!(CP_PROVISION, 0x11, "PasswordRecoveryEnabled");
+        add!(CP_PROVISION, 0x13, "AttachmentsEnabled");
+        add!(CP_PROVISION, 0x14, "MinDevicePasswordLength");
+        add!(CP_PROVISION, 0x15, "MaxInactivityTimeDeviceLock");
+        add!(CP_PROVISION, 0x16, "MaxDevicePasswordFailedAttempts");
+        add!(CP_PROVISION, 0x17, "MaxAttachmentSize");
+        add!(CP_PROVISION, 0x18, "AllowSimpleDevicePassword");
+        add!(CP_PROVISION, 0x19, "DevicePasswordExpiration");
+        add!(CP_PROVISION, 0x1A, "DevicePasswordHistory");
+        add!(CP_PROVISION, 0x1B, "AllowStorageCard");
+        add!(CP_PROVISION, 0x1C, "AllowCamera");
+        add!(CP_PROVISION, 0x1D, "RequireDeviceEncryption");
+        add!(CP_PROVISION, 0x1E, "AllowUnsignedApplications");
+        add!(CP_PROVISION, 0x1F, "AllowUnsignedInstallationPackages");
+        add!(CP_PROVISION, 0x20, "MinDevicePasswordComplexCharacters");
+        add!(CP_PROVISION, 0x21, "AllowWiFi");
+        add!(CP_PROVISION, 0x22, "AllowTextMessaging");
+        add!(CP_PROVISION, 0x23, "AllowPOPIMAPEmail");
+        add!(CP_PROVISION, 0x24, "AllowBluetooth");
+        add!(CP_PROVISION, 0x25, "AllowIrDA");
+        add!(CP_PROVISION, 0x26, "RequireManualSyncWhenRoaming");
+        add!(CP_PROVISION, 0x27, "AllowDesktopSync");
+        add!(CP_PROVISION, 0x28, "MaxCalendarAgeFilter");
+        add!(CP_PROVISION, 0x29, "AllowHTMLEmail");
+        add!(CP_PROVISION, 0x2A, "MaxEmailAgeFilter");
+        add!(CP_PROVISION, 0x2B, "MaxEmailBodyTruncationSize");
+        add!(CP_PROVISION, 0x2C, "MaxEmailHTMLBodyTruncationSize");
+        add!(CP_PROVISION, 0x2D, "RequireSignedSMIMEMessages");
+        add!(CP_PROVISION, 0x2E, "RequireEncryptedSMIMEMessages");
+        add!(CP_PROVISION, 0x2F, "RequireSignedSMIMEAlgorithm");
+        add!(CP_PROVISION, 0x30, "RequireEncryptionSMIMEAlgorithm");
+        add!(CP_PROVISION, 0x31, "AllowSMIMEEncryptionAlgorithmNegotiation");
+        add!(CP_PROVISION, 0x32, "AllowSMIMESoftCerts");
+        add!(CP_PROVISION, 0x33, "AllowBrowser");
+        add!(CP_PROVISION, 0x34, "AllowConsumerEmail");
+        add!(CP_PROVISION, 0x35, "AllowRemoteDesktop");
+        add!(CP_PROVISION, 0x36, "AllowInternetSharing");
+        add!(CP_PROVISION, 0x37, "UnapprovedInROMApplicationList");
+        add!(CP_PROVISION, 0x38, "ApplicationName");
+        add!(CP_PROVISION, 0x39, "ApprovedApplicationList");
+        add!(CP_PROVISION, 0x3A, "Hash");
 
-        // ValidateCert (11) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_VALIDATECERT, 0x05, "ValidateCert", true);
-        add!(CP_VALIDATECERT, 0x06, "Certificates", true);
-        add!(CP_VALIDATECERT, 0x07, "Certificate", true);
-        add!(CP_VALIDATECERT, 0x08, "CertificateChain", true);
-        add!(CP_VALIDATECERT, 0x09, "CheckCRL", true);
-        add!(CP_VALIDATECERT, 0x0A, "Status", true);
+        // Search (15) – MS-ASWBXML §2.1.2.1.16
+        add!(CP_SEARCH, 0x05, "Search");
+        add!(CP_SEARCH, 0x07, "Store");
+        add!(CP_SEARCH, 0x08, "Name");
+        add!(CP_SEARCH, 0x09, "Query");
+        add!(CP_SEARCH, 0x0A, "Options");
+        add!(CP_SEARCH, 0x0B, "Range");
+        add!(CP_SEARCH, 0x0C, "Status");
+        add!(CP_SEARCH, 0x0D, "Response");
+        add!(CP_SEARCH, 0x0E, "Result");
+        add!(CP_SEARCH, 0x0F, "Properties");
+        add!(CP_SEARCH, 0x10, "Total");
+        add!(CP_SEARCH, 0x11, "EqualTo");
+        add!(CP_SEARCH, 0x12, "Value");
+        add!(CP_SEARCH, 0x13, "And");
+        add!(CP_SEARCH, 0x14, "Or");
+        add!(CP_SEARCH, 0x15, "FreeText");
+        add!(CP_SEARCH, 0x17, "DeepTraversal");
+        add!(CP_SEARCH, 0x18, "LongId");
+        add!(CP_SEARCH, 0x19, "RebuildResults");
+        add!(CP_SEARCH, 0x1A, "LessThan");
+        add!(CP_SEARCH, 0x1B, "GreaterThan");
+        add!(CP_SEARCH, 0x1E, "UserName");
+        add!(CP_SEARCH, 0x1F, "Password");
+        add!(CP_SEARCH, 0x20, "ConversationId");
+        add!(CP_SEARCH, 0x21, "Picture");
+        add!(CP_SEARCH, 0x22, "MaxSize");
+        add!(CP_SEARCH, 0x23, "MaxPictures");
 
-        // Contacts2 (12) – per MS-ASCNTC / MS-ASWBXML spec
-        add!(CP_CONTACTS2, 0x05, "CustomerId", true);
-        add!(CP_CONTACTS2, 0x06, "GovernmentId", true);
-        add!(CP_CONTACTS2, 0x07, "IMAddress", true);
-        add!(CP_CONTACTS2, 0x08, "IMAddress2", true);
-        add!(CP_CONTACTS2, 0x09, "IMAddress3", true);
-        add!(CP_CONTACTS2, 0x0A, "ManagerName", true);
-        add!(CP_CONTACTS2, 0x0B, "CompanyMainPhone", true);
-        add!(CP_CONTACTS2, 0x0C, "AccountName", true);
-        add!(CP_CONTACTS2, 0x0D, "NickName", true);
-        add!(CP_CONTACTS2, 0x0E, "MMS", true);
+        // GAL (16) – MS-ASWBXML §2.1.2.1.17
+        add!(CP_GAL, 0x05, "DisplayName");
+        add!(CP_GAL, 0x06, "Phone");
+        add!(CP_GAL, 0x07, "Office");
+        add!(CP_GAL, 0x08, "Title");
+        add!(CP_GAL, 0x09, "Company");
+        add!(CP_GAL, 0x0A, "Alias");
+        add!(CP_GAL, 0x0B, "FirstName");
+        add!(CP_GAL, 0x0C, "LastName");
+        add!(CP_GAL, 0x0D, "HomePhone");
+        add!(CP_GAL, 0x0E, "MobilePhone");
+        add!(CP_GAL, 0x0F, "EmailAddress");
+        add!(CP_GAL, 0x10, "Picture");
+        add!(CP_GAL, 0x11, "Status");
+        add!(CP_GAL, 0x12, "Data");
 
-        // Ping (13) – per MS-ASWBXML spec
-        add!(CP_PING, 0x05, "Ping", true);
-        add!(CP_PING, 0x07, "Status", true);
-        add!(CP_PING, 0x08, "HeartbeatInterval", true);
-        add!(CP_PING, 0x09, "Folders", true);
-        add!(CP_PING, 0x0A, "Folder", true);
-        add!(CP_PING, 0x0B, "Id", true);
-        add!(CP_PING, 0x0C, "Class", true);
-        add!(CP_PING, 0x0D, "MaxFolders", true);
+        // AirSyncBase (17) – MS-ASWBXML §2.1.2.1.18
+        add!(CP_AIRSYNCBASE, 0x05, "BodyPreference");
+        add!(CP_AIRSYNCBASE, 0x06, "Type");
+        add!(CP_AIRSYNCBASE, 0x07, "TruncationSize");
+        add!(CP_AIRSYNCBASE, 0x08, "AllOrNone");
+        add!(CP_AIRSYNCBASE, 0x0A, "Body");
+        add!(CP_AIRSYNCBASE, 0x0B, "Data");
+        add!(CP_AIRSYNCBASE, 0x0C, "EstimatedDataSize");
+        add!(CP_AIRSYNCBASE, 0x0D, "Truncated");
+        add!(CP_AIRSYNCBASE, 0x0E, "Attachments");
+        add!(CP_AIRSYNCBASE, 0x0F, "Attachment");
+        add!(CP_AIRSYNCBASE, 0x10, "DisplayName");
+        add!(CP_AIRSYNCBASE, 0x11, "FileReference");
+        add!(CP_AIRSYNCBASE, 0x12, "Method");
+        add!(CP_AIRSYNCBASE, 0x13, "ContentId");
+        add!(CP_AIRSYNCBASE, 0x14, "ContentLocation");
+        add!(CP_AIRSYNCBASE, 0x15, "IsInline");
+        add!(CP_AIRSYNCBASE, 0x16, "NativeBodyType");
+        add!(CP_AIRSYNCBASE, 0x17, "ContentType");
+        add!(CP_AIRSYNCBASE, 0x18, "Preview");
+        add!(CP_AIRSYNCBASE, 0x19, "BodyPartPreference");
+        add!(CP_AIRSYNCBASE, 0x1A, "BodyPart");
+        add!(CP_AIRSYNCBASE, 0x1B, "Status");
+        add!(CP_AIRSYNCBASE, 0x1C, "Add");
+        add!(CP_AIRSYNCBASE, 0x1D, "Delete");
+        add!(CP_AIRSYNCBASE, 0x1E, "ClientId");
+        add!(CP_AIRSYNCBASE, 0x1F, "Content");
+        add!(CP_AIRSYNCBASE, 0x20, "Location");
+        add!(CP_AIRSYNCBASE, 0x21, "Annotation");
+        add!(CP_AIRSYNCBASE, 0x22, "Street");
+        add!(CP_AIRSYNCBASE, 0x23, "City");
+        add!(CP_AIRSYNCBASE, 0x24, "State");
+        add!(CP_AIRSYNCBASE, 0x25, "Country");
+        add!(CP_AIRSYNCBASE, 0x26, "PostalCode");
+        add!(CP_AIRSYNCBASE, 0x27, "Latitude");
+        add!(CP_AIRSYNCBASE, 0x28, "Longitude");
+        add!(CP_AIRSYNCBASE, 0x29, "Accuracy");
+        add!(CP_AIRSYNCBASE, 0x2A, "Altitude");
+        add!(CP_AIRSYNCBASE, 0x2B, "AltitudeAccuracy");
 
-        // GAL (16) – per MS-ASWBXML spec
-        add!(CP_GAL, 0x05, "DisplayName", true);
-        add!(CP_GAL, 0x06, "Phone", true);
-        add!(CP_GAL, 0x07, "Office", true);
-        add!(CP_GAL, 0x08, "Title", true);
-        add!(CP_GAL, 0x09, "Company", true);
-        add!(CP_GAL, 0x0A, "Alias", true);
-        add!(CP_GAL, 0x0B, "FirstName", true);
-        add!(CP_GAL, 0x0C, "LastName", true);
-        add!(CP_GAL, 0x0D, "HomePhone", true);
-        add!(CP_GAL, 0x0E, "MobilePhone", true);
-        add!(CP_GAL, 0x0F, "EmailAddress", true);
+        // Settings (18) – MS-ASWBXML §2.1.2.1.19
+        add!(CP_SETTINGS, 0x05, "Settings");
+        add!(CP_SETTINGS, 0x06, "Status");
+        add!(CP_SETTINGS, 0x07, "Get");
+        add!(CP_SETTINGS, 0x08, "Set");
+        add!(CP_SETTINGS, 0x09, "Oof");
+        add!(CP_SETTINGS, 0x0A, "OofState");
+        add!(CP_SETTINGS, 0x0B, "StartTime");
+        add!(CP_SETTINGS, 0x0C, "EndTime");
+        add!(CP_SETTINGS, 0x0D, "OofMessage");
+        add!(CP_SETTINGS, 0x0E, "AppliesToInternal");
+        add!(CP_SETTINGS, 0x0F, "AppliesToExternalKnown");
+        add!(CP_SETTINGS, 0x10, "AppliesToExternalUnknown");
+        add!(CP_SETTINGS, 0x11, "Enabled");
+        add!(CP_SETTINGS, 0x12, "ReplyMessage");
+        add!(CP_SETTINGS, 0x13, "BodyType");
+        add!(CP_SETTINGS, 0x14, "Password");
+        add!(CP_SETTINGS, 0x15, "DevicePassword");
+        add!(CP_SETTINGS, 0x16, "DeviceInformation");
+        add!(CP_SETTINGS, 0x17, "Model");
+        add!(CP_SETTINGS, 0x18, "IMEI");
+        add!(CP_SETTINGS, 0x19, "FriendlyName");
+        add!(CP_SETTINGS, 0x1A, "OS");
+        add!(CP_SETTINGS, 0x1B, "OSLanguage");
+        add!(CP_SETTINGS, 0x1C, "PhoneNumber");
+        add!(CP_SETTINGS, 0x1D, "UserInformation");
+        add!(CP_SETTINGS, 0x1E, "EmailAddresses");
+        add!(CP_SETTINGS, 0x1F, "SmtpAddress");
+        add!(CP_SETTINGS, 0x20, "UserAgent");
+        add!(CP_SETTINGS, 0x21, "EnableOutboundSMS");
+        add!(CP_SETTINGS, 0x22, "MobileOperator");
+        add!(CP_SETTINGS, 0x23, "PrimarySmtpAddress");
+        add!(CP_SETTINGS, 0x24, "Accounts");
+        add!(CP_SETTINGS, 0x25, "Account");
+        add!(CP_SETTINGS, 0x26, "AccountId");
+        add!(CP_SETTINGS, 0x27, "AccountName");
+        add!(CP_SETTINGS, 0x28, "UserDisplayName");
+        add!(CP_SETTINGS, 0x29, "SendDisabled");
+        add!(CP_SETTINGS, 0x2B, "RightsManagementInformation");
 
-        // DocumentLibrary (19) – per MS-ASWBXML spec
-        add!(CP_DOCUMENTLIBRARY, 0x05, "LinkId", true);
-        add!(CP_DOCUMENTLIBRARY, 0x06, "DisplayName", true);
-        add!(CP_DOCUMENTLIBRARY, 0x07, "IsFolder", true);
-        add!(CP_DOCUMENTLIBRARY, 0x09, "CreationDate", true);
-        add!(CP_DOCUMENTLIBRARY, 0x0A, "LastModifiedDate", true);
-        add!(CP_DOCUMENTLIBRARY, 0x0B, "IsHidden", true);
-        add!(CP_DOCUMENTLIBRARY, 0x0C, "ContentLength", true);
-        add!(CP_DOCUMENTLIBRARY, 0x0D, "ContentType", true);
+        // DocumentLibrary (19) – MS-ASWBXML §2.1.2.1.20
+        add!(CP_DOCUMENTLIBRARY, 0x05, "LinkId");
+        add!(CP_DOCUMENTLIBRARY, 0x06, "DisplayName");
+        add!(CP_DOCUMENTLIBRARY, 0x07, "IsFolder");
+        add!(CP_DOCUMENTLIBRARY, 0x09, "CreationDate");
+        add!(CP_DOCUMENTLIBRARY, 0x0A, "LastModifiedDate");
+        add!(CP_DOCUMENTLIBRARY, 0x0B, "IsHidden");
+        add!(CP_DOCUMENTLIBRARY, 0x0C, "ContentLength");
+        add!(CP_DOCUMENTLIBRARY, 0x0D, "ContentType");
 
-        // ComposeMail (21) – per MS-ASCMD / MS-ASWBXML spec
-        add!(CP_COMPOSEMAIL, 0x05, "SendMail", true);
-        add!(CP_COMPOSEMAIL, 0x06, "SmartForward", true);
-        add!(CP_COMPOSEMAIL, 0x07, "SmartReply", true);
-        add!(CP_COMPOSEMAIL, 0x08, "SaveInSentItems", true);
-        add!(CP_COMPOSEMAIL, 0x09, "ReplaceMime", true);
-        add!(CP_COMPOSEMAIL, 0x0B, "Source", true);
-        add!(CP_COMPOSEMAIL, 0x0C, "FolderId", true);
-        add!(CP_COMPOSEMAIL, 0x0D, "ItemId", true);
-        add!(CP_COMPOSEMAIL, 0x0E, "LongId", true);
-        add!(CP_COMPOSEMAIL, 0x0F, "InstanceId", true);
-        add!(CP_COMPOSEMAIL, 0x10, "Mime", true);
-        add!(CP_COMPOSEMAIL, 0x11, "ClientId", true);
-        add!(CP_COMPOSEMAIL, 0x12, "Status", true);
-        add!(CP_COMPOSEMAIL, 0x13, "AccountId", true);
+        // ItemOperations (20) – MS-ASWBXML §2.1.2.1.21
+        add!(CP_ITEMOPERATIONS, 0x05, "ItemOperations");
+        add!(CP_ITEMOPERATIONS, 0x06, "Fetch");
+        add!(CP_ITEMOPERATIONS, 0x07, "Store");
+        add!(CP_ITEMOPERATIONS, 0x08, "Options");
+        add!(CP_ITEMOPERATIONS, 0x09, "Range");
+        add!(CP_ITEMOPERATIONS, 0x0A, "Total");
+        add!(CP_ITEMOPERATIONS, 0x0B, "Properties");
+        add!(CP_ITEMOPERATIONS, 0x0C, "Data");
+        add!(CP_ITEMOPERATIONS, 0x0D, "Status");
+        add!(CP_ITEMOPERATIONS, 0x0E, "Response");
+        add!(CP_ITEMOPERATIONS, 0x0F, "Version");
+        add!(CP_ITEMOPERATIONS, 0x10, "Schema");
+        add!(CP_ITEMOPERATIONS, 0x11, "Part");
+        add!(CP_ITEMOPERATIONS, 0x12, "EmptyFolderContents");
+        add!(CP_ITEMOPERATIONS, 0x13, "DeleteSubFolders");
+        add!(CP_ITEMOPERATIONS, 0x14, "UserName");
+        add!(CP_ITEMOPERATIONS, 0x15, "Password");
+        add!(CP_ITEMOPERATIONS, 0x16, "Move");
+        add!(CP_ITEMOPERATIONS, 0x17, "DstFldId");
+        add!(CP_ITEMOPERATIONS, 0x18, "ConversationId");
+        add!(CP_ITEMOPERATIONS, 0x19, "MoveAlways");
 
-        // Email2 (22) – per MS-ASEMAIL / MS-ASWBXML spec
-        add!(CP_EMAIL2, 0x05, "UmCallerID", true);
-        add!(CP_EMAIL2, 0x06, "UmUserNotes", true);
-        add!(CP_EMAIL2, 0x07, "UmAttDuration", true);
-        add!(CP_EMAIL2, 0x08, "UmAttOrder", true);
-        add!(CP_EMAIL2, 0x09, "ConversationId", true);
-        add!(CP_EMAIL2, 0x0A, "ConversationIndex", true);
-        add!(CP_EMAIL2, 0x0B, "LastVerbExecuted", true);
-        add!(CP_EMAIL2, 0x0C, "LastVerbExecutionTime", true);
-        add!(CP_EMAIL2, 0x0D, "ReceivedAsBcc", true);
-        add!(CP_EMAIL2, 0x0E, "Sender", true);
-        add!(CP_EMAIL2, 0x0F, "CalendarType", true);
-        add!(CP_EMAIL2, 0x10, "IsLeapMonth", true);
-        add!(CP_EMAIL2, 0x11, "AccountId", true);
-        add!(CP_EMAIL2, 0x12, "FirstDayOfWeek", true);
-        add!(CP_EMAIL2, 0x13, "MeetingMessageType", true);
+        // ComposeMail (21) – MS-ASWBXML §2.1.2.1.22
+        add!(CP_COMPOSEMAIL, 0x05, "SendMail");
+        add!(CP_COMPOSEMAIL, 0x06, "SmartForward");
+        add!(CP_COMPOSEMAIL, 0x07, "SmartReply");
+        add!(CP_COMPOSEMAIL, 0x08, "SaveInSentItems");
+        add!(CP_COMPOSEMAIL, 0x09, "ReplaceMime");
+        add!(CP_COMPOSEMAIL, 0x0B, "Source");
+        add!(CP_COMPOSEMAIL, 0x0C, "FolderId");
+        add!(CP_COMPOSEMAIL, 0x0D, "ItemId");
+        add!(CP_COMPOSEMAIL, 0x0E, "LongId");
+        add!(CP_COMPOSEMAIL, 0x0F, "InstanceId");
+        add!(CP_COMPOSEMAIL, 0x10, "Mime");
+        add!(CP_COMPOSEMAIL, 0x11, "ClientId");
+        add!(CP_COMPOSEMAIL, 0x12, "Status");
+        add!(CP_COMPOSEMAIL, 0x13, "AccountId");
+        add!(CP_COMPOSEMAIL, 0x15, "Forwardees");
+        add!(CP_COMPOSEMAIL, 0x16, "Forwardee");
+        add!(CP_COMPOSEMAIL, 0x17, "Name");
+        add!(CP_COMPOSEMAIL, 0x18, "Email");
 
-        // Notes (23) – per MS-ASWBXML spec
-        add!(CP_NOTES, 0x05, "Subject", true);
-        add!(CP_NOTES, 0x06, "MessageClass", true);
-        add!(CP_NOTES, 0x07, "LastModifiedDate", true);
-        add!(CP_NOTES, 0x08, "Categories", true);
-        add!(CP_NOTES, 0x09, "Category", true);
+        // Email2 (22) – MS-ASWBXML §2.1.2.1.23
+        add!(CP_EMAIL2, 0x05, "UmCallerID");
+        add!(CP_EMAIL2, 0x06, "UmUserNotes");
+        add!(CP_EMAIL2, 0x07, "UmAttDuration");
+        add!(CP_EMAIL2, 0x08, "UmAttOrder");
+        add!(CP_EMAIL2, 0x09, "ConversationId");
+        add!(CP_EMAIL2, 0x0A, "ConversationIndex");
+        add!(CP_EMAIL2, 0x0B, "LastVerbExecuted");
+        add!(CP_EMAIL2, 0x0C, "LastVerbExecutionTime");
+        add!(CP_EMAIL2, 0x0D, "ReceivedAsBcc");
+        add!(CP_EMAIL2, 0x0E, "Sender");
+        add!(CP_EMAIL2, 0x0F, "CalendarType");
+        add!(CP_EMAIL2, 0x10, "IsLeapMonth");
+        add!(CP_EMAIL2, 0x11, "AccountId");
+        add!(CP_EMAIL2, 0x12, "FirstDayOfWeek");
+        add!(CP_EMAIL2, 0x13, "MeetingMessageType");
+        add!(CP_EMAIL2, 0x15, "IsDraft");
+        add!(CP_EMAIL2, 0x16, "Bcc");
+        add!(CP_EMAIL2, 0x17, "Send");
 
-        // RightsManagement (24) – per MS-ASWBXML spec
-        add!(CP_RIGHTSMANAGEMENT, 0x05, "RightsManagementSupport", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x06, "RightsManagementTemplates", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x07, "RightsManagementTemplate", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x08, "RightsManagementLicense", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x09, "EditAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x0A, "ReplyAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x0B, "ReplyAllAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x0C, "ForwardAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x0D, "ModifyRecipientsAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x0E, "ExtractAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x0F, "PrintAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x10, "ExportAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x11, "ProgrammaticAccessAllowed", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x12, "Owner", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x13, "ContentExpiryDate", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x14, "TemplateID", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x15, "TemplateName", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x16, "TemplateDescription", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x17, "ContentOwner", true);
-        add!(CP_RIGHTSMANAGEMENT, 0x18, "RemoveRightsManagementProtection", true);
+        // Notes (23) – MS-ASWBXML §2.1.2.1.24
+        add!(CP_NOTES, 0x05, "Subject");
+        add!(CP_NOTES, 0x06, "MessageClass");
+        add!(CP_NOTES, 0x07, "LastModifiedDate");
+        add!(CP_NOTES, 0x08, "Categories");
+        add!(CP_NOTES, 0x09, "Category");
+
+        // RightsManagement (24) – MS-ASWBXML §2.1.2.1.25
+        add!(CP_RIGHTSMANAGEMENT, 0x05, "RightsManagementSupport");
+        add!(CP_RIGHTSMANAGEMENT, 0x06, "RightsManagementTemplates");
+        add!(CP_RIGHTSMANAGEMENT, 0x07, "RightsManagementTemplate");
+        add!(CP_RIGHTSMANAGEMENT, 0x08, "RightsManagementLicense");
+        add!(CP_RIGHTSMANAGEMENT, 0x09, "EditAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x0A, "ReplyAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x0B, "ReplyAllAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x0C, "ForwardAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x0D, "ModifyRecipientsAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x0E, "ExtractAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x0F, "PrintAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x10, "ExportAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x11, "ProgrammaticAccessAllowed");
+        add!(CP_RIGHTSMANAGEMENT, 0x12, "Owner");
+        add!(CP_RIGHTSMANAGEMENT, 0x13, "ContentExpiryDate");
+        add!(CP_RIGHTSMANAGEMENT, 0x14, "TemplateID");
+        add!(CP_RIGHTSMANAGEMENT, 0x15, "TemplateName");
+        add!(CP_RIGHTSMANAGEMENT, 0x16, "TemplateDescription");
+        add!(CP_RIGHTSMANAGEMENT, 0x17, "ContentOwner");
+        add!(CP_RIGHTSMANAGEMENT, 0x18, "RemoveRightsManagementProtection");
+
+        // Find (25) – MS-ASWBXML §2.1.2.1.26
+        add!(CP_FIND, 0x05, "Find");
+        add!(CP_FIND, 0x06, "SearchId");
+        add!(CP_FIND, 0x07, "ExecuteSearch");
+        add!(CP_FIND, 0x08, "MailBoxSearchCriterion");
+        add!(CP_FIND, 0x09, "Query");
+        add!(CP_FIND, 0x0A, "Status");
+        add!(CP_FIND, 0x0B, "FreeText");
+        add!(CP_FIND, 0x0C, "Options");
+        add!(CP_FIND, 0x0D, "Range");
+        add!(CP_FIND, 0x0E, "DeepTraversal");
+        add!(CP_FIND, 0x11, "Response");
+        add!(CP_FIND, 0x12, "Result");
+        add!(CP_FIND, 0x13, "Properties");
+        add!(CP_FIND, 0x14, "Preview");
+        add!(CP_FIND, 0x15, "HasAttachments");
 
         m
     };
 
+    /// Reverse mapping: tag name -> list of (page, token) where it appears.
     static ref NAME_MAP: HashMap<&'static str, Vec<(u8, u8)>> = {
         let mut m: HashMap<&'static str, Vec<(u8, u8)>> = HashMap::new();
         for ((page, token), tag) in TAG_MAP.iter() {
@@ -726,23 +763,6 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             }
         }
         Ok(val)
-    }
-
-    fn read_strtbl_string(strtbl: &[u8], offset: usize) -> Result<String, String> {
-        if offset >= strtbl.len() {
-            return Err("String table offset out of bounds".into());
-        }
-        let mut end = offset;
-        while end < strtbl.len() && strtbl[end] != 0 {
-            end += 1;
-        }
-        if end == strtbl.len() {
-            return Err("Unterminated string table entry".into());
-        }
-        let s = std::str::from_utf8(&strtbl[offset..end])
-            .map_err(|_| "Invalid UTF-8 in string table".to_string())?
-            .to_string();
-        Ok(s)
     }
 
     /// Skip over a WBXML attribute section.  Per the WBXML spec the attribute
@@ -783,10 +803,6 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                     }
                     *pos += 1; // skip NUL
                 }
-                // STR_T — string table reference (mb_u_int32)
-                0x83 => {
-                    let _ = read_mb_u_int32(data, pos)?;
-                }
                 // OPAQUE — length-prefixed binary blob
                 0xC3 => {
                     let len = read_mb_u_int32(data, pos)?;
@@ -798,28 +814,7 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                     }
                     *pos = end;
                 }
-                // ENTITY — mb_u_int32 character entity
-                0x02 => {
-                    let _ = read_mb_u_int32(data, pos)?;
-                }
-                // EXT_I_0..2 — inline extension (NUL-terminated)
-                0x40..=0x42 => {
-                    while *pos < data.len() && data[*pos] != 0 {
-                        *pos += 1;
-                    }
-                    if *pos >= data.len() {
-                        return Err("Unexpected end in EXT_I in attributes".into());
-                    }
-                    *pos += 1; // skip NUL
-                }
-                // EXT_T_0..2 — integer extension (mb_u_int32)
-                0x80..=0x82 => {
-                    let _ = read_mb_u_int32(data, pos)?;
-                }
-                // EXT_0..2 — byte extension (no additional data)
-                0xC0..=0xC2 => {}
-                // LITERAL (0x04) in attribute context — attribute name from string
-                // table, carries an mb_u_int32 index that must be consumed.
+                // LITERAL (0x04) is not used in ActiveSync, but if present we must consume its index.
                 0x04 => {
                     let _ = read_mb_u_int32(data, pos)?;
                 }
@@ -830,7 +825,9 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                         return Err("Exceeded maximum nesting depth in WBXML attributes".into());
                     }
                 }
-                // All remaining single-byte attribute tokens (ATTRSTART, ATTRVALUE, etc.)
+                // All remaining tokens are either unsupported (EXT, ENTITY) or
+                // are attribute start/value tokens that we just skip without extra data.
+                // According to spec, attributes are not used, so we just ignore them.
                 _ => {}
             }
         }
@@ -856,15 +853,14 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
     // Read string table length (mb_u_int32)
     let strtbl_len = read_mb_u_int32(data, &mut pos)?;
 
-    // Read string table
-    let strtbl_start = pos;
-    let strtbl_end = strtbl_start
+    // Skip the string table (must be empty per spec, but we just advance pos)
+    // We do not need its contents because ActiveSync does not use string table references.
+    let strtbl_end = pos
         .checked_add(strtbl_len)
         .ok_or_else(|| "String table end overflow".to_string())?;
     if strtbl_end > data.len() {
         return Err("String table exceeds data length".into());
     }
-    let strtbl = &data[strtbl_start..strtbl_end];
     pos = strtbl_end;
 
     let mut current_page = 0;
@@ -945,70 +941,10 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
             continue;
         }
 
-        // Handle STR_T (0x83) — string table reference
-        if token == 0x83 {
-            let offset = read_mb_u_int32(data, &mut pos)?;
-            let text = read_strtbl_string(strtbl, offset)?;
-
-            if let Some(tag) = pending_tag.take() {
-                xml.push('>');
-                stack.push(tag);
-            }
-            xml.push_str(
-                &text
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;"),
-            );
-            continue;
-        }
-
-        // Reject unsupported WBXML global tokens (ENTITY, EXT_I, EXT_T, EXT, etc.)
-        // before they fall through to the tag-token handler which would misparse them.
-        if matches!(token, 0x02 | 0x40..=0x43 | 0x80..=0x82 | 0xC0..=0xC2) {
-            return Err(format!("Unsupported WBXML global token: 0x{:02X}", token));
-        }
-
-        // Handle LITERAL (0x04), LITERAL_C (0x44), LITERAL_A (0x84), LITERAL_AC (0xC4) tokens
-        if token == 0x04 || token == 0x44 || token == 0x84 || token == 0xC4 {
-            let has_content = (token & 0x40) != 0;
-            let has_attrs = (token & 0x80) != 0;
-            let offset = read_mb_u_int32(data, &mut pos)?;
-            let tag_name = read_strtbl_string(strtbl, offset)?;
-
-            if !is_valid_xml_name(&tag_name) {
-                return Err(format!(
-                    "Invalid LITERAL tag name in string table: {:?}",
-                    tag_name
-                ));
-            }
-
-            // Skip attributes if present (consume until END token).
-            // Per WBXML spec, attributes are a flat sequence of ATTRSTART/ATTRVALUE
-            // tokens terminated by END (0x01). ActiveSync doesn't use attributes, so
-            // we just consume them to keep the parse position correct.
-            if has_attrs {
-                skip_wbxml_attributes(data, &mut pos)?;
-            }
-
-            if pending_tag.is_some() {
-                xml.push('>');
-                stack.push(pending_tag.take().unwrap());
-            }
-
-            if has_content {
-                if stack.len() >= MAX_DECODE_DEPTH {
-                    return Err(format!(
-                        "WBXML nesting depth exceeds maximum of {}",
-                        MAX_DECODE_DEPTH
-                    ));
-                }
-                pending_tag = Some(tag_name.clone());
-                xml.push_str(&format!("<{}", tag_name));
-            } else {
-                xml.push_str(&format!("<{}/>", tag_name));
-            }
-            continue;
+        // Reject tokens that are not used by ActiveSync per spec (string table refs,
+        // entities, extensions, processing instructions, LITERAL tokens).
+        if matches!(token, 0x02 | 0x04 | 0x44 | 0x84 | 0xC4 | 0x40..=0x43 | 0x80..=0x83 | 0xC0..=0xC2) {
+            return Err(format!("Unsupported WBXML token used in ActiveSync: 0x{:02X}", token));
         }
 
         let has_content = (token & 0x40) != 0;
@@ -1037,24 +973,10 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 xml.push_str(&format!("<{}/>", tag_def.name));
             }
         } else {
-            // Unknown tag: preserve structure with a deterministic placeholder.
-            let placeholder = format!("Unknown_{}_{:02X}", current_page, token_id);
-            if pending_tag.is_some() {
-                xml.push('>');
-                stack.push(pending_tag.take().unwrap());
-            }
-            if has_content {
-                if stack.len() >= MAX_DECODE_DEPTH {
-                    return Err(format!(
-                        "WBXML nesting depth exceeds maximum of {}",
-                        MAX_DECODE_DEPTH
-                    ));
-                }
-                pending_tag = Some(placeholder.clone());
-                xml.push_str(&format!("<{}", placeholder));
-            } else {
-                xml.push_str(&format!("<{}/>", placeholder));
-            }
+            return Err(format!(
+                "Unknown WBXML token: page {}, token 0x{:02X}",
+                current_page, token_id
+            ));
         }
     }
     if pending_tag.is_some() || !stack.is_empty() {
@@ -1068,71 +990,20 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
     // 0x03 = WBXML version 1.3
     // 0x01 = Public ID (unknown/opaque, matches prior behavior)
     // 0x6A = Charset UTF-8
-    // <strtbl_len: mb_u_int32>
-    // <string table bytes>
+    // <strtbl_len: mb_u_int32> = 0 (string table not used)
+    // <string table> (empty)
     // <WBXML body>
     let mut reader = quick_xml::Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
 
-    // Build WBXML body separately so we can prefix the final output with a string table.
+    // Build WBXML body.
     let mut body: Vec<u8> = Vec::new();
     let mut current_page: u8 = 0;
 
     // Tracks the effective XML namespace (WBXML code page) at each nesting level
-    // so that unprefixed child tags inherit their parent's namespace scope rather
-    // than relying on the last WBXML page switch.
+    // so that unprefixed child tags inherit their parent's namespace scope.
     let mut scope_page_stack: Vec<u8> = Vec::new();
-
-    // String table for LITERAL tags (used when a tag isn't present in NAME_MAP).
-    let mut strtbl: Vec<u8> = Vec::new();
-    let mut strtbl_index: HashMap<String, usize> = HashMap::new();
-
-    fn write_mb_u_int32(out: &mut Vec<u8>, mut v: usize) {
-        // WBXML mb_u_int32: 7-bit groups, big-endian, high bit indicates continuation.
-        let mut bytes = [0u8; 10];
-        let mut n = 0usize;
-        loop {
-            bytes[n] = (v & 0x7F) as u8;
-            n += 1;
-            v >>= 7;
-            if v == 0 {
-                break;
-            }
-        }
-        for i in (0..n).rev() {
-            let mut b = bytes[i];
-            if i != 0 {
-                b |= 0x80;
-            }
-            out.push(b);
-        }
-    }
-
-    fn strtbl_offset(name: &str, idx: &mut HashMap<String, usize>, table: &mut Vec<u8>) -> usize {
-        if let Some(&off) = idx.get(name) {
-            return off;
-        }
-        let off = table.len();
-        table.extend_from_slice(name.as_bytes());
-        table.push(0x00);
-        idx.insert(name.to_string(), off);
-        off
-    }
-
-    fn encode_literal_tag(
-        out: &mut Vec<u8>,
-        name: &str,
-        has_content: bool,
-        idx: &mut HashMap<String, usize>,
-        table: &mut Vec<u8>,
-    ) {
-        // WBXML LITERAL (0x04) / LITERAL_C (0x44): followed by string table index (mb_u_int32)
-        let token = if has_content { 0x44 } else { 0x04 };
-        out.push(token);
-        let off = strtbl_offset(name, idx, table);
-        write_mb_u_int32(out, off);
-    }
 
     loop {
         buf.clear();
@@ -1141,38 +1012,18 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let (prefix, local) = split_prefix(&full_name);
                 // Determine the effective page: explicit prefix wins, otherwise
-                // inherit the parent's scope page so unprefixed siblings stay in
-                // the correct namespace even after a WBXML page switch.
-                // If a prefix is present but unrecognized, the tag belongs to a
-                // namespace we don't have a code page for — encode as LITERAL
-                // instead of falling back to the parent scope or current page.
+                // inherit the parent's scope page.
                 let resolved_prefix_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
-                let has_unknown_prefix = prefix.is_some() && resolved_prefix_page.is_none();
                 let scope_page = if prefix.is_some() {
                     resolved_prefix_page
                 } else {
                     scope_page_stack.last().copied()
                 };
-                if has_unknown_prefix
-                    || !encode_tag(&mut body, local, &mut current_page, true, scope_page)
-                {
-                    // When the tag carries any prefix, store the full
-                    // prefixed name (e.g. "AirSync:Type") in the string table
-                    // so the prefix survives the round-trip.  For unprefixed
-                    // tags the local name alone is sufficient.
-                    let literal_name = if prefix.is_some() { &full_name } else { local };
-                    encode_literal_tag(
-                        &mut body,
-                        literal_name,
-                        true,
-                        &mut strtbl_index,
-                        &mut strtbl,
-                    );
+                if !encode_tag(&mut body, local, &mut current_page, true, scope_page) {
+                    return Err(format!("Unknown tag or ambiguous namespace: {}", full_name));
                 }
-                // Push the resolved scope page. For unknown-prefix tags,
-                // inherit the parent's scope page so unprefixed descendants
-                // stay on the correct code page instead of using current_page
-                // which may have been changed by a preceding page switch.
+                // Push the resolved scope page. For unknown-prefix tags (which are already
+                // rejected), this would not be reached.
                 let fallback = scope_page_stack.last().copied().unwrap_or(current_page);
                 scope_page_stack.push(scope_page.unwrap_or(fallback));
             }
@@ -1180,23 +1031,13 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 let full_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let (prefix, local) = split_prefix(&full_name);
                 let resolved_prefix_page = prefix.and_then(|p| PREFIX_TO_PAGE.get(p).copied());
-                let has_unknown_prefix = prefix.is_some() && resolved_prefix_page.is_none();
                 let scope_page = if prefix.is_some() {
                     resolved_prefix_page
                 } else {
                     scope_page_stack.last().copied()
                 };
-                if has_unknown_prefix
-                    || !encode_tag(&mut body, local, &mut current_page, false, scope_page)
-                {
-                    let literal_name = if prefix.is_some() { &full_name } else { local };
-                    encode_literal_tag(
-                        &mut body,
-                        literal_name,
-                        false,
-                        &mut strtbl_index,
-                        &mut strtbl,
-                    );
+                if !encode_tag(&mut body, local, &mut current_page, false, scope_page) {
+                    return Err(format!("Unknown tag or ambiguous namespace: {}", full_name));
                 }
             }
             Ok(quick_xml::events::Event::End(_)) => {
@@ -1222,17 +1063,35 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 body.extend_from_slice(raw);
                 body.push(0x00);
             }
-            }
             Ok(_) => {}
             Err(e) => return Err(format!("XML parsing error: {}", e)),
         }
     }
 
     let mut output = vec![0x03, 0x01, 0x6A];
-    write_mb_u_int32(&mut output, strtbl.len());
-    output.extend_from_slice(&strtbl);
+    write_mb_u_int32(&mut output, 0); // string table length = 0
     output.extend_from_slice(&body);
     Ok(output)
+}
+
+/// Write a multi-byte integer in WBXML format (7-bit groups, big-endian).
+fn write_mb_u_int32(out: &mut Vec<u8>, mut v: usize) {
+    if v == 0 {
+        out.push(0);
+        return;
+    }
+    let mut bytes = Vec::new();
+    while v > 0 {
+        bytes.push((v & 0x7F) as u8);
+        v >>= 7;
+    }
+    for (i, b) in bytes.iter().enumerate().rev() {
+        let mut byte = *b;
+        if i != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+    }
 }
 
 /// Split a possibly-prefixed tag name (e.g. "Calendar:Type") into an optional
@@ -1244,6 +1103,8 @@ fn split_prefix(name: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// Encode a single tag. Returns `true` on success, `false` if the tag is unknown
+/// or the prefix cannot be resolved to a unique page.
 fn encode_tag(
     output: &mut Vec<u8>,
     name: &str,
@@ -1251,360 +1112,107 @@ fn encode_tag(
     has_content: bool,
     target_page: Option<u8>,
 ) -> bool {
-    if let Some(entries) = NAME_MAP.get(name) {
-        // When a namespace prefix resolved to a specific code page, use that page
-        // for disambiguation. Otherwise prefer the entry on the current page to
-        // avoid unnecessary page switches.
-        let (page, token) = if let Some(tp) = target_page {
-            match entries.iter().find(|(p, _)| *p == tp) {
-                Some(entry) => entry,
-                None => return false,
-            }
-        } else {
-            if let Some(entry) = entries.iter().find(|(p, _)| *p == *current_page) {
-                entry
-            } else if entries.len() == 1 {
-                &entries[0]
-            } else {
-                return false;
-            }
-        };
-        if *page != *current_page {
-            output.push(TAG_SWITCH_PAGE);
-            output.push(*page);
-            *current_page = *page;
+    let entries = match NAME_MAP.get(name) {
+        Some(e) => e,
+        None => return false,
+    };
+    // When a namespace prefix resolved to a specific code page, use that page
+    // for disambiguation. Otherwise prefer the entry on the current page to
+    // avoid unnecessary page switches.
+    let (page, token) = if let Some(tp) = target_page {
+        match entries.iter().find(|(p, _)| *p == tp) {
+            Some(entry) => entry,
+            None => return false,
         }
-        let mut final_token = *token;
-        if has_content {
-            final_token |= 0x40;
-        }
-        output.push(final_token);
-        true
     } else {
-        false
+        if let Some(entry) = entries.iter().find(|(p, _)| *p == *current_page) {
+            entry
+        } else if entries.len() == 1 {
+            &entries[0]
+        } else {
+            return false;
+        }
+    };
+    if *page != *current_page {
+        output.push(TAG_SWITCH_PAGE);
+        output.push(*page);
+        *current_page = *page;
     }
+    let mut final_token = *token;
+    if has_content {
+        final_token |= 0x40;
+    }
+    output.push(final_token);
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Verify that a tag with an explicitly-prefixed but *unrecognized* namespace
-    /// is encoded as a LITERAL rather than being silently resolved via the parent
-    /// scope's code page.
-    ///
-    /// Before the fix, `<FakeNS:Type>` inside a Calendar-scoped parent would
-    /// inherit the Calendar page and encode `Type` as Calendar:Type (page 4).
-    /// After the fix, the unknown prefix means `scope_page` is `None` and `Type`
-    /// (which is ambiguous across multiple code pages) cannot be resolved by
-    /// `encode_tag`, so it falls through to a LITERAL encoding.
+    /// Test round-trip encoding/decoding of a simple known message.
     #[test]
-    fn unknown_prefix_does_not_inherit_parent_scope() {
-        // Build XML: a Calendar-scoped parent wrapping a child with an unknown
-        // prefix that shares an ambiguous tag name ("Type" exists on pages 4 & 17).
-        let xml = "<Calendar:Recurrence><FakeNS:Type>5</FakeNS:Type></Calendar:Recurrence>";
-        let encoded = encode(xml).expect("encode should succeed");
-
-        // The WBXML body starts after the 4-byte header + string-table length.
-        // Find the string table length (mb_u_int32 at offset 3).
-        let mut pos = 3;
-        let mut strtbl_len: usize = 0;
-        loop {
-            let b = encoded[pos];
-            pos += 1;
-            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        let body_start = pos + strtbl_len;
-
-        // Scan the WBXML body for a LITERAL_C token (0x44), which signals the
-        // encoder used a string-table reference instead of a known code-page
-        // token for the inner "Type" tag.
-        let body = &encoded[body_start..];
-        let has_literal = body.contains(&0x44u8);
-        assert!(
-            has_literal,
-            "Expected a LITERAL_C (0x44) token for the unknown-prefixed 'Type' tag, \
-             but the encoder resolved it to a code-page token (wrong scope inheritance). \
-             Body bytes: {:02X?}",
-            body,
-        );
+    fn round_trip_basic_sync() {
+        let xml = r#"<Sync xmlns="AirSync"><Collections><Collection><SyncKey>1</SyncKey></Collection></Collections></Sync>"#;
+        let encoded = encode(xml).expect("encode failed");
+        let decoded = decode(&encoded).expect("decode failed");
+        // After round-trip, namespaces are stripped (prefixes become default ns)
+        assert!(decoded.contains("<Sync>"));
+        assert!(decoded.contains("<Collections>"));
+        assert!(decoded.contains("<Collection>"));
+        assert!(decoded.contains("<SyncKey>1</SyncKey>"));
     }
 
-    /// Ensure that a tag with a *known* prefix still encodes correctly when it
-    /// differs from the parent scope (regression guard for the happy path).
+    /// Test that a tag with a known prefix is encoded with correct page switch.
     #[test]
-    fn known_prefix_overrides_parent_scope() {
-        // "Type" with AirSyncBase prefix inside a Calendar parent should switch
-        // to page 17, not stay on page 4.
-        let xml =
-            "<Calendar:Recurrence><AirSyncBase:Type>2</AirSyncBase:Type></Calendar:Recurrence>";
+    fn known_prefix_encoding() {
+        let xml = "<Calendar:Recurrence><AirSyncBase:Type>2</AirSyncBase:Type></Calendar:Recurrence>";
         let encoded = encode(xml).expect("encode should succeed");
         let decoded = decode(&encoded).expect("round-trip decode should succeed");
-
-        // After round-trip, both tags must be present (unprefixed, since WBXML
-        // decoding strips namespace prefixes).
-        assert!(decoded.contains("<Recurrence>"), "decoded={}", decoded);
-        assert!(decoded.contains("<Type>"), "decoded={}", decoded);
-
-        // Verify the body contains a page switch to 17 (AirSyncBase).
-        let mut pos = 3;
-        let mut strtbl_len: usize = 0;
-        loop {
-            let b = encoded[pos];
-            pos += 1;
-            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        let body = &encoded[pos + strtbl_len..];
-
-        // Look for SWITCH_PAGE (0x00) followed by page 17 (0x11).
-        let has_page_switch = body
-            .windows(2)
-            .any(|w| w[0] == TAG_SWITCH_PAGE && w[1] == CP_AIRSYNCBASE);
-        assert!(
-            has_page_switch,
-            "Expected a page switch to AirSyncBase (page 17). Body: {:02X?}",
-            body,
-        );
+        assert!(decoded.contains("<Recurrence>"));
+        assert!(decoded.contains("<Type>"));
     }
 
-    /// Tags with no prefix inside a scoped parent should still inherit the
-    /// parent's page (the normal scope-inheritance path must keep working).
+    /// Test that an unknown tag results in an error.
     #[test]
-    fn unprefixed_child_inherits_parent_scope() {
-        let xml = "<Calendar:Recurrence><Type>1</Type></Calendar:Recurrence>";
-        let encoded = encode(xml).expect("encode should succeed");
-        let decoded = decode(&encoded).expect("round-trip decode should succeed");
-        assert!(decoded.contains("<Recurrence>"), "decoded={}", decoded);
-        assert!(decoded.contains("<Type>"), "decoded={}", decoded);
-
-        // The body should NOT contain a LITERAL_C since "Type" should resolve
-        // on the inherited Calendar page.
-        let mut pos = 3;
-        let mut strtbl_len: usize = 0;
-        loop {
-            let b = encoded[pos];
-            pos += 1;
-            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        let body = &encoded[pos + strtbl_len..];
-        let has_literal = body.contains(&0x44u8);
-        assert!(
-            !has_literal,
-            "Unprefixed 'Type' inside Calendar scope should NOT use LITERAL encoding. \
-             Body: {:02X?}",
-            body,
-        );
+    fn unknown_tag_returns_error() {
+        let xml = "<Unknown:Tag>test</Unknown:Tag>";
+        assert!(encode(xml).is_err());
     }
 
-    /// Unprefixed descendants of an unknown-prefixed tag must inherit the
-    /// *grandparent's* scope page, not `current_page` which may have been
-    /// changed by a preceding page-switch for a sibling tag.
-    ///
-    /// Scenario: Calendar:OrganizerEmail (page 4) → AirSyncBase:Type (switches
-    /// current_page to 17) → FakeNS:Foo (unknown prefix, LITERAL) →
-    /// OrganizerEmail (unprefixed, should resolve on Calendar page 4).
-    ///
-    /// Before the fix, `FakeNS:Foo` pushed `current_page` (17) into scope,
-    /// causing the inner `OrganizerEmail` to look up page 17 where it doesn't
-    /// exist, producing a LITERAL instead of the correct Calendar token.
+    /// Test handling of CData.
     #[test]
-    fn unknown_prefix_descendants_inherit_grandparent_scope() {
-        let xml = "\
-            <Calendar:OrganizerEmail>\
-                <AirSyncBase:Type>2</AirSyncBase:Type>\
-                <FakeNS:Foo>\
-                    <OrganizerEmail>test</OrganizerEmail>\
-                </FakeNS:Foo>\
-            </Calendar:OrganizerEmail>";
-        let encoded = encode(xml).expect("encode should succeed");
-
-        // Locate the WBXML body after the header and string table.
-        let mut pos = 3;
-        let mut strtbl_len: usize = 0;
-        loop {
-            let b = encoded[pos];
-            pos += 1;
-            strtbl_len = (strtbl_len << 7) | (b & 0x7F) as usize;
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        let body = &encoded[pos + strtbl_len..];
-
-        // Count LITERAL / LITERAL_C tokens by walking the body so we skip
-        // over bytes that are arguments to SWITCH_PAGE (0x00).
-        let mut literal_count = 0usize;
-        let mut i = 0;
-        while i < body.len() {
-            let b = body[i];
-            if b == 0x00 {
-                // SWITCH_PAGE — next byte is the page number, skip it.
-                i += 2;
-                continue;
-            }
-            if b == 0x04 || b == 0x44 {
-                literal_count += 1;
-                // After LITERAL / LITERAL_C comes an mb_u_int32 string-table
-                // index; skip the multi-byte integer.
-                i += 1;
-                while i < body.len() && body[i] & 0x80 != 0 {
-                    i += 1;
-                }
-                i += 1; // skip final byte of mb_u_int32
-                continue;
-            }
-            i += 1;
-        }
-        assert_eq!(
-            literal_count, 1,
-            "Expected exactly 1 LITERAL token (for FakeNS:Foo), but found {}. \
-             The unprefixed OrganizerEmail should resolve on the inherited \
-             Calendar page, not fall through to LITERAL. Body: {:02X?}",
-            literal_count, body,
-        );
+    fn cdata_encoding() {
+        let xml = "<Sync><![CDATA[<hello>]]></Sync>";
+        let encoded = encode(xml).expect("encode failed");
+        let decoded = decode(&encoded).expect("decode failed");
+        assert!(decoded.contains("<Sync>"));
+        assert!(decoded.contains("&lt;hello&gt;"));
     }
 
-    /// Round-tripping a tag with an unknown namespace prefix must preserve the
-    /// full prefixed name (e.g. `FakeNS:Type` → LITERAL → `FakeNS:Type`), not
-    /// strip the prefix and emit just the local name.
+    /// Test that string table references are rejected.
     #[test]
-    fn unknown_prefix_round_trips_with_prefix_preserved() {
-        let xml = "<Calendar:Recurrence><FakeNS:Type>5</FakeNS:Type></Calendar:Recurrence>";
-        let encoded = encode(xml).expect("encode should succeed");
-        let decoded = decode(&encoded).expect("decode should succeed");
-
-        assert!(
-            decoded.contains("<FakeNS:Type>"),
-            "Expected the unknown-prefixed tag 'FakeNS:Type' to survive the round-trip, \
-             but decoded XML was: {}",
-            decoded,
-        );
-    }
-
-    /// An empty (self-closing) tag with an unknown prefix must also preserve
-    /// the prefix through encode → decode.
-    #[test]
-    fn unknown_prefix_empty_tag_round_trips() {
-        let xml = "<Calendar:Recurrence><FakeNS:Marker/></Calendar:Recurrence>";
-        let encoded = encode(xml).expect("encode should succeed");
-        let decoded = decode(&encoded).expect("decode should succeed");
-
-        assert!(
-            decoded.contains("FakeNS:Marker"),
-            "Expected the unknown-prefixed empty tag 'FakeNS:Marker' to survive \
-             the round-trip, but decoded XML was: {}",
-            decoded,
-        );
-    }
-
-    /// A tag with a *known* prefix whose local name is not in the
-    /// corresponding code page must fall back to LITERAL encoding **with the
-    /// full `prefix:local` name preserved** so that the prefix survives the
-    /// round-trip. Before the fix, only the local name was stored in the
-    /// string table, silently dropping the prefix.
-    #[test]
-    fn known_prefix_literal_fallback_preserves_prefix() {
-        // "Calendar" is a known prefix (page 4), but "NoSuchTag" does not
-        // exist in any code page, so encode_tag will fail and we fall back
-        // to LITERAL encoding.
-        let xml =
-            "<Calendar:Recurrence><Calendar:NoSuchTag>v</Calendar:NoSuchTag></Calendar:Recurrence>";
-        let encoded = encode(xml).expect("encode should succeed");
-        let decoded = decode(&encoded).expect("decode should succeed");
-
-        assert!(
-            decoded.contains("<Calendar:NoSuchTag>"),
-            "Expected the known-prefixed but untokenizable tag 'Calendar:NoSuchTag' \
-             to preserve its prefix through the round-trip, but decoded XML was: {}",
-            decoded,
-        );
-    }
-
-    /// Same as above but for self-closing (empty) tags.
-    #[test]
-    fn known_prefix_empty_literal_fallback_preserves_prefix() {
-        let xml = "<Calendar:Recurrence><Calendar:NoSuchTag/></Calendar:Recurrence>";
-        let encoded = encode(xml).expect("encode should succeed");
-        let decoded = decode(&encoded).expect("decode should succeed");
-
-        assert!(
-            decoded.contains("Calendar:NoSuchTag"),
-            "Expected the known-prefixed but untokenizable empty tag 'Calendar:NoSuchTag' \
-             to preserve its prefix through the round-trip, but decoded XML was: {}",
-            decoded,
-        );
-    }
-
-    /// `read_strtbl_string` must reject an entry that is not NUL-terminated
-    /// (i.e. runs to the end of the table without a 0x00 byte).
-    #[test]
-    fn unterminated_strtbl_entry_is_rejected() {
-        // Craft minimal WBXML with a 5-byte string table containing "hello"
-        // but NO NUL terminator, then a body that references it via STR_T.
-        //
-        // Header: version=0x03, publicid=0x01, charset=0x6A, strtbl_len=5
-        // String table: b"hello" (no NUL)
-        // Body: STR_T (0x83) offset 0x00
-        let wbxml: Vec<u8> = vec![
-            0x03, // version
-            0x01, // public ID
-            0x6A, // charset (UTF-8)
-            0x05, // string table length = 5
-            b'h', b'e', b'l', b'l', b'o', // unterminated string
-            0x83, 0x00, // STR_T, offset 0
+    fn strt_token_rejected() {
+        // Manually construct a WBXML with STR_T token (0x83) referencing offset 0 in an empty string table.
+        // This should be rejected.
+        let wbxml = vec![
+            0x03, 0x01, 0x6A, 0x00, // header + zero string table length
+            0x83, 0x00, // STR_T offset 0 (but no string table)
         ];
         let result = decode(&wbxml);
-        assert!(
-            result.is_err(),
-            "Expected an error for unterminated string table entry, got: {:?}",
-            result,
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("nterminated"),
-            "Error message should mention unterminated string, got: {}",
-            err,
-        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported WBXML token"));
     }
 
-    /// `read_strtbl_string` must accept a properly NUL-terminated entry
-    /// when referenced via STR_T.
+    /// Test that LITERAL tokens are rejected.
     #[test]
-    fn terminated_strtbl_entry_is_accepted() {
-        // Same structure but string table is "hi\0" (properly terminated).
-        // Body: a known tag with content, STR_T referencing offset 0, END.
-        //
-        // Use AirSync:Sync (page 0, token 0x05) with content bit → 0x45.
-        let wbxml: Vec<u8> = vec![
-            0x03, // version
-            0x01, // public ID
-            0x6A, // charset (UTF-8)
-            0x03, // string table length = 3
-            b'h', b'i', 0x00, // "hi\0"
-            0x45, // tag Sync with content (page 0, token 0x05 | 0x40)
-            0x83, 0x00, // STR_T, offset 0
-            0x01, // END
+    fn literal_token_rejected() {
+        let wbxml = vec![
+            0x03, 0x01, 0x6A, 0x00, // header
+            0x04, 0x00, // LITERAL token with offset 0 (no string table)
         ];
         let result = decode(&wbxml);
-        assert!(
-            result.is_ok(),
-            "Expected decode to succeed for terminated string table entry, got: {:?}",
-            result,
-        );
-        let xml = result.unwrap();
-        assert!(
-            xml.contains("hi"),
-            "Expected decoded XML to contain 'hi', got: {}",
-            xml,
-        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported WBXML token"));
     }
 }
