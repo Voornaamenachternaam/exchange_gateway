@@ -39,26 +39,26 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
     local_str.to_string()
 }
 
-pub fn decode_basic_auth(auth: &str) -> (String, String) {
+pub fn decode_basic_auth(auth: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = auth.split_whitespace().collect();
     if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("Basic") {
-        return (String::new(), String::new());
+        return None;
     }
 
     let decoded = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[1])
     {
         Ok(d) => d,
-        Err(_) => return (String::new(), String::new()),
+        Err(_) => return None,
     };
 
     let decoded_str = match std::str::from_utf8(&decoded) {
         Ok(s) => s,
-        Err(_) => return (String::new(), String::new()),
+        Err(_) => return None,
     };
     let Some((username, password)) = decoded_str.split_once(':') else {
-        return (String::new(), String::new());
+        return None;
     };
-    (username.to_string(), password.to_string())
+    Some((username.to_string(), password.to_string()))
 }
 
 #[cfg(test)]
