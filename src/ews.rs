@@ -1,3 +1,4 @@
+// src/ews.rs
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use chrono::{DateTime, NaiveDateTime};
@@ -335,26 +336,41 @@ async fn handle_update_item(
     };
     let tz: Tz = config.timezone.parse().unwrap_or(chrono_tz::UTC);
 
-    // Build patches for all item changes up-front so we can send them in a
-    // single JMAP batch request instead of one network round-trip per item.
-    //
-    // Multiple ItemChange entries may reference the same ItemId (e.g. one
-    // updates the subject, another updates the start time).  We merge their
-    // patches into a single JMAP update per ID and track each *position* as
-    // either a no-op or linked to a patched ID so that the per-position
-    // response is correct.
-    let item_count = req.item_changes.items.len();
+    // Enum to track the outcome for each ItemChange in request order.
+    enum ResponsePlaceholder {
+        ImmediateSuccess,
+        ImmediateError { id: String, code: &'static str, message: &'static str },
+        Pending { id: String },
+    }
 
-    // Per-position tracking: (id, is_no_op).
-    let mut positions: Vec<(String, bool)> = Vec::with_capacity(item_count);
-
-    // Merged patches keyed by item ID.  We use a HashMap to accumulate fields
-    // across all occurrences of a given ID.
+    let mut placeholders = Vec::with_capacity(req.item_changes.items.len());
     let mut merged: std::collections::HashMap<String, serde_json::Map<String, serde_json::Value>> =
         std::collections::HashMap::new();
 
     for change in req.item_changes.items {
         let id = change.item_id.id;
+
+        // Check for unsupported operations (DeleteItemField, AppendToItemField)
+        if !change.updates.delete_fields.is_empty() || !change.updates.append_fields.is_empty() {
+            tracing::warn!(
+                "Unsupported update operation for item {}: delete or append fields present",
+                id
+            );
+            placeholders.push(ResponsePlaceholder::ImmediateError {
+                id,
+                code: "ErrorInternalServerError",
+                message: "Unsupported update operation (DeleteItemField or AppendToItemField)",
+            });
+            continue;
+        }
+
+        // No set fields → no-op
+        if change.updates.set_fields.is_empty() {
+            placeholders.push(ResponsePlaceholder::ImmediateSuccess);
+            continue;
+        }
+
+        // Build patch from SetItemField entries
         let mut patch = serde_json::Map::new();
         for update in change.updates.set_fields {
             match update.field_uri.field_uri.as_str() {
@@ -393,19 +409,18 @@ async fn handle_update_item(
             }
         }
         if patch.is_empty() {
-            positions.push((id, true));
+            placeholders.push(ResponsePlaceholder::ImmediateSuccess);
         } else {
-            // Merge fields into the existing patch for this ID (if any).
             merged.entry(id.clone()).or_default().extend(patch);
-            positions.push((id, false));
+            placeholders.push(ResponsePlaceholder::Pending { id });
         }
     }
 
-    // Flatten the merged map into the Vec expected by batch_patch_events.
+    // Flatten merged patches into the Vec expected by batch_patch_events.
     let patches: Vec<(String, serde_json::Map<String, serde_json::Value>)> =
         merged.into_iter().collect();
 
-    // Send all non-empty patches in a single batch request.
+    // Send all non‑empty patches in a single batch request.
     let batch_result = if patches.is_empty() {
         None
     } else {
@@ -423,13 +438,24 @@ async fn handle_update_item(
             }
             Err(e) => {
                 tracing::error!("batch_patch_events failed: {}", e);
-                // Total failure — every non-no-op item failed.
+                // Total failure – every pending item failed.
                 let mut response_messages = String::new();
-                for (_, is_no_op) in &positions {
-                    if *is_no_op {
-                        response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
-                    } else {
-                        response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
+                for ph in placeholders {
+                    match ph {
+                        ResponsePlaceholder::ImmediateSuccess => {
+                            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+                        }
+                        ResponsePlaceholder::ImmediateError { code, message, .. } => {
+                            response_messages.push_str(&format!(
+                                r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>{}</m:ResponseCode><m:MessageText>{}</m:MessageText></m:UpdateItemResponseMessage>"#,
+                                code, message
+                            ));
+                        }
+                        ResponsePlaceholder::Pending { id } => {
+                            response_messages.push_str(&format!(
+                                r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#,
+                            ));
+                        }
                     }
                 }
                 return soap_response(&format!(
@@ -440,23 +466,35 @@ async fn handle_update_item(
         }
     };
 
-    // Build per-item response messages in the original request order.
+    // Build per‑item response messages in the original request order.
     let not_updated: std::collections::HashMap<String, String> = batch_result
         .as_ref()
         .map(|r| r.not_updated.iter().cloned().collect())
         .unwrap_or_default();
 
     let mut response_messages = String::new();
-    for (id, is_no_op) in &positions {
-        if *is_no_op {
-            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
-        } else if let Some(desc) = not_updated.get(id) {
-            tracing::error!("patch_event failed for {}: {}", id, desc);
-            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
-        } else {
-            response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+    for ph in placeholders {
+        match ph {
+            ResponsePlaceholder::ImmediateSuccess => {
+                response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+            }
+            ResponsePlaceholder::ImmediateError { code, message, .. } => {
+                response_messages.push_str(&format!(
+                    r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>{}</m:ResponseCode><m:MessageText>{}</m:MessageText></m:UpdateItemResponseMessage>"#,
+                    code, message
+                ));
+            }
+            ResponsePlaceholder::Pending { id } => {
+                if let Some(desc) = not_updated.get(&id) {
+                    tracing::error!("patch_event failed for {}: {}", id, desc);
+                    response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorInternalServerError</m:ResponseCode><m:MessageText>Update failed</m:MessageText></m:UpdateItemResponseMessage>"#);
+                } else {
+                    response_messages.push_str(r#"<m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage>"#);
+                }
+            }
         }
     }
+
     soap_response(&format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:UpdateItemResponse>"#,
         NS_M, NS_T, response_messages
@@ -964,6 +1002,24 @@ struct EwsUpdates {
     #[serde(rename = "SetItemField")]
     #[serde(default)]
     set_fields: Vec<SetItemField>,
+    #[serde(rename = "DeleteItemField")]
+    #[serde(default)]
+    delete_fields: Vec<DeleteItemField>,
+    #[serde(rename = "AppendToItemField")]
+    #[serde(default)]
+    append_fields: Vec<AppendToItemField>,
+}
+#[derive(Debug, Deserialize)]
+struct DeleteItemField {
+    #[serde(rename = "FieldURI")]
+    field_uri: FieldURI,
+}
+#[derive(Debug, Deserialize)]
+struct AppendToItemField {
+    #[serde(rename = "FieldURI")]
+    field_uri: FieldURI,
+    #[serde(rename = "CalendarItem")]
+    calendar_item: EwsCalendarItem,
 }
 #[derive(Debug, Deserialize)]
 struct SetItemField {
@@ -1058,4 +1114,4 @@ struct DeleteItemRequest {
 struct SyncFolderHierarchyRequest {
     #[serde(rename = "SyncState", default)]
     sync_state: Option<String>,
-}
+} 
