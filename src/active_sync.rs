@@ -1026,7 +1026,7 @@ async fn handle_sync(
         }
     };
 
-    db::update_sync_state(
+    if let Err(e) = db::update_sync_state(
         config,
         user,
         device_id,
@@ -1034,7 +1034,14 @@ async fn handle_sync(
         &new_sync_key,
         &jmap_state_to_persist,
     )
-    .await;
+    .await
+    {
+        tracing::error!(
+            user = user, device_id = device_id, collection = %collection_id,
+            "Sync: failed to persist sync state: {e} — returning server error"
+        );
+        return error_xml(500, "SyncStateUpdateError");
+    }
 
     format!(
         r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands>{}</Commands></Collection></Collections></Sync>"#,
