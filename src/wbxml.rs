@@ -1214,9 +1214,14 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(quick_xml::events::Event::CData(ref e)) => {
+                let raw = e.as_ref();
+                if raw.contains(&0u8) {
+                    return Err("CData content contains NUL byte, cannot encode as WBXML inline string".to_string());
+                }
                 body.push(TAG_STR_I);
-                body.extend_from_slice(e.as_ref());
+                body.extend_from_slice(raw);
                 body.push(0x00);
+            }
             }
             Ok(_) => {}
             Err(e) => return Err(format!("XML parsing error: {}", e)),
