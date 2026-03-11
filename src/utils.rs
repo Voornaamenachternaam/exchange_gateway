@@ -45,33 +45,38 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
 
 /// Decode a Basic Authentication header into username and password.
 ///
-/// The header must start with "Basic " (case‑sensitive), followed by a
-/// base64‑encoded string of the form `username:password`. Returns `None`
-/// if the header is malformed, the base64 decode fails, or the split
-/// yields fewer than two parts.
+/// The header must start with "Basic" (case‑insensitive), followed by
+/// whitespace, and a base64‑encoded string of the form `username:password`.
+/// Returns `None` if the header is malformed, the base64 decode fails,
+/// or the split yields fewer than two parts.
 pub fn decode_basic_auth(auth_header: &str) -> Option<(String, String)> {
-    // 1. Must start with "Basic " (including the trailing space)
-    if !auth_header.starts_with("Basic ") {
+    // Trim leading whitespace per RFC 7230 (optional whitespace before scheme)
+    let trimmed = auth_header.trim_start();
+
+    // Split on any whitespace to separate the scheme and the token.
+    let mut parts = trimmed.split_whitespace();
+    let scheme = parts.next()?;
+    let encoded = parts.next()?;
+
+    // Scheme must be "Basic" (case‑insensitive)
+    if !scheme.eq_ignore_ascii_case("basic") {
         return None;
     }
 
-    // 2. Extract the base64 part
-    let encoded = &auth_header[6..]; // skip "Basic "
-
-    // 3. Decode base64
+    // Decode base64
     let decoded = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         encoded.as_bytes(),
     )
     .ok()?;
 
-    // 4. Convert to UTF-8 (should be ASCII, but we accept valid UTF-8)
+    // Convert to UTF-8 (should be ASCII, but we accept valid UTF-8)
     let decoded_str = String::from_utf8(decoded).ok()?;
 
-    // 5. Split on the first colon
+    // Split on the first colon
     let (user, pass) = decoded_str.split_once(':')?;
 
-    // 6. Return owned strings (allow empty username/password if present)
+    // Return owned strings (allow empty username/password if present)
     Some((user.to_string(), pass.to_string()))
 }
 
@@ -130,6 +135,27 @@ mod tests {
     }
 
     #[test]
+    fn decode_basic_auth_case_insensitive() {
+        let auth = "basic dXNlcjpwYXNz";
+        let result = decode_basic_auth(auth);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn decode_basic_auth_multiple_spaces() {
+        let auth = "Basic   dXNlcjpwYXNz";
+        let result = decode_basic_auth(auth);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn decode_basic_auth_leading_whitespace() {
+        let auth = "  Basic dXNlcjpwYXNz";
+        let result = decode_basic_auth(auth);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
     fn decode_basic_auth_missing_prefix() {
         assert_eq!(decode_basic_auth("Bearer token"), None);
     }
@@ -159,4 +185,4 @@ mod tests {
         let result = decode_basic_auth(auth);
         assert_eq!(result, Some(("user".to_string(), "".to_string())));
     }
-}
+} 
