@@ -989,11 +989,9 @@ async fn handle_sync(
                 }
             }
         }
+        _ => {
             // Either prev_state is None, or old_sync_key is "0" (client reset)
             if has_client_commands {
-                // Client commands were already applied during an initial sync.
-                // Advance the SyncKey and return an empty Commands block to prevent
-                // echoing the client's own writes back as server changes.
                 let new_key = Uuid::new_v4().to_string();
                 db::update_sync_state(
                     config,
@@ -1004,7 +1002,27 @@ async fn handle_sync(
                     &post_command_jmap_state,
                 )
                 .await;
-                return (String::new(), new_key, post_command_jmap_state);
+                return format!(
+                    r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
+                    utils::escape_xml(&new_key),
+                    utils::escape_xml(&collection_id),
+                    responses_xml
+                );
+            }
+            let events = match jmap_client::get_calendar_events(session).await {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!("Failed to fetch calendar events: {}", e);
+                    return error_xml(500, "CalendarEventsError");
+                }
+            };
+            let mut xml = String::new();
+            let new_key = Uuid::new_v4().to_string();
+            for event in events {
+                xml.push_str(&render_event_xml(event, "Add", &config.timezone));
+            }
+            (xml, new_key, post_command_jmap_state)
+        }
             }
 
             let events = match jmap_client::get_calendar_events(session).await {
