@@ -992,54 +992,28 @@ async fn handle_sync(
                 }
             }
         }
-        _ => {
             // Either prev_state is None, or old_sync_key is "0" (client reset)
+            if has_client_commands {
+                // Client commands were already applied during an initial sync.
+                // Advance the SyncKey and return an empty Commands block to prevent
+                // echoing the client's own writes back as server changes.
+                let new_key = Uuid::new_v4().to_string();
+                db::update_sync_state(
+                    config,
+                    user,
+                    device_id,
+                    &collection_id,
+                    &new_key,
+                    &post_command_jmap_state,
+                )
+                .await;
+                return (String::new(), new_key, post_command_jmap_state);
+            }
+
             let events = match jmap_client::get_calendar_events(session).await {
                 Ok(e) => e,
                 Err(e) => {
                     tracing::error!("Failed to fetch calendar events: {}", e);
-                    // Client commands were already applied — advance the
-                    // SyncKey to prevent command replay on retry.  This must
-                    // happen regardless of whether old_sync_key is "0"
-                    // (initial sync) or not; otherwise the client will resend
-                    // the same commands on the next attempt.
-                    if has_client_commands {
-                        let new_key = Uuid::new_v4().to_string();
-                        db::update_sync_state(
-                            config,
-                            user,
-                            device_id,
-                            &collection_id,
-                            &new_key,
-                            if old_sync_key == "0" {
-                                ""
-                            } else {
-                                &stored_jmap_state
-                            },
-                        )
-                        .await;
-                        return format!(
-                            r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands></Commands></Collection></Collections></Sync>"#,
-                            utils::escape_xml(&new_key),
-                            utils::escape_xml(&collection_id),
-                            responses_xml
-                        );
-                    }
-                    // When old_sync_key != "0", claim_sync_key already replaced
-                    // the DB's sync_key with a temporary placeholder.  Restore
-                    // the original SyncKey so the client can retry with the
-                    // same key instead of hitting Status 3 (invalid key).
-                    if old_sync_key != "0" {
-                        db::update_sync_state(
-                            config,
-                            user,
-                            device_id,
-                            &collection_id,
-                            &old_sync_key,
-                            &stored_jmap_state,
-                        )
-                        .await;
-                    }
                     return error_xml(500, "CalendarEventsError");
                 }
             };
