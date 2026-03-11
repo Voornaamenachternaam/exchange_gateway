@@ -206,7 +206,6 @@ async fn handle_activesync_options() -> impl IntoResponse {
         "",
     )
 }
-}
 
 async fn handle_ews(
     State(config): State<Arc<AppConfig>>,
