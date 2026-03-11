@@ -489,6 +489,7 @@ pub async fn push_event(
     if event.uid.is_none() {
         event.uid = Some(Uuid::new_v4().to_string());
     }
+    event.id = None;
     let mut event_json = serde_json::to_value(&event)
         .map_err(|e| JmapError::Parse(format!("serialize failed: {}", e)))?;
     if let Some(obj) = event_json.as_object_mut() {
