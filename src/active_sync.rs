@@ -1023,24 +1023,9 @@ async fn handle_sync(
             }
             (xml, new_key, post_command_jmap_state)
         }
-            }
-
-            let events = match jmap_client::get_calendar_events(session).await {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::error!("Failed to fetch calendar events: {}", e);
-                    return error_xml(500, "CalendarEventsError");
-                }
-            };
-            let mut xml = String::new();
-            let new_key = Uuid::new_v4().to_string();
-            for event in events {
-                xml.push_str(&render_event_xml(event, "Add", &config.timezone));
-            }
-            (xml, new_key, post_command_jmap_state)
-        }
     };
 
+    // ---- FIX: attempt to persist the new sync state, and if it fails, restore the old key ----
     if let Err(e) = db::update_sync_state(
         config,
         user,
@@ -1053,8 +1038,38 @@ async fn handle_sync(
     {
         tracing::error!(
             user = user, device_id = device_id, collection = %collection_id,
-            "Sync: failed to persist sync state: {e} — returning server error"
+            "Sync: failed to persist sync state: {e} — attempting rollback"
         );
+
+        // Attempt to restore the previous state (old_sync_key and the stored JMAP state)
+        // This prevents the client from being left with a stale placeholder key.
+        if old_sync_key != "0" {
+            let old_jmap = stored_state
+                .as_ref()
+                .map(|s| s.jmap_state.as_str())
+                .unwrap_or("");
+            if let Err(rollback_err) = db::update_sync_state(
+                config,
+                user,
+                device_id,
+                &collection_id,
+                &old_sync_key,
+                old_jmap,
+            )
+            .await
+            {
+                tracing::error!(
+                    user = user, device_id = device_id, collection = %collection_id,
+                    "Sync: rollback ALSO failed: {rollback_err} — sync key may be permanently invalid"
+                );
+            } else {
+                tracing::info!(
+                    user = user, device_id = device_id, collection = %collection_id,
+                    "Sync: successfully restored old sync key after persistence failure"
+                );
+            }
+        }
+
         return error_xml(500, "SyncStateUpdateError");
     }
 
@@ -1873,4 +1888,4 @@ async fn handle_folder_sync(
         FOLDER_SYNC_KEY,
         utils::escape_xml(&cal_id)
     )
-}
+        } 
