@@ -1045,13 +1045,16 @@ pub fn encode(xml: &str) -> Result<Vec<u8>, String> {
                 scope_page_stack.pop();
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
-                body.push(TAG_STR_I);
                 let text_str = std::str::from_utf8(e.as_ref())
                     .map_err(|_| "Invalid UTF-8 in XML text node".to_string())?;
                 let t = quick_xml::escape::unescape(text_str)
                     .map_err(|e| format!("XML text unescape error: {}", e))?;
-                body.extend(t.as_bytes());
-                body.push(0x00);
+                if !t.trim().is_empty() {
+                    body.push(TAG_STR_I);
+                    body.extend(t.as_bytes());
+                    body.push(0x00);
+                }
+            }
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(quick_xml::events::Event::CData(ref e)) => {
