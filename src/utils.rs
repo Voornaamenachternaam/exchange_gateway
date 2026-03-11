@@ -2,88 +2,77 @@ pub fn escape_xml(s: &str) -> String {
     quick_xml::escape::escape(s).into_owned()
 }
 
+/// Parse a local datetime string into UTC RFC 3339 format.
+/// Handles UTC‑suffixed strings, normal local times, DST gaps, and ambiguities.
 pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
     use chrono::{TimeZone, Utc};
+
+    // Already UTC (trailing Z)
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%SZ") {
         return Utc.from_utc_datetime(&dt).to_rfc3339();
     }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
-        return match tz.from_local_datetime(&dt) {
-            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
-            chrono::LocalResult::Ambiguous(earliest, _) => {
-                earliest.with_timezone(&Utc).to_rfc3339()
-            }
-            chrono::LocalResult::None => {
-                // DST gap: the local time does not exist. Advance minute by
-                // minute until we find a valid local time, then resolve to UTC.
-                let mut advanced = dt;
-                for _ in 0..(24 * 60) {
-                    advanced = match advanced.checked_add_signed(chrono::TimeDelta::minutes(1)) {
-                        Some(next) => next,
-                        None => return local_str.to_string(),
-                    };
-                    match tz.from_local_datetime(&advanced) {
-                        chrono::LocalResult::Single(dt) => {
-                            return dt.with_timezone(&Utc).to_rfc3339();
-                        }
-                        chrono::LocalResult::Ambiguous(earliest, _) => {
-                            return earliest.with_timezone(&Utc).to_rfc3339();
-                        }
-                        chrono::LocalResult::None => continue,
-                    }
-                }
-                local_str.to_string()
-            }
-        };
-    }
-    local_str.to_string()
-}
 
-```suggestion
-        } else {
-            return error_xml(401, "Unauthorized");
-        }
+    // Parse as naive local datetime
+    let naive = match chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
+        Ok(dt) => dt,
+        Err(_) => return local_str.to_string(), // unparseable → return as‑is
     };
 
-+    // Commands that do not require a JMAP session — handle them after
-+    // credentials have been fully validated via the JMAP session above.
-    match command.as_str() {
-        "Ping" => return handle_ping().await,
-        "Provision" => return handle_provision().await,
-        _ => {}
+    match tz.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
+        chrono::LocalResult::Ambiguous(earliest, _) => earliest.with_timezone(&Utc).to_rfc3339(),
+        chrono::LocalResult::None => {
+            // DST gap: local time does not exist. Advance minute by minute
+            // until we find a valid local time, then resolve to UTC.
+            let mut advanced = naive;
+            for _ in 0..(24 * 60) {
+                advanced = match advanced.checked_add_signed(chrono::TimeDelta::minutes(1)) {
+                    Some(next) => next,
+                    None => return local_str.to_string(),
+                };
+                match tz.from_local_datetime(&advanced) {
+                    chrono::LocalResult::Single(dt) => return dt.with_timezone(&Utc).to_rfc3339(),
+                    chrono::LocalResult::Ambiguous(earliest, _) => {
+                        return earliest.with_timezone(&Utc).to_rfc3339();
+                    }
+                    chrono::LocalResult::None => continue,
+                }
+            }
+            local_str.to_string()
+        }
+    }
+}
+
+/// Decode a Basic Authentication header into username and password.
+///
+/// The header must start with "Basic " (case‑sensitive), followed by a
+/// base64‑encoded string of the form `username:password`. Returns `None`
+/// if the header is malformed, the base64 decode fails, or the split
+/// yields fewer than two parts.
+pub fn decode_basic_auth(auth_header: &str) -> Option<(String, String)> {
+    // 1. Must start with "Basic " (including the trailing space)
+    if !auth_header.starts_with("Basic ") {
+        return None;
     }
 
-    match command.as_str() {
-        "FolderSync" => handle_folder_sync(&session, config, &user, device_id, xml).await,
-        "Sync" => {
-            let req: SyncRequest = match quick_xml::de::from_str(xml) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("Sync XML Parse Error: {:?}", e);
-                    return error_xml(400, "BadRequest");
-                }
-            };
-            handle_sync(&session, config, &user, device_id, req).await
-        }
-        "ItemOperations" => {
-            let req: ItemOpsReq = match quick_xml::de::from_str(xml) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("ItemOperations XML Parse Error: {:?}", e);
-                    return error_xml(400, "BadRequest");
-                }
-            };
-            handle_item_operations(&session, req).await
-        }
-        "MeetingResponse" => handle_meeting_response(&session, config, xml, &user).await,
-        "SendMail" => handle_send_mail(config, xml, &user).await,
-        "Settings" => handle_settings(&session, config, &user, device_id).await,
-        "Search" => handle_search(&session, xml).await,
-        _ => {
-            tracing::warn!("Unsupported EAS Command: {}", command);
-            error_xml(400, "UnsupportedCommand")
-        }
-    }
+    // 2. Extract the base64 part
+    let encoded = &auth_header[6..]; // skip "Basic "
+
+    // 3. Decode base64
+    let decoded = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        encoded.as_bytes(),
+    )
+    .ok()?;
+
+    // 4. Convert to UTF-8 (should be ASCII, but we accept valid UTF-8)
+    let decoded_str = String::from_utf8(decoded).ok()?;
+
+    // 5. Split on the first colon
+    let (user, pass) = decoded_str.split_once(':')?;
+
+    // 6. Return owned strings (allow empty username/password if present)
+    Some((user.to_string(), pass.to_string()))
 }
 
 #[cfg(test)]
@@ -109,7 +98,6 @@ mod tests {
         // 2024-03-10 02:30:00 US/Eastern does not exist (clocks spring forward
         // from 2:00 to 3:00). The function must still return valid RFC 3339.
         let result = parse_local_to_utc("2024-03-10T02:30:00", chrono_tz::US::Eastern);
-        // Must be parseable as RFC 3339 and end with +00:00 (UTC)
         assert!(
             result.ends_with("+00:00"),
             "Expected UTC RFC 3339 but got: {result}"
@@ -132,5 +120,43 @@ mod tests {
     fn parse_local_to_utc_unparseable_returns_input() {
         let result = parse_local_to_utc("not-a-date", chrono_tz::US::Eastern);
         assert_eq!(result, "not-a-date");
+    }
+
+    #[test]
+    fn decode_basic_auth_valid() {
+        let auth = "Basic dXNlcjpwYXNz"; // base64 of "user:pass"
+        let result = decode_basic_auth(auth);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn decode_basic_auth_missing_prefix() {
+        assert_eq!(decode_basic_auth("Bearer token"), None);
+    }
+
+    #[test]
+    fn decode_basic_auth_invalid_base64() {
+        let auth = "Basic not-base64!";
+        assert_eq!(decode_basic_auth(auth), None);
+    }
+
+    #[test]
+    fn decode_basic_auth_no_colon() {
+        let auth = "Basic dXNlcnBhc3M="; // base64 of "userpass"
+        assert_eq!(decode_basic_auth(auth), None);
+    }
+
+    #[test]
+    fn decode_basic_auth_empty_username() {
+        let auth = "Basic OnBhc3M="; // base64 of ":pass"
+        let result = decode_basic_auth(auth);
+        assert_eq!(result, Some(("".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn decode_basic_auth_empty_password() {
+        let auth = "Basic dXNlcjo="; // base64 of "user:"
+        let result = decode_basic_auth(auth);
+        assert_eq!(result, Some(("user".to_string(), "".to_string())));
     }
 }
