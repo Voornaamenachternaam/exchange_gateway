@@ -107,16 +107,17 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
     ))
 }
 
-async fn handle_find_folder(session: &jmap_client::JmapSession) -> String {
-    let cal_id = jmap_client::get_default_calendar_id(session)
-        .await
-        .unwrap_or("default".into());
-    soap_response(&format!(
-        r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true"><t:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
-        NS_M,
-        NS_T,
-        utils::escape_xml(&cal_id)
-    ))
+```suggestion
+110:async fn handle_find_folder(session: &jmap_client::JmapSession) -> String {
+111:    let cal_id = jmap_client::get_default_calendar_id(session)
+112:        .await
+113:        .unwrap_or("default".into());
+114:    soap_response(&format(
+115:        r#"<m:FindFolderResponse xmlns:m=\"{}\" xmlns:t=\"{}\"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView=\"1\" IncludesLastItemInRange=\"true\"><t:Folders><t:CalendarFolder><t:FolderId Id=\"{}\" ChangeKey=\"AQAAABYAAA=\" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
+116:        NS_M,
+117:        NS_T,
+118:        utils::escape_xml(&cal_id)
+119:    ))
 }
 
 async fn handle_resolve_names(session: &jmap_client::JmapSession, xml: &str) -> String {
