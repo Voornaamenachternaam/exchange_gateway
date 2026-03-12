@@ -20,10 +20,7 @@ impl AppConfig {
             smtp_url: {
                 let url_str = env::var("SMTP_URL").map_err(|_| "SMTP_URL missing".to_string())?;
                 let url = url::Url::parse(&url_str).map_err(|e| format!("Invalid SMTP_URL: {}", e))?;
-                match url.scheme() {
-                    "smtp" | "smtps" => Ok(url),
-                    _ => Err("SMTP_URL must use smtp:// or smtps://".to_string()),
-                }
+                Ok(url)
             }?,
             mail_domain: {
                 let domain = env::var("MAIL_DOMAIN")
