@@ -17,15 +17,9 @@ impl AppConfig {
             db_api_url: env::var("CF_D1_API_URL").map_err(|_| "CF_D1_API_URL missing")?,
             db_auth_token: env::var("GATEWAY_SECRET").map_err(|_| "GATEWAY_SECRET missing")?,
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
-            smtp_url: {
-                let url_str = env::var("SMTP_URL").map_err(|_| "SMTP_URL missing".to_string())?;
-                let url = url::Url::parse(&url_str)
-                    .map_err(|e| format!("Invalid SMTP_URL: {e}"))?;
-                if !matches!(url.scheme(), "smtp" | "smtps" | "starttls") || url.host_str().is_none() {
-                    return Err("SMTP_URL must use smtp://, smtps://, or starttls:// and include a host".to_string());
+                if !matches!(url.scheme(), "smtp" | "smtps") || url.host_str().is_none() {
+                    return Err("SMTP_URL must use smtp:// or smtps:// and include a host".to_string());
                 }
-                url
-            },
             mail_domain: {
                 let domain = env::var("MAIL_DOMAIN")
                     .ok()
