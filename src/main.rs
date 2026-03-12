@@ -157,7 +157,15 @@ async fn handle_active_sync(
     if is_wbxml {
         match wbxml::encode(&response_xml) {
             Ok(wbxml_data) => (
-                StatusCode::OK,
+(
+    StatusCode::OK,
+    [
+        ("content-type", "application/vnd.ms-sync.wbxml"),
+        ("MS-Server-ActiveSync", "16.1"),
+    ],
+    wbxml_data,
+)
+    .into_response()
                 [
                     ("content-type", "application/vnd.ms-sync.wbxml"),
                     ("MS-Server-ActiveSync", "16.1"),
