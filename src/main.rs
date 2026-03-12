@@ -202,6 +202,7 @@ async fn handle_active_sync(
             [
                 ("content-type", "application/xml; charset=utf-8"),
                 ("MS-Server-ActiveSync", "16.1"),
+                (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             ],
             response_xml,
         )
