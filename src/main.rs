@@ -177,7 +177,15 @@ async fn handle_active_sync(
             Err(e) => {
                 tracing::error!("WBXML Encode Error: {}", e);
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+(
+    StatusCode::INTERNAL_SERVER_ERROR,
+    [
+        ("content-type", "text/plain; charset=utf-8"),
+        ("MS-Server-ActiveSync", "16.1"),
+    ],
+    "WBXML Encode Error".to_string(),
+)
+    .into_response()
                     [
                         ("content-type", "text/plain; charset=utf-8"),
                         ("MS-Server-ActiveSync", "16.1"),
