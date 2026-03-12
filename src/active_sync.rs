@@ -696,7 +696,15 @@ async fn handle_sync(
     let coll = req.collections.collection;
     let old_sync_key = coll.sync_key.clone();
     let collection_id = coll.collection_id.clone();
-    let has_client_commands = coll.commands.is_some();
+    let has_client_commands = coll
+        .commands
+        .as_ref()
+        .map(|cmds| {
+            cmds.add.as_ref().map_or(false, |v| !v.is_empty())
+                || cmds.change.as_ref().map_or(false, |v| !v.is_empty())
+                || cmds.delete.as_ref().map_or(false, |v| !v.is_empty())
+        })
+        .unwrap_or(false);
 
     // Fetch the stored sync state (SyncKey + JMAP state) *before* processing
     // client commands.  We need the JMAP state for change-detection below.
