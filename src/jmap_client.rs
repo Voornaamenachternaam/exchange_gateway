@@ -360,7 +360,377 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
         access_token: token,
         account_id,
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use thiserror::Error;
+use uuid::Uuid;
+
+#[derive(Debug, Error)]
+pub enum JmapError {
+    #[error("connection error: {0}")]
+    Connection(#[from] reqwest::Error),
+
+    #[error("authentication failed: {0}")]
+    Auth(String),
+
+    #[error("parse error: {0}")]
+    Parse(String),
+
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    #[error("JMAP API error: {0}")]
+    Api(String),
+}
+
+impl JmapError {
+    /// Returns `true` for transient errors (network / connection / server
+    /// issues) where retrying later is likely to succeed and cached state
+    /// should be preserved.
+    ///
+    /// Inspects the underlying `reqwest::Error` to distinguish genuinely
+    /// transient conditions (timeouts, connection resets, DNS failures,
+    /// HTTP 5xx server errors) from non-transient ones.
+    ///
+    /// Parse errors are treated as **non-transient** because they typically
+    /// indicate a persistent problem (missing fields, schema mismatches,
+    /// deserialization failures) that will recur on every retry.  Treating
+    /// them as transient would preserve stale sync state and trap the client
+    /// in a loop re-encountering the same parse failure.  By classifying
+    /// them as non-transient, the caller can trigger a full re-sync which
+    /// rebuilds state from scratch and recovers cleanly.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            JmapError::Connection(e) => {
+                e.is_timeout()
+                    || e.is_connect()
+                    || e.status().is_some_and(|s| {
+                        s.is_server_error()
+                            || s == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || s == reqwest::StatusCode::REQUEST_TIMEOUT
+                    })
+            }
+            // JMAP method-level errors (RFC 8620 §3.6.1) embed the error
+            // type as a "[type]" prefix.  The transient types are:
+            //   serverFail          — unexpected/transient internal error
+            //   serverUnavailable   — temporarily unavailable
+            //   serverPartialFail   — some calls may have succeeded
+            JmapError::Api(msg) => {
+                msg.starts_with("[serverFail]")
+                    || msg.starts_with("[serverUnavailable]")
+                    || msg.starts_with("[serverPartialFail]")
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JmapSession {
+    pub api_url: String,
+    pub access_token: String,
+    pub account_id: String,
+    pub principals_account_id: String,
+    pub client: Client,
+    /// Server-advertised `maxObjectsInSet` from `urn:ietf:params:jmap:core`
+    /// capabilities.  Defaults to 500 when the server omits the value.
+    pub max_objects_in_set: usize,
+    pub blob_account_id: Option<String>,
+}
+
+/// JSCalendar NDay object (RFC 8984 Section 4.3.2) used inside
+/// `RecurrenceRule.by_day` to represent a day-of-week with an optional
+/// week-offset (e.g. "second Tuesday").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NDay {
+    #[serde(rename = "@type", default = "nday_type_default")]
+    pub r#type: String,
+    pub day: String,
+    #[serde(rename = "nthOfPeriod", skip_serializing_if = "Option::is_none")]
+    pub nth_of_period: Option<i32>,
+}
+
+fn nday_type_default() -> String {
+    "NDay".to_string()
+}
+
+/// JSCalendar RecurrenceRule object (RFC 8984 Section 4.3.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecurrenceRule {
+    #[serde(rename = "@type", default = "recurrence_rule_type_default")]
+    pub r#type: String,
+    pub frequency: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval: Option<u32>,
+    #[serde(rename = "byDay", skip_serializing_if = "Option::is_none")]
+    pub by_day: Option<Vec<NDay>>,
+    #[serde(rename = "byMonthDay", skip_serializing_if = "Option::is_none")]
+    pub by_month_day: Option<Vec<i32>>,
+    #[serde(rename = "byMonth", skip_serializing_if = "Option::is_none")]
+    pub by_month: Option<Vec<String>>,
+    #[serde(rename = "bySetPosition", skip_serializing_if = "Option::is_none")]
+    pub by_set_position: Option<Vec<i32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+fn recurrence_rule_type_default() -> String {
+    "RecurrenceRule".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct JmapEvent {
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "title", default)]
+    pub title: String,
+    #[serde(rename = "start")]
+    pub start: String,
+    #[serde(rename = "end")]
+    pub end: String,
+    #[serde(rename = "location", skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "uid", skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    #[serde(
+        rename = "participants",
+        skip_serializing_if = "Option::is_none",
+        with = "participants_serde",
+        default
+    )]
+    pub participants: Option<Vec<Participant>>,
+    #[serde(rename = "showWithoutTime", default)]
+    pub show_without_time: bool,
+    #[serde(rename = "recurrenceRules", skip_serializing_if = "Option::is_none")]
+    pub recurrence_rules: Option<Vec<RecurrenceRule>>,
+    #[serde(rename = "updated", skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>, // Added for ChangeKey
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Participant {
+    pub email: String,
+    pub name: String,
+    #[serde(
+        rename = "participationStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub status: Option<String>,
+    /// The opaque participant ID used as the map key in JSCalendar
+    /// (RFC 8984).  Preserved across round-trips so that patch paths
+    /// (`participants/<id>/…`) address the correct entry on the server.
+    #[serde(skip)]
+    pub participant_id: Option<String>,
+}
+
+/// Custom serde module to convert between `Vec<Participant>` and the JSCalendar
+/// participants map format (RFC 8984).
+///
+/// In JSCalendar the `participants` property is `Id[Participant]` — an object
+/// whose keys are opaque identifiers and whose values carry participant
+/// properties including `sendTo` (a map of method → URI, e.g.
+/// `"imip": "mailto:user@example.com"`).
+///
+/// On **serialization** we use the stored `participant_id` (or generate a UUID)
+/// as the map key and encode the email as `sendTo.imip`.
+///
+/// On **deserialization** we extract the email from `sendTo.imip` (stripping a
+/// `mailto:` prefix when present) and fall back to the map key for backward
+/// compatibility with servers that still key by email.
+mod participants_serde {
+    use super::Participant;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    /// Intermediate struct for serialization (RFC 8984 compliant).
+    #[derive(Serialize)]
+    struct ParticipantValue<'a> {
+        name: &'a str,
+        #[serde(rename = "sendTo")]
+        send_to: HashMap<&'a str, String>,
+        #[serde(
+            rename = "participationStatus",
+            skip_serializing_if = "Option::is_none"
+        )]
+        status: &'a Option<String>,
+    }
+
+    pub fn serialize<S>(value: &Option<Vec<Participant>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(participants) => {
+                let mut map = HashMap::new();
+                for p in participants {
+                    let key = p.participant_id.as_deref().unwrap_or("").to_string();
+                    let key = if key.is_empty() {
+                        Uuid::new_v4().to_string()
+                    } else {
+                        key
+                    };
+                    let mut send_to = HashMap::new();
+                    send_to.insert("imip", format!("mailto:{}", p.email));
+                    if map
+                        .insert(
+                            key,
+                            ParticipantValue {
+                                name: &p.name,
+                                send_to,
+                                status: &p.status,
+                            },
+                        )
+                        .is_some()
+                    {
+                        tracing::warn!(
+                            email = %p.email,
+                            "Duplicate participant id during serialization; \
+                             last entry wins"
+                        );
+                    }
+                }
+                map.serialize(serializer)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<Participant>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        /// Intermediate struct for deserialization.
+        #[derive(Deserialize)]
+        struct ParticipantValue {
+            #[serde(default)]
+            name: String,
+            #[serde(rename = "sendTo", default)]
+            send_to: Option<HashMap<String, String>>,
+            #[serde(rename = "participationStatus", default)]
+            status: Option<String>,
+        }
+
+        /// Extract the email from `sendTo.imip`, stripping the `mailto:` prefix.
+        fn email_from_send_to(send_to: &Option<HashMap<String, String>>) -> Option<String> {
+            send_to.as_ref().and_then(|m| {
+                m.get("imip").map(|uri| {
+                    if uri
+                        .as_bytes()
+                        .get(..7)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"mailto:"))
+                    {
+                        uri[7..].to_string()
+                    } else {
+                        uri.to_string()
+                    }
+                })
+            })
+        }
+
+        let opt: Option<HashMap<String, ParticipantValue>> = Option::deserialize(deserializer)?;
+        Ok(opt.map(|map| {
+            map.into_iter()
+                .map(|(id, p)| {
+                    let email = email_from_send_to(&p.send_to).unwrap_or_else(|| id.clone());
+                    Participant {
+                        email,
+                        name: p.name,
+                        status: p.status,
+                        participant_id: Some(id),
+                    }
+                })
+                .collect()
+        }))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Principal {
+    pub name: String,
+    pub email: String,
+}
+
+// Fix: Added Default derive
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct JmapChanges {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "oldState")]
+    pub old_state: String,
+    #[serde(rename = "newState")]
+    pub new_state: String,
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    pub destroyed: Vec<String>,
+}
+
+/// Look up the account ID for a given JMAP capability URN, first checking
+/// `primaryAccounts` and falling back to scanning `accounts` for a matching
+/// `accountCapabilities` entry.
+fn find_account_for_capability<'a>(
+    body: &'a serde_json::Value,
+    capability: &str,
+) -> Option<&'a str> {
+    body["primaryAccounts"][capability].as_str().or_else(|| {
+        body["accounts"].as_object().and_then(|accounts| {
+            accounts.iter().find_map(|(id, account)| {
+                account
+                    .get("accountCapabilities")
+                    .and_then(|caps| caps.get(capability))
+                    .map(|_| id.as_str())
+            })
+        })
+    })
+}
+
+pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapSession, JmapError> {
+    let client = Client::new();
+    let token = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("{}:{}", user, pass),
+    );
+    let res = client
+        .get(jmap_url)
+        .header("Authorization", format!("Basic {}", token))
+        .send()
+        .await?;
+    let status = res.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(JmapError::Auth(format!("HTTP {}", status)));
+    }
+    let body: serde_json::Value = res.error_for_status()?.json().await?;
+    let account_id = find_account_for_capability(&body, "urn:ietf:params:jmap:calendars")
+        .ok_or_else(|| JmapError::Parse("no usable account in JMAP session".into()))?
+        .to_string();
+    let principals_account_id =
+        find_account_for_capability(&body, "urn:ietf:params:jmap:principals")
+            .unwrap_or(&account_id)
+            .to_string();
+    let max_objects_in_set = body
+        .get("capabilities")
+        .and_then(|c| c.get("urn:ietf:params:jmap:core"))
+        .and_then(|core| core.get("maxObjectsInSet"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(500);
+    let blob_account_id = find_account_for_capability(&body, "urn:ietf:params:jmap:blob")
+        .map(String::from);
+    Ok(JmapSession {
+        api_url: body["apiUrl"].as_str().unwrap_or(jmap_url).to_string(),
+        access_token: token,
+        account_id,
         principals_account_id,
+        client,
+        max_objects_in_set,
+        blob_account_id,
+    })
+}
         client,
         max_objects_in_set,
     })
