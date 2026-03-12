@@ -196,6 +196,7 @@ async fn handle_activesync_options() -> impl IntoResponse {
         StatusCode::OK,
         [
             (header::ALLOW, "POST, OPTIONS"),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::ACCESS_CONTROL_ALLOW_METHODS, "POST, OPTIONS"),
             (
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
