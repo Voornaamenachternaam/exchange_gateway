@@ -31,7 +31,6 @@ const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
             return soap_fault("ErrorInternalServerError", "Auth Failed");
         }
     };
-    };
     let action = extract_action_name(xml);
     tracing::info!("EWS Request: {}", action);
 
