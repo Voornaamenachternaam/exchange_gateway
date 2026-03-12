@@ -4,7 +4,7 @@ pub fn escape_xml(s: &str) -> String {
 
 /// Parse a local datetime string into UTC RFC 3339 format.
 /// Handles UTC‑suffixed strings, normal local times, DST gaps, and ambiguities.
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeDelta, TimeZone, Utc};
 
 pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
     // Any RFC 3339 timestamp with an explicit offset can be normalized directly.
@@ -12,10 +12,8 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
         return dt.with_timezone(&Utc).to_rfc3339();
     }
 
-    // Parse as naive local datetime
-    let naive = match chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
-        Ok(n) => n,
-        Err(_) => return local_str.to_string(),
+    let Ok(naive) = NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") else {
+        return local_str.to_string();
     };
 
     match tz.from_local_datetime(&naive) {
@@ -26,7 +24,7 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
             // until we find a valid local time, then resolve to UTC.
             let mut advanced = naive;
             for _ in 0..(24 * 60) {
-                advanced = match advanced.checked_add_signed(chrono::TimeDelta::minutes(1)) {
+                advanced = match advanced.checked_add_signed(TimeDelta::minutes(1)) {
                     Some(next) => next,
                     None => return local_str.to_string(),
                 };
@@ -35,6 +33,13 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
                     chrono::LocalResult::Ambiguous(earliest, _) => {
                         return earliest.with_timezone(&Utc).to_rfc3339();
                     }
+                    chrono::LocalResult::None => continue,
+                }
+            }
+            local_str.to_string()
+        }
+    }
+}
                     chrono::LocalResult::None => continue,
                 }
             }
