@@ -140,20 +140,6 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
         NS_T,
         utils::escape_xml(&sync_state),
         changes
-    )))
-}
-
-async fn handle_find_folder(session: &jmap_client::JmapSession) -> Result<String, EwsError> {
-    let cal_id = jmap_client::get_default_calendar_id(session).await?;
-    Ok(soap_response(&format!(
-        r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true"><t:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
-        NS_M,
-        NS_T,
-        utils::escape_xml(&cal_id)
-    )))
-}
-    let auth = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
-        Some(a) => a,
 pub async fn process_request(
     config: &AppConfig,
     xml: &str,
@@ -162,14 +148,11 @@ pub async fn process_request(
     let auth_header = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
         None => return soap_fault("ErrorAccessDenied", "Missing Authorization header"),
+    };
 
     let (user, pass) = match utils::decode_basic_auth(auth_header) {
         Some((u, p)) => (u, p),
         None => return soap_fault("ErrorAccessDenied", "Invalid Authorization header format"),
-    };
-    let (user, pass) = match utils::decode_basic_auth(auth) {
-        Some(creds) => creds,
-        None => return soap_fault("ErrorAccessDenied", "Invalid Authorization header"),
     };
     let session = match jmap_client::get_session(&config.jmap_url, &user, &pass).await {
         Ok(s) => s,
