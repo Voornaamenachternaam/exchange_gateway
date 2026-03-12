@@ -1159,7 +1159,11 @@ pub async fn update_participant_status(
 }
 
 pub async fn get_blob(session: &JmapSession, blob_id: &str) -> Result<Vec<u8>, JmapError> {
-    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:blob"], "methodCalls": [["Blob/get", { "accountId": session.account_id, "ids": [blob_id], "properties": ["data:asBase64", "data:asText"] }, "c0"]] });
+    let blob_account_id = session.blob_account_id.as_ref().ok_or_else(|| {
+        JmapError::NotFound("JMAP server does not support Blob Management Extension".into())
+    })?;
+
+    let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:blob"], "methodCalls": [["Blob/get", { "accountId": blob_account_id, "ids": [blob_id], "properties": ["data:asBase64", "data:asText"] }, "c0"]] });
     let res = session
         .client
         .post(&session.api_url)
