@@ -23,10 +23,14 @@ const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
     };
     let session = match jmap_client::get_session(&config.jmap_url, &user, &pass).await {
         Ok(s) => s,
+        Err(jmap_client::JmapError::Auth(_)) => {
+            return soap_fault("ErrorAccessDenied", "Auth Failed");
+        }
         Err(e) => {
             tracing::error!("JMAP Auth failed: {}", e);
             return soap_fault("ErrorInternalServerError", "Auth Failed");
         }
+    };
     };
     let action = extract_action_name(xml);
     tracing::info!("EWS Request: {}", action);
