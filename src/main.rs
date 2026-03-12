@@ -179,7 +179,6 @@ async fn handle_active_sync(
                 )
                     .into_response()
             }
-            }
         }
     } else {
         (
