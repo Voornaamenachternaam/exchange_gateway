@@ -70,7 +70,7 @@ async fn handle_active_sync(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-    if !auth_header.to_ascii_lowercase().starts_with("basic ") {
+    if utils::decode_basic_auth(auth_header).is_none() {
         return (
             StatusCode::UNAUTHORIZED,
             [(
