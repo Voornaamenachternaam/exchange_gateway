@@ -326,13 +326,14 @@ async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &st
     // We detect raw MIME by looking for RFC 822-style header lines
     // (e.g. "Header-Name: value") anywhere in the first 10 lines. This
     // covers messages that start with Received:, Date:, Subject:, etc.
-    let looks_like_mime = mime_text.lines().take(10).any(|l| {
-        let Some((name, _)) = l.split_once(':') else {
-            return false;
-        };
-        // RFC 5322 field names: printable ASCII except colon, at least 1 char
-        !name.is_empty() && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
-    });
+```suggestion
+329:    let looks_like_mime = mime_text.lines().take(10).any(|l| {
+330:        let Some((name, _)) = l.split_once(':') else {
+331:            return false;
+332:        };
+333:        // RFC 5322 field names: printable ASCII except colon, at least 1 char
+334:        !name.is_empty() && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
+335:    });
     // Use Vec<u8> for the final MIME payload to avoid corrupting non-UTF-8
     // bytes (e.g. binary attachments) via lossy UTF-8 conversion.
     let mime_content: Vec<u8> = if !looks_like_mime {
