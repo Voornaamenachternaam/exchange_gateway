@@ -565,6 +565,7 @@ pub async fn push_events(
     let mut prepared: Vec<(String, String, serde_json::Value)> = Vec::with_capacity(events.len());
     for (caller_id, mut event) in events {
         event.id = None;
+        event.id = None;
         if event.uid.is_none() {
             event.uid = Some(Uuid::new_v4().to_string());
         }
