@@ -13,13 +13,6 @@ const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
 const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
-    // Proceed with session authentication...
-    config: &AppConfig,
-    xml: &str,
-    headers: &HeaderMap,
-// src/ews.rs
-use crate::{config::AppConfig, db, jmap_client, utils};
-use axum::http::HeaderMap;
 use chrono::{DateTime, NaiveDateTime};
 use chrono_tz::Tz;
 use quick_xml::Reader;
