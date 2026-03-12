@@ -13,7 +13,6 @@ const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
 const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
-let (user, pass) = utils::decode_basic_auth(auth);
     // Proceed with session authentication...
     config: &AppConfig,
     xml: &str,
