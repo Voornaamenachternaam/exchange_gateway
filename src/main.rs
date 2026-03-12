@@ -160,7 +160,8 @@ async fn handle_active_sync(
                 StatusCode::OK,
                 [
                     ("content-type", "application/vnd.ms-sync.wbxml"),
-                    ("MS-Server-ActiveSync", "15.0"),
+                    ("MS-Server-ActiveSync", "16.1"),
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
                 ],
                 wbxml_data,
             )
@@ -170,8 +171,9 @@ async fn handle_active_sync(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     [
-                        ("content-type", "text/plain; charset=utf-8"),
-                        ("MS-Server-ActiveSync", "15.0"),
+                        ("content-type", "application/xml; charset=utf-8"),
+                        ("MS-Server-ActiveSync", "16.1"),
+                        (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
                     ],
                     "WBXML Encode Error".to_string(),
                 )
@@ -183,7 +185,7 @@ async fn handle_active_sync(
             StatusCode::OK,
             [
                 ("content-type", "application/xml; charset=utf-8"),
-                ("MS-Server-ActiveSync", "15.0"),
+                ("MS-Server-ActiveSync", "16.1"),
             ],
             response_xml,
         )
