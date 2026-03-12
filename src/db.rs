@@ -163,6 +163,9 @@ pub async fn get_sync_state_full(
 ///
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
+fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
+    if let Some(obj) = json.as_object() {
+        match obj.get("success").and_then(|v| v.as_bool()) {
             Some(true) => {}
             Some(false) => {
                 let msg = json
@@ -177,8 +180,11 @@ pub async fn get_sync_state_full(
             }
             None => {}
         }
-    } else if json.is_array() {
-
+    } else if !json.is_array() {
+        return Err(DbError::UnexpectedFormat);
+    }
+    Ok(())
+}
 /// Extract the `meta.changes` count from a D1 API response.  Returns `None`
 /// when the field is missing or the response format is unrecognised, so
 /// callers can distinguish "no meta field" from an explicit zero.
