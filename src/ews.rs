@@ -17,7 +17,7 @@ pub async fn process_request(
     config: &AppConfig,
     xml: &str,
     headers: &HeaderMap,
-) -> String {
+) -> Result<String, EwsError> {
     let auth = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
         None => return soap_fault("ErrorAccessDenied", "Missing Authorization"),
