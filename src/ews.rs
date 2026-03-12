@@ -858,9 +858,13 @@ async fn handle_delete_item(
 }
 
 async fn handle_get_folder(session: &jmap_client::JmapSession, _xml: &str) -> String {
-    let cal_id = jmap_client::get_default_calendar_id(session)
-        .await
-        .unwrap_or("default".into());
+    let cal_id = match jmap_client::get_default_calendar_id(session).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("GetFolder: failed to get default calendar ID: {}", e);
+            return soap_fault("ErrorInternalServerError", "Failed to get calendar");
+        }
+    };
     soap_response(&format!(
         r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"#,
         NS_M,
