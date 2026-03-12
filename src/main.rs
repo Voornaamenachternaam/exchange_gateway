@@ -171,7 +171,7 @@ async fn handle_active_sync(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     [
-                        ("content-type", "application/xml; charset=utf-8"),
+                        ("content-type", "text/plain; charset=utf-8"),
                         ("MS-Server-ActiveSync", "16.1"),
                         (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
                     ],
