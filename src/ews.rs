@@ -13,6 +13,11 @@ const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
 const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
+pub async fn process_request(
+    config: &AppConfig,
+    xml: &str,
+    headers: &HeaderMap,
+) -> String {
     let auth = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
         None => return soap_fault("ErrorAccessDenied", "Missing Authorization"),
