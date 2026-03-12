@@ -40,13 +40,6 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
         }
     }
 }
-                    chrono::LocalResult::None => continue,
-                }
-            }
-            local_str.to_string()
-        }
-    }
-}
 
 /// Decode a Basic Authentication header into username and password.
 ///
