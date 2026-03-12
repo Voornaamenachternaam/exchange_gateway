@@ -19,9 +19,8 @@ impl AppConfig {
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
             smtp_url: {
                 let url_str = env::var("SMTP_URL").map_err(|_| "SMTP_URL missing".to_string())?;
-                let url = url::Url::parse(&url_str).map_err(|e| format!("Invalid SMTP_URL: {}", e))?;
-                Ok(url)
-            }?,
+                url::Url::parse(&url_str).map_err(|e| format!("Invalid SMTP_URL: {}", e))?
+            },
             mail_domain: {
                 let domain = env::var("MAIL_DOMAIN")
                     .ok()
