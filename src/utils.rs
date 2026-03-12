@@ -4,19 +4,12 @@ pub fn escape_xml(s: &str) -> String {
 
 /// Parse a local datetime string into UTC RFC 3339 format.
 /// Handles UTC‑suffixed strings, normal local times, DST gaps, and ambiguities.
-pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
-    use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 
-    // Already UTC (trailing Z)
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(local_str) {
+    // Any RFC 3339 timestamp with an explicit offset can be normalized directly.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(local_str) {
         return dt.with_timezone(&Utc).to_rfc3339();
     }
-
-    // Parse as naive local datetime
-    let naive = match chrono::NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") {
-        Ok(dt) => dt,
-        Err(_) => return local_str.to_string(), // unparseable → return as‑is
-    };
 
     match tz.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).to_rfc3339(),
