@@ -111,9 +111,13 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
 }
 
 async fn handle_find_folder(session: &jmap_client::JmapSession) -> String {
-    let cal_id = jmap_client::get_default_calendar_id(session)
-        .await
-        .unwrap_or("default".into());
+    let cal_id = match jmap_client::get_default_calendar_id(session).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("FindFolder: failed to get default calendar ID: {}", e);
+            return soap_fault("ErrorInternalServerError", "Failed to get calendar");
+        }
+    };
     soap_response(&format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true"><t:Folders><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
         NS_M,
