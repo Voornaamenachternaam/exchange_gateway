@@ -492,8 +492,6 @@ pub async fn push_event(
     event.id = None;
     let mut event_json = serde_json::to_value(&event)
         .map_err(|e| JmapError::Parse(format!("serialize failed: {}", e)))?;
-        let mut event_json = serde_json::to_value(&event)
-        .map_err(|e| JmapError::Parse(format!("serialize failed: {}", e)))?;
     if let Some(obj) = event_json.as_object_mut() {
         obj.insert("calendarIds".to_string(), json!({ (calendar_id): true }));
     }
