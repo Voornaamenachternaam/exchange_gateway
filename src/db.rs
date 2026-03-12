@@ -163,10 +163,6 @@ pub async fn get_sync_state_full(
 ///
 /// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
 /// explicitly signals failure.
-fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
-    if json.get("result").is_some() {
-        // New format: require an explicit boolean success flag
-        match json.get("success").and_then(|s| s.as_bool()) {
             Some(true) => {}
             Some(false) => {
                 let msg = json
@@ -179,15 +175,9 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
                     .to_owned();
                 return Err(DbError::Query(msg));
             }
-            None => return Err(DbError::UnexpectedFormat),
+            None => {}
         }
     } else if json.is_array() {
-        // Legacy array format – no top-level success flag; treat as OK.
-    } else {
-        return Err(DbError::UnexpectedFormat);
-    }
-    Ok(())
-}
 
 /// Extract the `meta.changes` count from a D1 API response.  Returns `None`
 /// when the field is missing or the response format is unrecognised, so
