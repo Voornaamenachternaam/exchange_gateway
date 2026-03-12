@@ -1053,10 +1053,7 @@ async fn handle_sync(
         // Attempt to restore the previous state (old_sync_key and the stored JMAP state)
         // This prevents the client from being left with a stale placeholder key.
         if old_sync_key != "0" {
-            let old_jmap = stored_state
-                .as_ref()
-                .map(|s| s.jmap_state.as_str())
-                .unwrap_or("");
+            let old_jmap = &stored_jmap_state;
             if let Err(rollback_err) = db::update_sync_state(
                 config,
                 user,
