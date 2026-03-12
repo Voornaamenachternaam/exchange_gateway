@@ -29,12 +29,10 @@ pub async fn process_request(
     let auth_header = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
         None => return soap_fault("ErrorAccessDenied", "Missing Authorization header"),
-    };
 
     let (user, pass) = match utils::decode_basic_auth(auth_header) {
         Some((u, p)) => (u, p),
         None => return soap_fault("ErrorAccessDenied", "Invalid Authorization header format"),
-    };
     };
     let (user, pass) = match utils::decode_basic_auth(auth) {
         Some(creds) => creds,
