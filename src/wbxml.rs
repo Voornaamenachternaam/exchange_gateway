@@ -753,18 +753,6 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                 return Err("Unexpected end reading mb_u_int32".into());
             }
             let byte = data[*pos];
-            *pos += 1;
-            val = val
-                .checked_mul(1 << 7)
-                .and_then(|v| v.checked_add((byte & 0x7F) as usize))
-                .ok_or_else(|| "mb_u_int32 overflow".to_string())?;
-            if (byte & 0x80) == 0 {
-                break;
-            }
-        }
-        Ok(val)
-    }
-
     /// Skip over a WBXML attribute section.  Per the WBXML spec the attribute
     /// list is a sequence of ATTRSTART / ATTRVALUE tokens terminated by an END
     /// (0x01) token.  Each token may carry inline data (strings, opaque, etc.)
@@ -825,12 +813,18 @@ pub fn decode(data: &[u8]) -> Result<String, String> {
                         return Err("Exceeded maximum nesting depth in WBXML attributes".into());
                     }
                 }
-                // All remaining tokens are either unsupported (EXT, ENTITY) or
-                // are attribute start/value tokens that we just skip without extra data.
-                // According to spec, attributes are not used, so we just ignore them.
+                // Attribute start/value tokens can be skipped as single-byte markers.
+                // Tokens with additional payload must be rejected or consumed explicitly.
+                0x02 | 0x44 | 0x84 | 0xC4 | 0x40..=0x42 | 0x80..=0x83 | 0xC0..=0xC2 => {
+                    return Err(format!(
+                        "Unsupported WBXML attribute token used in ActiveSync: 0x{:02X}",
+                        t
+                    ));
+                }
                 _ => {}
             }
         }
+    }
     }
 
     // Parse public ID as mb_u_int32 (per WBXML spec, section 5.4)
