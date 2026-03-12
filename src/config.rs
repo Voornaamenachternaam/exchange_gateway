@@ -19,7 +19,12 @@ impl AppConfig {
             timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
             smtp_url: {
                 let url_str = env::var("SMTP_URL").map_err(|_| "SMTP_URL missing".to_string())?;
-                url::Url::parse(&url_str).map_err(|e| format!("Invalid SMTP_URL: {}", e))?
+                let url = url::Url::parse(&url_str)
+                    .map_err(|e| format!("Invalid SMTP_URL: {e}"))?;
+                if !matches!(url.scheme(), "smtp" | "smtps" | "starttls") || url.host_str().is_none() {
+                    return Err("SMTP_URL must use smtp://, smtps://, or starttls:// and include a host".to_string());
+                }
+                url
             },
             mail_domain: {
                 let domain = env::var("MAIL_DOMAIN")
