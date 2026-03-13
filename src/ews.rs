@@ -73,11 +73,13 @@ async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &
     };
 
     Ok(soap_response(&format!(
-        r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
+        r#"<m:SyncFolderHierarchyResponse xmlns:m=\"{}\" xmlns:t=\"{}\"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass=\"Success\"<m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}\</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}\</m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
         NS_M,
         NS_T,
         utils::escape_xml(&sync_state),
         changes
+    )))
+
 pub async fn process_request(
     config: &AppConfig,
     xml: &str,
