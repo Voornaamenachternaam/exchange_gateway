@@ -205,15 +205,12 @@ async fn handle_activesync_options() -> impl IntoResponse {
     (
         StatusCode::OK,
         [
-            (header::ALLOW, "POST, OPTIONS"),
+            ("allow", "POST, OPTIONS"),
             ("MS-Server-ActiveSync", "16.1"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
-            (header::ACCESS_CONTROL_ALLOW_METHODS, "POST, OPTIONS"),
-            (
-                header::ACCESS_CONTROL_ALLOW_HEADERS,
-                "Authorization, Content-Type, X-MS-DeviceId",
-            ),
-            (header::ACCESS_CONTROL_MAX_AGE, "86400")
+            ("access-control-allow-origin", "*"),
+            ("access-control-allow-methods", "POST, OPTIONS"),
+            ("access-control-allow-headers", "Authorization, Content-Type, X-MS-DeviceId"),
+            ("access-control-max-age", "86400")
         ],
         "",
     )
