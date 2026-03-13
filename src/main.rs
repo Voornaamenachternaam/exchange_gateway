@@ -40,9 +40,8 @@ async fn main() {
             std::process::exit(1);
         }
     });
-    info!("Exchange Gateway v{} started", env!("CARGO_PKG_VERSION"));
-
-    let app = Router::new()
+    
+.with_state(config)  // `config` is already an Arc, no need for .clone()
         .route(
             "/Microsoft-Server-ActiveSync",
             post(handle_active_sync).options(handle_activesync_options),
@@ -53,9 +52,18 @@ async fn main() {
         .with_state(config.clone());
 
     let addr = "0.0.0.0:8134";
-    info!("Listening on {}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("Failed to bind to address {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
+    info!(
+        "Exchange Gateway v{} listening on {}",
+        env!("CARGO_PKG_VERSION"),
+        addr
+    );
     axum::serve(listener, app).await.unwrap();
 }
 
