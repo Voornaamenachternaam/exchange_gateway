@@ -201,7 +201,6 @@ async fn handle_active_sync(
         .into_response()
     }
 }
-}
 
 async fn handle_activesync_options() -> impl IntoResponse {
     (
