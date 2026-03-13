@@ -50,8 +50,8 @@ async function handleApiRequest(request, env) {
     return Response.json({
       success: result.success ?? true,
       errors: result.success === false
-        ? [{ message: result.error ?? "DB query failed" }]
-        : [],
+        ? [{ message: result.errors?.[0]?.message ?? "DB query failed" }]
+        : []
       result: [
         { results: result.results, meta: result.meta }
       ]
