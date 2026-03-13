@@ -178,7 +178,7 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
                     .to_owned();
                 return Err(DbError::Query(msg));
             }
-            None => {}
+            None => return Err(DbError::UnexpectedFormat),
         }
     } else if !json.is_array() {
         return Err(DbError::UnexpectedFormat);
