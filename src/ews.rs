@@ -13,6 +13,8 @@ const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
 const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
+use thiserror::Error;
+
 #[derive(Debug, Error)]
 pub enum EwsError {
     #[error("XML parsing error: {0}")]
