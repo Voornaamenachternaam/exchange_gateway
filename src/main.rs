@@ -51,23 +51,7 @@ async fn main() {
         .with_state(config);
 
     let addr = "0.0.0.0:8134";
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(listener) => listener,
-        Err(ews::EwsError::XmlParse(msg)) => (
-            StatusCode::BAD_REQUEST,
-            [(header::CONTENT_TYPE, "text/plain")],
-            msg,
-        )
-            .into_response(),
         Err(e) => {
-            tracing::error!("EWS processing error: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "text/plain")],
-                "Internal Server Error".to_string(),
-            )
-                .into_response()
-        }
             tracing::error!("Failed to bind to address {}: {}", addr, e);
             std::process::exit(1);
         }
