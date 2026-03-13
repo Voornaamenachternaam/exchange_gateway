@@ -48,8 +48,12 @@ async function handleApiRequest(request, env) {
     const result = await stmt.all();
     
     return Response.json({
+      success: result.success ?? true,
+      errors: result.success === false
+        ? [{ message: result.errors?.[0]?.message ?? "DB query failed" }]
+        : [],
       result: [
-        { results: result.results }
+        { results: result.results, meta: result.meta }
       ]
     });
   } catch (e) {

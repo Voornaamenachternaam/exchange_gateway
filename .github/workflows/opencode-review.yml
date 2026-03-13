@@ -1,0 +1,35 @@
+name: opencode-review
+
+on: 
+  pull_request:
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Configure git identity
+        run: |
+          git config user.name "Voornaamenachternaam"
+          git config user.email "84537103+Voornaamenachternaam@users.noreply.github.com"
+
+      - uses: anomalyco/opencode/github@latest
+        env:
+          OPENAI_API_KEY: ${{ secrets.AIHUBMIX_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: openai/coding-glm-free
+          use_github_token: true
+          prompt: |
+            Review this pull request and fix all issues you find.
+            You MUST use the Edit tool to make the actual code changes to the files.
+            Do NOT just describe or suggest changes - apply them directly.
+            After fixing, commit the changes grouped into logical commits with clear messages.
+            Only comment on issues you cannot fix directly.
