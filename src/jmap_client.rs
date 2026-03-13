@@ -729,11 +729,6 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         client,
         max_objects_in_set,
         blob_account_id,
-    })
-}
-        client,
-        max_objects_in_set,
-    })
 }
 
 pub async fn get_default_calendar_id(session: &JmapSession) -> Result<String, JmapError> {
