@@ -273,7 +273,7 @@ async fn handle_ews(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(header::CONTENT_TYPE, "text/plain")],
-                format!("Internal Server Error: {}", e),
+                "Internal Server Error".to_string(),
             )
                 .into_response()
         }
