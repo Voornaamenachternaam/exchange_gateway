@@ -57,8 +57,6 @@ let listener = match tokio::net::TcpListener::bind(addr).await {
         std::process::exit(1);
     }
 };
-        }
-    };
     info!(
         "Exchange Gateway v{} listening on {}",
         env!("CARGO_PKG_VERSION"),
