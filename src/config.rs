@@ -34,7 +34,14 @@ impl AppConfig {
                     || normalized.contains('/')
                     || normalized.contains(':')
                     || normalized.chars().any(|c| c.is_whitespace())
-                    || normalized.split('.').any(|label| label.is_empty())
+                    || normalized.split('.').any(|label| {
+                        label.is_empty()
+                            || label.starts_with('-')
+                            || label.ends_with('-')
+                            || !label
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                    })
                 {
                     return Err("MAIL_DOMAIN must be a bare domain name like example.com".to_string());
                 }
