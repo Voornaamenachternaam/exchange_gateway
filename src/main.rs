@@ -173,9 +173,8 @@ async fn handle_active_sync(
                     [
                         ("content-type", "text/plain; charset=utf-8"),
                         ("MS-Server-ActiveSync", "16.1"),
-                        (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                        ("access-control-allow-origin", "*"),
                     ],
-                    "WBXML Encode Error".to_string(),
                 )
                     .into_response()
             }
