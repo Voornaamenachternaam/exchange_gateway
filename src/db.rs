@@ -166,7 +166,7 @@ pub async fn get_sync_state_full(
 fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
     if let Some(obj) = json.as_object() {
         match obj.get("success").and_then(|v| v.as_bool()) {
-            Some(true) => {}
+            Some(true) => return Ok(()),
             Some(false) => {
                 let msg = json
                     .get("errors")
@@ -180,10 +180,13 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
             }
             None => return Err(DbError::UnexpectedFormat),
         }
-    } else if !json.is_array() {
-        return Err(DbError::UnexpectedFormat);
     }
-    Ok(())
+    if json.is_array() {
+        Ok(())
+    } else {
+        Err(DbError::UnexpectedFormat)
+    }
+}
 }
 /// Extract the `meta.changes` count from a D1 API response.  Returns `None`
 /// when the field is missing or the response format is unrecognised, so
