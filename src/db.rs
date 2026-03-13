@@ -216,18 +216,18 @@ fn extract_meta_changes(json: &serde_json::Value) -> Option<u64> {
 ///
 /// This prevents two concurrent requests carrying the same SyncKey from both
 /// passing validation: only the first one to execute the UPDATE will match.
-pub async fn claim_sync_key(
+pub async fn update_ews_sync_state_cas(
     config: &AppConfig,
     user: &str,
-    device_id: &str,
-    coll: &str,
-    expected_key: &str,
-    new_key: &str,
+    folder: &str,
+    expected_sync_token: &str,
+    new_sync_token: &str,
+    new_jmap_state: &str,
 ) -> Result<bool, DbError> {
     let client = reqwest::Client::new();
     let body = json!({
-        "query": "UPDATE sync_state SET sync_key = ? WHERE user_email = ? AND device_id = ? AND collection_id = ? AND sync_key = ?",
-        "params": [new_key, user, device_id, coll, expected_key]
+        "query": "UPDATE ews_sync_state SET sync_state = ?, jmap_state = ? WHERE user_email = ? AND folder_id = ? AND sync_state = ?",
+        "params": [new_sync_token, new_jmap_state, user, folder, expected_sync_token]
     });
     let res = match client
         .post(&config.db_api_url)
@@ -241,9 +241,8 @@ pub async fn claim_sync_key(
         Err(e) => {
             tracing::error!(
                 user = user,
-                device_id = device_id,
-                collection = coll,
-                "claim_sync_key: DB request failed: {e}"
+                folder = folder,
+                "update_ews_sync_state_cas: DB request failed: {e}"
             );
             return Err(DbError::Request(e));
         }
@@ -253,9 +252,8 @@ pub async fn claim_sync_key(
         Err(e) => {
             tracing::error!(
                 user = user,
-                device_id = device_id,
-                collection = coll,
-                "claim_sync_key: failed to parse DB response: {e}"
+                folder = folder,
+                "update_ews_sync_state_cas: failed to parse DB response: {e}"
             );
             return Err(DbError::Parse(e));
         }
@@ -263,29 +261,19 @@ pub async fn claim_sync_key(
     if let Err(reason) = check_db_success(&json) {
         tracing::error!(
             user = user,
-            device_id = device_id,
-            collection = coll,
-            "claim_sync_key: {reason}"
+            folder = folder,
+            "update_ews_sync_state_cas: {reason}"
         );
         return Err(reason);
     }
     let changes = match extract_meta_changes(&json) {
         Some(n) => n,
         None => {
-            // The DB confirmed the query succeeded (`check_db_success` passed)
-            // but the response lacks the `meta.changes` field.  Without the
-            // row-count we cannot tell whether the UPDATE matched (claim
-            // succeeded) or not (invalid/replayed SyncKey).  Treating this as
-            // success would silently accept bad keys, so return an error
-            // instead.  The caller's `Err` handler restores the original
-            // SyncKey and returns a transient server error (Status 5), letting
-            // the client retry safely.
             tracing::error!(
                 user = user,
-                device_id = device_id,
-                collection = coll,
-                "claim_sync_key: meta.changes missing from DB response; \
-                 cannot confirm SyncKey claim — treating as transient error"
+                folder = folder,
+                "update_ews_sync_state_cas: meta.changes missing from DB response; \
+                 cannot confirm SyncState claim — treating as transient error"
             );
             return Err(DbError::UnexpectedFormat);
         }
