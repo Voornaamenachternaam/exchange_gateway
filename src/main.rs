@@ -183,6 +183,7 @@ async fn handle_active_sync(
                         ("MS-Server-ActiveSync", "16.1"),
                         ("access-control-allow-origin", "*"),
                     ],
+                    "Internal Server Error",
                 )
                     .into_response()
             }
