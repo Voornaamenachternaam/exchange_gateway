@@ -1,7 +1,8 @@
 name: opencode-review
+
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -12,8 +13,6 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v6.0.2
-        with:
-          persist-credentials: false
 
       - name: Configure git identity
         run: |
