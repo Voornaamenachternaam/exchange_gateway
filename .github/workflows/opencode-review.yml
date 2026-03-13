@@ -20,7 +20,7 @@ jobs:
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: openrouter/hunter-alpha
+          model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
           use_github_token: true
           prompt: |
             Review this pull request:
