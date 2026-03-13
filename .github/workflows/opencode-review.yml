@@ -2,10 +2,11 @@ name: opencode-review
 
 on:
   pull_request:
-  
+
 jobs:
   review:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       id-token: write
       contents: write
@@ -21,10 +22,10 @@ jobs:
 
       - uses: anomalyco/opencode/github@latest
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_KEY }}
+          OPENAI_API_KEY: ${{ secrets.AIHUBMIX_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: openrouter/nemotron-free
+          model: openai/coding-glm-free
           use_github_token: true
           prompt: |
             Review this pull request:
