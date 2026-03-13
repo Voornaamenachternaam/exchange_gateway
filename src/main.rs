@@ -161,8 +161,6 @@ async fn handle_active_sync(
                 [
                     ("content-type", "application/vnd.ms-sync.wbxml"),
                     ("MS-Server-ActiveSync", "16.1"),
-                    ("content-type", "application/vnd.ms-sync.wbxml"),
-                    ("MS-Server-ActiveSync", "16.1"),
                     ("access-control-allow-origin", "*"),
                 ],
                 wbxml_data,
