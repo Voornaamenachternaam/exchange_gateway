@@ -2,7 +2,7 @@ name: opencode-review
 
 on:
   pull_request:
-
+  
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -20,10 +20,9 @@ jobs:
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: nvidia/nemotron-3-super-120b-a12b:free
           use_github_token: true
           prompt: |
             Review this pull request:
             - Check for code quality issues
-            - Look for potential bugs
-            - Suggest improvements
+            - Look for potential bugs and provide commit suggestions to fix them
+            - Provide improvements as commit suggestions
