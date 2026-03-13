@@ -1,12 +1,7 @@
 name: opencode-review
-on:
-  workflow_dispatch:
-    inputs:
-      branch:
-        description: 'Branch to review and apply fixes to'
-        required: true
-        default: 'main'
-        type: string
+
+on: 
+  pull_request:
 
 jobs:
   review:
@@ -19,17 +14,11 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v6.0.2
-        with:
-          ref: ${{ inputs.branch }}
-          fetch-depth: 0
 
       - name: Configure git identity
         run: |
           git config user.name "Voornaamenachternaam"
           git config user.email "84537103+Voornaamenachternaam@users.noreply.github.com"
-
-      - name: Set branch tracking
-        run: git checkout -B ${{ inputs.branch }} origin/${{ inputs.branch }}
 
       - uses: anomalyco/opencode/github@latest
         env:
@@ -43,6 +32,6 @@ jobs:
             You MUST use the Edit tool to make the actual code changes to the files.
             Do NOT just describe or suggest changes - apply them directly.
             After fixing, commit the changes grouped into logical commits with clear messages.
-            Only comment on issues you cannot fix directly. This solution must use Rust v1.94.0, which is the latest stable version of Rust, whenever possible/feasible.
-            The file: "worker/index.js" may be written in a different programming language.
+            Only comment on issues you cannot fix directly. This solution must use Rust v1.94.0, which is the latest stable version of Rust, whenever possible/feasible. 
+            The file: "worker/index.js" may be written in a different programming language. 
             Check the content of the file in question, to verify whether the code has changed since this problem/issue was posted.
