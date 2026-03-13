@@ -16,23 +16,24 @@ pub enum DbError {
 /// Extract a field from the first row of a DB API response.
 /// Supports both the Worker wrapper format `{ "result": [ { "results": [...] } ] }`
 /// and the legacy direct-array format `[ { "results": [...] } ]`.
-fn extract_first_field(json: &serde_json::Value, field: &str) -> Option<String> {
-    // New format: { "result": [ { "results": [ { field: "..." } ] } ] }
-    if let Some(val) = json
-        .get("result")
+/// Helper to get the `results` array from either the new or legacy DB response format.
+fn get_results_array(json: &serde_json::Value) -> Option<&serde_json::Value> {
+    // New format: { "result": [ { "results": [...] } ] }
+    json.get("result")
         .and_then(|r| r.get(0))
         .and_then(|r| r.get("results"))
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get(field))
-        .and_then(|v| v.as_str())
-    {
-        return Some(val.to_owned());
-    }
+        .or_else(|| {
+            // Legacy format: [ { "results": [...] } ]
+            json.get(0).and_then(|r| r.get("results"))
+        })
+}
 
-    // Legacy format: [ { "results": [ { field: "..." } ] } ]
-    json.get(0)
-        .and_then(|r| r.get("results"))
-        .and_then(|r| r.get(0))
+/// Extract a field from the first row of a DB API response.
+/// Supports both the Worker wrapper format `{ "result": [ { "results": [...] } ] }`
+/// and the legacy direct-array format `[ { "results": [...] } ]`.
+fn extract_first_field(json: &serde_json::Value, field: &str) -> Option<String> {
+    get_results_array(json)?
+        .get(0)
         .and_then(|r| r.get(field))
         .and_then(|v| v.as_str())
         .map(|s| s.to_owned())
@@ -41,26 +42,9 @@ fn extract_first_field(json: &serde_json::Value, field: &str) -> Option<String> 
 /// Returns `true` when the DB response contains at least one result row.
 /// An empty `"results": []` array (normal "no rows matched") returns `false`.
 fn has_result_rows(json: &serde_json::Value) -> bool {
-    // New format
-    if let Some(true) = json
-        .get("result")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("results"))
+    get_results_array(json)
         .and_then(|a| a.as_array())
-        .map(|a| !a.is_empty())
-    {
-        return true;
-    }
-    // Legacy format
-    if let Some(true) = json
-        .get(0)
-        .and_then(|r| r.get("results"))
-        .and_then(|a| a.as_array())
-        .map(|a| !a.is_empty())
-    {
-        return true;
-    }
-    false
+        .map_or(false, |a| !a.is_empty())
 }
 
 pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
