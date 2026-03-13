@@ -179,7 +179,7 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
                 return Err(DbError::Query(msg));
             }
             None => {
-                if obj.get("result").is_some() {
+                if obj.get("result").and_then(|v| v.as_array()).is_some() {
                     return Ok(());
                 }
                 return Err(DbError::UnexpectedFormat);
