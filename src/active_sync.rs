@@ -18,6 +18,529 @@ use uuid::Uuid;
 lazy_static! {
     static ref RE_TO: Regex = Regex::new(r"(?im)^to:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     static ref RE_FROM: Regex = Regex::new(r"(?im)^from:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    static ref RE_CC: Regex = Regex::new(r"(?im)^cc:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+    static ref RE_BCC: Regex = Regex::new(r"(?im)^bcc:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
+}
+
+const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="ComposeMail:"><Status>2</Status></SendMail>"#;
+
+/// Per-command failure reported back in the `<Responses>` element of the Sync
+/// response so the client knows which commands failed and can retry them.
+#[derive(Debug)]
+enum CommandFailure {
+    /// An Add command failed.  `client_id` echoes the device-assigned ClientId.
+    Add { client_id: String },
+    /// A Change (update) command failed.  `server_id` identifies the item.
+    Change { server_id: String },
+    /// A Delete command failed.  `server_id` identifies the item.
+    Delete { server_id: String },
+}
+
+/// A successfully applied Add command.  The `<Responses>` element must echo
+/// the ClientId back together with the server-assigned ServerId so the device
+/// can correlate local and remote items.
+#[derive(Debug)]
+struct AddSuccess {
+    client_id: String,
+    server_id: String,
+}
+
+/// Bundles the context needed by [`handle_sync_change_error`] so the helper
+/// stays under the recommended argument limit.
+struct SyncErrorContext<'a> {
+    config: &'a AppConfig,
+    user: &'a str,
+    device_id: &'a str,
+    collection_id: &'a str,
+    old_sync_key: &'a str,
+    prev_jmap_state: &'a str,
+    has_client_commands: bool,
+    responses_xml: &'a str,
+}
+
+/// Result of processing client commands — failures and successful Add mappings.
+#[derive(Debug, Default)]
+struct CommandResults {
+    failures: Vec<CommandFailure>,
+    add_successes: Vec<AddSuccess>,
+}
+
+impl CommandResults {
+    /// Render the ActiveSync `<Responses>` XML fragment.
+    ///
+    /// Status 1 = success, Status 6 = "Server error / object not found".
+    /// Successful Add commands include a ClientId→ServerId mapping so the
+    /// device can correlate local and remote items.
+    fn to_responses_xml(&self) -> String {
+        if self.failures.is_empty() && self.add_successes.is_empty() {
+            return String::new();
+        }
+        let mut xml = String::from("<Responses>");
+        for s in &self.add_successes {
+            xml.push_str(&format!(
+                "<Add><ClientId>{}</ClientId><ServerId>{}</ServerId><Status>1</Status></Add>",
+                utils::escape_xml(&s.client_id),
+                utils::escape_xml(&s.server_id),
+            ));
+        }
+        for f in &self.failures {
+            match f {
+                CommandFailure::Add { client_id } => {
+                    xml.push_str(&format!(
+                        "<Add><ClientId>{}</ClientId><Status>6</Status></Add>",
+                        utils::escape_xml(client_id),
+                    ));
+                }
+                CommandFailure::Change { server_id } => {
+                    xml.push_str(&format!(
+                        "<Change><ServerId>{}</ServerId><Status>6</Status></Change>",
+                        utils::escape_xml(server_id),
+                    ));
+                }
+                CommandFailure::Delete { server_id } => {
+                    xml.push_str(&format!(
+                        "<Delete><ServerId>{}</ServerId><Status>6</Status></Delete>",
+                        utils::escape_xml(server_id),
+                    ));
+                }
+            }
+        }
+        xml.push_str("</Responses>");
+        xml
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct Recurrence {
+    #[serde(rename = "Type")]
+    r#type: i32,
+    #[serde(rename = "Interval", default = "default_interval")]
+    interval: i32,
+    #[serde(rename = "DayOfWeek", skip_serializing_if = "Option::is_none")]
+    day_of_week: Option<i32>,
+    #[serde(
+        rename = "DayOfMonth",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    day_of_month: Option<i32>,
+    #[serde(
+        rename = "WeekOfMonth",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    week_of_month: Option<i32>,
+    #[serde(
+        rename = "MonthOfYear",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    month_of_year: Option<i32>,
+}
+
+fn default_interval() -> i32 {
+    1
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ApplicationData {
+    #[serde(rename = "TimeZone", default)]
+    time_zone: Option<String>,
+    #[serde(rename = "Subject", default)]
+    subject: Option<String>,
+    #[serde(rename = "Location", default)]
+    location: Option<String>,
+    #[serde(rename = "StartTime", default)]
+    start: Option<String>,
+    #[serde(rename = "EndTime", default)]
+    end: Option<String>,
+    #[serde(rename = "Body", default)]
+    body: Option<BodyData>,
+    #[serde(rename = "UID", default)]
+    uid: Option<String>,
+    #[serde(rename = "Attendees", default)]
+    attendees: Option<AttendeesList>,
+    #[serde(rename = "AllDayEvent", default)]
+    all_day_event: Option<i32>,
+    #[serde(rename = "Recurrence", default)]
+    recurrence: Option<Recurrence>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BodyData {
+    #[serde(rename = "Type")]
+    body_type: i32,
+    #[serde(rename = "Data")]
+    data: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AttendeesList {
+    #[serde(rename = "Attendee", default)]
+    items: Vec<Attendee>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Attendee {
+    #[serde(rename = "Email")]
+    email: String,
+    #[serde(rename = "Name")]
+    name: String,
+}
+
+pub async fn process_request(
+    config: &AppConfig,
+    xml: &str,
+    headers: &HeaderMap,
+    query_cmd: &str,
+) -> String {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+
+    let mut command = String::new();
+    let mut buf = Vec::new();
+
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                command = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+                break;
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                tracing::error!("Failed to read EAS XML: {:?}", e);
+                return error_xml(400, "BadRequest");
+            }
+            _ => {}
+        }
+    }
+
+    // When the XML body is empty (no root element), fall back to the Cmd
+    // query parameter from the URL.  ActiveSync clients may legitimately
+    // send no body for commands like Ping and Provision.
+    if command.is_empty() && !query_cmd.is_empty() {
+        command = query_cmd.to_string();
+    }
+
+    let auth = match headers.get("Authorization").and_then(|h| h.to_str().ok()) {
+        Some(a) => a,
+        None => return error_xml(401, "Unauthorized"),
+    };
+
+    let (user, pass) = match utils::decode_basic_auth(auth) {
+        Some((u, p)) => (u, p),
+        None => return error_xml(401, "Unauthorized"),
+    };
+
+    let session = match jmap_client::get_session(&config.jmap_url, &user, &pass).await {
+        Ok(s) => s,
+        Err(jmap_client::JmapError::Auth(_)) => return error_xml(401, "Unauthorized"),
+        Err(e) => {
+            tracing::error!("JMAP Auth failed: {}", e);
+            return error_xml(500, "AuthFailed");
+        }
+    };
+
+    // Commands that do not require a JMAP session — handle them after
+    // credentials have been fully validated via the JMAP session above.
+    match command.as_str() {
+        "Ping" => return handle_ping().await,
+        "Provision" => return handle_provision().await,
+        _ => {}
+    }
+
+    match command.as_str() {
+        "FolderSync" => handle_folder_sync(&session, config, &user, device_id, xml).await,
+        "Sync" => {
+            let req: SyncRequest = match quick_xml::de::from_str(xml) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("Sync XML Parse Error: {:?}", e);
+                    return error_xml(400, "BadRequest");
+                }
+            };
+            handle_sync(&session, config, &user, device_id, req).await
+        }
+        "ItemOperations" => {
+            let req: ItemOpsReq = match quick_xml::de::from_str(xml) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("ItemOperations XML Parse Error: {:?}", e);
+                    return error_xml(400, "BadRequest");
+                }
+            };
+            handle_item_operations(&session, req).await
+        }
+        "MeetingResponse" => handle_meeting_response(&session, config, xml, &user).await,
+        "SendMail" => handle_send_mail(config, xml, &user).await,
+        "Settings" => handle_settings(&session, config, &user, device_id).await,
+        "Search" => handle_search(&session, xml).await,
+        _ => {
+            tracing::warn!("Unsupported EAS Command: {}", command);
+            error_xml(400, "UnsupportedCommand")
+        }
+    }
+}
+
+async fn handle_send_mail(config: &AppConfig, xml: &str, authenticated_user: &str) -> String {
+    let mut mime_text = String::new();
+    let mut buf = Vec::new();
+    let mut in_mime = false;
+    let mut reader = Reader::from_str(xml);
+
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                if String::from_utf8_lossy(e.local_name().as_ref()) == "Mime" {
+                    in_mime = true;
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                if String::from_utf8_lossy(e.local_name().as_ref()) == "Mime" {
+                    in_mime = false;
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if in_mime {
+                    let text = String::from_utf8_lossy(&t);
+                    let unescaped = match escape::unescape(&text) {
+                        Ok(s) => s.into_owned(),
+                        Err(e) => {
+                            tracing::warn!("SendMail: failed to unescape XML text: {:?}", e);
+                            text.into_owned()
+                        }
+                    };
+                    mime_text.push_str(&unescaped);
+                }
+            }
+            Ok(Event::CData(t)) => {
+                if in_mime {
+                    mime_text.push_str(&String::from_utf8_lossy(t.as_ref()));
+                }
+            }
+            Ok(Event::Eof) => break,
+            _ => {}
+        }
+    }
+
+    let mut final_mime_content: Vec<u8>;
+    let mut header_section_str: String;
+
+    // Determine if mime_text is base64 encoded or raw MIME
+    let looks_like_mime = mime_text.lines().take(10).any(|l| {
+        let Some((name, _)) = l.split_once(':') else {
+            return false;
+        };
+        !name.is_empty() && name.bytes().all(|b| b.is_ascii_graphic() && b != b':')
+    });
+
+    if !looks_like_mime {
+        let stripped: String = mime_text
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+        match base64::engine::general_purpose::STANDARD.decode(&stripped) {
+            Ok(decoded_bytes) => {
+                final_mime_content = decoded_bytes;
+            },
+            Err(e) => {
+                tracing::warn!("SendMail: base64 decode failed, using raw text: {e}");
+                final_mime_content = mime_text.into_bytes();
+            }
+        }
+    } else {
+        final_mime_content = mime_text.into_bytes();
+    }
+
+    if final_mime_content.is_empty() {
+        return SEND_MAIL_ERROR.to_string();
+    }
+
+    // Extract the RFC 5322 header section for To/From/Cc/Bcc parsing.
+    let header_end = final_mime_content
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 4)
+        .or_else(|| {
+            final_mime_content
+                .windows(2)
+                .position(|w| w == b"\n\n")
+                .map(|p| p + 2)
+        })
+        .unwrap_or(final_mime_content.len());
+    header_section_str = String::from_utf8_lossy(&final_mime_content[..header_end]).to_string();
+
+    let to_addr = RE_TO
+        .captures(&header_section_str)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_string());
+    let from_header = RE_FROM
+        .captures(&header_section_str)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_string());
+    let cc_addr = RE_CC
+        .captures(&header_section_str)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_string());
+    let bcc_addr = RE_BCC
+        .captures(&header_section_str)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_string());
+
+    // Verify the From address matches the authenticated user to prevent spoofing
+    let from_addr_str = match from_header {
+        Some(f) => f,
+        None => {
+            tracing::warn!("SendMail: Missing From header");
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+    let from_mailbox = match from_addr_str.parse::<lettre::message::Mailbox>() {
+        Ok(mb) => mb,
+        Err(e) => {
+            tracing::warn!("SendMail: Malformed From header '{}': {}", from_addr_str, e);
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+    let from_email = from_mailbox.email.to_string();
+    let from_matches = if authenticated_user.contains('@') {
+        from_email.eq_ignore_ascii_case(authenticated_user)
+    } else {
+        if let Some((local, domain)) = from_email.rsplit_once('@') {
+            local.eq_ignore_ascii_case(authenticated_user)
+                && domain.eq_ignore_ascii_case(&config.mail_domain)
+        } else {
+            false
+        }
+    };
+    if !from_matches {
+        tracing::warn!(
+            "SendMail: From address '{}' does not match authenticated user",
+            from_email
+        );
+        return SEND_MAIL_ERROR.to_string();
+    }
+
+    // Collect all recipient addresses
+    let mut all_recipients: std::collections::HashSet<lettre::Address> = std::collections::HashSet::new();
+
+    let mut parse_recipients = |addr_list_opt: Option<String>, header_name: &str| -> Result<(), String> {
+        if let Some(addr_list) = addr_list_opt {
+            let mailboxes: Vec<lettre::message::Mailbox> =
+                match addr_list.parse::<lettre::message::Mailboxes>() {
+                    Ok(mbs) => mbs.into(),
+                    Err(e) => {
+                        tracing::warn!("SendMail: invalid {} address in '{}': {}", header_name, addr_list, e);
+                        return Err(format!("Invalid {} address", header_name));
+                    }
+                };
+            for mb in mailboxes {
+                all_recipients.insert(mb.email);
+            }
+        }
+        Ok(())
+    };
+
+    if let Err(_) = parse_recipients(to_addr, "To") { return SEND_MAIL_ERROR.to_string(); }
+    if let Err(_) = parse_recipients(cc_addr, "Cc") { return SEND_MAIL_ERROR.to_string(); }
+    if let Err(_) = parse_recipients(bcc_addr.clone(), "Bcc") { return SEND_MAIL_ERROR.to_string(); } // Clone bcc_addr for later removal
+
+    if all_recipients.is_empty() {
+        tracing::warn!("SendMail: no valid recipients found");
+        return SEND_MAIL_ERROR.to_string();
+    }
+
+    // Remove Bcc header from the MIME content before sending
+    if bcc_addr.is_some() {
+        header_section_str = RE_BCC.replace_all(&header_section_str, "").to_string();
+        // Reconstruct final_mime_content without Bcc header
+        let body_section = &final_mime_content[header_end..];
+        final_mime_content = header_section_str.into_bytes();
+        final_mime_content.extend_from_slice(body_section);
+    }
+
+    let to_addresses: Vec<lettre::Address> = all_recipients.into_iter().collect();
+    let envelope = match Envelope::new(Some(from_mailbox.email), to_addresses) {
+        Ok(env) => env,
+        Err(e) => {
+            tracing::error!("Failed to build SMTP envelope: {}", e);
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+
+    let smtp_url = &config.smtp_url;
+    let smtp_host = match smtp_url.host_str() {
+        Some(h) => h,
+        None => {
+            tracing::error!("SMTP URL has no host");
+            return SEND_MAIL_ERROR.to_string();
+        }
+    };
+
+    let scheme = smtp_url.scheme().to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "smtps" => 465,
+        "smtp" => 25,
+        _ => 587,
+    };
+    let port = smtp_url.port().unwrap_or(default_port);
+
+    let mut builder = {
+        let b = match scheme.as_str() {
+            "smtps" => {
+                match AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to create SMTP relay transport: {}", e);
+                        return SEND_MAIL_ERROR.to_string();
+                    }
+                }
+            }
+            "smtp" => {
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(smtp_host)
+            }
+            _ => {
+                match AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to create SMTP STARTTLS transport: {}", e);
+                        return SEND_MAIL_ERROR.to_string();
+                    }
+                }
+            }
+        };
+        b.port(port)
+    };
+
+    let user = percent_decode_str(smtp_url.username()).decode_utf8_lossy();
+    if !user.is_empty()
+        && let Some(pass) = smtp_url.password()
+    {
+        let pass = percent_decode_str(pass).decode_utf8_lossy();
+        builder =
+            builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
+                user.into_owned(),
+                pass.into_owned(),
+            ));
+    }
+
+    let mailer = builder.build();
+
+    let status = match mailer.send_raw(&envelope, &final_mime_content).await {
+        Ok(_) => "1",
+        Err(e) => {
+            tracing::error!("SMTP Error: {}", e);
+            "2"
+        }
+    };
+
+    format!(
+        r#"<SendMail xmlns="ComposeMail:"><Status>{}</Status></SendMail>"#,
+        status
+    )
+}
 }
 
 const SEND_MAIL_ERROR: &str = r#"<SendMail xmlns="ComposeMail:"><Status>2</Status></SendMail>"#;
