@@ -26,7 +26,20 @@ impl AppConfig {
                 }
                 url
             },
-            mail_domain: env::var("MAIL_DOMAIN").map_err(|_| "MAIL_DOMAIN missing")?,
+            mail_domain: {
+                let raw = env::var("MAIL_DOMAIN").map_err(|_| "MAIL_DOMAIN missing")?;
+                let normalized = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+                if normalized.is_empty()
+                    || normalized.contains('@')
+                    || normalized.contains('/')
+                    || normalized.contains(':')
+                    || normalized.chars().any(|c| c.is_whitespace())
+                    || normalized.split('.').any(|label| label.is_empty())
+                {
+                    return Err("MAIL_DOMAIN must be a bare domain name like example.com".to_string());
+                }
+                normalized
+            },
         }
     }
 }
