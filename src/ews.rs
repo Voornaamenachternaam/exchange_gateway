@@ -67,9 +67,7 @@ pub async fn process_request(
         "UpdateItem" => handle_update_item(&session, config, xml).await?,
         "DeleteItem" => handle_delete_item(&session, config, xml).await?,
         "GetItem" => handle_get_item(&session, config, xml).await?,
-async fn handle_find_item() -> Result<String, EwsError> {
-    Err(EwsError::UnsupportedOperation("FindItem is not yet implemented".into()))
-}
+        "FindItem" => handle_find_item().await?,
         "ResolveNames" => handle_resolve_names(&session, xml).await?,
         "GetAttachment" => handle_get_attachment(&session, xml).await?,
         "GetRoomLists" => handle_get_room_lists().await?,
