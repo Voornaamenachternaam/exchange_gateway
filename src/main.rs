@@ -40,8 +40,7 @@ async fn main() {
             std::process::exit(1);
         }
     });
-    
-.with_state(config)  // `config` is already an Arc, no need for .clone()
+    let app = Router::new()
         .route(
             "/Microsoft-Server-ActiveSync",
             post(handle_active_sync).options(handle_activesync_options),
@@ -49,7 +48,7 @@ async fn main() {
         .route("/EWS/Exchange.asmx", post(handle_ews))
         .route("/health", get(|| async { "OK" }))
         .layer(TraceLayer::new_for_http())
-        .with_state(config.clone());
+        .with_state(config);
 
     let addr = "0.0.0.0:8134";
     let listener = match tokio::net::TcpListener::bind(addr).await {
