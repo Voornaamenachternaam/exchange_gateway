@@ -52,7 +52,13 @@ async fn main() {
         .with_state(config.clone());
 
     let addr = "0.0.0.0:8134";
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("Failed to bind to address {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
     info!(
         "Exchange Gateway v{} listening on {}",
         env!("CARGO_PKG_VERSION"),
