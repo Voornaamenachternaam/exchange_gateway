@@ -125,7 +125,117 @@ pub async fn process_request(
     }
 }
 
+// src/ews.rs
+use crate::{config::AppConfig, db, jmap_client, utils};
+use axum::http::HeaderMap;
+use chrono::{DateTime, NaiveDateTime};
+use chrono_tz::Tz;
+use quick_xml::Reader;
+use quick_xml::events::Event;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
+const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
+
+use thiserror::Error;
+
+string
+
+async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &str) -> Result<String, EwsError> {
+    let req: SyncFolderHierarchyRequest = parse_body_content(xml).map_err(EwsError::XmlParse)?;
+    let cal_id = jmap_client::get_default_calendar_id(session).await?;
+    // Generate a stable sync state from the calendar ID so clients can
+    // distinguish initial from subsequent syncs.
+    let sync_state = {
+        let mut h = Sha256::new();
+        h.update(b"folder-hierarchy:");
+        h.update(cal_id.as_bytes());
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, h.finalize())
+    };
+
+    let changes = match req.sync_state.as_deref() {
+        Some(state) if state == sync_state.as_str() => {
+            // Subsequent sync: hierarchy hasn't changed (single calendar folder),
+            // return empty changes.
+            String::new()
+        }
+        Some(_) => {
+            // Stale or unrecognised sync state (e.g. server restart, calendar
+            // ID change).  Fall back to an initial sync so the client can
+            // recover, consistent with handle_sync_folder_items.
+            tracing::warn!(
+                "SyncFolderHierarchy: client SyncState does not match; falling back to initial sync"
+            );
+            format!(
+                r#"<t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create>"#,
+                utils::escape_xml(&cal_id)
+            )
+        }
+        None => {
+            // Initial sync: report the calendar folder as created.
+            format!(
+                r#"<t:Create><t:CalendarFolder><t:FolderId Id="{}" ChangeKey="AQAAABYAAA=" /><t:DisplayName>Calendar</t:DisplayName></t:CalendarFolder></t:Create>"#,
+                utils::escape_xml(&cal_id)
+            )
+        }
+    };
+
+    Ok(soap_response(&format!(
+        r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
+        NS_M,
+        NS_T,
+        utils::escape_xml(&sync_state),
+        changes
+pub async fn process_request(
+    config: &AppConfig,
+    xml: &str,
+    headers: &HeaderMap,
+) -> Result<String, EwsError> {
+    let auth_header = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
+        Some(a) => a,
+        None => return soap_fault("ErrorAccessDenied", "Missing Authorization header"),
+    };
+
+    let (user, pass) = match utils::decode_basic_auth(auth_header) {
+        Some((u, p)) => (u, p),
+        None => return soap_fault("ErrorAccessDenied", "Invalid Authorization header format"),
+    };
+    let session = match jmap_client::get_session(&config.jmap_url, &user, &pass).await {
+        Ok(s) => s,
+        Err(jmap_client::JmapError::Auth(_)) => {
+            return soap_fault("ErrorAccessDenied", "Auth Failed");
+        }
+        Err(e) => {
+            tracing::error!("JMAP Auth failed: {}", e);
+            return soap_fault("ErrorInternalServerError", "Auth Failed");
+        }
+    };
+    let action = extract_action_name(xml);
+    tracing::info!("EWS Request: {}", action);
+
+    match action.as_str() {
+        "GetFolder" => handle_get_folder(&session, xml).await,
+        "FindFolder" => handle_find_folder(&session).await,
+        "SyncFolderHierarchy" => handle_sync_folder_hierarchy(&session, xml).await,
+        "SyncFolderItems" => handle_sync_folder_items(&session, config, &user, xml).await,
+        "CreateItem" => handle_create_item(&session, config, xml).await,
+        "UpdateItem" => handle_update_item(&session, config, xml).await,
+        "DeleteItem" => handle_delete_item(&session, config, xml).await,
+        "GetItem" => handle_get_item(&session, config, xml).await,
+        "FindItem" => handle_find_item().await,
+        "ResolveNames" => handle_resolve_names(&session, xml).await,
+        "GetAttachment" => handle_get_attachment(&session, xml).await,
+        "GetRoomLists" => handle_get_room_lists().await,
+        "GetRooms" => handle_get_rooms().await,
+        _ => soap_fault("ErrorInvalidRequest", &format!("Unsupported: {}", action)),
+    }
+}
+
 async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &str) -> String {
+
     let req: SyncFolderHierarchyRequest = match parse_body_content(xml) {
         Ok(r) => r,
         Err(_) => return soap_fault("ErrorInvalidRequest", "Bad XML"),
