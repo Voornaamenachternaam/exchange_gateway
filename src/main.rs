@@ -189,6 +189,7 @@ async fn handle_active_sync(
             }
         }
     } else {
+        (
             StatusCode::OK,
             [
                 ("content-type", "application/xml; charset=utf-8"),
@@ -197,7 +198,9 @@ async fn handle_active_sync(
             ],
             response_xml,
         )
-            .into_response()
+        .into_response()
+    }
+}
 }
 
 async fn handle_activesync_options() -> impl IntoResponse {
