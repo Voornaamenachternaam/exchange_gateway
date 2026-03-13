@@ -78,7 +78,6 @@ async fn main() {
         addr
     );
     axum::serve(listener, app).await.unwrap();
-}
 
 async fn handle_active_sync(
     State(config): State<Arc<AppConfig>>,
