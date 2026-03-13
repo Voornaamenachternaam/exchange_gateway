@@ -3,7 +3,8 @@
   "provider": {
     "openai": {
       "options": {
-        "baseURL": "https://aihubmix.com/v1"
+        "baseURL": "https://aihubmix.com/v1",
+        "compatibility": "compatible"
       },
       "models": {
         "coding-glm-free": {
