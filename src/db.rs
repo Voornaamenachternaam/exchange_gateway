@@ -187,7 +187,6 @@ fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
         Err(DbError::UnexpectedFormat)
     }
 }
-}
 /// Extract the `meta.changes` count from a D1 API response.  Returns `None`
 /// when the field is missing or the response format is unrecognised, so
 /// callers can distinguish "no meta field" from an explicit zero.
