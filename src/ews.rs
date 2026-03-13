@@ -13,19 +13,6 @@ const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
 const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
-use chrono::{DateTime, NaiveDateTime};
-use chrono_tz::Tz;
-use quick_xml::Reader;
-use quick_xml::events::Event;
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use uuid::Uuid;
-use thiserror::Error;
-
-const NS_SOAP: &str = "http://schemas.xmlsoap.org/soap/envelope/";
-const NS_M: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
-const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
-
 #[derive(Debug, Error)]
 pub enum EwsError {
     #[error("XML parsing error: {0}")]
