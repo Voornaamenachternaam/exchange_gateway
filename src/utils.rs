@@ -77,6 +77,11 @@ pub fn decode_basic_auth(auth_header: &str) -> Option<(String, String)> {
     // Split on the first colon
     let (user, pass) = decoded_str.split_once(':')?;
 
+    // Reject control characters in credentials
+    if user.chars().chain(pass.chars()).any(|c| c.is_control()) {
+        return None;
+    }
+
     // Return owned strings (allow empty username/password if present)
     Some((user.to_string(), pass.to_string()))
 }
