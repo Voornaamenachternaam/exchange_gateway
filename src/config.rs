@@ -27,7 +27,6 @@ impl AppConfig {
                 url
             },
             mail_domain: env::var("MAIL_DOMAIN").map_err(|_| "MAIL_DOMAIN missing")?,
-        })
-        })
+        }
     }
 }
