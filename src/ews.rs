@@ -31,52 +31,6 @@ pub enum EwsError {
     Db(#[from] db::DbError),
 }
 
-pub async fn process_request(
-    config: &AppConfig,
-    xml: &str,
-    headers: &HeaderMap,
-) -> Result<String, EwsError> {
-    let auth_header = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
-        Some(a) => a,
-        None => return Err(EwsError::Auth("Missing Authorization header".into())),
-    };
-
-    let (user, pass) = match utils::decode_basic_auth(auth_header) {
-        Some((u, p)) => (u, p),
-        None => return Err(EwsError::Auth("Invalid Authorization header format".into())),
-    };
-    let session = match jmap_client::get_session(&config.jmap_url, &user, &pass).await {
-        Ok(s) => s,
-        Err(jmap_client::JmapError::Auth(_)) => {
-            return Err(EwsError::Auth("Auth Failed".into()));
-        }
-        Err(e) => {
-            tracing::error!("JMAP Auth failed: {}", e);
-            return Err(EwsError::Internal(format!("JMAP Auth Failed: {}", e)));
-        }
-    };
-    let action = extract_action_name(xml);
-    tracing::info!("EWS Request: {}", action);
-
-    let response_string = match action.as_str() {
-        "GetFolder" => handle_get_folder(&session, xml).await?,
-        "FindFolder" => handle_find_folder(&session).await?,
-        "SyncFolderHierarchy" => handle_sync_folder_hierarchy(&session, xml).await?,
-        "SyncFolderItems" => handle_sync_folder_items(&session, config, &user, xml).await?,
-        "CreateItem" => handle_create_item(&session, config, xml).await?,
-        "UpdateItem" => handle_update_item(&session, config, xml).await?,
-        "DeleteItem" => handle_delete_item(&session, config, xml).await?,
-        "GetItem" => handle_get_item(&session, config, xml).await?,
-        "FindItem" => handle_find_item().await?,
-        "ResolveNames" => handle_resolve_names(&session, xml).await?,
-        "GetAttachment" => handle_get_attachment(&session, xml).await?,
-        "GetRoomLists" => handle_get_room_lists().await?,
-        "GetRooms" => handle_get_rooms().await?,
-        _ => return Err(EwsError::UnsupportedOperation(format!("Unsupported: {}", action))),
-    };
-    Ok(response_string)
-}
-
 async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &str) -> Result<String, EwsError> {
     let req: SyncFolderHierarchyRequest = parse_body_content(xml).map_err(EwsError::XmlParse)?;
     let cal_id = jmap_client::get_default_calendar_id(session).await?;
