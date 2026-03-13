@@ -246,11 +246,36 @@ async fn handle_ews(
         }
     };
 
-    let response_xml = ews::process_request(&config, xml_body, &headers).await;
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-        response_xml,
-    )
-        .into_response()
+    match ews::process_request(&config, xml_body, &headers).await {
+        Ok(response_xml) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
+            response_xml,
+        )
+            .into_response(),
+        Err(ews::EwsError::Auth(msg)) => (
+            StatusCode::UNAUTHORIZED,
+            [(
+                header::WWW_AUTHENTICATE,
+                r#"Basic realm="exchange_gateway""#,
+            )],
+            msg,
+        )
+            .into_response(),
+        Err(ews::EwsError::UnsupportedOperation(msg)) => (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "text/plain")],
+            msg,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("EWS processing error: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain")],
+                format!("Internal Server Error: {}", e),
+            )
+                .into_response()
+        }
+    }
 }
