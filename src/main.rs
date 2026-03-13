@@ -41,7 +41,7 @@ async fn main() {
         }
     });
     
-    let app = Router::new()
+.with_state(config)  // `config` is already an Arc, no need for .clone()
         .route(
             "/Microsoft-Server-ActiveSync",
             post(handle_active_sync).options(handle_activesync_options),
