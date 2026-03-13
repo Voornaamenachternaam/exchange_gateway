@@ -4,7 +4,7 @@
     "openrouter": {
       "models": {
         "nemotron-free": {
-          "id": "nvidia/nemotron-3-super-120b-a12b:free",
+          "id": "deepseek/deepseek-chat-v3-0324:free",
           "name": "NVIDIA Nemotron 3 Super 120B (free)"
         }
       }
