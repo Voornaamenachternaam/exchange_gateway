@@ -106,24 +106,41 @@ pub async fn get_sync_state_full(
     {
         Ok(res) => res,
         Err(e) => {
-            tracing::error!(
-                user = user,
-                device_id = device_id,
-                collection = coll,
-                "get_sync_state_full: DB request failed: {e}"
-            );
-            return Err(DbError::Request(e));
-        }
-    };
-    let json: serde_json::Value = match res.json().await {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::error!(
-                user = user,
-                device_id = device_id,
-                collection = coll,
-                "get_sync_state_full: failed to parse DB response: {e}"
-            );
+```suggestion
+--- a/src/db.rs
++++ b/src/db.rs
+@@ -1,5 +1,7 @@
+ // src/db.rs
+ use crate::config::AppConfig;
+ use serde_json::json;
++use sha2::{Digest, Sha256};
+ 
+ #[derive(Debug, thiserror::Error)]
+ pub enum DbError {
+@@ -109,9 +111,9 @@
+     {   
+         Ok(res) => res,
+         Err(e) => {
+-            tracing::error(
++            tracing::error(
+                 user = user,
+-                device_id = device_id,
++                device_id = Sha256::digest(device_id.as_bytes()).as_hex(),
+                 collection = coll,
+                 "get_sync_state_full: DB request failed: {e}"
+             );
+@@ -121,9 +123,9 @@
+     let json: serde_json::Value = match res.json().await {
+         Ok(json) => json,
+         Err(e) => {
+-            tracing::error(
++            tracing::error(
+                 user = user,
+-                device_id = device_id,
++                device_id = Sha256::digest(device_id.as_bytes()).as_hex(),
+                 collection = coll,
+                 "get_sync_state_full: failed to parse DB response: {e}"
+             );
             return Err(DbError::Parse(e));
         }
     };
