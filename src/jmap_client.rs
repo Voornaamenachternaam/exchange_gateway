@@ -1035,7 +1035,9 @@ pub async fn push_events(
                         .push((caller_id, format!("{}: {}", error_type, desc)));
                 }
             }
-        } // <-- missing brace added here
+        }
+    }
+}
 
         // Any remaining IDs in id_map were neither created nor explicitly
         // rejected — treat them as failures.
