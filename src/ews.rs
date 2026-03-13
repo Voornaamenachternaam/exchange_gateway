@@ -62,7 +62,7 @@ pub async fn process_request(
         "GetFolder" => handle_get_folder(&session, xml).await?,
         "FindFolder" => handle_find_folder(&session).await?,
         "SyncFolderHierarchy" => handle_sync_folder_hierarchy(&session, xml).await?,
-        "SyncFolderItems" => handle_sync_folder_items(&session, config, &user, xml).await?,
+string
         "CreateItem" => handle_create_item(&session, config, xml).await?,
         "UpdateItem" => handle_update_item(&session, config, xml).await?,
         "DeleteItem" => handle_delete_item(&session, config, xml).await?,
