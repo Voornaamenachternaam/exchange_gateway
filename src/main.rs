@@ -189,17 +189,15 @@ async fn handle_active_sync(
             }
         }
     } else {
-        (
             StatusCode::OK,
             [
                 ("content-type", "application/xml; charset=utf-8"),
                 ("MS-Server-ActiveSync", "16.1"),
-                (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                ("access-control-allow-origin", "*"),
             ],
             response_xml,
         )
             .into_response()
-    }
 }
 
 async fn handle_activesync_options() -> impl IntoResponse {
