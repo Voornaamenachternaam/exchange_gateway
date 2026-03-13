@@ -40,8 +40,7 @@ async fn main() {
             std::process::exit(1);
         }
     });
-    info!("Exchange Gateway v{} started", env!("CARGO_PKG_VERSION"));
-
+    
     let app = Router::new()
         .route(
             "/Microsoft-Server-ActiveSync",
@@ -53,9 +52,12 @@ async fn main() {
         .with_state(config.clone());
 
     let addr = "0.0.0.0:8134";
-    info!("Listening on {}", addr);
-
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    info!(
+        "Exchange Gateway v{} listening on {}",
+        env!("CARGO_PKG_VERSION"),
+        addr
+    );
     axum::serve(listener, app).await.unwrap();
 }
 
