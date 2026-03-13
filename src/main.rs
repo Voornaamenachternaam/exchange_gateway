@@ -50,12 +50,13 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(config);
 
-    let addr = "0.0.0.0:8134";
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("Failed to bind to address {}: {}", addr, e);
-            std::process::exit(1);
+let listener = match tokio::net::TcpListener::bind(addr).await {
+    Ok(l) => l,
+    Err(e) => {
+        tracing::error!("Failed to bind to address {}: {}", addr, e);
+        std::process::exit(1);
+    }
+};
         }
     };
     info!(
