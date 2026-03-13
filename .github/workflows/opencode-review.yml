@@ -28,7 +28,10 @@ jobs:
           model: openai/coding-glm-free
           use_github_token: true
           prompt: |
-            Review this pull request:
-            - Check for code quality issues
-            - Look for potential bugs and provide commit suggestions to fix them
-            - Provide improvements as commit suggestions
+            Review this pull request and fix all issues you find.
+            You MUST use the Edit tool to make the actual code changes to the files.
+            Do NOT just describe or suggest changes - apply them directly.
+            After fixing, commit the changes grouped into logical commits with clear messages.
+            Only comment on issues you cannot fix directly. This solution must use Rust v1.94.0, which is the latest stable version of Rust, whenever possible/feasible. 
+            The file: "worker/index.js" may be written in a different programming language. 
+            Check the content of the file in question, to verify whether the code has changed since this problem/issue was posted.
