@@ -1,5 +1,6 @@
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
+use base64::Engine;
 use chrono::{DateTime, NaiveDateTime};
 use chrono_tz::Tz;
 use quick_xml::Reader;
