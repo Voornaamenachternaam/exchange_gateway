@@ -3,6 +3,13 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
 
+    // Typed gateway API used by Rust storage client
+    if (path === '/api/set_sync_key') return handleSetSyncKey(request, env);
+    if (path === '/api/upsert_item_map') return handleUpsertItemMap(request, env);
+    if (path === '/api/delete_item_by_server_id') return handleDeleteItemByServerId(request, env);
+    if (path === '/api/list_changes_since') return handleListChangesSince(url, request, env);
+
+    // Generic SQL API (admin/debug)
     if (path.startsWith('/api/')) {
       return handleApiRequest(request, env);
     }
@@ -27,11 +34,108 @@ export default {
   }
 };
 
-async function handleApiRequest(request, env) {
-  const authHeader = request.headers.get('Authorization');
-  const expectedSecret = `Bearer ${env.GATEWAY_SECRET}`;
+function isAuthorized(request, env) {
+  const bearer = request.headers.get('Authorization');
+  const xSecret = request.headers.get('x-gateway-secret');
+  const expectedBearer = `Bearer ${env.GATEWAY_SECRET}`;
+  return bearer === expectedBearer || xSecret === env.GATEWAY_SECRET;
+}
 
-  if (authHeader !== expectedSecret) {
+async function readJson(request) {
+  try {
+    return await request.json();
+  } catch {
+    throw new Error('Invalid JSON');
+  }
+}
+
+async function handleSetSyncKey(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const body = await readJson(request);
+  const owner = body.owner || '';
+  const collectionId = body.collection_id || '';
+  const syncKey = body.sync_key || '';
+  const token = body.token || null;
+  if (!owner || !collectionId || !syncKey) {
+    return new Response('Missing owner/collection_id/sync_key', { status: 400 });
+  }
+
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO sync_state (owner, collection_id, sync_key, token, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner, collection_id)
+      DO UPDATE SET sync_key = excluded.sync_key, token = excluded.token, updated_at = CURRENT_TIMESTAMP
+    `)
+    .bind(owner, collectionId, syncKey, token)
+    .run();
+
+  return Response.json({ success: true });
+}
+
+async function handleUpsertItemMap(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const body = await readJson(request);
+  const { owner = '', caldav_href = '', resource_href = '', server_id = '', uid = '', etag = '' } = body;
+  if (!owner || !resource_href || !server_id) {
+    return new Response('Missing owner/resource_href/server_id', { status: 400 });
+  }
+
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner, server_id)
+      DO UPDATE SET
+        caldav_href = excluded.caldav_href,
+        resource_href = excluded.resource_href,
+        uid = excluded.uid,
+        etag = excluded.etag,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+    .bind(owner, caldav_href, resource_href, server_id, uid, etag)
+    .run();
+
+  return Response.json({ success: true });
+}
+
+async function handleDeleteItemByServerId(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const body = await readJson(request);
+  const serverId = body.server_id || '';
+  if (!serverId) return new Response('Missing server_id', { status: 400 });
+
+  await env.EXCHANGE_DB
+    .prepare('DELETE FROM item_map WHERE server_id = ?')
+    .bind(serverId)
+    .run();
+
+  return Response.json({ success: true });
+}
+
+async function handleListChangesSince(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = url.searchParams.get('since') || '0';
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const sinceExpr = Number.isFinite(Number(since)) ? Number(since) : 0;
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT server_id, resource_href
+      FROM item_map
+      WHERE owner = ?
+        AND strftime('%s', updated_at) >= ?
+      ORDER BY updated_at ASC
+    `)
+    .bind(owner, sinceExpr)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+async function handleApiRequest(request, env) {
+  if (!isAuthorized(request, env)) {
     return new Response('Unauthorized', { status: 401 });
   }
 
