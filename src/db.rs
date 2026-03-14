@@ -76,12 +76,15 @@ pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
         "query": "INSERT OR IGNORE INTO device_info (user_email, device_id) VALUES (?, ?)",
         "params": [user, device_id]
     });
-    let _ = client
+    if let Err(e) = client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
-        .await;
+        .await
+    {
+        tracing::error!(user = user, device_id = device_id, "Failed to register device: {}", e);
+    }
 
 /// Check whether the DB API response indicates success.
 /// The Worker wrapper format includes "success": true/false` at the top
