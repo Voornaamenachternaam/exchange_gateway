@@ -36,5 +36,4 @@ impl AppConfig {
             }
         })
     }
-    }
 }
