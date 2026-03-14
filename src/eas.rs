@@ -36,6 +36,71 @@ struct EasRequest {
     policy_key: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+struct CommandGrammar {
+    namespace: &'static str,
+    required_tags: &'static [&'static str],
+}
+
+fn command_grammar(command: &str) -> Option<CommandGrammar> {
+    let cmd = command.to_ascii_lowercase();
+    match cmd.as_str() {
+        "sync" => Some(CommandGrammar {
+            namespace: "AirSync:",
+            required_tags: &["Collections", "Collection", "CollectionId", "SyncKey"],
+        }),
+        "foldersync" => Some(CommandGrammar {
+            namespace: "FolderHierarchy:",
+            required_tags: &["SyncKey"],
+        }),
+        "provision" => Some(CommandGrammar {
+            namespace: "Provision:",
+            required_tags: &["Policies", "Policy"],
+        }),
+        "settings" => Some(CommandGrammar {
+            namespace: "Settings:",
+            required_tags: &["UserInformation"],
+        }),
+        "ping" => Some(CommandGrammar {
+            namespace: "Ping:",
+            required_tags: &["HeartbeatInterval", "Folders"],
+        }),
+        "itemoperations" => Some(CommandGrammar {
+            namespace: "ItemOperations:",
+            required_tags: &["Fetch"],
+        }),
+        "search" => Some(CommandGrammar {
+            namespace: "Search:",
+            required_tags: &["Store"],
+        }),
+        "meetingresponse" => Some(CommandGrammar {
+            namespace: "MeetingResponse:",
+            required_tags: &["RequestId", "UserResponse"],
+        }),
+        "resolverecipients" => Some(CommandGrammar {
+            namespace: "ResolveRecipients:",
+            required_tags: &["To"],
+        }),
+        "sendmail" | "smartreply" | "smartforward" => Some(CommandGrammar {
+            namespace: "ComposeMail:",
+            required_tags: &[],
+        }),
+        "validatecert" => Some(CommandGrammar {
+            namespace: "ValidateCert:",
+            required_tags: &["Certificates"],
+        }),
+        "getitemestimate" => Some(CommandGrammar {
+            namespace: "GetItemEstimate:",
+            required_tags: &["Collections", "Collection", "SyncKey", "CollectionId"],
+        }),
+        "moveitems" => Some(CommandGrammar {
+            namespace: "Move:",
+            required_tags: &["Move"],
+        }),
+        _ => None,
+    }
+}
+
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     if let Some(v) = headers.get(header::AUTHORIZATION)
         && let Ok(s) = v.to_str()
@@ -106,59 +171,26 @@ fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String
         .map(|(_, v)| v.clone())
 }
 
-fn command_namespace_expectation() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        ("sync", "AirSync:"),
-        ("foldersync", "FolderHierarchy:"),
-        ("provision", "Provision:"),
-        ("settings", "Settings:"),
-        ("ping", "Ping:"),
-        ("itemoperations", "ItemOperations:"),
-        ("search", "Search:"),
-        ("meetingresponse", "MeetingResponse:"),
-        ("resolverecipients", "ResolveRecipients:"),
-        ("sendmail", "ComposeMail:"),
-        ("smartreply", "ComposeMail:"),
-        ("smartforward", "ComposeMail:"),
-        ("validatecert", "ValidateCert:"),
-        ("getitemestimate", "GetItemEstimate:"),
-        ("moveitems", "Move:"),
-    ])
-}
-
-fn required_tags_for_command(command: &str) -> HashSet<&'static str> {
-    match command {
-        "sync" => HashSet::from(["CollectionId", "SyncKey"]),
-        "provision" => HashSet::from(["Policies", "Policy"]),
-        "settings" => HashSet::from(["UserInformation"]),
-        "getitemestimate" => HashSet::from(["Collections", "Collection"]),
-        "moveitems" => HashSet::from(["Move"]),
-        _ => HashSet::new(),
-    }
-}
-
 fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let cmd = command.to_ascii_lowercase();
+
     if xml.is_empty() {
-        return if matches!(
-            cmd.as_str(),
-            "ping" | "sendmail" | "smartreply" | "smartforward" | "options"
-        ) {
+        return if matches!(cmd.as_str(), "sendmail" | "smartreply" | "smartforward") {
             Ok(())
         } else {
             Err("Empty request body")
         };
     }
 
-    if let Some(ns) = command_namespace_expectation().get(cmd.as_str())
-        && !xml.contains(ns)
-    {
-        return Err("Request missing expected command namespace");
-    }
+    if let Some(grammar) = command_grammar(cmd.as_str()) {
+        if !xml.contains(grammar.namespace) {
+            return Err("Request missing expected command namespace");
+        }
 
-    for tag in required_tags_for_command(cmd.as_str()) {
-        if !xml.contains(&format!("<{}", tag)) {
-            return Err("Request missing required command element");
+        for tag in grammar.required_tags {
+            if !xml.contains(&format!("<{}", tag)) {
+                return Err("Request missing required command element");
+            }
         }
     }
 
@@ -172,6 +204,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
             "Tasks",
             "DocumentLibrary",
             "SMS",
+            "RightsManagement",
         ];
         if !supported.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
             return Err("Unsupported Sync class");
@@ -616,8 +649,7 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::{
-        command_from_query, extract_first_tag_text, extract_root_command,
-        required_tags_for_command, validate_payload,
+        command_from_query, extract_first_tag_text, extract_root_command, validate_payload,
     };
     use std::collections::HashMap;
 
@@ -665,8 +697,14 @@ mod tests {
     }
 
     #[test]
-    fn required_tag_matrix_exists() {
-        assert!(required_tags_for_command("sync").contains("CollectionId"));
-        assert!(required_tags_for_command("provision").contains("Policies"));
+    fn validates_ping_required_tags() {
+        let xml = r#"<Ping xmlns=\"Ping:\"><Folders /></Ping>"#;
+        assert!(validate_payload("Ping", xml).is_err());
+    }
+
+    #[test]
+    fn validates_getitemestimate_required_tags() {
+        let xml = r#"<GetItemEstimate xmlns=\"GetItemEstimate:\"></GetItemEstimate>"#;
+        assert!(validate_payload("GetItemEstimate", xml).is_err());
     }
 }
