@@ -207,11 +207,46 @@ pub async fn perform_sync(
     owner: &str,
     collection_id: &str,
     _incoming_sync_key: &str,
+    content_class: &str,
     _window_size: usize,
     username: &str,
     password: &str,
 ) -> Result<String> {
     let storage = &state.storage;
+
+    // Non-calendar classes requested by ActiveSync class protocols.
+    // We acknowledge sync state and return an empty command set for now.
+    if !content_class.eq_ignore_ascii_case("Calendar") {
+        let class_name = content_class.trim();
+        let normalized = if class_name.is_empty() {
+            "Calendar"
+        } else {
+            class_name
+        };
+        let new_sync_key = Uuid::new_v4().to_string();
+        storage
+            .set_sync_key(owner, collection_id, &new_sync_key, Some("token"))
+            .await?;
+
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
+<Collections><Collection>
+<Class>{}</Class>
+<SyncKey>{}</SyncKey>
+<CollectionId>{}</CollectionId>
+<Status>1</Status>
+<MoreAvailable></MoreAvailable>
+<Commands></Commands>
+</Collection></Collections>
+</Sync>"#,
+            xml_escape(normalized),
+            new_sync_key,
+            xml_escape(collection_id)
+        );
+        return Ok(xml);
+    }
+
     let caldav = CaldavClient::new(&state.cfg);
 
     let calendars = caldav.find_user_calendars(username, password).await?;

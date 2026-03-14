@@ -12,6 +12,7 @@
 
 ## Implementation update (this revision)
 
+- Expanded high-priority class protocol coverage for Contacts, Conversations, Documents, SMS, Notes, Rights Management, and Tasks by adding class-aware Sync handling and namespace/token support in EAS/WBXML.
 - Implemented command-aware EAS dispatch (MS-ASCMD-focused) using XML root and `Cmd` query fallback, plus explicit `OPTIONS` capability headers.
 - Expanded calendar payload mapping for sync responses (MS-ASCAL-focused), including additional fields such as `DtStamp`, `BusyStatus`, and `Sensitivity`.
 - Expanded WBXML namespace/tag page coverage and fixed token decoding for content-bit tokens (MS-ASAIRS/MS-ASWBXML path).
@@ -42,17 +43,17 @@ Current repository is **not production-ready** for the stated use-case and is **
 | MS-ASAIRS | Exchange ActiveSync: AirSyncBase Namespace Protocol | Critical | Partially implemented | Major functional gaps |
 | MS-ASCAL | Exchange ActiveSync: Calendar Class Protocol | Critical | Partially implemented | Major functional gaps |
 | MS-ASCMD | Exchange ActiveSync: Command Reference Protocol | Critical | Partially implemented | Major functional gaps |
-| MS-ASCNTC | Exchange ActiveSync: Contact Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASCON | Exchange ActiveSync: Conversations Protocol | High | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASDOC | Exchange ActiveSync: Document Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
+| MS-ASCNTC | Exchange ActiveSync: Contact Class Protocol | High | Implemented (Contacts namespace + class-aware Sync acknowledgements subset) | Remaining full contact CRUD/merge semantics |
+| MS-ASCON | Exchange ActiveSync: Conversations Protocol | High | Implemented (ConversationMode token support subset) | Remaining full conversation/search semantics |
+| MS-ASDOC | Exchange ActiveSync: Document Class Protocol | High | Implemented (DocumentLibrary namespace + class-aware Sync acknowledgements subset) | Remaining full document-sync semantics |
 | MS-ASDTYPE | Exchange ActiveSync: Data Types | Critical | Implemented (core calendar/email sync datatype subset) | Remaining edge-case datatype gaps |
 | MS-ASEMAIL | Exchange ActiveSync: Email Class Protocol | Critical | Implemented (ComposeMail subset: SendMail/SmartReply/SmartForward statuses) | Remaining full mail-class feature gaps |
 | MS-ASHTTP | Exchange ActiveSync: HTTP Protocol | Critical | Implemented (core headers/auth/options/command dispatch) | Remaining interoperability edge-case gaps |
-| MS-ASMS | Exchange ActiveSync: Short Message Service (SMS) Protocol | High | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASNOTE | Exchange ActiveSync: Notes Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
+| MS-ASMS | Exchange ActiveSync: Short Message Service (SMS) Protocol | High | Implemented (Settings EnableOutboundSMS + class-aware Sync acknowledgements subset) | Remaining outbound SMS transport semantics |
+| MS-ASNOTE | Exchange ActiveSync: Notes Class Protocol | High | Implemented (Notes namespace + class-aware Sync acknowledgements subset) | Remaining full notes item semantics |
 | MS-ASPROV | Exchange ActiveSync: Provisioning Protocol | Critical | Implemented (two-phase policy key handshake subset) | Remaining policy-surface and device-management gaps |
-| MS-ASRM | Exchange ActiveSync: Rights Management Protocol | High | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASTASK | Exchange ActiveSync: Tasks Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
+| MS-ASRM | Exchange ActiveSync: Rights Management Protocol | High | Implemented (RightsManagement namespace token subset) | Remaining full rights-enforcement/license workflows |
+| MS-ASTASK | Exchange ActiveSync: Tasks Class Protocol | High | Implemented (Tasks namespace + class-aware Sync acknowledgements subset) | Remaining task lifecycle/recurrence semantics |
 | MS-ASWBXML | Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm | Critical | Implemented (core multi-page WBXML decode/encode subset incl mb_u_int32/string table) | Remaining token/page completeness gaps |
 | MS-MCI | Microsoft ZIP (MSZIP) Compression and Decompression Data Structure | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXABREF | Address Book Name Service Provider Interface (NSPI) Referral Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
@@ -182,7 +183,7 @@ Current repository is **not production-ready** for the stated use-case and is **
 - Command detection is XML substring-based; no robust command parsing by query `Cmd` and canonical namespaces.
 - Sync collection identity is hardcoded (`collection_id = "1"`), not negotiated per-folder/account model.
 - Provision policy response is static and not persisted/validated across policy keys/device ids.
-- Missing broad command surface: `ItemOperations`, `MeetingResponse`, `SendMail`, `Settings`, `Search`, etc.
+- Remaining command-surface gap: advanced semantics for `MeetingResponse`, `ResolveRecipients`, `ValidateCert`, and full fidelity behavior for `Search`/`ItemOperations`/`SendMail` workflows.
 - Missing robust status/error codes and server-side semantics expected by Outlook clients.
 
 ### C) EWS protocol gaps

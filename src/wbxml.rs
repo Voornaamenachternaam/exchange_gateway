@@ -33,6 +33,18 @@ lazy_static::lazy_static! {
         m.insert((0, 0x1B), "Conflict");
         m.insert((0, 0x1C), "Collections");
         m.insert((0, 0x1D), "ApplicationData");
+        m.insert((0, 0x27), "ConversationMode");
+
+
+        // Code Page 1: Contacts (ASCNTC subset)
+        m.insert((1, 0x05), "Contacts:Anniversary");
+        m.insert((1, 0x08), "Contacts:Birthday");
+        m.insert((1, 0x13), "Contacts:BusinessPhoneNumber");
+        m.insert((1, 0x19), "Contacts:CompanyName");
+        m.insert((1, 0x1B), "Contacts:Email1Address");
+        m.insert((1, 0x1F), "Contacts:FirstName");
+        m.insert((1, 0x29), "Contacts:LastName");
+        m.insert((1, 0x2B), "Contacts:MobilePhoneNumber");
 
         // Code Page 2: Email (subset for ASEMAL)
         m.insert((2, 0x05), "Email:Attachment");
@@ -117,6 +129,35 @@ lazy_static::lazy_static! {
         // Code Page 18: Settings
         m.insert((18, 0x05), "Settings");
         m.insert((18, 0x06), "Status");
+        m.insert((18, 0x1A), "EnableOutboundSMS");
+
+
+        // Code Page 9: Tasks (ASTASK subset)
+        m.insert((9, 0x08), "Tasks:Complete");
+        m.insert((9, 0x09), "Tasks:DateCompleted");
+        m.insert((9, 0x0D), "Tasks:DueDate");
+        m.insert((9, 0x0F), "Tasks:Importance");
+        m.insert((9, 0x17), "Tasks:StartDate");
+        m.insert((9, 0x18), "Tasks:Subject");
+
+        // Code Page 19: DocumentLibrary (ASDOC subset)
+        m.insert((19, 0x05), "DocumentLibrary:LinkId");
+        m.insert((19, 0x06), "DocumentLibrary:DisplayName");
+        m.insert((19, 0x07), "DocumentLibrary:IsFolder");
+        m.insert((19, 0x08), "DocumentLibrary:CreationDate");
+        m.insert((19, 0x09), "DocumentLibrary:LastModifiedDate");
+
+        // Code Page 23: Notes (ASNOTE subset)
+        m.insert((23, 0x05), "Notes:Subject");
+        m.insert((23, 0x06), "Notes:MessageClass");
+        m.insert((23, 0x07), "Notes:LastModifiedDate");
+        m.insert((23, 0x08), "Notes:Categories");
+        m.insert((23, 0x0B), "Notes:Body");
+
+        // Code Page 24: RightsManagement (ASRM subset)
+        m.insert((24, 0x05), "RightsManagement:RightsManagementSupport");
+        m.insert((24, 0x06), "RightsManagement:RightsManagementTemplates");
+        m.insert((24, 0x08), "RightsManagement:RightsManagementLicense");
 
         // Code Page 21: ComposeMail (ASEMAIL)
         m.insert((21, 0x05), "SendMail");

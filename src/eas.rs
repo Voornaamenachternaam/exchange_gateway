@@ -84,6 +84,10 @@ fn extract_sync_key(xml: &str) -> Option<String> {
     extract_first_tag_text(xml, b"SyncKey")
 }
 
+fn extract_sync_class(xml: &str) -> Option<String> {
+    extract_first_tag_text(xml, b"Class")
+}
+
 fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
     query
         .iter()
@@ -192,6 +196,16 @@ fn handle_provision(xml: &str, wbxml: &Wbxml, as_wbxml: bool) -> Response {
     xml_or_wbxml_response(wbxml, as_wbxml, &response)
 }
 
+fn handle_settings(xml: &str, wbxml: &Wbxml, as_wbxml: bool) -> Response {
+    let outbound_sms =
+        extract_first_tag_text(xml, b"EnableOutboundSMS").unwrap_or_else(|| "1".to_string());
+    let status_xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><Settings xmlns="Settings:"><Status>1</Status><Set><Status>1</Status><Oof><Get><Status>1</Status></Get></Oof><DevicePassword><Status>1</Status></DevicePassword><EnableOutboundSMS>{}</EnableOutboundSMS></Set></Settings>"#,
+        outbound_sms
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &status_xml)
+}
+
 fn handle_send_mail(wbxml: &Wbxml, as_wbxml: bool) -> Response {
     // MS-ASEMAIL / ComposeMail command path acknowledgement.
     let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><SendMail xmlns="ComposeMail:"><Status>1</Status></SendMail>"#;
@@ -245,7 +259,7 @@ pub async fn handle(
     match command.as_str() {
         "FolderSync" => {
             let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
-<FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>1</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></FolderSync>"#;
+<FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>5</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add><Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Contacts</DisplayName><Type>9</Type></Add><Add><ServerId>3</ServerId><ParentId>0</ParentId><DisplayName>Tasks</DisplayName><Type>7</Type></Add><Add><ServerId>4</ServerId><ParentId>0</ParentId><DisplayName>Notes</DisplayName><Type>11</Type></Add><Add><ServerId>5</ServerId><ParentId>0</ParentId><DisplayName>Documents</DisplayName><Type>19</Type></Add></Changes></FolderSync>"#;
             xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
         }
         "Provision" => handle_provision(&xml, &wbxml, wants_wbxml),
@@ -253,12 +267,14 @@ pub async fn handle(
             let owner = username.as_str();
             let collection_id = "1";
             let incoming_key = extract_sync_key(&xml).unwrap_or_else(|| "0".to_string());
+            let class = extract_sync_class(&xml).unwrap_or_else(|| "Calendar".to_string());
 
             match sync::perform_sync(
                 state,
                 owner,
                 collection_id,
                 &incoming_key,
+                &class,
                 100,
                 &username,
                 &password,
@@ -277,11 +293,17 @@ pub async fn handle(
             let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
             xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
         }
-        "Settings" => {
-            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Settings xmlns="Settings:"><Status>1</Status></Settings>"#;
+        "Settings" => handle_settings(&xml, &wbxml, wants_wbxml),
+        "SendMail" => handle_send_mail(&wbxml, wants_wbxml),
+
+        "ItemOperations" => {
+            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:"><Status>1</Status><Responses></Responses></ItemOperations>"#;
             xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
         }
-        "SendMail" => handle_send_mail(&wbxml, wants_wbxml),
+        "Search" => {
+            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>1</Status><Result></Result></Store></Response></Search>"#;
+            xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
+        }
         "SmartReply" | "SmartForward" => {
             let resp_xml =
                 r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">1</Status>"#;
@@ -293,7 +315,7 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::{command_from_query, extract_root_command, extract_sync_key};
+    use super::{command_from_query, extract_root_command, extract_sync_class, extract_sync_key};
     use std::collections::HashMap;
 
     #[test]
@@ -306,6 +328,12 @@ mod tests {
     fn parses_sync_key() {
         let xml = r#"<Sync xmlns=\"AirSync:\"><Collections><Collection><SyncKey>123</SyncKey></Collection></Collections></Sync>"#;
         assert_eq!(extract_sync_key(xml).as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn extracts_sync_class() {
+        let xml = r#"<Sync xmlns=\"AirSync:\"><Collections><Collection><Class>Contacts</Class></Collection></Collections></Sync>"#;
+        assert_eq!(extract_sync_class(xml).as_deref(), Some("Contacts"));
     }
 
     #[test]
