@@ -260,9 +260,9 @@ mod participants_serde {
                         .get(..7)
                         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"mailto:"))
                     {
-                        uri[7..].to_string()
+                        uri[7..].trim().to_string()
                     } else {
-                        uri.to_string()
+                        uri.trim().to_string()
                     }
                 })
             })
