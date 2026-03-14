@@ -249,3 +249,12 @@ async fn handle_ews(
                 .into_response();
         }
     };
+
+    let response = ews::process_request(&config, xml_body, &headers).await;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/xml; charset=utf-8")],
+        response,
+    )
+        .into_response()
+}
