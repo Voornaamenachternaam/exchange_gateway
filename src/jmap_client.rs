@@ -227,7 +227,7 @@ mod participants_serde {
                         .is_some()
                     {
                         tracing::warn!(
-                            email = %p.email,
+                            participant_id = %key,
                             "Duplicate participant id during serialization; \
                              last entry wins"
                         );
