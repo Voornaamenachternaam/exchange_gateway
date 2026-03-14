@@ -1,5 +1,5 @@
 use std::env;
-use lazy_static::lazy_static;
+use std::sync::LazyLock;
 use regex::Regex;
 
 lazy_static! {
