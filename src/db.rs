@@ -82,66 +82,6 @@ pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
         .json(&body)
         .send()
         .await;
-```suggestion
-84:        .json(&body)
-85:        .send()
-
-/// Check whether the DB API response indicates success.
-/// The Worker wrapper format includes "success": true/false` at the top
-/// level; the legacy direct-array format has no such flag (always assumed OK
-/// because it only appears when the request actually succeeded).
-///
-/// Returns `Ok(())` when the query succeeded, `Err(reason)` when the response
-/// explicitly signals failure.
-fn check_db_success(json: &serde_json::Value) -> Result<(), DbError> {
-    if let Some(obj) = json.as_object() {
-        match obj.get("success").and_then(|v| v.as_bool()) {
-            Some(true) => return Ok(()),
-            Some(false) => {
-                let msg = json
-                    .get("errors")
-                    .and_then(|e| e.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("DB query failed")
-                    .to_owned();
-                return Err(DbError::Query(msg));
-            }
-            None => {
-                if obj.get("result").and_then(|v| v.as_array()).is_some() {
-                    return Ok(());
-                }
-                return Err(DbError::UnexpectedFormat);
-            },
-        }
-    }
-    if json.is_array() {
-        Ok(())
-    } else {
-        Err(DbError::UnexpectedFormat)
-    }
-}
-/// Extract the `meta.changes` count from a D1 API response.  Returns `None`
-/// when the field is missing or the response format is unrecognised, so
-/// callers can distinguish "no meta field" from an explicit zero.
-fn extract_meta_changes(json: &serde_json::Value) -> Option<u64> {
-    // New format: { "result": [ { "meta": { "changes": N } } ] }
-    if let Some(n) = json
-        .get("result")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("meta"))
-        .and_then(|m| m.get("changes"))
-        .and_then(|v| v.as_u64())
-    {
-        return Some(n);
-    }
-    // Legacy format: [ { "meta": { "changes": N } } ]
-    json.get(0)
-        .and_then(|r| r.get("meta"))
-        .and_then(|m| m.get("changes"))
-        .and_then(|v| v.as_u64())
-}
 
 /// Atomically claim (invalidate) a SyncKey by updating the row only when the
 /// stored `sync_key` still matches `expected_key`.  Returns `Ok(true)` when
