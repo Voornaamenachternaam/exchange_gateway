@@ -364,6 +364,11 @@ pub async fn perform_sync(
             "<Calendar:EndTime>{}</Calendar:EndTime>",
             dtend.format("%Y-%m-%dT%H:%M:%SZ")
         ));
+        commands.push_str(&format!(
+            "<Calendar:DtStamp>{}</Calendar:DtStamp>",
+            Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+        ));
+        commands.push_str("<Calendar:BusyStatus>2</Calendar:BusyStatus><Calendar:Sensitivity>0</Calendar:Sensitivity>");
 
         if !location.is_empty() {
             commands.push_str(&format!(

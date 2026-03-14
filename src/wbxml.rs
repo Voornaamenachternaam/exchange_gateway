@@ -23,10 +23,15 @@ lazy_static::lazy_static! {
         m.insert((0, 0x0F), "Collection");
         m.insert((0, 0x10), "Class");
         m.insert((0, 0x12), "CollectionId");
-        m.insert((0, 0x18), "Commands");
-        m.insert((0, 0x1F), "ApplicationData");
 
-        // Code Page 4: Calendar
+        // Additional AirSync tags used by command/reference semantics
+        m.insert((0, 0x16), "Commands");
+        m.insert((0, 0x17), "Options");
+        m.insert((0, 0x1B), "Conflict");
+        m.insert((0, 0x1C), "Collections");
+        m.insert((0, 0x1D), "ApplicationData");
+
+        // Code Page 4: Calendar (ASCAL)
         m.insert((4, 0x05), "Calendar:Timezone");
         m.insert((4, 0x06), "Calendar:AllDayEvent");
         m.insert((4, 0x0B), "Calendar:Body");
@@ -61,6 +66,45 @@ lazy_static::lazy_static! {
         m.insert((17, 0x0B), "AirSyncBase:Data");
         m.insert((17, 0x0C), "AirSyncBase:EstimatedDataSize");
         m.insert((17, 0x0D), "AirSyncBase:Truncated");
+
+
+        // Code Page 7: FolderHierarchy
+        m.insert((7, 0x05), "Folders");
+        m.insert((7, 0x06), "Folder");
+        m.insert((7, 0x07), "DisplayName");
+        m.insert((7, 0x08), "ServerId");
+        m.insert((7, 0x09), "ParentId");
+        m.insert((7, 0x0A), "Type");
+        m.insert((7, 0x0C), "Status");
+        m.insert((7, 0x0E), "Changes");
+        m.insert((7, 0x0F), "Add");
+        m.insert((7, 0x10), "Delete");
+        m.insert((7, 0x11), "Update");
+        m.insert((7, 0x12), "SyncKey");
+        m.insert((7, 0x16), "FolderSync");
+        m.insert((7, 0x17), "Count");
+
+        // Code Page 13: Ping
+        m.insert((13, 0x05), "Ping");
+        m.insert((13, 0x07), "Status");
+        m.insert((13, 0x08), "HeartbeatInterval");
+        m.insert((13, 0x09), "Folders");
+        m.insert((13, 0x0A), "Folder");
+        m.insert((13, 0x0B), "Id");
+        m.insert((13, 0x0C), "Class");
+
+        // Code Page 14: Provision
+        m.insert((14, 0x05), "Provision");
+        m.insert((14, 0x06), "Policies");
+        m.insert((14, 0x07), "Policy");
+        m.insert((14, 0x08), "PolicyType");
+        m.insert((14, 0x09), "PolicyKey");
+        m.insert((14, 0x0A), "Data");
+        m.insert((14, 0x0B), "Status");
+
+        // Code Page 18: Settings
+        m.insert((18, 0x05), "Settings");
+        m.insert((18, 0x06), "Status");
 
         m
     };
@@ -136,28 +180,21 @@ impl Wbxml {
                         .replace(">", "&gt;");
                     output.push_str(&escaped);
                 }
-                0x05..=0x3F => {
-                    let has_content = (token & 0x40) != 0;
-                    let tag_id = token & 0x3F;
+                _ => {
+                    if token >= 0x05 {
+                        let has_content = (token & 0x40) != 0;
+                        let tag_id = token & 0x3F;
 
-                    if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
-                        output.push_str(&format!("<{}>", name));
-                        if has_content {
-                            xml_stack.push(name.to_string());
-                        } else {
-                            output.push_str(&format!("</{}>", name));
-                        }
-                    } else {
-                        let unknown = format!("Tag_{}_{}", current_code_page, tag_id);
-                        output.push_str(&format!("<{}>", unknown));
-                        if has_content {
-                            xml_stack.push(unknown);
-                        } else {
-                            output.push_str(&format!("</{}>", unknown));
+                        if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
+                            output.push_str(&format!("<{}>", name));
+                            if has_content {
+                                xml_stack.push(name.to_string());
+                            } else {
+                                output.push_str(&format!("</{}>", name));
+                            }
                         }
                     }
                 }
-                _ => {}
             }
         }
         Ok(output)
@@ -252,5 +289,34 @@ impl Wbxml {
             buf_event.clear();
         }
         Ok(buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Wbxml;
+
+    #[test]
+    fn round_trip_sync_with_namespaces() {
+        let codec = Wbxml::new();
+        let xml = r#"<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Collections><Collection><SyncKey>1</SyncKey><CollectionId>1</CollectionId><Commands></Commands></Collection></Collections></Sync>"#;
+        let wb = codec.encode(xml).expect("encode");
+        let dec = codec.decode(&wb).expect("decode");
+        assert!(dec.contains("<Sync>"));
+        assert!(dec.contains("<SyncKey>1</SyncKey>"));
+    }
+
+    #[test]
+    fn round_trip_folder_sync_and_provision() {
+        let codec = Wbxml::new();
+        let folder = r#"<FolderSync xmlns=\"FolderHierarchy:\"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>1</Count></Changes></FolderSync>"#;
+        let wb_folder = codec.encode(folder).expect("encode folder");
+        let folder_dec = codec.decode(&wb_folder).expect("decode folder");
+        assert!(folder_dec.contains("<FolderSync>"));
+
+        let prov = r#"<Provision xmlns=\"Provision:\"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><PolicyKey>1</PolicyKey></Policy></Policies></Provision>"#;
+        let wb_prov = codec.encode(prov).expect("encode provision");
+        let prov_dec = codec.decode(&wb_prov).expect("decode provision");
+        assert!(prov_dec.contains("<Provision>"));
     }
 }

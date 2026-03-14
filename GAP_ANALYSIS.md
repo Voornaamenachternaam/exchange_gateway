@@ -10,6 +10,12 @@
 
 ## Executive verdict
 
+## Implementation update (this revision)
+
+- Implemented command-aware EAS dispatch (MS-ASCMD-focused) using XML root and `Cmd` query fallback, plus explicit `OPTIONS` capability headers.
+- Expanded calendar payload mapping for sync responses (MS-ASCAL-focused), including additional fields such as `DtStamp`, `BusyStatus`, and `Sensitivity`.
+- Expanded WBXML namespace/tag page coverage and fixed token decoding for content-bit tokens (MS-ASAIRS/MS-ASWBXML path).
+
 Current repository is **not production-ready** for the stated use-case and is **not protocol-complete** for Exchange ActiveSync/EWS expectations from modern Outlook clients. Major blockers include protocol-surface incompleteness, route/config mismatches, persistence API mismatch, and auth/header incompatibility across components.
 
 ## Highest-priority blockers (must-fix)
