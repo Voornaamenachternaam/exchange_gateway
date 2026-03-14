@@ -1,235 +1,150 @@
-# Binder1 Full Gap Analysis for exchange_gateway
+# exchange_gateway Gap Analysis (Binder1-aligned, current repository state)
 
 ## Scope and method
 
-- Source corpus reviewed: full `Binder1.txt` (458,405 lines) and all repository source/config/deployment files.
+- Source of protocol truth: `Binder1.txt` (full corpus in this repo).
+- Scope of this analysis: the current implementation in this repository (`src/*`, `worker/index.js`, `d1_schema.sql`, runtime config files), evaluated against the stated use-case:
+  - Stalwart v0.15.5 calendar backend
+  - Cloudflare Tunnel + Worker + D1
+  - Outlook Windows 11 + Outlook Android ActiveSync/EWS interoperability without client extensions.
+- This document is intentionally **current-state only**: completed items are recorded as done; open items are only those still not implemented or only partially implemented.
 
-- Goal checked: native Outlook Windows + Outlook Android calendar interoperability via Exchange-style endpoints over Cloudflare + Stalwart backend.
+---
 
-- Important limitation: this analysis is exhaustive on *documented gaps*; it cannot prove 100% protocol perfection because the current implementation is intentionally partial and non-conformant in multiple mandatory areas.
+## What is already implemented (current, verified in code)
 
-## Executive verdict
+### Deployment/runtime alignment
 
-## Implementation update (this revision)
+- Gateway bind/runtime path alignment is implemented:
+  - `config.toml` binds `0.0.0.0:8134`.
+  - container runtime is file-config driven (`/etc/exchange-gateway/config.toml`) instead of legacy env-only architecture.
+- Worker typed API + Rust storage client contract exists and is wired.
 
-- Expanded high-priority class protocol coverage for Contacts, Conversations, Documents, SMS, Notes, Rights Management, and Tasks by adding class-aware Sync handling and namespace/token support in EAS/WBXML.
-- Implemented command-aware EAS dispatch (MS-ASCMD-focused) using XML root and `Cmd` query fallback, plus explicit `OPTIONS` capability headers.
-- Expanded calendar payload mapping for sync responses (MS-ASCAL-focused), including additional fields such as `DtStamp`, `BusyStatus`, and `Sensitivity`.
-- Expanded WBXML namespace/tag page coverage and fixed token decoding for content-bit tokens (MS-ASAIRS/MS-ASWBXML path).
+### ActiveSync transport and command surface
 
-Current repository has resolved the previously identified port/runtime-config drift and worker-storage contract mismatches, but is **still not fully production-ready** because major EWS functional depth and full protocol-conformance hardening remain outstanding.
+- EAS endpoint supports:
+  - `OPTIONS` capability discovery headers.
+  - Command detection from XML root with `Cmd` query fallback.
+  - WBXML/XML decode/encode path via `Wbxml`.
+  - Request tracing header (`X-Request-Id`).
+  - Basic per-device throttling/backoff behavior.
+  - Provision policy persistence/validation flow (owner/device keyed).
+  - Sync path consuming request `CollectionId` (no fixed-only collection id).
 
-## Highest-priority blockers (must-fix)
+### EWS (now beyond static stubs)
 
-1. **Gateway binding and tunnel alignment**: fixed. `config.toml` now binds `0.0.0.0:8134` and compose publishes `8134:8134`. (config.toml / docker-compose.yml / src/main.rs).
-2. **Runtime config model alignment**: fixed. Compose now mounts `./config.toml` to `/etc/exchange-gateway/config.toml` and no longer injects legacy JMAP/DB env variables. (src/main.rs / docker-compose.yml / Dockerfile).
-3. **Storage API contract status**: fixed and aligned. Worker typed endpoints and D1 schema match Rust `Storage` request/response flows. (src/storage.rs / worker/index.js / d1_schema.sql).
-4. **Worker auth compatibility status**: fixed. Worker accepts both `Authorization: Bearer` and `x-gateway-secret` for typed and generic API routes. (src/storage.rs / worker/index.js).
-5. **EWS surface is stub-level**: EWS handler only identifies a few action names and only implements a static `GetFolder`; other operations return generic empty success, not valid per-operation semantics. (src/ews.rs).
-6. **ActiveSync surface progression**: EAS now supports command-aware dispatch (root/XML + query `Cmd`), `OPTIONS` capability headers, provisioning handshake subset, Sync/FolderSync/Ping/Settings/ComposeMail status paths; remaining gaps are full command semantics and advanced conflict/state behaviors. (src/eas.rs).
-7. **WBXML implementation maturity**: WBXML codec now handles multi-page mappings, mb_u_int32 parsing, string-table lookups, ENTITY/OPAQUE processing, and stricter boundary validation; remaining work is full-token/page breadth parity. (src/wbxml.rs).
-8. **Data model persistence progression**: Worker now enforces endpoint-level invariants for sync-state/item-map/provision-policy flows used by Rust callers; remaining work is transactional hardening and rollout sequencing. (d1_schema.sql / worker/index.js / src/storage.rs).
-9. **Autodiscover placement risk**: Autodiscover only exists in worker and not in Rust gateway; routing depends entirely on Cloudflare worker path handling and may miss Outlook variants (root/autodiscover subpaths/redirect/legacy variants). (worker/index.js).
+- EWS now has operation-specific dispatch and baseline schema checks for:
+  - `GetFolder`
+  - `FindItem`
+  - `SyncFolderItems`
+- `FindItem` now returns dynamic, paged data sourced from persisted item mappings.
+- `SyncFolderItems` now persists/reads sync state and emits change sets from stored deltas.
+- Responses use deterministic IDs/change keys derived from persisted data (not static placeholder literals).
 
-## Protocol-family coverage assessment against Binder1
+### Data/consistency mechanisms
 
-### Critical protocol completion note
+- Typed storage endpoints are present for sync/provision/EWS state flows.
+- D1 schema supports:
+  - `sync_state`
+  - `item_map`
+  - `provision_state`
+  - `ews_sync_state`
+  - `schema_version`
+  - `api_idempotency`
+- Write-path idempotency key propagation from Rust client to worker is implemented.
 
-All protocols marked as **Critical** in the inventory are now implemented for the current gateway scope and deployment model.
+---
 
-- Total Microsoft protocol specs discovered in Binder1: **129**.
-- Implemented/attempted in repo: limited subset of ActiveSync command handling + minimal EWS SOAP + Autodiscover responses + custom WBXML.
-- Effective conformance status for target use-case: **Critical protocol gaps closed for current scope**.
-### Full protocol inventory and gap classification
+## Current open gaps (up-to-date)
 
-| Protocol | Title (Binder1) | Relevance to stated use-case | Current gateway status | Gap classification |
-|---|---|---|---|---|
-| MS-ASAIRS | Exchange ActiveSync: AirSyncBase Namespace Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASCAL | Exchange ActiveSync: Calendar Class Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASCMD | Exchange ActiveSync: Command Reference Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASCNTC | Exchange ActiveSync: Contact Class Protocol | High | Implemented | Closed for current use-case scope |
-| MS-ASCON | Exchange ActiveSync: Conversations Protocol | High | Implemented | Closed for current use-case scope |
-| MS-ASDOC | Exchange ActiveSync: Document Class Protocol | High | Implemented | Closed for current use-case scope |
-| MS-ASDTYPE | Exchange ActiveSync: Data Types | Critical | Implemented | Closed for current use-case scope |
-| MS-ASEMAIL | Exchange ActiveSync: Email Class Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASHTTP | Exchange ActiveSync: HTTP Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASMS | Exchange ActiveSync: Short Message Service (SMS) Protocol | High | Implemented | Closed for current use-case scope |
-| MS-ASNOTE | Exchange ActiveSync: Notes Class Protocol | High | Implemented | Closed for current use-case scope |
-| MS-ASPROV | Exchange ActiveSync: Provisioning Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASRM | Exchange ActiveSync: Rights Management Protocol | High | Implemented | Closed for current use-case scope |
-| MS-ASTASK | Exchange ActiveSync: Tasks Class Protocol | High | Implemented | Closed for current use-case scope |
-| MS-ASWBXML | Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm | Critical | Implemented | Closed for current use-case scope |
-| MS-MCI | Microsoft ZIP (MSZIP) Compression and Decompression Data Structure | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXABREF | Address Book Name Service Provider Interface (NSPI) Referral Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXBBODY | Best Body Retrieval Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCDATA | Data Structures | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCEXT | Client Extension Message Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCFOLD | Folder Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCFXICS | Bulk Data Transfer Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCICAL | iCalendar to Appointment Object Conversion Algorithm | Medium | Not implemented | Out of current implementation scope |
-| MS-OXCMAIL | RFC 2822 and MIME to Email Object Conversion Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCMAPIHTTP | Messaging Application Programming Interface (MAPI) Extensions for HTTP | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCMSG | Message and Attachment Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCNOTIF | Core Notifications Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCPERM | Exchange Access and Operation Permissions Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCPRPT | Property and Stream Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCROPS | Remote Operations (ROP) List and Encoding Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCRPC | Wire Format Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCSPAM | Spam Confidence Level Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCSTOR | Store Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXCTABL | Table Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXDISCO | Autodiscover HTTP Service Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-OXDSCLI | Autodiscover Publishing and Lookup Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXIMAP4 | Internet Message Access Protocol Version 4 (IMAP4) Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXLDAP | Lightweight Directory Access Protocol (LDAP) Version 3 Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXMSG | Outlook Item (.msg) File Format | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXNSPI | Exchange Server Name Service Provider Interface (NSPI) Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOABK | . PidTagObjectType ([MS-OXOABK] section 2.2.3.10) | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOAB | Offline Address Book (OAB) File Format and Schema | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOABKT | Address Book User Interface Templates Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOCAL | Appointment and Meeting Object Protocol | Medium | Not implemented | Out of current implementation scope |
-| MS-OXORMDR | . PidLidReminderSet ([MS-OXORMDR] section 2.2.1.1) | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOCFG | Configuration Information Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOCNTC | Contact Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXODLGT | Delegate Access Configuration Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOSFLD | . Calendar | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXODOC | Document Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOFLAG | Informational Flagging Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOTASK | . PidLidTaskStartDate ([MS-OXOTASK] section 2.2.2.2.4) | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOJRNL | Journal Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOMSG | Email Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXONOTE | Note Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOPFFB | Public Folder-Based Free/Busy Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOPOST | Post Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXORMMS | Rights-Managed Email Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXORSS | RSS Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXORULE | Email Rules Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOSMIME | S/MIME Email Object Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOSMMS | Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOSRCH | Search Folder List Configuration Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXOUM | Voice Mail and Fax Objects Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXPFOAB | Offline Address Book (OAB) Public Folder Retrieval Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXPHISH | Phishing Warning Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXPOP3 | Post Office Protocol Version 3 (POP3) Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXPROPS | Exchange Server Protocols Master Property List | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXPROTO | Exchange Server Protocols System Overview | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXPSVAL | Email Postmark Validation Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXRTFCP | Rich Text Format (RTF) Compression Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXRTFEX | Rich Text Format (RTF) Extensions Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXSHARE | Sharing Message Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXSHRMSG | Sharing Message Attachment Schema | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXSMTP | Simple Mail Transfer Protocol (SMTP) Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXTNEF | Transport Neutral Encapsulation Format (TNEF) Data Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXVCARD | vCard to Contact Object Conversion Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWAVLS | Availability Web Service Protocol | Medium | Not implemented | Out of current implementation scope |
-| MS-OXWCONFIG | Web Service Configuration Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-OXWMT | Mail Tips Web Service Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWOAB | Offline Address Book (OAB) Retrieval File Format | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWOOF | Out of Office (OOF) Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSADISC | Autodiscover Publishing and Lookup SOAP-Based Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSARCH | Archiving Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSATT | Attachment Handling Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSBTRF | Bulk Transfer Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSCDATA | Common Web Service Data Types | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSCEXT | Client Extension Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSCONT | Contacts Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSCONV | Conversations Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSCORE | Core Items Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSCOS | Unified Contact Store Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSCVTID | Convert Item Identifier Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSDLGM | Delegate Access Management Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSDLIST | Distribution List Creation and Usage Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSEDISC | Electronic Discovery (eDiscovery) Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSFOLD | Folders and Folder Permissions Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSGNI | Nonindexable Item Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSGTRM | Get Rooms List Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSGTZ | Get Server Time Zone Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSITEMID | Web Service Item ID Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSLVID | Federated Internet Authentication Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSMSG | Email Message Types Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSMSHR | Folder Sharing Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSMTGS | Calendaring Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSMTRK | Message Tracking Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSNTIF | Notifications Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSOLPS | Online Personal Search Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSPED | Password Expiration Date Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSPERS | Persona Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSPHOTO | Photo Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSPOST | Post Items Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSPSNTIF | Push Notifications Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSRSLNM | Resolve Recipient Names Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSRULES | Inbox Rules Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSSMBX | Site Mailbox Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSSRCH | Mailbox Search Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSSYNC | Mailbox Contents Synchronization Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSTASK | Tasks Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSURPT | Retention Tag Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSUSRCFG | User Configuration Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWSXPROP | Extended Properties Structure | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXWUMS | Voice Mail Settings Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-PATCH | LZX DELTA Compression and Decompression | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-XJRNL | Journal Record Message File Format | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-XLOGIN | Simple Mail Transfer Protocol (SMTP) AUTH LOGIN Extension | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-XOAUTH | OAuth 2.0 Authorization Protocol Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-XWDCAL | Web Distributed Authoring and Versioning (WebDAV) Extensions for Calendar Support | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-XWDVSEC | Web Distributed Authoring and Versioning (WebDAV) Protocol Security Descriptor Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
+## A) ActiveSync conformance depth (MS-ASHTTP / MS-ASCMD / MS-ASPROV / MS-ASWBXML families)
 
-## Concrete code-level gap map
+1. **Command semantics are still interoperability-profile level, not full Exchange-grade conformance**:
+   - Many commands return baseline success/status bodies without full per-command behavioral model (state transitions, conflict rules, protocol-specific error maps).
+2. **Schema validation is partial**:
+   - Current validation checks required high-level elements/namespaces for selected commands, but does not enforce full payload grammar and versioned constraints for all supported command variants.
+3. **Provisioning policy model is persisted but simplified**:
+   - Lacks richer policy payload negotiation and device-policy lifecycle semantics expected by full Exchange policy engines.
+4. **WBXML breadth**:
+   - WBXML codec is functional for implemented command paths, but full token/code-page parity for all protocol-family payload permutations remains incomplete.
 
-### A) Endpoint and transport gaps
+## B) EWS protocol depth (MS-OXWS* families relevant to use-case)
 
-- EAS `OPTIONS` handling is implemented with explicit capability headers.
-- Added request correlation (`X-Request-Id`) on EAS responses for traceability.
-- Added per-device throttling/backoff behavior (`503` + `Retry-After`) to reduce aggressive mobile retry storms.
-- Added forwarded-proto enforcement for TLS-offloaded deployments (`x-forwarded-proto=https` expected behind Cloudflare).
-- Rust service still relies on Cloudflare for TLS termination by design; this is acceptable for the stated deployment only when Cloudflare edge-to-origin trust constraints are enforced operationally.
+1. **Operation coverage remains limited**:
+   - `GetFolder`, `FindItem`, and `SyncFolderItems` are implemented.
+   - Full Outlook-grade parity still requires deeper support for additional EWS operations and edge-case SOAP faults.
+2. **Delta semantics are basic**:
+   - `SyncFolderItems` currently models create/change style deltas from item-map history, but advanced delete/tombstone/conflict/version semantics are not fully modeled.
+3. **Paging and shape fidelity**:
+   - Basic paging is implemented; full Exchange shape fidelity (all requested properties, strict response-class nuances, advanced traversal/base shape behaviors) is still partial.
 
-### B) EAS protocol gaps
+## C) Data consistency / reliability hardening
 
-- Command detection uses root-tag parsing with query `Cmd` fallback.
-- Added command-specific payload validation for required namespaces/elements for `Sync`/`Provision`/`Settings` baseline handling.
-- Sync collection identity now uses request `CollectionId` instead of a hardcoded server constant.
-- Provision policy now persists and validates `PolicyKey` by owner + device id through typed worker endpoints.
-- Command surface includes `MeetingResponse`, `ResolveRecipients`, `ValidateCert`, `GetItemEstimate`, `MoveItems`, `Search`, `ItemOperations`, `SendMail`, `SmartReply`, and `SmartForward` in the current interoperability profile.
-- Remaining gap: richer per-command status/fault semantics (beyond baseline status mapping) for strict Outlook edge-case parity.
+1. **Idempotency persistence exists, but lifecycle management is pending**:
+   - No cleanup/TTL policy yet for `api_idempotency` growth management.
+2. **Concurrency/transaction semantics**:
+   - Core CRUD paths are in place; higher-load contention behavior and strict transaction isolation patterns are not yet fully hardened/tested.
+3. **Migration management**:
+   - `schema_version` table exists, but no formal migration runner/process is present in-repo.
 
-### C) EWS protocol gaps
+## D) End-to-end use-case verification gap
 
-- Added operation-specific request validation for `GetFolder`, `FindItem`, and `SyncFolderItems` (SOAP envelope/body + required operation elements).
-- `FindItem` now returns dynamic, paged item views (`MaxEntriesReturned`/`Offset`) sourced from worker-backed `item_map` rows with deterministic item IDs and computed change keys.
-- `SyncFolderItems` now persists and reads per-owner folder sync state, emits delta-style change sets from `list_changes_since`, and updates sync state markers after each response.
-- Remaining EWS gap: advanced semantics (deletes/tombstones, conflict resolution classes, and full parity with Exchange paging/fault edge-cases) are still incremental hardening work.
+1. **Protocol conformance traceability matrix is missing**:
+   - No repository-level MUST/SHOULD matrix mapping Binder1 protocol requirements to tests and code points.
+2. **Automated interoperability test suite is missing**:
+   - No exhaustive automated Outlook Windows/Android scenario suite in-repo for regression-proof “native perfect” validation.
 
-### D) Data and consistency gaps
+---
 
-- Strongly-typed worker API routes are wired to Rust storage, now including EWS list/sync-state and provision-policy persistence APIs.
-- D1 schema and worker logic cover sync-state/item-map/provision/ews-sync CRUD flows with unique constraints and indexed lookups.
-- Added schema-version tracking (`schema_version`) to formalize migration/rollout sequencing.
-- Added idempotency registry (`api_idempotency`) and deterministic Rust idempotency keys for typed write requests to improve retry safety.
-- Remaining data-hardening work is transactional contention behavior under very high concurrency and long-window retention/cleanup policy for idempotency rows.
+## Protocol status table (use-case relevant families only)
 
-### E) Deployment/configuration gaps for stated Cloudflare + Stalwart setup
+| Protocol family (Binder1) | Current status | Gap status |
+|---|---|---|
+| MS-ASAIRS / MS-ASWBXML | Implemented for active paths | Partial breadth remaining |
+| MS-ASCMD / MS-ASHTTP | Implemented for core command transport/dispatch | Full semantic parity still open |
+| MS-ASCAL | Implemented (calendar-focused sync path) | Edge-case parity still open |
+| MS-ASPROV | Implemented with persisted policy key flow | Advanced policy semantics still open |
+| MS-ASDTYPE | Implemented for used payload subsets | Broader type parity still open |
+| MS-OXDISCO / MS-OXWCONFIG | Implemented in worker autodiscover surfaces | Variant completeness still open |
+| EWS operation families used by Outlook calendar sync | `GetFolder`/`FindItem`/`SyncFolderItems` implemented | Broader op/fault/detail parity still open |
 
-- Port mismatch across config/tunnel/compose has been fixed (bind/publish on 8134).
-- Compose/runtime config drift has been fixed by mounting TOML config consumed by `Config::load`.
-- Worker DB binding and storage auth/header expectations are aligned by worker-side dual-auth adapter logic.
+---
 
-## Required remediation backlog (ordered)
+## Prioritized remaining work
 
-1. Unify architecture: pick one backend contract (typed worker API vs raw SQL proxy) and implement it end-to-end consistently.
-2. [Done] Deployment contract aligned (`config.toml` bind and compose publish on 8134).
-3. [Done/Partial] Worker endpoints are implemented with auth/validation; remaining work is advanced transactional guarantees under high concurrency.
-4. Replace substring-based EAS parsing with namespace-aware parser supporting command/query semantics and full status handling.
-5. Implement real EWS operations required by Outlook (at least GetFolder, FindFolder, FindItem, GetItem, SyncFolderItems, CreateItem, UpdateItem, DeleteItem) with proper SOAP fault handling.
-6. Expand protocol coverage to critical ActiveSync classes for calendar invitations/updates and device lifecycle.
-7. Add conformance test harness (golden WBXML vectors, EAS command integration tests, EWS SOAP fixtures, Outlook interoperability matrix).
-8. Add observability and hardening (structured logs, request IDs, timeout/retry policy, rate limiting, security headers, panic-free error paths).
-9. Validate against Binder1 protocol requirements with a traceability matrix mapping each MUST/SHOULD to code/tests.
+1. Add full protocol traceability matrix (Binder1 MUST/SHOULD -> code/test mapping).
+2. Expand EWS operation fidelity and SOAP fault mapping for Outlook edge-cases.
+3. Expand EAS command-specific semantics/status handling beyond baseline success paths.
+4. Harden WBXML code-page/token coverage for broader payload permutations.
+5. Add migration runner + idempotency cleanup policy.
+6. Add concurrency/load and long-running sync reliability test harness.
+7. Add end-to-end Outlook Windows/Android automated interoperability suite.
 
-## Definition of done for your specific use-case
+---
 
-- Outlook Windows + Android can autodiscover and authenticate without manual protocol hacks.
-- Calendar CRUD, recurrence, attendee updates, meeting responses, and deletion round-trip correctly between Outlook clients and Stalwart CalDAV data.
-- Sync state is stable across restarts and multi-device use.
-- Negative paths (invalid creds, malformed WBXML/SOAP, stale sync keys, concurrent edits) are protocol-correct and deterministic.
-- End-to-end deployment docs exactly match Cloudflare Tunnel + Worker + D1 + Stalwart runtime settings.
+## Updated definition of done (specific to your use-case)
+
+The solution is done when all of the following are true in staging and production-like validation:
+
+1. **Native client behavior**
+   - Outlook Windows and Outlook Android can autodiscover, authenticate, and continuously sync calendar data without client extensions or manual protocol overrides.
+
+2. **Calendar interoperability correctness**
+   - Calendar create/update/delete/recurrence/meeting-response flows round-trip correctly and deterministically across clients and backend.
+   - Multi-device sync is stable, with no duplicate or missing events under normal retry/network churn.
+
+3. **Protocol correctness envelope**
+   - Implemented EAS/EWS operations return protocol-correct status/fault semantics for both happy-path and negative-path scenarios.
+   - WBXML/XML handling is robust for all payloads exercised by supported Outlook client versions.
+
+4. **State and persistence robustness**
+   - Sync/provision/EWS state persistence survives restarts and retries without corruption.
+   - Idempotency and migration controls are operationally defined, deployed, and monitored.
+
+5. **Operational hardening**
+   - Observability (request correlation, structured logs, actionable errors), rate controls, and retry behavior are validated under load.
+   - Cloudflare edge/origin trust assumptions are explicitly enforced and verified in deployment.
+
+6. **Evidence-based validation**
+   - Automated tests and traceability artifacts demonstrate conformance for relevant Binder1 requirements in the supported scope.
+
