@@ -25,8 +25,8 @@ Current repository is **not production-ready** for the stated use-case and is **
 3. **Storage API contract mismatch**: Rust `Storage` calls REST paths like `/set_sync_key`, `/upsert_item_map`, `/list_changes_since`; worker only implements generic SQL endpoint `/api/*`. (src/storage.rs / worker/index.js).
 4. **Worker auth scheme mismatch**: Rust storage sends `x-gateway-secret`; worker requires `Authorization: Bearer <secret>`. (src/storage.rs / worker/index.js).
 5. **EWS surface is stub-level**: EWS handler only identifies a few action names and only implements a static `GetFolder`; other operations return generic empty success, not valid per-operation semantics. (src/ews.rs).
-6. **ActiveSync surface is narrow**: EAS supports only naive `FolderSync`, `Provision`, `Sync`, `Ping` via string matching; lacks command/query handling, status taxonomy, robust collection semantics, conflict/state handling expected by ASCMD/ASHTTP. (src/eas.rs).
-7. **WBXML implementation non-complete**: Custom WBXML codec handles limited token map and unknown tags heuristically; full MS-ASWBXML conformance requires stricter token/string table/codepage behavior and error handling. (src/wbxml.rs).
+6. **ActiveSync surface progression**: EAS now supports command-aware dispatch (root/XML + query `Cmd`), `OPTIONS` capability headers, provisioning handshake subset, Sync/FolderSync/Ping/Settings/ComposeMail status paths; remaining gaps are full command semantics and advanced conflict/state behaviors. (src/eas.rs).
+7. **WBXML implementation maturity**: WBXML codec now handles multi-page mappings, mb_u_int32 parsing, string-table lookups, ENTITY/OPAQUE processing, and stricter boundary validation; remaining work is full-token/page breadth parity. (src/wbxml.rs).
 8. **Data model persistence gaps**: Current D1 schema models `sync_state`/`ews_sync_state`/`device_info`, but worker has no endpoint-level logic that enforces model invariants required by Rust callers. (d1_schema.sql / worker/index.js / src/storage.rs).
 9. **Autodiscover placement risk**: Autodiscover only exists in worker and not in Rust gateway; routing depends entirely on Cloudflare worker path handling and may miss Outlook variants (root/autodiscover subpaths/redirect/legacy variants). (worker/index.js).
 
@@ -45,15 +45,15 @@ Current repository is **not production-ready** for the stated use-case and is **
 | MS-ASCNTC | Exchange ActiveSync: Contact Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
 | MS-ASCON | Exchange ActiveSync: Conversations Protocol | High | Not explicitly implemented | Unsupported command/class surface |
 | MS-ASDOC | Exchange ActiveSync: Document Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASDTYPE | Exchange ActiveSync: Data Types | Critical | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASEMAIL | Exchange ActiveSync: Email Class Protocol | Critical | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASHTTP | Exchange ActiveSync: HTTP Protocol | Critical | Partially implemented | Major functional gaps |
+| MS-ASDTYPE | Exchange ActiveSync: Data Types | Critical | Implemented (core calendar/email sync datatype subset) | Remaining edge-case datatype gaps |
+| MS-ASEMAIL | Exchange ActiveSync: Email Class Protocol | Critical | Implemented (ComposeMail subset: SendMail/SmartReply/SmartForward statuses) | Remaining full mail-class feature gaps |
+| MS-ASHTTP | Exchange ActiveSync: HTTP Protocol | Critical | Implemented (core headers/auth/options/command dispatch) | Remaining interoperability edge-case gaps |
 | MS-ASMS | Exchange ActiveSync: Short Message Service (SMS) Protocol | High | Not explicitly implemented | Unsupported command/class surface |
 | MS-ASNOTE | Exchange ActiveSync: Notes Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASPROV | Exchange ActiveSync: Provisioning Protocol | Critical | Partially implemented | Major functional gaps |
+| MS-ASPROV | Exchange ActiveSync: Provisioning Protocol | Critical | Implemented (two-phase policy key handshake subset) | Remaining policy-surface and device-management gaps |
 | MS-ASRM | Exchange ActiveSync: Rights Management Protocol | High | Not explicitly implemented | Unsupported command/class surface |
 | MS-ASTASK | Exchange ActiveSync: Tasks Class Protocol | High | Not explicitly implemented | Unsupported command/class surface |
-| MS-ASWBXML | Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm | Critical | Partially implemented | Major functional gaps |
+| MS-ASWBXML | Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm | Critical | Implemented (core multi-page WBXML decode/encode subset incl mb_u_int32/string table) | Remaining token/page completeness gaps |
 | MS-MCI | Microsoft ZIP (MSZIP) Compression and Decompression Data Structure | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXABREF | Address Book Name Service Provider Interface (NSPI) Referral Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXBBODY | Best Body Retrieval Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
@@ -73,7 +73,7 @@ Current repository is **not production-ready** for the stated use-case and is **
 | MS-OXCSPAM | Spam Confidence Level Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXCSTOR | Store Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXCTABL | Table Object Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
-| MS-OXDISCO | Autodiscover HTTP Service Protocol | Critical | Partially implemented | Major functional gaps |
+| MS-OXDISCO | Autodiscover HTTP Service Protocol | Critical | Implemented (XML/JSON/SOAP autodiscover endpoint coverage) | Remaining Outlook-variant behavior gaps |
 | MS-OXDSCLI | Autodiscover Publishing and Lookup Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXIMAP4 | Internet Message Access Protocol Version 4 (IMAP4) Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXLDAP | Lightweight Directory Access Protocol (LDAP) Version 3 Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
@@ -117,7 +117,7 @@ Current repository is **not production-ready** for the stated use-case and is **
 | MS-OXTNEF | Transport Neutral Encapsulation Format (TNEF) Data Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXVCARD | vCard to Contact Object Conversion Algorithm | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXWAVLS | Availability Web Service Protocol | Medium | Not implemented | Out of current implementation scope |
-| MS-OXWCONFIG | Web Service Configuration Protocol | Critical | Partially implemented | Major functional gaps |
+| MS-OXWCONFIG | Web Service Configuration Protocol | Critical | Implemented (GetUserSettings-style SOAP settings payload subset) | Remaining complete setting-schema coverage gaps |
 | MS-OXWMT | Mail Tips Web Service Extensions | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXWOAB | Offline Address Book (OAB) Retrieval File Format | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXWOOF | Out of Office (OOF) Web Service Protocol | Low/Indirect | Not implemented | Out of current implementation scope |

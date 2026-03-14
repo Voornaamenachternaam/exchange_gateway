@@ -1,40 +1,48 @@
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
 
-    if (path.startsWith("/api/")) {
+    if (path.startsWith('/api/')) {
       return handleApiRequest(request, env);
     }
 
-    if (path.includes("autodiscover")) {
-      if (path.includes(".json")) {
+    // MS-OXDISCO / MS-OXWCONFIG-style autodiscover endpoints.
+    if (
+      path.includes('/autodiscover/') ||
+      path.endsWith('/autodiscover.xml') ||
+      path.endsWith('/autodiscover.svc') ||
+      path.includes('/autodiscover.json')
+    ) {
+      if (path.includes('.json')) {
         return handleAutodiscoverJson(url, env);
+      }
+      if (path.endsWith('.svc')) {
+        return handleAutodiscoverSoap(request, env);
       }
       return handleAutodiscoverXml(request, env);
     }
 
-    return new Response("Not Found", { status: 404 });
+    return new Response('Not Found', { status: 404 });
   }
 };
 
 async function handleApiRequest(request, env) {
-  const authHeader = request.headers.get("Authorization");
+  const authHeader = request.headers.get('Authorization');
   const expectedSecret = `Bearer ${env.GATEWAY_SECRET}`;
 
   if (authHeader !== expectedSecret) {
-    return new Response("Unauthorized", { status: 401 });
+    return new Response('Unauthorized', { status: 401 });
   }
 
   let body;
   try {
     body = await request.json();
-  } catch (e) {
-    return new Response("Invalid JSON", { status: 400 });
+  } catch {
+    return new Response('Invalid JSON', { status: 400 });
   }
 
   const { query, params } = body;
-
   if (!query) {
     return new Response("Missing 'query' field", { status: 400 });
   }
@@ -44,43 +52,51 @@ async function handleApiRequest(request, env) {
     if (params && Array.isArray(params)) {
       stmt = stmt.bind(...params);
     }
-    
+
     const result = await stmt.all();
     return Response.json({
       success: result.success ?? true,
-      errors: result.success === false
-        ? [{ message: result.errors?.[0]?.message ?? "DB query failed" }]
-        : [],
-      result: [
-        { results: result.results, meta: result.meta }
-      ]
+      errors:
+        result.success === false
+          ? [{ message: result.errors?.[0]?.message ?? 'DB query failed' }]
+          : [],
+      result: [{ results: result.results, meta: result.meta }]
     });
   } catch (e) {
-    console.error("D1 Error:", e);
+    console.error('D1 Error:', e);
     return Response.json({ error: { message: e.message } }, { status: 500 });
   }
 }
 
 async function handleAutodiscoverJson(url, env) {
   const domain = env.GATEWAY_HOST;
-  if (!domain) return new Response("Config Error", { status: 500 });
-  
-  return new Response(JSON.stringify({
-    "Protocol": "Exchange",
-    "Url": `https://${domain}/EWS/Exchange.asmx`
-  }), { headers: { "Content-Type": "application/json" }});
+  if (!domain) return new Response('Config Error', { status: 500 });
+
+  const payload = {
+    Protocol: 'Exchange',
+    Url: `https://${domain}/EWS/Exchange.asmx`,
+    EwsUrl: `https://${domain}/EWS/Exchange.asmx`,
+    ActiveSyncUrl: `https://${domain}/Microsoft-Server-ActiveSync`
+  };
+
+  return new Response(JSON.stringify(payload), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'private, no-store'
+    }
+  });
 }
 
 async function handleAutodiscoverXml(request, env) {
   const domain = env.GATEWAY_HOST;
-  if (!domain) return new Response("Config Error", { status: 500 });
+  if (!domain) return new Response('Config Error', { status: 500 });
 
-  let email = "";
+  let email = '';
   try {
     const body = await request.text();
     const match = body.match(/<EMailAddress>(.*?)<\/EMailAddress>/i);
     if (match) email = match[1];
-  } catch (e) {}
+  } catch {}
 
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
@@ -88,6 +104,7 @@ async function handleAutodiscoverXml(request, env) {
     <User>
       <DisplayName>Stalwart Mail</DisplayName>
       <EMailAddress>${escapeXml(email)}</EMailAddress>
+      <DeploymentId>00000000-0000-0000-0000-000000000000</DeploymentId>
     </User>
     <Account>
       <AccountType>email</AccountType>
@@ -95,6 +112,17 @@ async function handleAutodiscoverXml(request, env) {
       <Protocol>
         <Type>EXCH</Type>
         <Server>${domain}</Server>
+        <ServerDN>/o=Exchange/ou=Exchange Administrative Group/cn=Recipients/cn=user</ServerDN>
+        <ASUrl>https://${domain}/Microsoft-Server-ActiveSync</ASUrl>
+        <EwsUrl>https://${domain}/EWS/Exchange.asmx</EwsUrl>
+        <EmwsUrl>https://${domain}/EWS/Exchange.asmx</EmwsUrl>
+      </Protocol>
+      <Protocol>
+        <Type>EXPR</Type>
+        <Server>${domain}</Server>
+        <SSL>On</SSL>
+        <AuthPackage>Basic</AuthPackage>
+        <ASUrl>https://${domain}/Microsoft-Server-ActiveSync</ASUrl>
         <EwsUrl>https://${domain}/EWS/Exchange.asmx</EwsUrl>
       </Protocol>
       <Protocol>
@@ -106,16 +134,80 @@ async function handleAutodiscoverXml(request, env) {
 </Autodiscover>`;
 
   return new Response(xml, {
-    headers: { "Content-Type": "application/xml; charset=utf-8" }
+    headers: {
+      'Content-Type': 'application/xml; charset=utf-8',
+      'Cache-Control': 'private, no-store'
+    }
   });
 }
 
-function escapeXml(unsafe) {
-    return unsafe.replace(/[<>&'"]/g, function (c) {
-        switch (c) {
-            case '<': return '&lt;'; case '>': return '&gt;';
-            case '&': return '&amp;'; case '\'': return '&apos;';
-            case '"': return '&quot;';
-        }
-    });
+async function handleAutodiscoverSoap(request, env) {
+  const domain = env.GATEWAY_HOST;
+  if (!domain) return new Response('Config Error', { status: 500 });
+
+  const body = await request.text();
+  const emailMatch = body.match(/<a:EMailAddress>(.*?)<\/a:EMailAddress>/i);
+  const email = emailMatch ? emailMatch[1] : '';
+
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
+  <s:Body>
+    <a:GetUserSettingsResponseMessage>
+      <a:Response>
+        <a:ErrorCode>NoError</a:ErrorCode>
+        <a:ErrorMessage />
+        <a:UserResponses>
+          <a:UserResponse>
+            <a:ErrorCode>NoError</a:ErrorCode>
+            <a:ErrorMessage />
+            <a:RedirectTarget />
+            <a:UserSettingErrors />
+            <a:UserSettings>
+              <a:UserSetting>
+                <a:Name>UserDisplayName</a:Name>
+                <a:Value>Stalwart Mail</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>UserDN</a:Name>
+                <a:Value>${escapeXml(email)}</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>ExternalEwsUrl</a:Name>
+                <a:Value>https://${domain}/EWS/Exchange.asmx</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>InternalEwsUrl</a:Name>
+                <a:Value>https://${domain}/EWS/Exchange.asmx</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>MobileSyncServer</a:Name>
+                <a:Value>${domain}</a:Value>
+              </a:UserSetting>
+            </a:UserSettings>
+          </a:UserResponse>
+        </a:UserResponses>
+      </a:Response>
+    </a:GetUserSettingsResponseMessage>
+  </s:Body>
+</s:Envelope>`;
+
+  return new Response(xml, {
+    headers: {
+      'Content-Type': 'application/soap+xml; charset=utf-8',
+      'Cache-Control': 'private, no-store'
+    }
+  });
+}
+
+function escapeXml(unsafe = '') {
+  return String(unsafe).replace(/[<>&'\"]/g, function (c) {
+    switch (c) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '&': return '&amp;';
+      case '\'': return '&apos;';
+      case '"': return '&quot;';
+      default: return c;
+    }
+  });
 }

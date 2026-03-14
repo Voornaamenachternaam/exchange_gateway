@@ -36,6 +36,9 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
 }
 
 fn extract_root_command(xml: &str) -> Option<String> {
+    if xml.trim().is_empty() {
+        return None;
+    }
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -53,21 +56,21 @@ fn extract_root_command(xml: &str) -> Option<String> {
     }
 }
 
-fn extract_sync_key(xml: &str) -> Option<String> {
+fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
-    let mut in_sync_key = false;
+    let mut inside = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"SyncKey" => {
-                in_sync_key = true;
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => {
+                inside = true;
             }
-            Ok(Event::Text(t)) if in_sync_key => {
-                return Some(t.decode().ok()?.into_owned());
+            Ok(Event::Text(t)) if inside => {
+                return t.decode().ok().map(|v| v.into_owned());
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"SyncKey" => {
-                in_sync_key = false;
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => {
+                inside = false;
             }
             Ok(Event::Eof) => return None,
             Err(_) => return None,
@@ -77,13 +80,37 @@ fn extract_sync_key(xml: &str) -> Option<String> {
     }
 }
 
+fn extract_sync_key(xml: &str) -> Option<String> {
+    extract_first_tag_text(xml, b"SyncKey")
+}
+
+fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
+    query
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Cmd"))
+        .map(|(_, v)| v.clone())
+}
+
+fn standard_headers(content_type: &'static str) -> [(&'static str, &'static str); 5] {
+    [
+        (header::CONTENT_TYPE.as_str(), content_type),
+        ("MS-Server-ActiveSync", "16.1"),
+        ("Cache-Control", "private, no-store"),
+        ("Pragma", "no-cache"),
+        ("X-MS-ProtocolVersion", "16.1"),
+    ]
+}
+
 fn unauth_response() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(
-            header::WWW_AUTHENTICATE,
-            "Basic realm=\"Microsoft-Server-ActiveSync\"",
-        )],
+        [
+            (
+                header::WWW_AUTHENTICATE.as_str(),
+                "Basic realm=\"Microsoft-Server-ActiveSync\"",
+            ),
+            ("MS-Server-ActiveSync", "16.1"),
+        ],
         "Unauthorized",
     )
         .into_response()
@@ -100,6 +127,7 @@ fn options_response() -> Response {
                 "MS-ASProtocolCommands",
                 "Sync,SendMail,SmartForward,SmartReply,GetAttachment,FolderSync,FolderCreate,FolderDelete,FolderUpdate,MoveItems,GetItemEstimate,MeetingResponse,Search,Settings,Ping,ItemOperations,Provision,ResolveRecipients,ValidateCert",
             ),
+            ("Cache-Control", "private, no-store"),
         ],
         "",
     )
@@ -111,18 +139,13 @@ fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str) -> Response {
         match wbxml.encode(xml) {
             Ok(b) => (
                 StatusCode::OK,
-                [
-                    (
-                        header::CONTENT_TYPE.as_str(),
-                        "application/vnd.ms-sync.wbxml",
-                    ),
-                    ("MS-Server-ActiveSync", "16.1"),
-                ],
+                standard_headers("application/vnd.ms-sync.wbxml"),
                 b,
             )
                 .into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
+                standard_headers("text/plain; charset=utf-8"),
                 format!("WBXML Encode Err: {}", e),
             )
                 .into_response(),
@@ -130,24 +153,49 @@ fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str) -> Response {
     } else {
         (
             StatusCode::OK,
-            [
-                (
-                    header::CONTENT_TYPE.as_str(),
-                    "application/xml; charset=utf-8",
-                ),
-                ("MS-Server-ActiveSync", "16.1"),
-            ],
+            standard_headers("application/xml; charset=utf-8"),
             xml.to_string(),
         )
             .into_response()
     }
 }
 
-fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
-    query
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("Cmd"))
-        .map(|(_, v)| v.clone())
+fn unsupported_command_response(cmd: &str, wbxml: &Wbxml, as_wbxml: bool) -> Response {
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><Status xmlns=\"AirSync:\">5</Status><!-- Unsupported command: {} -->",
+        cmd
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &body)
+}
+
+fn handle_provision(xml: &str, wbxml: &Wbxml, as_wbxml: bool) -> Response {
+    let policy_key = extract_first_tag_text(xml, b"PolicyKey").unwrap_or_else(|| "0".to_string());
+
+    // Two-phase provisioning handshake per ActiveSync behavior:
+    // - First request (PolicyKey=0) => issue server policy key.
+    // - Second request (client echoes policy key) => acknowledge success.
+    let server_policy_key = "12345";
+    let response = if policy_key == "0" {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>{}</PolicyKey></Policy></Policies></Provision>"#,
+            server_policy_key
+        )
+    } else {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>{}</PolicyKey></Policy></Policies></Provision>"#,
+            policy_key
+        )
+    };
+
+    xml_or_wbxml_response(wbxml, as_wbxml, &response)
+}
+
+fn handle_send_mail(wbxml: &Wbxml, as_wbxml: bool) -> Response {
+    // MS-ASEMAIL / ComposeMail command path acknowledgement.
+    let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><SendMail xmlns="ComposeMail:"><Status>1</Status></SendMail>"#;
+    xml_or_wbxml_response(wbxml, as_wbxml, resp_xml)
 }
 
 pub async fn handle(
@@ -180,7 +228,12 @@ pub async fn handle(
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("WBXML Decode Error: {}", e);
-                return (StatusCode::BAD_REQUEST, format!("Invalid body: {}", e)).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    standard_headers("text/plain; charset=utf-8"),
+                    format!("Invalid body: {}", e),
+                )
+                    .into_response();
             }
         }
     };
@@ -195,15 +248,7 @@ pub async fn handle(
 <FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>1</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes></FolderSync>"#;
             xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
         }
-        "Provision" => {
-            let policy_key = "12345";
-            let resp_xml = format!(
-                r#"<?xml version="1.0" encoding="utf-8"?>
-<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><Status>1</Status><PolicyKey>{}</PolicyKey></Policy></Policies></Provision>"#,
-                policy_key
-            );
-            xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml)
-        }
+        "Provision" => handle_provision(&xml, &wbxml, wants_wbxml),
         "Sync" => {
             let owner = username.as_str();
             let collection_id = "1";
@@ -229,26 +274,20 @@ pub async fn handle(
             }
         }
         "Ping" => {
-            let resp_xml =
-                r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
+            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
             xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
         }
         "Settings" => {
             let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Settings xmlns="Settings:"><Status>1</Status></Settings>"#;
             xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
         }
-        _ => (
-            StatusCode::BAD_REQUEST,
-            [
-                (header::CONTENT_TYPE.as_str(), "application/xml; charset=utf-8"),
-                ("MS-Server-ActiveSync", "16.1"),
-            ],
-            format!(
-                "<?xml version=\"1.0\" encoding=\"utf-8\"?><Status xmlns=\"AirSync:\">5</Status><!-- Unsupported command: {} -->",
-                command
-            ),
-        )
-            .into_response(),
+        "SendMail" => handle_send_mail(&wbxml, wants_wbxml),
+        "SmartReply" | "SmartForward" => {
+            let resp_xml =
+                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">1</Status>"#;
+            xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
+        }
+        _ => unsupported_command_response(&command, &wbxml, wants_wbxml),
     }
 }
 

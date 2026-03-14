@@ -4,7 +4,11 @@ use std::collections::HashMap;
 
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
+const ENTITY: u8 = 0x02;
 const STR_I: u8 = 0x03;
+const LITERAL: u8 = 0x04;
+const STR_T: u8 = 0x83;
+const OPAQUE: u8 = 0xC3;
 
 lazy_static::lazy_static! {
     static ref TAG_TO_NAME: HashMap<(u8, u8), &'static str> = {
@@ -16,6 +20,7 @@ lazy_static::lazy_static! {
         m.insert((0, 0x07), "Add");
         m.insert((0, 0x08), "Change");
         m.insert((0, 0x09), "Delete");
+        m.insert((0, 0x0A), "Fetch");
         m.insert((0, 0x0B), "SyncKey");
         m.insert((0, 0x0C), "ClientId");
         m.insert((0, 0x0D), "ServerId");
@@ -23,25 +28,33 @@ lazy_static::lazy_static! {
         m.insert((0, 0x0F), "Collection");
         m.insert((0, 0x10), "Class");
         m.insert((0, 0x12), "CollectionId");
-
-        // Additional AirSync tags used by command/reference semantics
         m.insert((0, 0x16), "Commands");
         m.insert((0, 0x17), "Options");
         m.insert((0, 0x1B), "Conflict");
         m.insert((0, 0x1C), "Collections");
         m.insert((0, 0x1D), "ApplicationData");
 
+        // Code Page 2: Email (subset for ASEMAL)
+        m.insert((2, 0x05), "Email:Attachment");
+        m.insert((2, 0x06), "Email:Attachments");
+        m.insert((2, 0x07), "Email:AttName");
+        m.insert((2, 0x08), "Email:AttSize");
+        m.insert((2, 0x14), "Email:Subject");
+        m.insert((2, 0x16), "Email:To");
+        m.insert((2, 0x17), "Email:Cc");
+        m.insert((2, 0x18), "Email:From");
+        m.insert((2, 0x0C), "Email:Body");
+
         // Code Page 4: Calendar (ASCAL)
         m.insert((4, 0x05), "Calendar:Timezone");
         m.insert((4, 0x06), "Calendar:AllDayEvent");
-        m.insert((4, 0x0B), "Calendar:Body");
+        m.insert((4, 0x07), "Calendar:Attendees");
+        m.insert((4, 0x08), "Calendar:Attendee");
+        m.insert((4, 0x09), "Calendar:Email");
+        m.insert((4, 0x0A), "Calendar:Name");
         m.insert((4, 0x0D), "Calendar:BusyStatus");
         m.insert((4, 0x11), "Calendar:DtStamp");
         m.insert((4, 0x12), "Calendar:EndTime");
-        m.insert((4, 0x13), "Calendar:Exception");
-        m.insert((4, 0x14), "Calendar:Exceptions");
-        m.insert((4, 0x15), "Calendar:Deleted");
-        m.insert((4, 0x16), "Calendar:ExceptionStartTime");
         m.insert((4, 0x17), "Calendar:Location");
         m.insert((4, 0x1B), "Calendar:Recurrence");
         m.insert((4, 0x1C), "Calendar:Type");
@@ -57,16 +70,6 @@ lazy_static::lazy_static! {
         m.insert((4, 0x26), "Calendar:Subject");
         m.insert((4, 0x27), "Calendar:StartTime");
         m.insert((4, 0x28), "Calendar:UID");
-
-        // Code Page 17: AirSyncBase
-        m.insert((17, 0x05), "AirSyncBase:BodyPreference");
-        m.insert((17, 0x06), "AirSyncBase:Type");
-        m.insert((17, 0x07), "AirSyncBase:TruncationSize");
-        m.insert((17, 0x0A), "AirSyncBase:Body");
-        m.insert((17, 0x0B), "AirSyncBase:Data");
-        m.insert((17, 0x0C), "AirSyncBase:EstimatedDataSize");
-        m.insert((17, 0x0D), "AirSyncBase:Truncated");
-
 
         // Code Page 7: FolderHierarchy
         m.insert((7, 0x05), "Folders");
@@ -102,9 +105,25 @@ lazy_static::lazy_static! {
         m.insert((14, 0x0A), "Data");
         m.insert((14, 0x0B), "Status");
 
+        // Code Page 17: AirSyncBase
+        m.insert((17, 0x05), "AirSyncBase:BodyPreference");
+        m.insert((17, 0x06), "AirSyncBase:Type");
+        m.insert((17, 0x07), "AirSyncBase:TruncationSize");
+        m.insert((17, 0x0A), "AirSyncBase:Body");
+        m.insert((17, 0x0B), "AirSyncBase:Data");
+        m.insert((17, 0x0C), "AirSyncBase:EstimatedDataSize");
+        m.insert((17, 0x0D), "AirSyncBase:Truncated");
+
         // Code Page 18: Settings
         m.insert((18, 0x05), "Settings");
         m.insert((18, 0x06), "Status");
+
+        // Code Page 21: ComposeMail (ASEMAIL)
+        m.insert((21, 0x05), "SendMail");
+        m.insert((21, 0x06), "SmartForward");
+        m.insert((21, 0x07), "SmartReply");
+        m.insert((21, 0x08), "SaveInSentItems");
+        m.insert((21, 0x0B), "Mime");
 
         m
     };
@@ -125,6 +144,40 @@ impl Wbxml {
         Wbxml
     }
 
+    fn read_mb_uint(bytes: &[u8], pos: &mut usize) -> Result<u32> {
+        let mut result: u32 = 0;
+        let mut count = 0;
+        loop {
+            if *pos >= bytes.len() {
+                return Err(anyhow!("Truncated WBXML mb_u_int32"));
+            }
+            let b = bytes[*pos];
+            *pos += 1;
+            result = (result << 7) | u32::from(b & 0x7F);
+            count += 1;
+            if (b & 0x80) == 0 {
+                break;
+            }
+            if count > 5 {
+                return Err(anyhow!("WBXML mb_u_int32 too large"));
+            }
+        }
+        Ok(result)
+    }
+
+    fn read_inline_str(bytes: &[u8], pos: &mut usize) -> Result<String> {
+        let start = *pos;
+        while *pos < bytes.len() && bytes[*pos] != 0 {
+            *pos += 1;
+        }
+        if *pos >= bytes.len() {
+            return Err(anyhow!("Unterminated STR_I string"));
+        }
+        let s = String::from_utf8(bytes[start..*pos].to_vec())?;
+        *pos += 1; // null terminator
+        Ok(s)
+    }
+
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
         if bytes.is_empty() {
             return Err(anyhow!("Empty WBXML payload"));
@@ -134,19 +187,24 @@ impl Wbxml {
         }
 
         let mut pos = 0;
-        let _version = bytes[pos];
+        let _version = *bytes
+            .get(pos)
+            .ok_or_else(|| anyhow!("Missing WBXML version"))?;
         pos += 1;
-        let _public_id = bytes[pos];
-        pos += 1;
-        let _charset = bytes[pos];
-        pos += 1;
-        let _str_table_len = bytes[pos];
-        pos += 1;
+        let _public_id = Self::read_mb_uint(bytes, &mut pos)?;
+        let _charset = Self::read_mb_uint(bytes, &mut pos)?;
+        let str_table_len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+            .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
+
+        if pos + str_table_len > bytes.len() {
+            return Err(anyhow!("WBXML string table exceeds payload"));
+        }
+        let string_table = &bytes[pos..pos + str_table_len];
+        pos += str_table_len;
 
         let mut current_code_page = 0u8;
         let mut xml_stack: Vec<String> = Vec::new();
         let mut output = String::new();
-
         output.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
 
         while pos < bytes.len() {
@@ -156,7 +214,7 @@ impl Wbxml {
             match token {
                 SWITCH_PAGE => {
                     if pos >= bytes.len() {
-                        break;
+                        return Err(anyhow!("WBXML SWITCH_PAGE missing code page"));
                     }
                     current_code_page = bytes[pos];
                     pos += 1;
@@ -167,24 +225,53 @@ impl Wbxml {
                     }
                 }
                 STR_I => {
-                    let mut s_bytes = Vec::new();
-                    while pos < bytes.len() && bytes[pos] != 0 {
-                        s_bytes.push(bytes[pos]);
-                        pos += 1;
-                    }
-                    pos += 1;
-                    let content = String::from_utf8_lossy(&s_bytes);
+                    let content = Self::read_inline_str(bytes, &mut pos)?;
                     let escaped = content
                         .replace("&", "&amp;")
                         .replace("<", "&lt;")
                         .replace(">", "&gt;");
                     output.push_str(&escaped);
                 }
+                STR_T => {
+                    let offset = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                        .map_err(|_| anyhow!("Invalid STR_T offset"))?;
+                    if offset >= string_table.len() {
+                        return Err(anyhow!("STR_T offset outside string table"));
+                    }
+                    let mut end = offset;
+                    while end < string_table.len() && string_table[end] != 0 {
+                        end += 1;
+                    }
+                    let content = String::from_utf8(string_table[offset..end].to_vec())?;
+                    let escaped = content
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;");
+                    output.push_str(&escaped);
+                }
+                ENTITY => {
+                    let ent = Self::read_mb_uint(bytes, &mut pos)?;
+                    output.push_str(&format!("&#{};", ent));
+                }
+                OPAQUE => {
+                    let len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                        .map_err(|_| anyhow!("Invalid OPAQUE length"))?;
+                    if pos + len > bytes.len() {
+                        return Err(anyhow!("OPAQUE data exceeds payload"));
+                    }
+                    let opaque = &bytes[pos..pos + len];
+                    pos += len;
+                    let b64 =
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, opaque);
+                    output.push_str(&b64);
+                }
+                LITERAL => {
+                    return Err(anyhow!("LITERAL token unsupported in this profile"));
+                }
                 _ => {
                     if token >= 0x05 {
                         let has_content = (token & 0x40) != 0;
                         let tag_id = token & 0x3F;
-
                         if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
                             output.push_str(&format!("<{}>", name));
                             if has_content {
@@ -197,6 +284,11 @@ impl Wbxml {
                 }
             }
         }
+
+        while let Some(tag) = xml_stack.pop() {
+            output.push_str(&format!("</{}>", tag));
+        }
+
         Ok(output)
     }
 
@@ -271,7 +363,6 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::Text(e)) => {
                     buf.push(STR_I);
-                    // FIXED: Use decode() for quick-xml 0.39
                     let txt = e
                         .decode()
                         .map_err(|e| anyhow!("XML Decode Error: {}", e))?
