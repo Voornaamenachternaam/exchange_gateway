@@ -50,6 +50,7 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(config);
 
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8134));
 let listener = match tokio::net::TcpListener::bind(addr).await {
     Ok(l) => l,
     Err(e) => {
