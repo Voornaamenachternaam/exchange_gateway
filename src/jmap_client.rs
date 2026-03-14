@@ -366,8 +366,9 @@ pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapS
         principals_account_id,
         client,
         max_objects_in_set,
-        blob_account_id,
-}
+        blob_account_id,   
+    })
+} 
 
 pub async fn get_default_calendar_id(session: &JmapSession) -> Result<String, JmapError> {
     let body = json!({ "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:calendars"], "methodCalls": [["Calendar/get", { "accountId": session.account_id, "ids": null }, "c0"]] });
