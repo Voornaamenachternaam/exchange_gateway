@@ -82,63 +82,7 @@ pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
         .json(&body)
         .send()
         .await;
-}
-
-/// Stored ActiveSync sync state: the JMAP state used to compute deltas.
-pub struct ActiveSyncState {
-    pub jmap_state: String,
-}
-
-/// Retrieve the stored JMAP state for a given user / device / collection.
-/// Returns `Ok(None)` when no row exists, `Err` on DB / network / parse
-/// failures so callers can distinguish "missing state" from transient errors.
-pub async fn get_sync_state_full(
-    config: &AppConfig,
-    user: &str,
-    device_id: &str,
-    coll: &str,
-) -> Result<Option<ActiveSyncState>, DbError> {
-    let client = reqwest::Client::new();
-    let body = json!({
-        "query": "SELECT jmap_state FROM sync_state WHERE user_email = ? AND device_id = ? AND collection_id = ?",
-        "params": [user, device_id, coll]
-    });
-    let res = match client
-        .post(&config.db_api_url)
-        .bearer_auth(&config.db_auth_token)
-        .json(&body)
-        .send()
-        .await
-        .and_then(|res| res.error_for_status())
-    {
-        Ok(res) => res,
-        Err(e) => {
-            tracing::error!(
-                user = user,
-                device_id = device_id,
-                collection = coll,
-                "get_sync_state_full: DB request failed: {e}"
-            );
-            return Err(DbError::Request(e));
-        }
-
-    match extract_first_field(&json, "jmap_state") {
-        Some(jmap_state) => Ok(Some(ActiveSyncState { jmap_state })),
-        None => {
-            if has_result_rows(&json) {
-                tracing::warn!(
-                    user = user,
-                    device_id = device_id,
-                    collection = coll,
-                    "get_sync_state_full: unexpected DB response format"
-                );
-                Err(DbError::UnexpectedFormat)
-            } else {
-                Ok(None)
-            }
-        }
-    }
-}
+        return Err(DbError::Request(e));
 
 /// Check whether the DB API response indicates success.
 /// The Worker wrapper format includes "success": true/false` at the top
