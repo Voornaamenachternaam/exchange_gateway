@@ -46,7 +46,6 @@ async function handleApiRequest(request, env) {
     }
     
     const result = await stmt.all();
-    const result = await stmt.all();
     return Response.json({
       success: result.success ?? true,
       errors: result.success === false
@@ -55,7 +54,6 @@ async function handleApiRequest(request, env) {
       result: [
         { results: result.results, meta: result.meta }
       ]
-    });
     });
   } catch (e) {
     console.error("D1 Error:", e);
