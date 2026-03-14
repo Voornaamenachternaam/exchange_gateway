@@ -33,6 +33,8 @@ impl AppConfig {
                     return Err("MAIL_DOMAIN must be a bare domain name like example.com".to_string());
                 }
                 normalized
-        }
+            }
+        })
+    }
     }
 }
