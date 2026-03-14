@@ -322,7 +322,7 @@ fn find_account_for_capability<'a>(
     })
 }
 
-    let client = Client::builder()
+pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapSession, JmapError> {
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| JmapError::Connection(e))?;
