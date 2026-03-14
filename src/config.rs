@@ -1,4 +1,10 @@
 use std::env;
+use lazy_static::lazy_static;
+use regex::Regex;
+
+lazy_static! {
+    static ref MAIL_DOMAIN_REGEX: Regex = Regex::new(r"^(?i)[a-z0-9]+([\\-\\.]{1}[a-z0-9]+)*\\.[a-z]{2,6}$").unwrap();
+}
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
