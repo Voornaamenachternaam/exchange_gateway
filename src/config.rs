@@ -1,44 +1,22 @@
-use std::env;
-use std::sync::LazyLock;
-use regex::Regex;
+// src/config.rs
+use serde::Deserialize;
+use std::fs;
 
-static MAIL_DOMAIN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^[a-z0-9]+([-.][a-z0-9]+)*\.[a-z]{2,}$").unwrap()
-});
-
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub jmap_url: String,
-    pub db_api_url: String,
-    pub db_auth_token: String,
-    pub timezone: String,
-    pub smtp_url: url::Url,
-    pub mail_domain: String,
+#[derive(Clone, Debug, Deserialize)]
+pub struct Config {
+    pub bind: String,
+    pub caldav_base: String,
+    pub worker_url: String,
+    pub worker_secret: String,
+    pub hmac_secret: String,
 }
 
-impl AppConfig {
-    pub fn from_env() -> Result<Self, String> {
-        Ok(Self {
-            jmap_url: env::var("JMAP_URL").map_err(|_| "JMAP_URL missing")?,
-            db_api_url: env::var("CF_D1_API_URL").map_err(|_| "CF_D1_API_URL missing")?,
-            db_auth_token: env::var("GATEWAY_SECRET").map_err(|_| "GATEWAY_SECRET missing")?,
-            timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
-            smtp_url: {
-                let raw = env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?;
-                let url = url::Url::parse(&raw)
-                    .map_err(|_| "SMTP_URL must be a valid URL".to_string())?;
-                if !matches!(url.scheme(), "smtp" | "smtps") || url.host_str().is_none() {
-                    return Err("SMTP_URL must use smtp:// or smtps:// and include a host".to_string());
-                }
-                url
-            },
-            mail_domain: {
-                let raw = env::var("MAIL_DOMAIN").map_err(|_| "MAIL_DOMAIN missing")?;
-                let normalized = raw.trim().trim_end_matches('.').to_ascii_lowercase();
-                if !MAIL_DOMAIN_REGEX.is_match(&normalized) {
-                    return Err("MAIL_DOMAIN must be a bare domain name like example.com".to_string());
-                }
-                normalized
-            }
-        })
+impl Config {
+    pub fn load(path: &str) -> anyhow::Result<Self> {
+        let s = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
+        let cfg: Config = toml::from_str(&s)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
+        Ok(cfg)
     }
+}

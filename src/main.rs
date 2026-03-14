@@ -1,251 +1,62 @@
 // src/main.rs
-mod active_sync;
-mod config;
-mod db;
-mod ews;
-mod jmap_client;
-mod utils;
-mod wbxml;
-
-use std::sync::Arc;
-
 use axum::{
     Router,
-    body::Bytes,
-    extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
-    response::IntoResponse,
-    routing::{get, post},
+    routing::{any, post},
 };
-use tower_http::trace::TraceLayer;
-use tracing::info;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
 
-use crate::config::AppConfig;
+mod caldav;
+mod config;
+mod eas;
+mod ews;
+mod models;
+mod storage;
+mod sync;
+mod wbxml;
+
+use crate::config::Config;
+use crate::models::AppState;
+use crate::storage::Storage;
 
 #[tokio::main]
-async fn main() {
-    let env_filter = match tracing_subscriber::EnvFilter::try_from_default_env() {
-        Ok(filter) => filter,
-        Err(_) => "info,exchange_gateway=debug"
-            .parse()
-            .expect("valid default filter"),
-    };
+async fn main() -> anyhow::Result<()> {
+    // Initialize logging early, but use explicit print for critical startup errors
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
-
-    let config = Arc::new(match AppConfig::from_env() {
+    // Load config from the absolute path used in Dockerfile/Compose
+    let config = match Config::load("/etc/exchange-gateway/config.toml") {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("Configuration Error: {}", e);
-            std::process::exit(1);
+            eprintln!("CRITICAL: Failed to load config: {}", e);
+            return Err(e);
         }
+    };
+
+    tracing::info!("Configuration loaded successfully. Initializing storage...");
+
+    let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
+    let app_state = Arc::new(AppState {
+        cfg: config.clone(),
+        storage: storage.clone(),
     });
+
     let app = Router::new()
-        .route(
-            "/Microsoft-Server-ActiveSync",
-            post(handle_active_sync).options(handle_activesync_options),
-        )
-        .route("/EWS/Exchange.asmx", post(handle_ews))
-        .route("/health", get(|| async { "OK" }))
-        .layer(TraceLayer::new_for_http())
-        .with_state(config);
+        .route("/EWS/*path", post(ews::handle))
+        .route("/EWS/Exchange.asmx", post(ews::handle))
+        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
+        .with_state(app_state);
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8134));
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("Failed to bind to address {}: {}", addr, e);
-            std::process::exit(1);
-        }
-    };
-    info!(
-        "Exchange Gateway v{} listening on {}",
-        env!("CARGO_PKG_VERSION"),
-        addr
-    );
-    axum::serve(listener, app).await.unwrap();
+    let addr: SocketAddr = config.bind.parse()?;
+    let listener = TcpListener::bind(addr).await?;
+
+    tracing::info!("Exchange Gateway listening on {}", addr);
+
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }
-
-async fn handle_active_sync(
-    State(config): State<Arc<AppConfig>>,
-    Query(query): Query<std::collections::HashMap<String, String>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if utils::decode_basic_auth(auth_header).is_none() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            [(
-                header::WWW_AUTHENTICATE,
-                r#"Basic realm="exchange_gateway""#,
-            )],
-            "Unauthorized".to_string(),
-        )
-            .into_response();
-    }
-
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|h| h.to_str().ok());
-
-    let is_explicit_wbxml = content_type
-        .map(|ct| ct.to_ascii_lowercase().contains("wbxml"))
-        .unwrap_or(false);
-
-    let is_explicit_xml = content_type
-        .map(|ct| {
-            let lower = ct.to_ascii_lowercase();
-            lower.contains("xml") && !lower.contains("wbxml")
-        })
-        .unwrap_or(false);
-
-    let (xml_body, is_wbxml) = if is_explicit_xml {
-        // Explicitly marked as XML — parse as UTF-8 text
-        match std::str::from_utf8(&body) {
-            Ok(s) => (s.to_string(), false),
-            Err(_) => {
-                return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response();
-            }
-        }
-    } else if is_explicit_wbxml {
-        // Explicit WBXML content-type — decode must succeed or return 400
-        if body.is_empty() {
-            (String::new(), true)
-        } else {
-            match wbxml::decode(&body) {
-                Ok(xml) => (xml, true),
-                Err(e) => {
-                    tracing::error!("WBXML decode error: {:?}", e);
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "Unable to decode request body".to_string(),
-                    )
-                        .into_response();
-                }
-            }
-        }
-    } else if body.is_empty() {
-        // Allow empty bodies through — some ActiveSync commands legitimately send no body.
-        (String::new(), true)
-    } else {
-        // No Content-Type: sniff by first meaningful byte — WBXML never starts with '<'
-        let trimmed = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&body);
-        let first_meaningful = trimmed.iter().find(|b| !b.is_ascii_whitespace());
-        if first_meaningful == Some(&b'<') {
-            match std::str::from_utf8(trimmed) {
-                Ok(s) => (s.to_string(), false),
-                Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "Invalid UTF-8".to_string()).into_response();
-                }
-            }
-        } else {
-            match wbxml::decode(trimmed) {
-                Ok(xml) => (xml, true),
-                Err(e) => {
-                    tracing::error!("WBXML decode error: {:?}", e);
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "Unable to decode request body".to_string(),
-                    )
-                        .into_response();
-                }
-            }
-        }
-    };
-
-    let query_cmd = query.get("Cmd").cloned().unwrap_or_default();
-    let response_xml = active_sync::process_request(&config, &xml_body, &headers, &query_cmd).await;
-
-    if is_wbxml {
-        match wbxml::encode(&response_xml) {
-            Ok(wbxml_data) => (
-                StatusCode::OK,
-                [
-                    ("content-type", "application/vnd.ms-sync.wbxml"),
-                    ("MS-Server-ActiveSync", "16.1"),
-                    ("access-control-allow-origin", "*"),
-                ],
-                wbxml_data,
-            )
-                .into_response(),
-            Err(e) => {
-                tracing::error!("WBXML Encode Error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [
-                        ("content-type", "text/plain; charset=utf-8"),
-                        ("MS-Server-ActiveSync", "16.1"),
-                        ("access-control-allow-origin", "*"),
-                    ],
-                    "Internal Server Error",
-                )
-                    .into_response()
-            }
-        }
-    } else {
-        (
-            StatusCode::OK,
-            [
-                ("content-type", "application/xml; charset=utf-8"),
-                ("MS-Server-ActiveSync", "16.1"),
-                ("access-control-allow-origin", "*"),
-            ],
-            response_xml,
-        )
-        .into_response()
-    }
-}
-
-async fn handle_activesync_options() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [
-            ("allow", "POST, OPTIONS"),
-            ("MS-Server-ActiveSync", "16.1"),
-            ("access-control-allow-origin", "*"),
-            ("access-control-allow-methods", "POST, OPTIONS"),
-            ("access-control-allow-headers", "Authorization, Content-Type, X-MS-DeviceId"),
-            ("access-control-max-age", "86400")
-        ],
-        "",
-    )
-}
-
-async fn handle_ews(
-    State(config): State<Arc<AppConfig>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if utils::decode_basic_auth(auth_header).is_none() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            [(
-                header::WWW_AUTHENTICATE,
-                r#"Basic realm="exchange_gateway""#,
-            )],
-            "Unauthorized".to_string(),
-        )
-            .into_response();
-    }
-
-    let xml_body = match std::str::from_utf8(&body) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                [(header::CONTENT_TYPE, "text/plain")],
-                "Invalid UTF-8".to_string(),
-            )
-                .into_response();
-        }
-    };
