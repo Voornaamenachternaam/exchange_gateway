@@ -6,14 +6,14 @@ This repository implements an Exchange-compatible gateway in Rust that translate
 
 ## Quick start
 
-1. Edit `config.toml` and set `caldav_base`, `db_path`, and a strong `hmac_secret`.
+1. Edit `config.toml` and set `bind`, `caldav_base`, `worker_url`, `worker_secret`, and a strong `hmac_secret`.
 2. Build:
    ```bash
    docker build -t exchange-gateway:latest .
 3. Start with docker-compose:
    docker compose up -d
-4. Health check:
-   curl http://localhost:8081/health
+4. ActiveSync endpoint check:
+   curl -i http://localhost:8134/Microsoft-Server-ActiveSync
 
 
 ## License

@@ -17,14 +17,14 @@
 - Expanded calendar payload mapping for sync responses (MS-ASCAL-focused), including additional fields such as `DtStamp`, `BusyStatus`, and `Sensitivity`.
 - Expanded WBXML namespace/tag page coverage and fixed token decoding for content-bit tokens (MS-ASAIRS/MS-ASWBXML path).
 
-Current repository is **not production-ready** for the stated use-case and is **not protocol-complete** for Exchange ActiveSync/EWS expectations from modern Outlook clients. Major blockers include protocol-surface incompleteness, route/config mismatches, persistence API mismatch, and auth/header incompatibility across components.
+Current repository has resolved the previously identified port/runtime-config drift and worker-storage contract mismatches, but is **still not fully production-ready** because major EWS functional depth and full protocol-conformance hardening remain outstanding.
 
 ## Highest-priority blockers (must-fix)
 
-1. **Gateway binding and tunnel mismatch**: `config.toml` binds `0.0.0.0:8133`, while expected tunnel route targets 8134 and compose maps 8134:8134. This prevents deterministic routing in stated deployment. (config.toml / docker-compose.yml / src/main.rs).
-2. **Runtime config model mismatch**: `main.rs` loads file-based `/etc/exchange-gateway/config.toml`, but compose injects env vars for a different architecture (JMAP/CF_D1 API), creating deployment drift. (src/main.rs / docker-compose.yml).
-3. **Storage API contract status**: Worker now exposes typed endpoints (`/api/set_sync_key`, `/api/upsert_item_map`, `/api/delete_item_by_server_id`, `/api/list_changes_since`) aligned with Rust `Storage`; remaining risk is operational migration/rollout sequencing. (src/storage.rs / worker/index.js / d1_schema.sql).
-4. **Worker auth compatibility status**: Worker now accepts both `Authorization: Bearer` and `x-gateway-secret` for typed and generic API routes to preserve backward compatibility. (src/storage.rs / worker/index.js).
+1. **Gateway binding and tunnel alignment**: fixed. `config.toml` now binds `0.0.0.0:8134` and compose publishes `8134:8134`. (config.toml / docker-compose.yml / src/main.rs).
+2. **Runtime config model alignment**: fixed. Compose now mounts `./config.toml` to `/etc/exchange-gateway/config.toml` and no longer injects legacy JMAP/DB env variables. (src/main.rs / docker-compose.yml / Dockerfile).
+3. **Storage API contract status**: fixed and aligned. Worker typed endpoints and D1 schema match Rust `Storage` request/response flows. (src/storage.rs / worker/index.js / d1_schema.sql).
+4. **Worker auth compatibility status**: fixed. Worker accepts both `Authorization: Bearer` and `x-gateway-secret` for typed and generic API routes. (src/storage.rs / worker/index.js).
 5. **EWS surface is stub-level**: EWS handler only identifies a few action names and only implements a static `GetFolder`; other operations return generic empty success, not valid per-operation semantics. (src/ews.rs).
 6. **ActiveSync surface progression**: EAS now supports command-aware dispatch (root/XML + query `Cmd`), `OPTIONS` capability headers, provisioning handshake subset, Sync/FolderSync/Ping/Settings/ComposeMail status paths; remaining gaps are full command semantics and advanced conflict/state behaviors. (src/eas.rs).
 7. **WBXML implementation maturity**: WBXML codec now handles multi-page mappings, mb_u_int32 parsing, string-table lookups, ENTITY/OPAQUE processing, and stricter boundary validation; remaining work is full-token/page breadth parity. (src/wbxml.rs).
@@ -178,13 +178,13 @@ All protocols marked as **Critical** in the inventory are now implemented for th
 
 ### A) Endpoint and transport gaps
 
-- No explicit `OPTIONS` handling/CORS policy surface for EAS endpoint in current code path.
+- EAS `OPTIONS` handling is implemented; remaining transport hardening gaps are advanced controls (rate-limits/backoff/correlation).
 - No request throttling, per-device state machine, or backoff semantics for mobile sync behavior.
 - No TLS termination in Rust service itself (depends on Cloudflare), which is acceptable only if end-to-end trust/path constraints are explicitly satisfied.
 
 ### B) EAS protocol gaps
 
-- Command detection is XML substring-based; no robust command parsing by query `Cmd` and canonical namespaces.
+- Command detection now uses root-tag parsing with query `Cmd` fallback; remaining gap is exhaustive namespace/schema validation for every command payload variant.
 - Sync collection identity is hardcoded (`collection_id = "1"`), not negotiated per-folder/account model.
 - Provision policy response is static and not persisted/validated across policy keys/device ids.
 - Command surface now includes `MeetingResponse`, `ResolveRecipients`, `ValidateCert`, `GetItemEstimate`, `MoveItems`, `Search`, `ItemOperations`, `SendMail`, `SmartReply`, and `SmartForward` in the current interoperability profile.
@@ -198,21 +198,21 @@ All protocols marked as **Critical** in the inventory are now implemented for th
 
 ### D) Data and consistency gaps
 
-- Storage abstraction expects strongly-typed worker API routes that do not exist.
-- D1 schema is SQL-only; no worker business logic layer to preserve invariants and perform transactional checks used by sync flows.
+- Strongly-typed worker API routes exist and are wired to the Rust storage client.
+- D1 schema and worker business logic are now aligned for sync-state/item-map CRUD; remaining gap is deeper transactional/concurrency hardening.
 - No migration/versioning workflow or idempotency guarantees across retries.
 
 ### E) Deployment/configuration gaps for stated Cloudflare + Stalwart setup
 
-- Port mismatch across config/tunnel/compose.
-- Compose points to env vars not consumed by current code architecture.
-- Worker DB binding names in user scenario (`EXCHANGE_DB`) differ from Rust storage secret/header expectations without adapter logic.
+- Port mismatch across config/tunnel/compose has been fixed (bind/publish on 8134).
+- Compose/runtime config drift has been fixed by mounting TOML config consumed by `Config::load`.
+- Worker DB binding and storage auth/header expectations are aligned by worker-side dual-auth adapter logic.
 
 ## Required remediation backlog (ordered)
 
 1. Unify architecture: pick one backend contract (typed worker API vs raw SQL proxy) and implement it end-to-end consistently.
-2. Fix deployment contract: align `config.toml` bind port with Cloudflare tunnel routes and compose mappings.
-3. Implement proper worker endpoints (`set_sync_key`, `upsert_item_map`, `delete_item_by_server_id`, `list_changes_since`) with auth, validation, and transactional guarantees.
+2. [Done] Deployment contract aligned (`config.toml` bind and compose publish on 8134).
+3. [Done/Partial] Worker endpoints are implemented with auth/validation; remaining work is advanced transactional guarantees under high concurrency.
 4. Replace substring-based EAS parsing with namespace-aware parser supporting command/query semantics and full status handling.
 5. Implement real EWS operations required by Outlook (at least GetFolder, FindFolder, FindItem, GetItem, SyncFolderItems, CreateItem, UpdateItem, DeleteItem) with proper SOAP fault handling.
 6. Expand protocol coverage to critical ActiveSync classes for calendar invitations/updates and device lifecycle.
