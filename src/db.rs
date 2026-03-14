@@ -82,6 +82,7 @@ pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
         .json(&body)
         .send()
         .await
+        .and_then(|res| res.error_for_status())
     {
         tracing::error!(user = user, device_id = device_id, "Failed to register device: {}", e);
     }
