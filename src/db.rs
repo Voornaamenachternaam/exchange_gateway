@@ -113,16 +113,14 @@ pub async fn get_sync_state_full(
     {
         Ok(res) => res,
         Err(e) => {
-            let redacted_user = redact_identifier(user);
-            let redacted_device_id = redact_identifier(device_id);
             tracing::error!(
-                user = redacted_user,
-                device_id = redacted_device_id,
+                user = user,
+                device_id = device_id,
                 collection = coll,
                 "get_sync_state_full: DB request failed: {e}"
             );
-        return Err(reason);
-    }
+            return Err(DbError::Request(e));
+        }
 
     match extract_first_field(&json, "jmap_state") {
         Some(jmap_state) => Ok(Some(ActiveSyncState { jmap_state })),
