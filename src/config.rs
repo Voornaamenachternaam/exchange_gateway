@@ -2,9 +2,9 @@ use std::env;
 use std::sync::LazyLock;
 use regex::Regex;
 
-lazy_static! {
-    static ref MAIL_DOMAIN_REGEX: Regex = Regex::new(r"(?i)^[a-z0-9]+([-.][a-z0-9]+)*\.[a-z]{2,6}$").unwrap();
-}
+static MAIL_DOMAIN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[a-z0-9]+([-.][a-z0-9]+)*\.[a-z]{2,}$").unwrap()
+});
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
