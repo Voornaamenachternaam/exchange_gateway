@@ -1,18 +1,4 @@
-use regex::Regex;
-
-// ... existing code ...
-
-/// Strips the Bcc header from the given MIME content.
-/// This function uses a regex to remove lines starting with "Bcc:".
-/// It is a pragmatic solution for privacy, but for highly complex or malformed
-/// MIME structures, a dedicated MIME parsing library would be more robust.
-fn strip_bcc_from_mime(mime_content: &str) -> String {
-    // The (?im) flags enable case-insensitive matching and multi-line mode.
-    // In multi-line mode, ^ and $ match the start and end of a line, respectively.
-    // This regex matches a line starting with "Bcc:" (case-insensitive) and removes it.
-    let bcc_regex = Regex::new(r"(?im)^Bcc:.*\r?\n").unwrap();
-    bcc_regex.replace_all(mime_content, "").to_string()
-}
+// src/active_sync.rs
 use crate::{config::AppConfig, db, jmap_client, utils};
 use axum::http::HeaderMap;
 use base64::Engine;
@@ -28,6 +14,14 @@ use quick_xml::events::Event;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+fn strip_bcc_from_mime(mime_content: &str) -> String {
+    // The (?im) flags enable case-insensitive matching and multi-line mode.
+    // In multi-line mode, ^ and $ match the start and end of a line, respectively.
+    // This regex matches a line starting with "Bcc:" (case-insensitive) and removes it.
+    let bcc_regex = Regex::new(r"(?im)^Bcc:.*\r?\n").unwrap();
+    bcc_regex.replace_all(mime_content, "").to_string()
+}
 
 lazy_static! {
     static ref RE_TO: Regex = Regex::new(r"(?im)^to:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
