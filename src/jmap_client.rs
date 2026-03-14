@@ -327,8 +327,10 @@ fn find_account_for_capability<'a>(
     })
 }
 
-pub async fn get_session(jmap_url: &str, user: &str, pass: &str) -> Result<JmapSession, JmapError> {
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| JmapError::Connection(e))?;
     let token = base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
         format!("{}:{}", user, pass),
