@@ -292,7 +292,7 @@ pub struct Principal {
 }
 
 // Fix: Added Default derive
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct JmapChanges {
     #[serde(rename = "accountId")]
     pub account_id: String,
