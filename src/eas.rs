@@ -214,7 +214,7 @@ fn success_status_response(
     extra_inner: &str,
 ) -> Response {
     let xml = format!(
-        "<?xml version="1.0" encoding="utf-8"?><{root} xmlns="{ns}"><Status>1</Status>{extra}</{root}>",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><{root} xmlns=\"{ns}\"><Status>1</Status>{extra}</{root}>",
         root = root,
         ns = ns,
         extra = extra_inner

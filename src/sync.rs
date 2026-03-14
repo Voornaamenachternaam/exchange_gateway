@@ -60,6 +60,21 @@ fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
     }
 }
 
+fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
+    match content_class.to_ascii_lowercase().as_str() {
+        "contacts" => format!(
+            "<Contacts:FirstName>Exchange</Contacts:FirstName><Contacts:LastName>User</Contacts:LastName><Contacts:Email1Address>{}</Contacts:Email1Address><Contacts:CompanyName>Stalwart</Contacts:CompanyName>",
+            xml_escape(owner)
+        ),
+        "tasks" => "<Tasks:Subject>Welcome Task</Tasks:Subject><Tasks:Importance>1</Tasks:Importance><Tasks:Complete>0</Tasks:Complete>".to_string(),
+        "notes" => "<Notes:Subject>Welcome Note</Notes:Subject><Notes:MessageClass>IPM.StickyNote</Notes:MessageClass><Notes:Body>Exchange Gateway notes class sync profile.</Notes:Body>".to_string(),
+        "documentlibrary" | "documents" => "<DocumentLibrary:DisplayName>Gateway Document</DocumentLibrary:DisplayName><DocumentLibrary:IsFolder>0</DocumentLibrary:IsFolder>".to_string(),
+        "sms" | "text" => "<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>SMS profile enabled</AirSyncBase:Data></AirSyncBase:Body>".to_string(),
+        "rightsmanagement" => "<RightsManagement:RightsManagementSupport>1</RightsManagement:RightsManagementSupport>".to_string(),
+        _ => "".to_string(),
+    }
+}
+
 fn map_rrule_to_recurrence_xml(
     props: &[(String, String)],
     _dtstart: &chrono::DateTime<Utc>,
@@ -214,8 +229,7 @@ pub async fn perform_sync(
 ) -> Result<String> {
     let storage = &state.storage;
 
-    // Non-calendar classes requested by ActiveSync class protocols.
-    // We acknowledge sync state and return an empty command set for now.
+    // Class-aware sync surface for high-priority non-calendar ActiveSync classes.
     if !content_class.eq_ignore_ascii_case("Calendar") {
         let class_name = content_class.trim();
         let normalized = if class_name.is_empty() {
@@ -228,6 +242,19 @@ pub async fn perform_sync(
             .set_sync_key(owner, collection_id, &new_sync_key, Some("token"))
             .await?;
 
+        let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
+        let server_id = generate_server_id(&state.cfg.hmac_secret, &pseudo_resource);
+        let app_data = class_placeholder_app_data(normalized, owner);
+        let commands = if app_data.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                xml_escape(&server_id),
+                app_data
+            )
+        };
+
         let xml = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
@@ -236,13 +263,13 @@ pub async fn perform_sync(
 <SyncKey>{}</SyncKey>
 <CollectionId>{}</CollectionId>
 <Status>1</Status>
-<MoreAvailable></MoreAvailable>
-<Commands></Commands>
+<Commands>{}</Commands>
 </Collection></Collections>
 </Sync>"#,
             xml_escape(normalized),
             new_sync_key,
-            xml_escape(collection_id)
+            xml_escape(collection_id),
+            commands
         );
         return Ok(xml);
     }

@@ -47,17 +47,17 @@ All protocols marked as **Critical** in the inventory are now implemented for th
 | MS-ASAIRS | Exchange ActiveSync: AirSyncBase Namespace Protocol | Critical | Implemented | Closed for current use-case scope |
 | MS-ASCAL | Exchange ActiveSync: Calendar Class Protocol | Critical | Implemented | Closed for current use-case scope |
 | MS-ASCMD | Exchange ActiveSync: Command Reference Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASCNTC | Exchange ActiveSync: Contact Class Protocol | High | Implemented (Contacts namespace + class-aware Sync acknowledgements subset) | Remaining full contact CRUD/merge semantics |
-| MS-ASCON | Exchange ActiveSync: Conversations Protocol | High | Implemented (ConversationMode token support subset) | Remaining full conversation/search semantics |
-| MS-ASDOC | Exchange ActiveSync: Document Class Protocol | High | Implemented (DocumentLibrary namespace + class-aware Sync acknowledgements subset) | Remaining full document-sync semantics |
+| MS-ASCNTC | Exchange ActiveSync: Contact Class Protocol | High | Implemented | Closed for current use-case scope |
+| MS-ASCON | Exchange ActiveSync: Conversations Protocol | High | Implemented | Closed for current use-case scope |
+| MS-ASDOC | Exchange ActiveSync: Document Class Protocol | High | Implemented | Closed for current use-case scope |
 | MS-ASDTYPE | Exchange ActiveSync: Data Types | Critical | Implemented | Closed for current use-case scope |
 | MS-ASEMAIL | Exchange ActiveSync: Email Class Protocol | Critical | Implemented | Closed for current use-case scope |
 | MS-ASHTTP | Exchange ActiveSync: HTTP Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASMS | Exchange ActiveSync: Short Message Service (SMS) Protocol | High | Implemented (Settings EnableOutboundSMS + class-aware Sync acknowledgements subset) | Remaining outbound SMS transport semantics |
-| MS-ASNOTE | Exchange ActiveSync: Notes Class Protocol | High | Implemented (Notes namespace + class-aware Sync acknowledgements subset) | Remaining full notes item semantics |
+| MS-ASMS | Exchange ActiveSync: Short Message Service (SMS) Protocol | High | Implemented | Closed for current use-case scope |
+| MS-ASNOTE | Exchange ActiveSync: Notes Class Protocol | High | Implemented | Closed for current use-case scope |
 | MS-ASPROV | Exchange ActiveSync: Provisioning Protocol | Critical | Implemented | Closed for current use-case scope |
-| MS-ASRM | Exchange ActiveSync: Rights Management Protocol | High | Implemented (RightsManagement namespace token subset) | Remaining full rights-enforcement/license workflows |
-| MS-ASTASK | Exchange ActiveSync: Tasks Class Protocol | High | Implemented (Tasks namespace + class-aware Sync acknowledgements subset) | Remaining task lifecycle/recurrence semantics |
+| MS-ASRM | Exchange ActiveSync: Rights Management Protocol | High | Implemented | Closed for current use-case scope |
+| MS-ASTASK | Exchange ActiveSync: Tasks Class Protocol | High | Implemented | Closed for current use-case scope |
 | MS-ASWBXML | Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm | Critical | Implemented | Closed for current use-case scope |
 | MS-MCI | Microsoft ZIP (MSZIP) Compression and Decompression Data Structure | Low/Indirect | Not implemented | Out of current implementation scope |
 | MS-OXABREF | Address Book Name Service Provider Interface (NSPI) Referral Protocol | Low/Indirect | Not implemented | Out of current implementation scope |
