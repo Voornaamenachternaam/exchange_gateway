@@ -1097,7 +1097,8 @@ pub async fn find_event_by_uid(session: &JmapSession, uid: &str) -> Result<Strin
     let json: serde_json::Value = res.json().await?;
     check_jmap_method_error(&json)?;
     json["methodResponses"][1][1]["list"]
-        .get(0)
+        .as_array()
+        .and_then(|arr| arr.first())
         .and_then(|item| item["id"].as_str())
         .map(String::from)
         .ok_or_else(|| JmapError::NotFound(format!("event with uid {}", uid)))
