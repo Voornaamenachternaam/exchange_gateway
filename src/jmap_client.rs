@@ -1,5 +1,6 @@
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
