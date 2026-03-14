@@ -28,7 +28,7 @@ Current repository has resolved the previously identified port/runtime-config dr
 5. **EWS surface is stub-level**: EWS handler only identifies a few action names and only implements a static `GetFolder`; other operations return generic empty success, not valid per-operation semantics. (src/ews.rs).
 6. **ActiveSync surface progression**: EAS now supports command-aware dispatch (root/XML + query `Cmd`), `OPTIONS` capability headers, provisioning handshake subset, Sync/FolderSync/Ping/Settings/ComposeMail status paths; remaining gaps are full command semantics and advanced conflict/state behaviors. (src/eas.rs).
 7. **WBXML implementation maturity**: WBXML codec now handles multi-page mappings, mb_u_int32 parsing, string-table lookups, ENTITY/OPAQUE processing, and stricter boundary validation; remaining work is full-token/page breadth parity. (src/wbxml.rs).
-8. **Data model persistence gaps**: Current D1 schema models `sync_state`/`ews_sync_state`/`device_info`, but worker has no endpoint-level logic that enforces model invariants required by Rust callers. (d1_schema.sql / worker/index.js / src/storage.rs).
+8. **Data model persistence progression**: Worker now enforces endpoint-level invariants for sync-state/item-map/provision-policy flows used by Rust callers; remaining work is transactional hardening and rollout sequencing. (d1_schema.sql / worker/index.js / src/storage.rs).
 9. **Autodiscover placement risk**: Autodiscover only exists in worker and not in Rust gateway; routing depends entirely on Cloudflare worker path handling and may miss Outlook variants (root/autodiscover subpaths/redirect/legacy variants). (worker/index.js).
 
 ## Protocol-family coverage assessment against Binder1
@@ -178,17 +178,20 @@ All protocols marked as **Critical** in the inventory are now implemented for th
 
 ### A) Endpoint and transport gaps
 
-- EAS `OPTIONS` handling is implemented; remaining transport hardening gaps are advanced controls (rate-limits/backoff/correlation).
-- No request throttling, per-device state machine, or backoff semantics for mobile sync behavior.
-- No TLS termination in Rust service itself (depends on Cloudflare), which is acceptable only if end-to-end trust/path constraints are explicitly satisfied.
+- EAS `OPTIONS` handling is implemented with explicit capability headers.
+- Added request correlation (`X-Request-Id`) on EAS responses for traceability.
+- Added per-device throttling/backoff behavior (`503` + `Retry-After`) to reduce aggressive mobile retry storms.
+- Added forwarded-proto enforcement for TLS-offloaded deployments (`x-forwarded-proto=https` expected behind Cloudflare).
+- Rust service still relies on Cloudflare for TLS termination by design; this is acceptable for the stated deployment only when Cloudflare edge-to-origin trust constraints are enforced operationally.
 
 ### B) EAS protocol gaps
 
-- Command detection now uses root-tag parsing with query `Cmd` fallback; remaining gap is exhaustive namespace/schema validation for every command payload variant.
-- Sync collection identity is hardcoded (`collection_id = "1"`), not negotiated per-folder/account model.
-- Provision policy response is static and not persisted/validated across policy keys/device ids.
-- Command surface now includes `MeetingResponse`, `ResolveRecipients`, `ValidateCert`, `GetItemEstimate`, `MoveItems`, `Search`, `ItemOperations`, `SendMail`, `SmartReply`, and `SmartForward` in the current interoperability profile.
-- Missing robust status/error codes and server-side semantics expected by Outlook clients.
+- Command detection uses root-tag parsing with query `Cmd` fallback.
+- Added command-specific payload validation for required namespaces/elements for `Sync`/`Provision`/`Settings` baseline handling.
+- Sync collection identity now uses request `CollectionId` instead of a hardcoded server constant.
+- Provision policy now persists and validates `PolicyKey` by owner + device id through typed worker endpoints.
+- Command surface includes `MeetingResponse`, `ResolveRecipients`, `ValidateCert`, `GetItemEstimate`, `MoveItems`, `Search`, `ItemOperations`, `SendMail`, `SmartReply`, and `SmartForward` in the current interoperability profile.
+- Remaining gap: richer per-command status/fault semantics (beyond baseline status mapping) for strict Outlook edge-case parity.
 
 ### C) EWS protocol gaps
 

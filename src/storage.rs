@@ -29,6 +29,20 @@ struct UpsertItemReq<'a> {
     etag: &'a str,
 }
 
+#[derive(Serialize)]
+struct SetProvisionReq<'a> {
+    owner: &'a str,
+    device_id: &'a str,
+    policy_key: &'a str,
+    policy_status: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ProvisionRow {
+    policy_key: String,
+    policy_status: String,
+}
+
 #[derive(Deserialize)]
 struct ChangeRow {
     server_id: String,
@@ -138,5 +152,35 @@ impl Storage {
             .into_iter()
             .map(|r| (r.server_id, r.resource_href))
             .collect())
+    }
+
+    pub async fn set_provision_policy(
+        &self,
+        owner: &str,
+        device_id: &str,
+        policy_key: &str,
+        policy_status: &str,
+    ) -> Result<()> {
+        let body = SetProvisionReq {
+            owner,
+            device_id,
+            policy_key,
+            policy_status,
+        };
+        self.post_json("set_provision_policy", &body).await
+    }
+
+    pub async fn get_provision_policy(
+        &self,
+        owner: &str,
+        device_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let path = format!(
+            "get_provision_policy?owner={}&device_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(device_id)
+        );
+        let row: Option<ProvisionRow> = self.get_json(&path).await?;
+        Ok(row.map(|r| (r.policy_key, r.policy_status)))
     }
 }

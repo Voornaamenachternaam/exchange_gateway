@@ -8,6 +8,8 @@ export default {
     if (path === '/api/upsert_item_map') return handleUpsertItemMap(request, env);
     if (path === '/api/delete_item_by_server_id') return handleDeleteItemByServerId(request, env);
     if (path === '/api/list_changes_since') return handleListChangesSince(url, request, env);
+    if (path === '/api/set_provision_policy') return handleSetProvisionPolicy(request, env);
+    if (path === '/api/get_provision_policy') return handleGetProvisionPolicy(url, request, env);
 
     // Generic SQL API (admin/debug)
     if (path.startsWith('/api/')) {
@@ -314,4 +316,52 @@ function escapeXml(unsafe = '') {
       default: return c;
     }
   });
+}
+
+
+async function handleSetProvisionPolicy(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const body = await readJson(request);
+  const owner = body.owner || '';
+  const deviceId = body.device_id || '';
+  const policyKey = body.policy_key || '';
+  const policyStatus = body.policy_status || '';
+  if (!owner || !deviceId || !policyKey || !policyStatus) {
+    return new Response('Missing owner/device_id/policy_key/policy_status', { status: 400 });
+  }
+
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO provision_state (owner, device_id, policy_key, policy_status, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner, device_id)
+      DO UPDATE SET
+        policy_key = excluded.policy_key,
+        policy_status = excluded.policy_status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+    .bind(owner, deviceId, policyKey, policyStatus)
+    .run();
+
+  return Response.json({ success: true });
+}
+
+async function handleGetProvisionPolicy(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const deviceId = url.searchParams.get('device_id') || '';
+  if (!owner || !deviceId) return new Response('Missing owner/device_id', { status: 400 });
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT policy_key, policy_status
+      FROM provision_state
+      WHERE owner = ? AND device_id = ?
+      LIMIT 1
+    `)
+    .bind(owner, deviceId)
+    .all();
+
+  const row = (result.results || [])[0] || null;
+  return Response.json(row);
 }

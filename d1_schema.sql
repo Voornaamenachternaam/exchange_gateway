@@ -2,6 +2,7 @@ DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS item_map;
 DROP TABLE IF EXISTS ews_sync_state;
 DROP TABLE IF EXISTS device_info;
+DROP TABLE IF EXISTS provision_state;
 
 -- ActiveSync sync-key tracking used by /api/set_sync_key
 CREATE TABLE sync_state (
@@ -25,6 +26,18 @@ CREATE TABLE item_map (
     etag TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, server_id)
+);
+
+
+-- Provisioning policy state by owner/device used by /api/set_provision_policy and /api/get_provision_policy
+CREATE TABLE provision_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    policy_key TEXT NOT NULL,
+    policy_status TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, device_id)
 );
 
 -- Minimal EWS sync state persistence (reserved for future EWS expansion)
@@ -52,3 +65,5 @@ CREATE INDEX idx_sync_lookup ON sync_state(owner, collection_id);
 CREATE INDEX idx_item_map_owner_time ON item_map(owner, updated_at);
 CREATE INDEX idx_item_map_resource ON item_map(owner, resource_href);
 CREATE INDEX idx_ews_sync_lookup ON ews_sync_state(user_email, folder_id);
+
+CREATE INDEX idx_provision_lookup ON provision_state(owner, device_id);
