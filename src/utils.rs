@@ -12,7 +12,7 @@ pub fn parse_local_to_utc(local_str: &str, tz: chrono_tz::Tz) -> String {
         return dt.with_timezone(&Utc).to_rfc3339();
     }
 
-    let Ok(naive) = NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S") else {
+    let Ok(naive) = NaiveDateTime::parse_from_str(local_str, "%Y-%m-%dT%H:%M:%S%.f") else {
         return local_str.to_string();
     };
 
