@@ -13,6 +13,7 @@ export default {
     if (path === '/api/list_ews_items') return handleListEwsItems(url, request, env);
     if (path === '/api/get_ews_sync_state') return handleGetEwsSyncState(url, request, env);
     if (path === '/api/set_ews_sync_state') return handleSetEwsSyncState(request, env);
+    if (path === '/api/get_ews_item_by_id') return handleGetEwsItemById(url, request, env);
 
     // Generic SQL API (admin/debug)
     if (path.startsWith('/api/')) {
@@ -454,4 +455,25 @@ async function handleSetEwsSyncState(request, env) {
     .run();
 
   return Response.json({ success: true });
+}
+
+
+async function handleGetEwsItemById(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const serverId = url.searchParams.get('server_id') || '';
+  if (!owner || !serverId) return new Response('Missing owner/server_id', { status: 400 });
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT server_id, resource_href, uid, etag, updated_at
+      FROM item_map
+      WHERE owner = ? AND server_id = ?
+      LIMIT 1
+    `)
+    .bind(owner, serverId)
+    .all();
+
+  const row = (result.results || [])[0] || null;
+  return Response.json(row);
 }

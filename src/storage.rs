@@ -237,6 +237,19 @@ impl Storage {
         Ok(row.map(|r| r.sync_state))
     }
 
+    pub async fn get_ews_item_by_server_id(
+        &self,
+        owner: &str,
+        server_id: &str,
+    ) -> Result<Option<EwsItemRow>> {
+        let path = format!(
+            "get_ews_item_by_id?owner={}&server_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(server_id)
+        );
+        self.get_json(&path).await
+    }
+
     pub async fn set_ews_sync_state(
         &self,
         owner: &str,
