@@ -269,7 +269,13 @@ pub async fn update_ews_sync_state_cas(
             return Err(DbError::UnexpectedFormat);
         }
     };
-    Ok(changes > 0)
+    match changes {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DbError::Query(format!(
+            "expected CAS update to affect at most one row, got {changes}"
+        ))),
+    }
 }
 
 pub async fn update_sync_state(
