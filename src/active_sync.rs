@@ -15,14 +15,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-fn strip_bcc_from_mime(mime_content: &str) -> String {
-    // The (?im) flags enable case-insensitive matching and multi-line mode.
-    // In multi-line mode, ^ and $ match the start and end of a line, respectively.
-    // This regex matches a line starting with "Bcc:" (case-insensitive) and removes it.
-    let bcc_regex = Regex::new(r"(?im)^Bcc:.*\r?\n").unwrap();
-    bcc_regex.replace_all(mime_content, "").to_string()
-}
-
 lazy_static! {
     static ref RE_TO: Regex = Regex::new(r"(?im)^to:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
     static ref RE_FROM: Regex = Regex::new(r"(?im)^from:\s*(.*(?:\r?\n\s+.*)*)").unwrap();
