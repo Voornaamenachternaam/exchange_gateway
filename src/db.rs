@@ -70,22 +70,24 @@ fn has_result_rows(json: &serde_json::Value) -> bool {
         .map_or(false, |a| !a.is_empty())
 }
 
-pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
+pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) -> Result<(), DbError> {
     let client = reqwest::Client::new();
     let body = json!({
         "query": "INSERT OR IGNORE INTO device_info (user_email, device_id) VALUES (?, ?)",
         "params": [user, device_id]
     });
-    if let Err(e) = client
+    let resp = client
         .post(&config.db_api_url)
         .bearer_auth(&config.db_auth_token)
         .json(&body)
         .send()
         .await
-        .and_then(|res| res.error_for_status())
-    {
-        tracing::error!(user = user, device_id = device_id, "Failed to register device: {}", e);
-    }
+        .map_err(DbError::Request)?
+        .error_for_status()
+        .map_err(DbError::Request)?;
+    let json: serde_json::Value = resp.json().await.map_err(DbError::Parse)?;
+    check_db_success(&json)
+}
 
 /// Check whether the DB API response indicates success.
 /// The Worker wrapper format includes "success": true/false` at the top
