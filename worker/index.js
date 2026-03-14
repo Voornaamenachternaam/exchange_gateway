@@ -48,6 +48,9 @@ async function handleApiRequest(request, env) {
     const result = await stmt.all();
     
     return Response.json({
+    const result = await stmt.all(params);
+    
+    return Response.json({
       success: result.success ?? true,
       errors: result.success === false
         ? [{ message: result.errors?.[0]?.message ?? "DB query failed" }]
