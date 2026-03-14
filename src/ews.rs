@@ -182,7 +182,7 @@ pub async fn process_request(
 ) -> Result<String, EwsError> {
     let auth_header = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
-        None => return soap_fault("ErrorAccessDenied", "Missing Authorization header"),
+        None => return Ok(soap_fault("ErrorAccessDenied", "Missing Authorization header")),
     };
 
     let (user, pass) = match utils::decode_basic_auth(auth_header) {
@@ -308,7 +308,7 @@ pub async fn process_request(
 ) -> Result<String, EwsError> {
     let auth_header = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
-        None => return soap_fault("ErrorAccessDenied", "Missing Authorization header"),
+        None => return Ok(soap_fault("ErrorAccessDenied", "Missing Authorization header")),
     };
 
     let (user, pass) = match utils::decode_basic_auth(auth_header) {
@@ -400,7 +400,7 @@ pub async fn process_request(
 ) -> Result<String, EwsError> {
     let auth_header = match headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         Some(a) => a,
-        None => return soap_fault("ErrorAccessDenied", "Missing Authorization header"),
+        None => return Ok(soap_fault("ErrorAccessDenied", "Missing Authorization header")),
     };
 
     let (user, pass) = match utils::decode_basic_auth(auth_header) {
