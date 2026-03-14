@@ -195,15 +195,18 @@ All protocols marked as **Critical** in the inventory are now implemented for th
 
 ### C) EWS protocol gaps
 
-- No operation-specific schema validation for EWS request/response bodies.
-- `FindItem`/`SyncFolderItems` are detected but not truly implemented with item deltas, sync states, and paging semantics.
-- Response envelopes are mostly static; IDs/change keys are placeholders.
+- Added operation-specific request validation for `GetFolder`, `FindItem`, and `SyncFolderItems` (SOAP envelope/body + required operation elements).
+- `FindItem` now returns dynamic, paged item views (`MaxEntriesReturned`/`Offset`) sourced from worker-backed `item_map` rows with deterministic item IDs and computed change keys.
+- `SyncFolderItems` now persists and reads per-owner folder sync state, emits delta-style change sets from `list_changes_since`, and updates sync state markers after each response.
+- Remaining EWS gap: advanced semantics (deletes/tombstones, conflict resolution classes, and full parity with Exchange paging/fault edge-cases) are still incremental hardening work.
 
 ### D) Data and consistency gaps
 
-- Strongly-typed worker API routes exist and are wired to the Rust storage client.
-- D1 schema and worker business logic are now aligned for sync-state/item-map CRUD; remaining gap is deeper transactional/concurrency hardening.
-- No migration/versioning workflow or idempotency guarantees across retries.
+- Strongly-typed worker API routes are wired to Rust storage, now including EWS list/sync-state and provision-policy persistence APIs.
+- D1 schema and worker logic cover sync-state/item-map/provision/ews-sync CRUD flows with unique constraints and indexed lookups.
+- Added schema-version tracking (`schema_version`) to formalize migration/rollout sequencing.
+- Added idempotency registry (`api_idempotency`) and deterministic Rust idempotency keys for typed write requests to improve retry safety.
+- Remaining data-hardening work is transactional contention behavior under very high concurrency and long-window retention/cleanup policy for idempotency rows.
 
 ### E) Deployment/configuration gaps for stated Cloudflare + Stalwart setup
 

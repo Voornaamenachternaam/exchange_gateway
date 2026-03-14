@@ -3,6 +3,8 @@ DROP TABLE IF EXISTS item_map;
 DROP TABLE IF EXISTS ews_sync_state;
 DROP TABLE IF EXISTS device_info;
 DROP TABLE IF EXISTS provision_state;
+DROP TABLE IF EXISTS api_idempotency;
+DROP TABLE IF EXISTS schema_version;
 
 -- ActiveSync sync-key tracking used by /api/set_sync_key
 CREATE TABLE sync_state (
@@ -67,3 +69,22 @@ CREATE INDEX idx_item_map_resource ON item_map(owner, resource_href);
 CREATE INDEX idx_ews_sync_lookup ON ews_sync_state(user_email, folder_id);
 
 CREATE INDEX idx_provision_lookup ON provision_state(owner, device_id);
+
+
+-- Schema version tracking for rollout/migration sequencing
+CREATE TABLE schema_version (
+    version INTEGER PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO schema_version (version, description) VALUES (1, "initial gateway typed schema");
+
+-- Idempotency registry for retry-safe typed write APIs
+CREATE TABLE api_idempotency (
+    idempotency_key TEXT PRIMARY KEY,
+    route_name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_api_idempotency_created ON api_idempotency(created_at);

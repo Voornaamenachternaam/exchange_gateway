@@ -2,6 +2,7 @@
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -49,6 +50,20 @@ struct ChangeRow {
     resource_href: String,
 }
 
+#[derive(Deserialize)]
+pub struct EwsItemRow {
+    pub server_id: String,
+    pub resource_href: String,
+    pub uid: Option<String>,
+    pub etag: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EwsSyncStateRow {
+    sync_state: String,
+}
+
 impl Storage {
     pub fn new(worker_url: &str, worker_secret: &str) -> Result<Self> {
         let client = Client::builder()
@@ -62,12 +77,25 @@ impl Storage {
         })
     }
 
+    fn make_idempotency_key<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<String> {
+        let mut hasher = Sha256::new();
+        hasher.update(path.as_bytes());
+        hasher.update(b"\n");
+        let payload = serde_json::to_vec(body)?;
+        hasher.update(&payload);
+        let digest = hasher.finalize();
+        Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+    }
+
     async fn post_json<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<()> {
-        let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
+        let clean_path = path.trim_start_matches('/');
+        let url = format!("{}/{}", self.base_url, clean_path);
+        let idempotency_key = self.make_idempotency_key(clean_path, body)?;
         let resp = self
             .client
             .post(&url)
             .header("x-gateway-secret", &self.secret)
+            .header("Idempotency-Key", idempotency_key)
             .json(body)
             .send()
             .await?;
@@ -182,5 +210,50 @@ impl Storage {
         );
         let row: Option<ProvisionRow> = self.get_json(&path).await?;
         Ok(row.map(|r| (r.policy_key, r.policy_status)))
+    }
+
+    pub async fn list_ews_items(
+        &self,
+        owner: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<EwsItemRow>> {
+        let path = format!(
+            "list_ews_items?owner={}&limit={}&offset={}",
+            urlencoding::encode(owner),
+            limit,
+            offset
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn get_ews_sync_state(&self, owner: &str, folder_id: &str) -> Result<Option<String>> {
+        let path = format!(
+            "get_ews_sync_state?owner={}&folder_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(folder_id)
+        );
+        let row: Option<EwsSyncStateRow> = self.get_json(&path).await?;
+        Ok(row.map(|r| r.sync_state))
+    }
+
+    pub async fn set_ews_sync_state(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        sync_state: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            folder_id: &'a str,
+            sync_state: &'a str,
+        }
+        let req = Req {
+            owner,
+            folder_id,
+            sync_state,
+        };
+        self.post_json("set_ews_sync_state", &req).await
     }
 }

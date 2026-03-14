@@ -10,6 +10,9 @@ export default {
     if (path === '/api/list_changes_since') return handleListChangesSince(url, request, env);
     if (path === '/api/set_provision_policy') return handleSetProvisionPolicy(request, env);
     if (path === '/api/get_provision_policy') return handleGetProvisionPolicy(url, request, env);
+    if (path === '/api/list_ews_items') return handleListEwsItems(url, request, env);
+    if (path === '/api/get_ews_sync_state') return handleGetEwsSyncState(url, request, env);
+    if (path === '/api/set_ews_sync_state') return handleSetEwsSyncState(request, env);
 
     // Generic SQL API (admin/debug)
     if (path.startsWith('/api/')) {
@@ -51,8 +54,23 @@ async function readJson(request) {
   }
 }
 
+
+async function checkIdempotency(request, env, routeName) {
+  const key = request.headers.get('Idempotency-Key');
+  if (!key) return;
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO api_idempotency (idempotency_key, route_name, created_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(idempotency_key) DO NOTHING
+    `)
+    .bind(key, routeName)
+    .run();
+}
+
 async function handleSetSyncKey(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleSetSyncKey');
   const body = await readJson(request);
   const owner = body.owner || '';
   const collectionId = body.collection_id || '';
@@ -77,6 +95,7 @@ async function handleSetSyncKey(request, env) {
 
 async function handleUpsertItemMap(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleUpsertItemMap');
   const body = await readJson(request);
   const { owner = '', caldav_href = '', resource_href = '', server_id = '', uid = '', etag = '' } = body;
   if (!owner || !resource_href || !server_id) {
@@ -103,6 +122,7 @@ async function handleUpsertItemMap(request, env) {
 
 async function handleDeleteItemByServerId(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleDeleteItemByServerId');
   const body = await readJson(request);
   const serverId = body.server_id || '';
   if (!serverId) return new Response('Missing server_id', { status: 400 });
@@ -321,6 +341,7 @@ function escapeXml(unsafe = '') {
 
 async function handleSetProvisionPolicy(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleSetProvisionPolicy');
   const body = await readJson(request);
   const owner = body.owner || '';
   const deviceId = body.device_id || '';
@@ -364,4 +385,73 @@ async function handleGetProvisionPolicy(url, request, env) {
 
   const row = (result.results || [])[0] || null;
   return Response.json(row);
+}
+
+
+async function handleListEwsItems(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const limit = Number(url.searchParams.get('limit') || '50');
+  const offset = Number(url.searchParams.get('offset') || '0');
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const safeLimit = Math.max(1, Math.min(512, Number.isFinite(limit) ? limit : 50));
+  const safeOffset = Math.max(0, Number.isFinite(offset) ? offset : 0);
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT server_id, resource_href, uid, etag, updated_at
+      FROM item_map
+      WHERE owner = ?
+      ORDER BY updated_at DESC, server_id ASC
+      LIMIT ? OFFSET ?
+    `)
+    .bind(owner, safeLimit, safeOffset)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+async function handleGetEwsSyncState(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const folderId = url.searchParams.get('folder_id') || '';
+  if (!owner || !folderId) return new Response('Missing owner/folder_id', { status: 400 });
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT sync_state
+      FROM ews_sync_state
+      WHERE user_email = ? AND folder_id = ?
+      LIMIT 1
+    `)
+    .bind(owner, folderId)
+    .all();
+
+  const row = (result.results || [])[0] || null;
+  return Response.json(row);
+}
+
+async function handleSetEwsSyncState(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleSetEwsSyncState');
+  const body = await readJson(request);
+  const owner = body.owner || '';
+  const folderId = body.folder_id || '';
+  const syncState = body.sync_state || '';
+  if (!owner || !folderId || !syncState) {
+    return new Response('Missing owner/folder_id/sync_state', { status: 400 });
+  }
+
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO ews_sync_state (user_email, folder_id, sync_state, created_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_email, folder_id)
+      DO UPDATE SET sync_state = excluded.sync_state, created_at = CURRENT_TIMESTAMP
+    `)
+    .bind(owner, folderId, syncState)
+    .run();
+
+  return Response.json({ success: true });
 }
