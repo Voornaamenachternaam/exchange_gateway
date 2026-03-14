@@ -219,8 +219,6 @@ pub async fn process_request(
 
 use thiserror::Error;
 
-string
-
 async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &str) -> Result<String, EwsError> {
     let req: SyncFolderHierarchyRequest = parse_body_content(xml).map_err(EwsError::XmlParse)?;
     let cal_id = jmap_client::get_default_calendar_id(session).await?;
