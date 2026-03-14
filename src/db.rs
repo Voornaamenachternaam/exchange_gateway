@@ -82,7 +82,9 @@ pub async fn register_device(config: &AppConfig, user: &str, device_id: &str) {
         .json(&body)
         .send()
         .await;
-        return Err(DbError::Request(e));
+```suggestion
+84:        .json(&body)
+85:        .send()
 
 /// Check whether the DB API response indicates success.
 /// The Worker wrapper format includes "success": true/false` at the top
