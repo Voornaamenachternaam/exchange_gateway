@@ -17,15 +17,38 @@ pub enum DbError {
 /// Supports both the Worker wrapper format `{ "result": [ { "results": [...] } ] }`
 /// and the legacy direct-array format `[ { "results": [...] } ]`.
 /// Helper to get the `results` array from either the new or legacy DB response format.
-fn get_results_array(json: &serde_json::Value) -> Option<&serde_json::Value> {
+fn get_results_array(json: &serde_json::Value) -> Result<Option<&serde_json::Value>, DbError> {
+    let check_results_array = |val: &serde_json::Value| {
+        if val.is_array() {
+            Ok(Some(val))
+        } else {
+            Err(DbError::UnexpectedFormat)
+        }
+    };
+
     // New format: { "result": [ { "results": [...] } ] }
-    json.get("result")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("results"))
-        .or_else(|| {
-            // Legacy format: [ { "results": [...] } ]
-            json.get(0).and_then(|r| r.get("results"))
-        })
+    if let Some(result_wrapper) = json.get("result") {
+        if let Some(first_array_item) = result_wrapper.get(0) {
+            if let Some(results_field) = first_array_item.get("results") {
+                return check_results_array(results_field);
+            }
+        }
+        // If "result" wrapper exists but inner structure is malformed, it's an UnexpectedFormat
+        return Err(DbError::UnexpectedFormat);
+    }
+
+    // Legacy format: [ { "results": [...] } ]
+    if let Some(first_array_item) = json.get(0) {
+        if let Some(results_field) = first_array_item.get("results") {
+            return check_results_array(results_field);
+        }
+        // If it's an array but inner structure is malformed, it's an UnexpectedFormat
+        return Err(DbError::UnexpectedFormat);
+    }
+
+    // Neither format matched, meaning the "result" wrapper is absent AND the top-level is not an array.
+    // This should be treated as "no results array found", which maps to Ok(None).
+    Ok(None)
 }
 
 /// Extract a field from the first row of a DB API response.
