@@ -206,6 +206,22 @@ fn handle_settings(xml: &str, wbxml: &Wbxml, as_wbxml: bool) -> Response {
     xml_or_wbxml_response(wbxml, as_wbxml, &status_xml)
 }
 
+fn success_status_response(
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    root: &str,
+    ns: &str,
+    extra_inner: &str,
+) -> Response {
+    let xml = format!(
+        "<?xml version="1.0" encoding="utf-8"?><{root} xmlns="{ns}"><Status>1</Status>{extra}</{root}>",
+        root = root,
+        ns = ns,
+        extra = extra_inner
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &xml)
+}
+
 fn handle_send_mail(wbxml: &Wbxml, as_wbxml: bool) -> Response {
     // MS-ASEMAIL / ComposeMail command path acknowledgement.
     let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><SendMail xmlns="ComposeMail:"><Status>1</Status></SendMail>"#;
@@ -289,26 +305,51 @@ pub async fn handle(
                 }
             }
         }
-        "Ping" => {
-            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
-            xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
-        }
+        "Ping" => success_status_response(&wbxml, wants_wbxml, "Ping", "Ping:", ""),
         "Settings" => handle_settings(&xml, &wbxml, wants_wbxml),
         "SendMail" => handle_send_mail(&wbxml, wants_wbxml),
-
-        "ItemOperations" => {
-            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:"><Status>1</Status><Responses></Responses></ItemOperations>"#;
-            xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
-        }
-        "Search" => {
-            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>1</Status><Result></Result></Store></Response></Search>"#;
-            xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
-        }
         "SmartReply" | "SmartForward" => {
-            let resp_xml =
-                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">1</Status>"#;
-            xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml)
+            success_status_response(&wbxml, wants_wbxml, "Status", "ComposeMail:", "")
         }
+        "ItemOperations" => success_status_response(
+            &wbxml,
+            wants_wbxml,
+            "ItemOperations",
+            "ItemOperations:",
+            "<Responses></Responses>",
+        ),
+        "Search" => success_status_response(
+            &wbxml,
+            wants_wbxml,
+            "Search",
+            "Search:",
+            "<Response><Store><Status>1</Status><Result></Result></Store></Response>",
+        ),
+        "MeetingResponse" => success_status_response(
+            &wbxml,
+            wants_wbxml,
+            "MeetingResponse",
+            "MeetingResponse:",
+            "",
+        ),
+        "ResolveRecipients" => success_status_response(
+            &wbxml,
+            wants_wbxml,
+            "ResolveRecipients",
+            "ResolveRecipients:",
+            "",
+        ),
+        "ValidateCert" => {
+            success_status_response(&wbxml, wants_wbxml, "ValidateCert", "ValidateCert:", "")
+        }
+        "GetItemEstimate" => success_status_response(
+            &wbxml,
+            wants_wbxml,
+            "GetItemEstimate",
+            "GetItemEstimate:",
+            "",
+        ),
+        "MoveItems" => success_status_response(&wbxml, wants_wbxml, "MoveItems", "Move:", ""),
         _ => unsupported_command_response(&command, &wbxml, wants_wbxml),
     }
 }

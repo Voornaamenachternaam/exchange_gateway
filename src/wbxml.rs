@@ -83,6 +83,49 @@ lazy_static::lazy_static! {
         m.insert((4, 0x27), "Calendar:StartTime");
         m.insert((4, 0x28), "Calendar:UID");
 
+
+        // Code Page 5: Move
+        m.insert((5, 0x05), "MoveItems");
+        m.insert((5, 0x06), "Move");
+        m.insert((5, 0x07), "SrcMsgId");
+        m.insert((5, 0x08), "SrcFldId");
+        m.insert((5, 0x09), "DstFldId");
+        m.insert((5, 0x0A), "Response");
+        m.insert((5, 0x0B), "Status");
+
+        // Code Page 6: GetItemEstimate
+        m.insert((6, 0x05), "GetItemEstimate");
+        m.insert((6, 0x06), "Version");
+        m.insert((6, 0x07), "Collections");
+        m.insert((6, 0x08), "Collection");
+        m.insert((6, 0x09), "Class");
+        m.insert((6, 0x0A), "CollectionId");
+        m.insert((6, 0x0B), "DateTime");
+        m.insert((6, 0x0C), "Estimate");
+        m.insert((6, 0x0D), "Response");
+        m.insert((6, 0x0E), "Status");
+
+        // Code Page 8: MeetingResponse
+        m.insert((8, 0x05), "MeetingResponse");
+        m.insert((8, 0x06), "Request");
+        m.insert((8, 0x07), "Result");
+        m.insert((8, 0x08), "Status");
+        m.insert((8, 0x09), "UserResponse");
+        m.insert((8, 0x0A), "InstanceId");
+
+        // Code Page 10: ResolveRecipients
+        m.insert((10, 0x05), "ResolveRecipients");
+        m.insert((10, 0x06), "Response");
+        m.insert((10, 0x07), "Status");
+        m.insert((10, 0x08), "Type");
+        m.insert((10, 0x09), "Recipient");
+
+        // Code Page 11: ValidateCert
+        m.insert((11, 0x05), "ValidateCert");
+        m.insert((11, 0x06), "Certificates");
+        m.insert((11, 0x07), "Certificate");
+        m.insert((11, 0x0B), "Status");
+
         // Code Page 7: FolderHierarchy
         m.insert((7, 0x05), "Folders");
         m.insert((7, 0x06), "Folder");
