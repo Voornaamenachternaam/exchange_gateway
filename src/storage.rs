@@ -156,12 +156,13 @@ impl Storage {
         self.post_json("upsert_item_map", &body).await
     }
 
-    pub async fn delete_item_by_server_id(&self, server_id: &str) -> Result<()> {
+    pub async fn delete_item_by_server_id(&self, owner: &str, server_id: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
+            owner: &'a str,
             server_id: &'a str,
         }
-        self.post_json("delete_item_by_server_id", &Req { server_id })
+        self.post_json("delete_item_by_server_id", &Req { owner, server_id })
             .await
     }
 

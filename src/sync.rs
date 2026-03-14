@@ -473,7 +473,7 @@ pub async fn perform_sync(
     for (old_id, _) in old_items {
         if !seen_ids.contains(&old_id) {
             commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", old_id));
-            let _ = storage.delete_item_by_server_id(&old_id).await;
+            let _ = storage.delete_item_by_server_id(owner, &old_id).await;
         }
     }
 

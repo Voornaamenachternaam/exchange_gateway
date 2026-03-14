@@ -30,6 +30,10 @@ enum EwsAction {
     FindItem,
     GetItem,
     SyncFolderItems,
+    CreateItem,
+    UpdateItem,
+    DeleteItem,
+    ResolveNames,
 }
 
 pub async fn handle(
@@ -65,6 +69,10 @@ pub async fn handle(
         EwsAction::FindItem => handle_find_item(&state, &auth, &body).await,
         EwsAction::GetItem => handle_get_item(&state, &auth, &body).await,
         EwsAction::SyncFolderItems => handle_sync_folder_items(&state, &auth, &body).await,
+        EwsAction::CreateItem => handle_create_item(&state, &auth, &body).await,
+        EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
+        EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
+        EwsAction::ResolveNames => handle_resolve_names(&auth, &body).await,
     }
 }
 
@@ -102,6 +110,18 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                 }
                 if name.as_ref() == b"SyncFolderItems" {
                     return Some(EwsAction::SyncFolderItems);
+                }
+                if name.as_ref() == b"CreateItem" {
+                    return Some(EwsAction::CreateItem);
+                }
+                if name.as_ref() == b"UpdateItem" {
+                    return Some(EwsAction::UpdateItem);
+                }
+                if name.as_ref() == b"DeleteItem" {
+                    return Some(EwsAction::DeleteItem);
+                }
+                if name.as_ref() == b"ResolveNames" {
+                    return Some(EwsAction::ResolveNames);
                 }
             }
             Ok(Event::Eof) => return None,
@@ -155,6 +175,30 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
             }
             if !xml.contains("MaxChangesReturned") {
                 return Err("SyncFolderItems requires MaxChangesReturned");
+            }
+            Ok(())
+        }
+        EwsAction::CreateItem => {
+            if !xml.contains("SavedItemFolderId") || !xml.contains("Items") {
+                return Err("CreateItem requires SavedItemFolderId and Items");
+            }
+            Ok(())
+        }
+        EwsAction::UpdateItem => {
+            if !xml.contains("ItemChanges") {
+                return Err("UpdateItem requires ItemChanges");
+            }
+            Ok(())
+        }
+        EwsAction::DeleteItem => {
+            if !xml.contains("ItemIds") {
+                return Err("DeleteItem requires ItemIds");
+            }
+            Ok(())
+        }
+        EwsAction::ResolveNames => {
+            if !xml.contains("UnresolvedEntry") {
+                return Err("ResolveNames requires UnresolvedEntry");
             }
             Ok(())
         }
@@ -302,6 +346,10 @@ fn operation_error_response(
         EwsAction::FindItem => "FindItemResponseMessage",
         EwsAction::GetItem => "GetItemResponseMessage",
         EwsAction::SyncFolderItems => "SyncFolderItemsResponseMessage",
+        EwsAction::CreateItem => "CreateItemResponseMessage",
+        EwsAction::UpdateItem => "UpdateItemResponseMessage",
+        EwsAction::DeleteItem => "DeleteItemResponseMessage",
+        EwsAction::ResolveNames => "ResolveNamesResponseMessage",
     };
     let top = match action {
         EwsAction::GetFolder => "GetFolderResponse",
@@ -309,6 +357,10 @@ fn operation_error_response(
         EwsAction::FindItem => "FindItemResponse",
         EwsAction::GetItem => "GetItemResponse",
         EwsAction::SyncFolderItems => "SyncFolderItemsResponse",
+        EwsAction::CreateItem => "CreateItemResponse",
+        EwsAction::UpdateItem => "UpdateItemResponse",
+        EwsAction::DeleteItem => "DeleteItemResponse",
+        EwsAction::ResolveNames => "ResolveNamesResponse",
     };
 
     let xml = format!(
@@ -746,6 +798,240 @@ async fn handle_sync_folder_items(
     soap_ok(response)
 }
 
+fn generate_server_id(owner: &str, seed: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(owner.as_bytes());
+    h.update(seed.as_bytes());
+    h.update(now_unix().to_string().as_bytes());
+    let digest = h.finalize();
+    format!(
+        "AAMk{}",
+        digest[..16]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    )
+}
+
+async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let owner = owner_from_username(&auth.username);
+    let uid = extract_first_tag_text(body, b"UID").unwrap_or_else(|| "new-item".to_string());
+    let subject =
+        extract_first_tag_text(body, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
+    let seed = format!("{}:{}", uid, subject);
+    let server_id = generate_server_id(owner, &seed);
+    let href = format!("/ews/{}/{}.ics", owner.replace('@', "_"), server_id);
+    let etag = format!(
+        "\"{}\"",
+        changekey_for_item(&EwsItemRow {
+            server_id: server_id.clone(),
+            resource_href: href.clone(),
+            uid: Some(uid.clone()),
+            etag: None,
+            updated_at: Some(now_unix().to_string())
+        })
+    );
+
+    if let Err(e) = state
+        .storage
+        .upsert_item_map(owner, &href, &href, &server_id, &uid, &etag)
+        .await
+    {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorInternalServerError",
+            &format!("Failed to persist created item: {}", e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+
+    let response = format!(
+        r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:CreateItemResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:Items>
+        <t:CalendarItem>
+          <t:ItemId Id="{}" ChangeKey="{}" />
+          <t:Subject>{}</t:Subject>
+          <t:UID>{}</t:UID>
+        </t:CalendarItem>
+      </m:Items>
+    </m:CreateItemResponseMessage>
+  </m:ResponseMessages>
+</m:CreateItemResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        xml_escape(&server_id),
+        xml_escape(etag.trim_matches('"')),
+        xml_escape(&subject),
+        xml_escape(&uid),
+    );
+    soap_ok(response)
+}
+
+async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let owner = owner_from_username(&auth.username);
+    let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
+    if item_id.is_empty() {
+        return operation_error_response(
+            &EwsAction::UpdateItem,
+            "ErrorInvalidIdMalformed",
+            "UpdateItem requires ItemId/@Id",
+            StatusCode::OK,
+        );
+    }
+
+    let current = match state
+        .storage
+        .get_ews_item_by_server_id(owner, &item_id)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                &format!("Failed to load item: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+    let Some(item) = current else {
+        return operation_error_response(
+            &EwsAction::UpdateItem,
+            "ErrorItemNotFound",
+            "Requested item does not exist",
+            StatusCode::OK,
+        );
+    };
+
+    let new_subject = extract_first_tag_text(body, b"Value")
+        .or_else(|| extract_first_tag_text(body, b"Subject"))
+        .or_else(|| item.uid.clone())
+        .unwrap_or_else(|| "updated-item".to_string());
+    let uid = item.uid.clone().unwrap_or_else(|| item.server_id.clone());
+    let new_etag = format!("\"upd-{}\"", now_unix());
+    if let Err(e) = state
+        .storage
+        .upsert_item_map(
+            owner,
+            &item.resource_href,
+            &item.resource_href,
+            &item.server_id,
+            &uid,
+            &new_etag,
+        )
+        .await
+    {
+        return operation_error_response(
+            &EwsAction::UpdateItem,
+            "ErrorInternalServerError",
+            &format!("Failed to persist update: {}", e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+
+    let response = format!(
+        r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:UpdateItemResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:Items>
+        <t:CalendarItem>
+          <t:ItemId Id="{}" ChangeKey="{}" />
+          <t:Subject>{}</t:Subject>
+          <t:UID>{}</t:UID>
+        </t:CalendarItem>
+      </m:Items>
+    </m:UpdateItemResponseMessage>
+  </m:ResponseMessages>
+</m:UpdateItemResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        xml_escape(&item.server_id),
+        xml_escape(new_etag.trim_matches('"')),
+        xml_escape(&new_subject),
+        xml_escape(&uid),
+    );
+    soap_ok(response)
+}
+
+async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let owner = owner_from_username(&auth.username);
+    let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
+    if item_id.is_empty() {
+        return operation_error_response(
+            &EwsAction::DeleteItem,
+            "ErrorInvalidIdMalformed",
+            "DeleteItem requires ItemId/@Id",
+            StatusCode::OK,
+        );
+    }
+
+    match state
+        .storage
+        .delete_item_by_server_id(owner, &item_id)
+        .await
+    {
+        Ok(_) => {}
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInternalServerError",
+                &format!("Failed to delete item: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    }
+
+    let response = format!(
+        r#"<m:DeleteItemResponse xmlns:m="{}">
+  <m:ResponseMessages>
+    <m:DeleteItemResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+    </m:DeleteItemResponseMessage>
+  </m:ResponseMessages>
+</m:DeleteItemResponse>"#,
+        EWS_MSG_NS
+    );
+    soap_ok(response)
+}
+
+async fn handle_resolve_names(auth: &AuthContext, body: &str) -> Response {
+    let unresolved =
+        extract_first_tag_text(body, b"UnresolvedEntry").unwrap_or_else(|| auth.username.clone());
+    let mailbox = if unresolved.contains('@') {
+        unresolved
+    } else {
+        auth.username.clone()
+    };
+    let response = format!(
+        r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:ResolveNamesResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:ResolutionSet TotalItemsInView="1" IncludesLastItemInRange="true">
+        <t:Resolution>
+          <t:Mailbox>
+            <t:Name>{}</t:Name>
+            <t:EmailAddress>{}</t:EmailAddress>
+            <t:RoutingType>SMTP</t:RoutingType>
+            <t:MailboxType>Mailbox</t:MailboxType>
+          </t:Mailbox>
+        </t:Resolution>
+      </m:ResolutionSet>
+    </m:ResolveNamesResponseMessage>
+  </m:ResponseMessages>
+</m:ResolveNamesResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        xml_escape(&mailbox),
+        xml_escape(&mailbox),
+    );
+    soap_ok(response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -775,6 +1061,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn detects_create_item_action() {
+        let xml = r#"<s:Envelope><s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#;
+        assert_eq!(detect_action(xml), Some(EwsAction::CreateItem));
+    }
+
+    #[test]
+    fn validates_delete_item_schema() {
+        let xml = r#"<s:Envelope><s:Body><m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemIds /></m:DeleteItem></s:Body></s:Envelope>"#;
+        assert!(validate_schema(&EwsAction::DeleteItem, xml).is_ok());
+    }
     #[test]
     fn operation_error_uses_response_code() {
         let resp = operation_error_response(

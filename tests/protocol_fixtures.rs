@@ -32,3 +32,18 @@ fn ews_getitem_fixture_contains_itemid() {
     assert!(body.contains("GetItem"));
     assert!(body.contains("ItemId"));
 }
+
+#[test]
+fn ews_createitem_fixture_contains_saved_folder_and_items() {
+    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:CreateItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:SavedItemFolderId/><m:Items><t:CalendarItem xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\"><t:Subject>Meeting</t:Subject></t:CalendarItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#;
+    assert!(body.contains("CreateItem"));
+    assert!(body.contains("SavedItemFolderId"));
+    assert!(body.contains("Items"));
+}
+
+#[test]
+fn ews_deleteitem_fixture_contains_itemids() {
+    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:DeleteItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:ItemIds><t:ItemId xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\" Id=\"abc\"/></m:ItemIds></m:DeleteItem></s:Body></s:Envelope>"#;
+    assert!(body.contains("DeleteItem"));
+    assert!(body.contains("ItemIds"));
+}

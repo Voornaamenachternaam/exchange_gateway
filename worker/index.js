@@ -125,12 +125,13 @@ async function handleDeleteItemByServerId(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleDeleteItemByServerId');
   const body = await readJson(request);
+  const owner = body.owner || '';
   const serverId = body.server_id || '';
-  if (!serverId) return new Response('Missing server_id', { status: 400 });
+  if (!owner || !serverId) return new Response('Missing owner/server_id', { status: 400 });
 
   await env.EXCHANGE_DB
-    .prepare('DELETE FROM item_map WHERE server_id = ?')
-    .bind(serverId)
+    .prepare('DELETE FROM item_map WHERE owner = ? AND server_id = ?')
+    .bind(owner, serverId)
     .run();
 
   return Response.json({ success: true });
