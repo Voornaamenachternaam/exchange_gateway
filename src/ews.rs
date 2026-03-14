@@ -15,6 +15,25 @@ const NS_T: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
 use thiserror::Error;
 
+#[derive(Debug, Error)]
+pub enum EwsError {
+    #[error("XML parsing error: {0}")]
+    XmlParse(#[from] quick_xml::DeError),
+    #[error("HTTP request error: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Missing required element or field: {0}")]
+    MissingElement(String),
+    #[error("JMAP client error: {0}")]
+    Jmap(#[from] crate::jmap_client::JmapError),
+    #[error("Authentication error: {0}")]
+    Auth(String),
+    #[error("Unsupported operation: {0}")]
+    UnsupportedOperation(String),
+    #[error("Other error: {0}")]
+    Other(String),
+}
 async fn handle_sync_folder_hierarchy(session: &jmap_client::JmapSession, xml: &str) -> Result<String, EwsError> {
     let req: SyncFolderHierarchyRequest = parse_body_content(xml).map_err(EwsError::XmlParse)?;
     let cal_id = jmap_client::get_default_calendar_id(session).await?;
