@@ -206,15 +206,7 @@ mod participants_serde {
         match value {
             Some(participants) => {
                 let mut map = HashMap::new();
-                for p in participants {
-                    let key = p.participant_id.as_deref().unwrap_or("").to_string();
-                    let key = if key.is_empty() {
-                        Uuid::new_v4().to_string()
-                    } else {
-                        key
-                    };
-                    let mut send_to = HashMap::new();
-                    send_to.insert("imip", format!("mailto:{}", p.email));
+                    let key_for_log = key.clone();
                     if map
                         .insert(
                             key,
@@ -227,7 +219,7 @@ mod participants_serde {
                         .is_some()
                     {
                         tracing::warn!(
-                            participant_id = %key,
+                            participant_id = %key_for_log,
                             "Duplicate participant id during serialization; \
                              last entry wins"
                         );
