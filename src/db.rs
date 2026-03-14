@@ -113,35 +113,14 @@ pub async fn get_sync_state_full(
     {
         Ok(res) => res,
         Err(e) => {
+            let redacted_user = redact_identifier(user);
+            let redacted_device_id = redact_identifier(device_id);
             tracing::error!(
-                user = user,
-                device_id = device_id,
+                user = redacted_user,
+                device_id = redacted_device_id,
                 collection = coll,
                 "get_sync_state_full: DB request failed: {e}"
             );
-            return Err(DbError::Request(e));
-        }
-    };
-
-    let json: serde_json::Value = match res.json().await {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::error!(
-                user = user,
-                device_id = device_id,
-                collection = coll,
-                "get_sync_state_full: failed to parse DB response: {e}"
-            );
-            return Err(DbError::Parse(e));
-        }
-    };
-    if let Err(reason) = check_db_success(&json) {
-        tracing::error!(
-            user = user,
-            device_id = device_id,
-            collection = coll,
-            "get_sync_state_full: {reason}"
-        );
         return Err(reason);
     }
 
