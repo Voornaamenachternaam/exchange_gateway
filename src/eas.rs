@@ -13,7 +13,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use lazy_static::lazy_static;
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -106,12 +106,43 @@ fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String
         .map(|(_, v)| v.clone())
 }
 
+fn command_namespace_expectation() -> HashMap<&'static str, &'static str> {
+    HashMap::from([
+        ("sync", "AirSync:"),
+        ("foldersync", "FolderHierarchy:"),
+        ("provision", "Provision:"),
+        ("settings", "Settings:"),
+        ("ping", "Ping:"),
+        ("itemoperations", "ItemOperations:"),
+        ("search", "Search:"),
+        ("meetingresponse", "MeetingResponse:"),
+        ("resolverecipients", "ResolveRecipients:"),
+        ("sendmail", "ComposeMail:"),
+        ("smartreply", "ComposeMail:"),
+        ("smartforward", "ComposeMail:"),
+        ("validatecert", "ValidateCert:"),
+        ("getitemestimate", "GetItemEstimate:"),
+        ("moveitems", "Move:"),
+    ])
+}
+
+fn required_tags_for_command(command: &str) -> HashSet<&'static str> {
+    match command {
+        "sync" => HashSet::from(["CollectionId", "SyncKey"]),
+        "provision" => HashSet::from(["Policies", "Policy"]),
+        "settings" => HashSet::from(["UserInformation"]),
+        "getitemestimate" => HashSet::from(["Collections", "Collection"]),
+        "moveitems" => HashSet::from(["Move"]),
+        _ => HashSet::new(),
+    }
+}
+
 fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let cmd = command.to_ascii_lowercase();
     if xml.is_empty() {
         return if matches!(
             cmd.as_str(),
-            "ping" | "sendmail" | "smartreply" | "smartforward"
+            "ping" | "sendmail" | "smartreply" | "smartforward" | "options"
         ) {
             Ok(())
         } else {
@@ -119,33 +150,35 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         };
     }
 
-    match cmd.as_str() {
-        "sync" => {
-            if !xml.contains("AirSync:") {
-                return Err("Sync request missing AirSync namespace");
-            }
-            if extract_first_tag_text(xml, b"CollectionId").is_none() {
-                return Err("Sync request missing CollectionId");
-            }
-            if extract_first_tag_text(xml, b"SyncKey").is_none() {
-                return Err("Sync request missing SyncKey");
-            }
-            Ok(())
-        }
-        "provision" => {
-            if !xml.contains("Provision:") {
-                return Err("Provision request missing Provision namespace");
-            }
-            Ok(())
-        }
-        "settings" => {
-            if !xml.contains("Settings:") {
-                return Err("Settings request missing Settings namespace");
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+    if let Some(ns) = command_namespace_expectation().get(cmd.as_str())
+        && !xml.contains(ns)
+    {
+        return Err("Request missing expected command namespace");
     }
+
+    for tag in required_tags_for_command(cmd.as_str()) {
+        if !xml.contains(&format!("<{}", tag)) {
+            return Err("Request missing required command element");
+        }
+    }
+
+    if cmd == "sync" {
+        let class = extract_first_tag_text(xml, b"Class").unwrap_or_else(|| "Calendar".to_string());
+        let supported = [
+            "Calendar",
+            "Contacts",
+            "Email",
+            "Notes",
+            "Tasks",
+            "DocumentLibrary",
+            "SMS",
+        ];
+        if !supported.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
+            return Err("Unsupported Sync class");
+        }
+    }
+
+    Ok(())
 }
 
 fn make_request_id() -> String {
@@ -273,13 +306,15 @@ fn success_status_response(
     as_wbxml: bool,
     root: &str,
     ns: &str,
+    status: &str,
     extra_inner: &str,
     request_id: &str,
 ) -> Response {
     let xml = format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?><{root} xmlns=\"{ns}\"><Status>1</Status>{extra}</{root}>",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><{root} xmlns=\"{ns}\"><Status>{status}</Status>{extra}</{root}>",
         root = root,
         ns = ns,
+        status = status,
         extra = extra_inner
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
@@ -379,8 +414,21 @@ async fn handle_provision(
         return xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id);
     }
 
-    let response = r#"<?xml version="1.0" encoding="utf-8"?><Provision xmlns="Provision:"><Status>2</Status></Provision>"#;
-    xml_or_wbxml_response(wbxml, as_wbxml, response, request_id)
+    success_status_response(
+        wbxml,
+        as_wbxml,
+        "Provision",
+        "Provision:",
+        "2",
+        "",
+        request_id,
+    )
+}
+
+fn handle_folder_sync(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> Response {
+    let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>5</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add><Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Contacts</DisplayName><Type>9</Type></Add><Add><ServerId>3</ServerId><ParentId>0</ParentId><DisplayName>Tasks</DisplayName><Type>7</Type></Add><Add><ServerId>4</ServerId><ParentId>0</ParentId><DisplayName>Notes</DisplayName><Type>11</Type></Add><Add><ServerId>5</ServerId><ParentId>0</ParentId><DisplayName>Documents</DisplayName><Type>19</Type></Add></Changes></FolderSync>"#;
+    xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id)
 }
 
 pub async fn handle(
@@ -439,11 +487,7 @@ pub async fn handle(
     }
 
     match req.command.as_str() {
-        "FolderSync" => {
-            let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
-<FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>5</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add><Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Contacts</DisplayName><Type>9</Type></Add><Add><ServerId>3</ServerId><ParentId>0</ParentId><DisplayName>Tasks</DisplayName><Type>7</Type></Add><Add><ServerId>4</ServerId><ParentId>0</ParentId><DisplayName>Notes</DisplayName><Type>11</Type></Add><Add><ServerId>5</ServerId><ParentId>0</ParentId><DisplayName>Documents</DisplayName><Type>19</Type></Add></Changes></FolderSync>"#;
-            xml_or_wbxml_response(&wbxml, wants_wbxml, resp_xml, &request_id)
-        }
+        "FolderSync" => handle_folder_sync(&wbxml, wants_wbxml, &request_id),
         "Provision" => {
             handle_provision(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
         }
@@ -472,13 +516,16 @@ pub async fn handle(
                 }
             }
         }
-        "Ping" => success_status_response(&wbxml, wants_wbxml, "Ping", "Ping:", "", &request_id),
+        "Ping" => {
+            success_status_response(&wbxml, wants_wbxml, "Ping", "Ping:", "1", "", &request_id)
+        }
         "Settings" => success_status_response(
             &wbxml,
             wants_wbxml,
             "Settings",
             "Settings:",
-            "<Status>1</Status>",
+            "1",
+            "",
             &request_id,
         ),
         "SendMail" => success_status_response(
@@ -486,6 +533,7 @@ pub async fn handle(
             wants_wbxml,
             "SendMail",
             "ComposeMail:",
+            "1",
             "",
             &request_id,
         ),
@@ -494,6 +542,7 @@ pub async fn handle(
             wants_wbxml,
             "Status",
             "ComposeMail:",
+            "1",
             "",
             &request_id,
         ),
@@ -502,6 +551,7 @@ pub async fn handle(
             wants_wbxml,
             "ItemOperations",
             "ItemOperations:",
+            "1",
             "<Responses></Responses>",
             &request_id,
         ),
@@ -510,6 +560,7 @@ pub async fn handle(
             wants_wbxml,
             "Search",
             "Search:",
+            "1",
             "<Response><Store><Status>1</Status><Result></Result></Store></Response>",
             &request_id,
         ),
@@ -518,6 +569,7 @@ pub async fn handle(
             wants_wbxml,
             "MeetingResponse",
             "MeetingResponse:",
+            "1",
             "",
             &request_id,
         ),
@@ -526,6 +578,7 @@ pub async fn handle(
             wants_wbxml,
             "ResolveRecipients",
             "ResolveRecipients:",
+            "1",
             "",
             &request_id,
         ),
@@ -534,6 +587,7 @@ pub async fn handle(
             wants_wbxml,
             "ValidateCert",
             "ValidateCert:",
+            "1",
             "",
             &request_id,
         ),
@@ -542,12 +596,19 @@ pub async fn handle(
             wants_wbxml,
             "GetItemEstimate",
             "GetItemEstimate:",
+            "1",
             "",
             &request_id,
         ),
-        "MoveItems" => {
-            success_status_response(&wbxml, wants_wbxml, "MoveItems", "Move:", "", &request_id)
-        }
+        "MoveItems" => success_status_response(
+            &wbxml,
+            wants_wbxml,
+            "MoveItems",
+            "Move:",
+            "1",
+            "",
+            &request_id,
+        ),
         _ => unsupported_command_response(&req.command, &wbxml, wants_wbxml, &request_id),
     }
 }
@@ -555,7 +616,8 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::{
-        command_from_query, extract_first_tag_text, extract_root_command, validate_payload,
+        command_from_query, extract_first_tag_text, extract_root_command,
+        required_tags_for_command, validate_payload,
     };
     use std::collections::HashMap;
 
@@ -594,5 +656,17 @@ mod tests {
     fn validates_sync_namespace() {
         let xml = r#"<Sync><CollectionId>1</CollectionId><SyncKey>1</SyncKey></Sync>"#;
         assert!(validate_payload("Sync", xml).is_err());
+    }
+
+    #[test]
+    fn validates_sync_class() {
+        let xml = r#"<Sync xmlns=\"AirSync:\"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>InvalidClass</Class></Collection></Collections></Sync>"#;
+        assert!(validate_payload("Sync", xml).is_err());
+    }
+
+    #[test]
+    fn required_tag_matrix_exists() {
+        assert!(required_tags_for_command("sync").contains("CollectionId"));
+        assert!(required_tags_for_command("provision").contains("Policies"));
     }
 }

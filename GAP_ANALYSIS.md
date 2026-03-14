@@ -1,92 +1,72 @@
-# exchange_gateway gap analysis and Binder1 traceability matrix (current state)
+# GAP_ANALYSIS.md (Binder1-driven, current-state only)
 
 ## Scope
 
-- Protocol source of truth: `Binder1.txt`.
-- Implementation assessed: Rust gateway (`src/*`), Worker API (`worker/index.js`), persistence schema (`d1_schema.sql`), runtime config model.
-- Use-case target: Stalwart calendar interoperability for Outlook Windows + Outlook Android via EAS/EWS over Cloudflare.
+- Single protocol source of truth: `Binder1.txt`.
+- Target use-case: Outlook Windows + Outlook Android calendar interoperability against Stalwart via this gateway (EAS/EWS), through Cloudflare Worker + D1.
+- This document lists **only currently open gaps** and an up-to-date traceability matrix.
 
 ---
 
-## What is already implemented (current repository state)
+## Open gaps (only)
 
-1. **Deployment contract alignment**
-   - File-based runtime config (`/etc/exchange-gateway/config.toml`) and bind `0.0.0.0:8134` architecture are in place.
-2. **EAS baseline transport and sync**
-   - EAS command dispatch, OPTIONS capabilities, per-device throttling, WBXML/XML handling, provision key persistence flow, and sync collection-id usage from request payload are implemented.
-3. **EWS operation surface expanded**
-   - `GetFolder`, `FindFolder`, `FindItem`, `GetItem`, and `SyncFolderItems` are implemented with operation-specific validation and operation-specific error response mapping.
-4. **Typed state persistence**
-   - Worker + D1 support sync/provision/EWS state and idempotency-aware write APIs; schema version tracking is present.
+### A) EAS conformance depth
+
+1. **Command grammar coverage is still not complete for all real-world Outlook variants**
+   - Current validation enforces required namespace/element checks for key commands, but does not implement full XML grammar/state-machine validation for every command payload permutation in Binder1 families.
+2. **Advanced semantic parity remains partial**
+   - Several commands still return baseline interoperable success/status structures rather than exhaustive Exchange-grade state/conflict semantics for every branch.
+3. **End-to-end protocol fixture depth remains limited**
+   - Repository has fixture-oriented tests, but not a full automated Outlook interoperability matrix proving all negative-path MUST/SHOULD scenarios.
+
+### B) EWS fidelity and edge-case parity
+
+1. **EWS shape/traversal/property fidelity is partial**
+   - `FindItem`/`GetItem`/`SyncFolderItems` are implemented with operation-specific validation and faults, but advanced property-shape handling and full traversal nuances remain incomplete.
+2. **SyncFolderItems parity is still partial for full Exchange behavior**
+   - Delete/tombstone and conflict/version semantics improved but still do not model the entire Exchange server behavior surface.
+3. **Broader Outlook workflow EWS operations are still missing**
+   - Current implemented set is calendar-focused; additional operations used by wider Outlook workflows remain unimplemented.
+
+### C) Data/reliability hardening
+
+1. `api_idempotency` retention/cleanup lifecycle is not implemented.
+2. Migration orchestration runner is not implemented (schema version tracking exists, but migration execution is external).
+3. No full concurrency/load race harness validating state integrity under sustained parallel sync workloads.
+
+### D) Conformance evidence gap
+
+1. Traceability matrix exists, but machine-verifiable MUST/SHOULD evidence generation is not implemented.
+2. Several matrix rows do not yet have full end-to-end integration artifacts.
 
 ---
 
-## Binder1 traceability matrix (MUST/SHOULD -> code + tests)
+## Binder1 MUST/SHOULD traceability matrix (current)
 
-> Matrix is scoped to the protocol families that are relevant to the stated use-case.
-
-| Binder1 protocol family | Requirement level | Requirement summary (implementation-facing) | Current implementation mapping | Test mapping | Status |
+| Binder1 family | Level | Requirement summary | Code mapping | Test mapping | Current state |
 |---|---|---|---|---|---|
-| MS-ASHTTP | MUST | Accept authenticated ActiveSync requests on `/Microsoft-Server-ActiveSync`; support protocol discovery (`OPTIONS`) and command dispatch semantics | `src/eas.rs` request auth + method handling + command detection + OPTIONS capability headers | `src/eas.rs` unit tests for command extraction/validation | Implemented (scope) |
-| MS-ASCMD | MUST | Parse command envelope/query and route command-specific processing with valid status envelopes | `src/eas.rs` command dispatch table and command-specific responses | `src/eas.rs` command/query extraction tests | Implemented (scope) |
-| MS-ASPROV | MUST | Provision policy key handshake semantics across phases | `src/eas.rs` provision branch + `src/storage.rs` policy get/set + worker provision endpoints | runtime-covered; no dedicated integration fixture yet | Implemented (scope) |
-| MS-ASWBXML / MS-ASAIRS | MUST | Decode/encode WBXML payloads used by implemented command surfaces | `src/wbxml.rs` codec + `src/eas.rs` wbxml path selection | `src/wbxml.rs` roundtrip tests | Implemented (scope) |
-| MS-ASCAL | MUST | Calendar synchronization surface for ActiveSync collection | `src/sync.rs` CalDAV-backed sync projection + EAS Sync response path | `src/eas.rs` sync parsing tests; no full E2E fixture in-repo | Implemented (scope) |
-| EWS core message/type schemas (Binder1 EWS families) | MUST | Validate operation request shape before execution; return operation-specific error semantics | `src/ews.rs` `validate_schema` and `operation_error_response` | `src/ews.rs` schema/sync-state parser tests | Implemented (scope) |
-| EWS FindItem behavior | SHOULD | Support paging and deterministic item identity/changekey in response payload | `src/ews.rs` `handle_find_item`; `src/storage.rs` EWS item listing API; worker `/api/list_ews_items` | currently unit-level only | Implemented (partial-depth) |
-| EWS GetItem behavior | SHOULD | Return item payload by requested id and map not-found to operation-specific error | `src/ews.rs` `handle_get_item`; `src/storage.rs` `get_ews_item_by_server_id`; worker `/api/get_ews_item_by_id` | currently unit-level only | Implemented (partial-depth) |
-| EWS SyncFolderItems behavior | MUST | Persist sync state and return incremental changes based on state token | `src/ews.rs` `handle_sync_folder_items`; `src/storage.rs` sync-state methods; worker EWS sync-state endpoints | currently unit-level only | Implemented (partial-depth) |
-| Data consistency for retry paths | SHOULD | Retry-safe typed writes with idempotency signal propagation | `src/storage.rs` deterministic `Idempotency-Key`; worker `api_idempotency` registration | schema + route smoke checks | Implemented (baseline) |
-| Migration/version traceability | SHOULD | explicit schema version marker for rollout sequencing | `d1_schema.sql` `schema_version` table + baseline row | SQL schema parse check | Implemented (baseline) |
+| MS-ASHTTP | MUST | Authenticated EAS endpoint transport and command dispatch capability headers | `src/eas.rs` (`handle`, `options_response`, auth + routing) | `src/eas.rs` unit tests | Implemented (scope) |
+| MS-ASCMD | MUST | Command extraction + per-command routing and status envelope behavior | `src/eas.rs` command dispatch + command validators | `src/eas.rs` unit tests | Implemented (scope) |
+| MS-ASPROV | MUST | Provisioning key lifecycle (issue/ack/validate) | `src/eas.rs` provision flow + `src/storage.rs` + worker provision endpoints | unit-level + runtime path | Implemented (scope) |
+| MS-ASWBXML / MS-ASAIRS | MUST | WBXML encode/decode for implemented command paths | `src/wbxml.rs`, `src/eas.rs` WBXML path | `src/wbxml.rs` tests | Implemented (scope) |
+| MS-ASCAL | MUST | Calendar sync response generation for ActiveSync collections | `src/sync.rs` + `src/eas.rs` Sync path | `src/eas.rs` parsing tests | Implemented (scope) |
+| EWS core message/type schemas (Binder1 EWS families) | MUST | Operation-specific request validation and operation-specific fault mapping | `src/ews.rs` (`validate_schema`, `operation_error_response`) | `src/ews.rs` tests | Implemented (scope) |
+| EWS FindItem | SHOULD | Paged item listing with deterministic IDs/change keys | `src/ews.rs::handle_find_item`, `src/storage.rs::list_ews_items`, worker `/api/list_ews_items` | unit-level + fixture test | Implemented (partial-depth) |
+| EWS GetItem | SHOULD | Item fetch by id with not-found and malformed-id fault mapping | `src/ews.rs::handle_get_item`, `src/storage.rs::get_ews_item_by_server_id`, worker `/api/get_ews_item_by_id` | `src/ews.rs` tests | Implemented (partial-depth) |
+| EWS SyncFolderItems | MUST | Incremental state token handling and change return | `src/ews.rs::handle_sync_folder_items`, storage sync-state methods, worker `/api/get_ews_sync_state` + `/api/set_ews_sync_state` | `src/ews.rs` tests | Implemented (partial-depth) |
+| Retry-safe typed writes | SHOULD | Idempotency signal propagation for typed write APIs | `src/storage.rs` Idempotency-Key generation + worker `api_idempotency` registration | worker/schema checks | Implemented (baseline) |
+| Migration traceability | SHOULD | Explicit schema version marker | `d1_schema.sql` `schema_version` | schema check | Implemented (baseline) |
 
 ---
 
-## Up-to-date open gaps (only remaining work)
+## New up-to-date Definition of Done (specific use-case)
 
-## A) EAS conformance depth
+Done means all of the following are true simultaneously in production-like validation:
 
-1. Command grammar validation is still subset-based and not full payload-grammar complete for all command variants used by modern Outlook clients.
-2. Some command responses remain interoperability-profile responses rather than full Exchange semantic parity for advanced state/conflict branches.
-3. No repository-level end-to-end Outlook protocol fixture suite proving full MUST/SHOULD coverage across negative-path permutations.
-
-## B) EWS fidelity and edge-case parity
-
-1. `FindItem`/`GetItem`/`SyncFolderItems` are implemented, but advanced shape/traversal/property sets and strict parity for all edge fault conditions remain partial.
-2. Delete/tombstone and conflict/version semantics in `SyncFolderItems` are baseline-level and not yet full parity with all Exchange server behaviors.
-3. Additional EWS operations used in broader Outlook workflows (beyond current calendar-focused scope) are still not implemented.
-
-## C) Data and reliability hardening
-
-1. `api_idempotency` cleanup/retention lifecycle is not implemented.
-2. No dedicated migration runner is included; schema version table exists but deployment migration orchestration is external.
-3. Concurrency/load test coverage for worker + gateway state update races is not present in-repo.
-
-## D) Binder1 compliance evidence gap
-
-1. Traceability is now documented in this file, but automated evidence generation (machine-checked conformance report) is not yet implemented.
-2. MUST/SHOULD matrix rows do not yet have full integration-test artifacts for every row.
-
----
-
-## Updated definition of done for your specific use-case
-
-The solution is done when all conditions below are simultaneously true:
-
-1. **Outlook-native onboarding**
-   - Outlook Windows and Outlook Android autodiscover and authenticate without any client-side extensions or manual protocol workarounds.
-
-2. **Calendar interoperability correctness**
-   - Calendar CRUD, recurrence handling, meeting response updates, and deletions are deterministic and consistent across Outlook clients and Stalwart-backed state.
-
-3. **Protocol correctness**
-   - Implemented EAS/EWS operations return protocol-correct success and fault semantics for both happy-path and negative-path requests that are exercised by supported Outlook versions.
-
-4. **State durability and retry safety**
-   - Sync/provision/EWS state survives restarts and retries without corruption, duplicate side effects, or divergent sync windows.
-
-5. **Operational hardening**
-   - Observability, throttling, retry/backoff behavior, and Cloudflare trust-path assumptions are validated in staging under load representative of production usage.
-
-6. **Evidence-backed conformance**
-   - Automated test artifacts and traceability evidence show that all Binder1 MUST/SHOULD requirements in the scoped protocol families are satisfied for the declared use-case boundary.
+1. Outlook Windows and Outlook Android autodiscover + authenticate natively without client extensions.
+2. Calendar create/update/delete/recurrence/meeting-response flows round-trip deterministically between clients and backend.
+3. Implemented EAS/EWS operations return protocol-correct success/fault behavior for happy and negative paths observed in supported Outlook versions.
+4. Sync/provision/EWS state survives retries/restarts without corruption, duplication, or divergence.
+5. Cloudflare edge/origin trust path, throttling, and observability are validated under realistic load.
+6. Traceability evidence demonstrates Binder1 MUST/SHOULD coverage for all in-scope protocol families and is backed by automated integration artifacts.
 
