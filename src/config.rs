@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 static MAIL_DOMAIN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^[a-z0-9]+([-.][a-z0-9]+)*\.[a-z]{2,}$").unwrap()
+    Regex::new(r"(?i)^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$").unwrap()
 });
 
 #[derive(Debug, Clone)]
