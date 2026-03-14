@@ -206,6 +206,9 @@ mod participants_serde {
         match value {
             Some(participants) => {
                 let mut map = HashMap::new();
+                for p in participants {
+                    let key = p.participant_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+                    let send_to = HashMap::from([("imip", format!("mailto:{}", p.email))]);
                     let key_for_log = key.clone();
                     if map
                         .insert(
