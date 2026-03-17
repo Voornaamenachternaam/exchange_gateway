@@ -76,3 +76,25 @@ Attach the worker to all of the following routes on the same hostname:
 - `worker_secret = "<same-as-GATEWAY_SECRET>"`
 - `bind = "0.0.0.0:8134"`
 
+
+
+## Free-plan hardening profile (March 2026)
+
+Set these additional Worker text variables:
+
+1. `SQL_API_ENABLED`
+   - Type: text
+   - Value: `false` (recommended in production)
+
+2. `MAX_FORWARD_BODY_BYTES`
+   - Type: text
+   - Value: `1048576`
+
+3. `MAX_API_BODY_BYTES`
+   - Type: text
+   - Value: `262144`
+
+Notes:
+- The generic `/api/*` SQL endpoint is now disabled unless `SQL_API_ENABLED=true`.
+- When enabled, it permits only `SELECT` queries.
+- Typed APIs used by the Rust gateway remain available and authenticated via `GATEWAY_SECRET`.

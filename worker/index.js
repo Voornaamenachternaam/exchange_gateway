@@ -1,4 +1,5 @@
 const FORWARDED_PATH_PREFIXES = ['/ews', '/microsoft-server-activesync'];
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
 export default {
   async fetch(request, env, ctx) {
@@ -86,6 +87,12 @@ async function checkIdempotency(request, env, routeName) {
 async function handleGatewayForward(request, env, ctx) {
   if (!env.ORIGIN_BASE_URL) {
     return new Response('Worker misconfigured: ORIGIN_BASE_URL is required', { status: 500 });
+  }
+
+  const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
+  const maxForwardBodyBytes = Math.max(1024, Number.parseInt(env.MAX_FORWARD_BODY_BYTES || `${DEFAULT_MAX_BODY_BYTES}`, 10) || DEFAULT_MAX_BODY_BYTES);
+  if (Number.isFinite(contentLength) && contentLength > maxForwardBodyBytes) {
+    return new Response('Payload too large', { status: 413 });
   }
 
   const rateLimitResult = await enforceRateLimit(request, env, ctx);
@@ -259,6 +266,17 @@ async function handleApiRequest(request, env) {
     return new Response('Unauthorized', { status: 401 });
   }
 
+  const sqlApiEnabled = String(env.SQL_API_ENABLED || 'false').toLowerCase() === 'true';
+  if (!sqlApiEnabled) {
+    return new Response('SQL API disabled', { status: 403 });
+  }
+
+  const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
+  const maxBodyBytes = Math.max(1024, Number.parseInt(env.MAX_API_BODY_BYTES || `${DEFAULT_MAX_BODY_BYTES}`, 10) || DEFAULT_MAX_BODY_BYTES);
+  if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+    return new Response('Payload too large', { status: 413 });
+  }
+
   let body;
   try {
     body = await request.json();
@@ -267,8 +285,13 @@ async function handleApiRequest(request, env) {
   }
 
   const { query, params } = body;
-  if (!query) {
+  if (!query || typeof query !== 'string') {
     return new Response("Missing 'query' field", { status: 400 });
+  }
+
+  const trimmed = query.trim().toUpperCase();
+  if (!trimmed.startsWith('SELECT')) {
+    return new Response('Only SELECT queries are permitted', { status: 403 });
   }
 
   try {
