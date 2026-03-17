@@ -98,3 +98,25 @@ Notes:
 - The generic `/api/*` SQL endpoint is now disabled unless `SQL_API_ENABLED=true`.
 - When enabled, it permits only `SELECT` queries.
 - Typed APIs used by the Rust gateway remain available and authenticated via `GATEWAY_SECRET`.
+
+
+## Stalwart v0.15.5 compatibility notes
+
+- Keep Stalwart calendar backend on CalDAV as configured in the Rust gateway (`caldav_base`).
+- Keep Stalwart basic username/password auth enabled for Outlook profile compatibility.
+- Keep TLS termination at Cloudflare edge; origin behind tunnel can remain HTTP on private Docker network.
+- For cloudflared ingress, use a dedicated origin hostname for gateway forwarding, for example:
+
+```yaml
+ingress:
+  - hostname: exchange-origin.example.com
+    service: http://exchange_gateway:8134
+  - service: http_status:404
+```
+
+- Ensure Worker `ORIGIN_BASE_URL` points to that origin hostname, and `GATEWAY_HOST` points to the public Exchange hostname.
+
+
+## Allowed forwarded methods
+
+Forwarded Exchange routes accept only: `OPTIONS`, `POST`, `GET`, `HEAD`.

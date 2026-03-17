@@ -1,5 +1,15 @@
 const FORWARDED_PATH_PREFIXES = ['/ews', '/microsoft-server-activesync'];
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const HOP_BY_HOP_HEADERS = [
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade'
+];
 
 export default {
   async fetch(request, env, ctx) {
@@ -74,6 +84,9 @@ async function readJson(request) {
 async function checkIdempotency(request, env, routeName) {
   const key = request.headers.get('Idempotency-Key');
   if (!key) return;
+  if (key.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(key)) {
+    return;
+  }
   await env.EXCHANGE_DB
     .prepare(`
       INSERT INTO api_idempotency (idempotency_key, route_name, created_at)
@@ -87,6 +100,15 @@ async function checkIdempotency(request, env, routeName) {
 async function handleGatewayForward(request, env, ctx) {
   if (!env.ORIGIN_BASE_URL) {
     return new Response('Worker misconfigured: ORIGIN_BASE_URL is required', { status: 500 });
+  }
+
+  const method = (request.method || 'GET').toUpperCase();
+  if (!['OPTIONS', 'POST', 'GET', 'HEAD'].includes(method)) {
+    return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'OPTIONS, POST, GET, HEAD' } });
+  }
+
+  if (!isValidOriginBaseUrl(env.ORIGIN_BASE_URL)) {
+    return new Response('Worker misconfigured: ORIGIN_BASE_URL must be http/https URL', { status: 500 });
   }
 
   const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
@@ -108,12 +130,11 @@ async function handleGatewayForward(request, env, ctx) {
 
   const incoming = new URL(request.url);
   const upstream = new URL(incoming.pathname + incoming.search, env.ORIGIN_BASE_URL);
-  const forwardedHeaders = new Headers(request.headers);
+  const forwardedHeaders = sanitizeForwardHeaders(request.headers);
   forwardedHeaders.set('X-Forwarded-Proto', 'https');
   forwardedHeaders.set('X-Forwarded-Host', incoming.host);
   forwardedHeaders.set('X-Forwarded-For', request.headers.get('CF-Connecting-IP') || '');
 
-  const method = (request.method || 'GET').toUpperCase();
   const upstreamRequest = new Request(upstream.toString(), {
     method,
     headers: forwardedHeaders,
@@ -121,8 +142,29 @@ async function handleGatewayForward(request, env, ctx) {
     redirect: 'manual'
   });
 
-  const upstreamResponse = await fetch(upstreamRequest);
-  return withCommonSecurityHeaders(upstreamResponse);
+  try {
+    const upstreamResponse = await fetch(upstreamRequest);
+    return withCommonSecurityHeaders(upstreamResponse);
+  } catch {
+    return new Response('Bad Gateway', { status: 502, headers: { 'Cache-Control': 'private, no-store' } });
+  }
+}
+
+function sanitizeForwardHeaders(inputHeaders) {
+  const headers = new Headers(inputHeaders);
+  for (const h of HOP_BY_HOP_HEADERS) {
+    headers.delete(h);
+  }
+  return headers;
+}
+
+function isValidOriginBaseUrl(raw) {
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 async function enforceRateLimit(request, env, ctx) {
@@ -165,6 +207,8 @@ function withCommonSecurityHeaders(response) {
   const headers = new Headers(response.headers);
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('X-Frame-Options', 'DENY');
+  headers.set('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   headers.set('Cache-Control', headers.get('Cache-Control') || 'private, no-store');
   return new Response(response.body, {
     status: response.status,

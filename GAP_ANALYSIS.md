@@ -20,7 +20,8 @@ All protocol conclusions below are scoped to `Binder1.txt` only.
 
 5. **TLS termination + request-shaping controls active and verified in production runtime**
    - **Implemented:** PARTIAL
-   - In-repo controls are implemented (edge routing/rate-limits/payload limits/authn controls), but live deployment verification evidence is environment-specific and not bundled in this repository.
+   - Implemented in-repo controls: edge rate limits, payload caps, method allow-list, hop-by-hop header stripping, and authenticated typed APIs.
+   - Remaining: live production verification evidence from your deployed environment is not stored as repeatable artifacts in this repository.
 
 6. **Binder1 family traceability to code/tests remains current**
    - **Implemented:** YES
@@ -32,7 +33,7 @@ All protocol conclusions below are scoped to `Binder1.txt` only.
 
 ## Up-to-date remaining gaps
 
-1. Production evidence bundle for item 5 is not yet present as repeatable repository artifacts from your live environment.
+1. Production evidence bundle for item 5 is not yet present as repeatable repository artifacts from your live Cloudflare + cloudflared + host deployment.
 2. Full non-calendar Exchange parity from Binder1 remains intentionally out of scope for this calendar-focused deployment.
 
 ## Dependency recommendation (March 2026)
