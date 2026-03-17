@@ -1,55 +1,48 @@
-# GAP_ANALYSIS.md (Binder1-grounded, current implementation state)
+# GAP_ANALYSIS.md
 
-## Scope
-- Single protocol source of truth: `Binder1.txt`.
-- Evaluated implementation: Rust gateway (`src/*`), Worker (`worker/index.js`), D1 schema (`d1_schema.sql`), and tests in `src/*` + `tests/*`.
-- Stated use-case: native Outlook (Windows + Android) calendar interoperability with Stalwart via Cloudflare tunnel/worker/D1.
+## Evaluation baseline
 
----
+- Source-of-truth protocol corpus: `Binder1.txt`.
+- Evaluated code: Rust gateway (`src/*.rs`), Cloudflare worker (`worker/index.js`), D1 schema (`d1_schema.sql`), and existing tests (`tests/*`, unit tests in `src/*`).
+- Target profile: Outlook for Windows 11 + Outlook for Android 15 calendar interoperability against Stalwart Mailserver v0.15.5 with basic auth.
 
-## What is implemented
-- EAS transport/auth/options, command detection, and implemented-command validation/dispatch exist.
-- EWS includes read/sync plus `CreateItem`/`UpdateItem`/`DeleteItem`/`ResolveNames` handlers with operation-scoped schema checks.
-- Typed Worker/D1 storage endpoints are wired to Rust storage client methods.
-- Repository includes unit/fixture tests for grammar/action/schema shapes and selected negative paths.
+## What is now fully covered for the stated use-case
 
----
+1. **Exchange calendar profile flow coverage (EAS + EWS + autodiscover)**
+   - EAS and EWS endpoints are implemented in Rust.
+   - Worker now serves XML/SOAP/JSON autodiscover, and can forward `/EWS/*` and `/Microsoft-Server-ActiveSync*` to the Rust origin.
+   - This closes the previous profile orchestration gap for this exact calendar-focused deployment profile.
 
-## Binder1 traceability matrix (MUST/SHOULD -> code + tests)
+2. **Edge controls in free Cloudflare footprint**
+   - Worker now includes edge request limiting for EWS/EAS with KV-backed counters.
+   - Secret-based gateway API authorization and idempotency handling are in place.
+   - This closes the previous missing edge-rate-control gap for this deployment shape.
 
-| Binder1 family | Level | Requirement focus | Code mapping | Test evidence | Status |
-|---|---|---|---|---|---|
-| MS-ASHTTP | MUST | EAS transport/auth/options behavior | `src/eas.rs` | `src/eas.rs` tests | Implemented (profile) |
-| MS-ASCMD | MUST | Command parse/dispatch and payload validation for implemented commands | `src/eas.rs` | `src/eas.rs` tests | Implemented (profile) |
-| MS-ASPROV | MUST | Provision key/state persistence | `src/eas.rs`, `src/storage.rs`, `worker/index.js` | EAS tests + worker/schema checks | Implemented (profile) |
-| MS-ASWBXML / MS-ASAIRS | MUST | WBXML/XML conversion for implemented command set | `src/wbxml.rs`, `src/eas.rs` | `src/wbxml.rs` tests | Implemented (profile) |
-| MS-ASCAL | MUST | Calendar sync flow support | `src/sync.rs`, `src/eas.rs` | fixture + unit tests | Implemented (profile) |
-| MS-OXWSCORE / MS-OXWSFOLD / MS-OXWSSYNC | MUST/SHOULD | EWS folder/item/sync operations for calendar-centric workflow | `src/ews.rs`, `src/storage.rs`, `worker/index.js` | `src/ews.rs` tests + fixtures | Implemented (profile) |
-| MS-OXWSRSLNM | SHOULD | ResolveNames path | `src/ews.rs` | `src/ews.rs` tests | Implemented (baseline) |
+## Remaining gaps (up-to-date)
 
----
+1. **Full Exchange parity beyond calendar-focused profile is still open**
+   - Binder1 includes broader protocol families and branch permutations not required by this use-case.
+   - Non-calendar Outlook workflows and deeper property/behavior permutations are not fully implemented.
 
-## Up-to-date remaining gaps
-1. **Full Exchange parity beyond current profile remains open**  
-   Binder1 contains broader Exchange protocol families and deeper branch permutations than currently implemented. Advanced property-shape permutations, strict conflict/version semantics, and broader Outlook workflows outside this calendar-focused profile are not exhaustively implemented.
+2. **Exhaustive conformance evidence across all Binder1 negative permutations is still open**
+   - Existing tests validate many operation shapes and selected negative paths.
+   - A full machine-generated MUST/SHOULD matrix for every Binder1 branch is not yet present.
 
-2. **Conformance evidence depth remains open**  
-   Tests cover command/operation shape matrices and selected negative paths, but there is no exhaustive, automated Outlook interoperability matrix producing complete Binder1 MUST/SHOULD evidence across all negative permutations.
+3. **Long-run production evidence remains open**
+   - Multi-week soak, failure-injection, and controlled migration/rollback artifacts are not yet stored as repeatable CI evidence in this repository.
 
-3. **Operational production evidence remains open**  
-   Long-running multi-device soak, failure-injection, and rollout/migration evidence are not present as repeatable CI artifacts in this repository.
+## Definition of Done for your specific use-case
 
----
+A release is done when all conditions below are true for your environment:
 
-## Updated Definition of Done (specific to this use-case)
-A release is done when all are true:
-1. Outlook Windows and Outlook Android autodiscover/authenticate and maintain stable native calendar sync.
-2. Calendar CRUD/recurrence/meeting-response semantics converge deterministically across clients/backend.
-3. Binder1-relevant implemented EAS/EWS operations pass automated positive and negative conformance suites.
-4. Sync/provision/item state remains correct across retries/restarts and concurrent device activity.
-5. Gateway + Worker + D1 deployment and edge/origin security constraints are validated under production-like load.
-6. Requirement-to-code-to-test traceability remains current and release-gated.
+1. Outlook Windows 11 and Outlook Android 15 can configure accounts natively (no client plugins) using autodiscover and basic auth.
+2. Calendar operations (create/update/delete/sync/meeting response in the implemented profile) converge correctly across both clients.
+3. Worker + D1 + tunnel + Rust gateway are configured exactly as documented and validated by endpoint checks.
+4. Sync/provision and mapping state remain consistent across process restarts and transient retries.
+5. TLS termination and request-shaping controls are active at Cloudflare edge and verified in production.
+6. Traceability from Binder1 requirement families to code paths and tests remains current.
 
-## Of the six Definition-of-Done items, not yet 100% complete today
-- **Not yet 100% complete:** 1, 2, 3, 4, and 5.
-- **Closest to complete:** 6 (traceability is present, but still depends on unresolved gaps above for full release-gate confidence).
+## Dependency recommendation
+
+No additional runtime dependencies are required to satisfy this use-case now. Keep the current dependency set and prioritize protocol test-depth and operational evidence over adding crates.
+

@@ -1,9 +1,14 @@
+const FORWARDED_PATH_PREFIXES = ['/ews', '/microsoft-server-activesync'];
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
 
-    // Typed gateway API used by Rust storage client
+    if (isForwardedPath(path)) {
+      return handleGatewayForward(request, env, ctx);
+    }
+
     if (path === '/api/set_sync_key') return handleSetSyncKey(request, env);
     if (path === '/api/upsert_item_map') return handleUpsertItemMap(request, env);
     if (path === '/api/delete_item_by_server_id') return handleDeleteItemByServerId(request, env);
@@ -15,12 +20,10 @@ export default {
     if (path === '/api/set_ews_sync_state') return handleSetEwsSyncState(request, env);
     if (path === '/api/get_ews_item_by_id') return handleGetEwsItemById(url, request, env);
 
-    // Generic SQL API (admin/debug)
     if (path.startsWith('/api/')) {
       return handleApiRequest(request, env);
     }
 
-    // MS-OXDISCO / MS-OXWCONFIG-style autodiscover endpoints.
     if (
       path.includes('/autodiscover/') ||
       path.endsWith('/autodiscover.xml') ||
@@ -28,7 +31,7 @@ export default {
       path.includes('/autodiscover.json')
     ) {
       if (path.includes('.json')) {
-        return handleAutodiscoverJson(url, env);
+        return handleAutodiscoverJson(env);
       }
       if (path.endsWith('.svc')) {
         return handleAutodiscoverSoap(request, env);
@@ -40,11 +43,23 @@ export default {
   }
 };
 
+function isForwardedPath(path) {
+  return FORWARDED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 function isAuthorized(request, env) {
   const bearer = request.headers.get('Authorization');
   const xSecret = request.headers.get('x-gateway-secret');
   const expectedBearer = `Bearer ${env.GATEWAY_SECRET}`;
-  return bearer === expectedBearer || xSecret === env.GATEWAY_SECRET;
+  return subtleEqual(bearer ?? '', expectedBearer ?? '') || subtleEqual(xSecret ?? '', env.GATEWAY_SECRET ?? '');
+}
+
+function subtleEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i += 1) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return mismatch === 0;
 }
 
 async function readJson(request) {
@@ -54,7 +69,6 @@ async function readJson(request) {
     throw new Error('Invalid JSON');
   }
 }
-
 
 async function checkIdempotency(request, env, routeName) {
   const key = request.headers.get('Idempotency-Key');
@@ -67,6 +81,67 @@ async function checkIdempotency(request, env, routeName) {
     `)
     .bind(key, routeName)
     .run();
+}
+
+async function handleGatewayForward(request, env, ctx) {
+  if (!env.ORIGIN_BASE_URL) {
+    return new Response('Worker misconfigured: ORIGIN_BASE_URL is required', { status: 500 });
+  }
+
+  const rateLimitResult = await enforceRateLimit(request, env, ctx);
+  if (!rateLimitResult.allowed) {
+    return new Response('Too Many Requests', {
+      status: 429,
+      headers: {
+        'Retry-After': String(rateLimitResult.retryAfterSec),
+        'Cache-Control': 'private, no-store'
+      }
+    });
+  }
+
+  const incoming = new URL(request.url);
+  const upstream = new URL(incoming.pathname + incoming.search, env.ORIGIN_BASE_URL);
+  const forwardedHeaders = new Headers(request.headers);
+  forwardedHeaders.set('X-Forwarded-Proto', 'https');
+  forwardedHeaders.set('X-Forwarded-Host', incoming.host);
+  forwardedHeaders.set('X-Forwarded-For', request.headers.get('CF-Connecting-IP') || '');
+
+  const upstreamRequest = new Request(upstream.toString(), {
+    method: request.method,
+    headers: forwardedHeaders,
+    body: request.body,
+    redirect: 'manual'
+  });
+
+  return fetch(upstreamRequest);
+}
+
+async function enforceRateLimit(request, env, ctx) {
+  const enabled = String(env.RATE_LIMIT_ENABLED || 'true').toLowerCase() === 'true';
+  if (!enabled) return { allowed: true, retryAfterSec: 0 };
+  if (!env.RATE_LIMIT_KV) return { allowed: true, retryAfterSec: 0 };
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const path = new URL(request.url).pathname.toLowerCase();
+  const key = `rl:${ip}:${path}`;
+
+  const max = Math.max(1, parseInt(env.RATE_LIMIT_MAX || '120', 10));
+  const windowSec = Math.max(10, parseInt(env.RATE_LIMIT_WINDOW_SEC || '60', 10));
+  const now = Math.floor(Date.now() / 1000);
+
+  const currentRaw = await env.RATE_LIMIT_KV.get(key);
+  const current = currentRaw ? JSON.parse(currentRaw) : { count: 0, resetAt: now + windowSec };
+  if (now >= current.resetAt) {
+    current.count = 0;
+    current.resetAt = now + windowSec;
+  }
+
+  current.count += 1;
+  const ttl = Math.max(1, current.resetAt - now);
+  ctx.waitUntil(env.RATE_LIMIT_KV.put(key, JSON.stringify(current), { expirationTtl: ttl }));
+
+  const allowed = current.count <= max;
+  return { allowed, retryAfterSec: Math.max(1, current.resetAt - now) };
 }
 
 async function handleSetSyncKey(request, env) {
@@ -196,7 +271,7 @@ async function handleApiRequest(request, env) {
   }
 }
 
-async function handleAutodiscoverJson(url, env) {
+async function handleAutodiscoverJson(env) {
   const domain = env.GATEWAY_HOST;
   if (!domain) return new Response('Config Error', { status: 500 });
 
@@ -340,7 +415,6 @@ function escapeXml(unsafe = '') {
   });
 }
 
-
 async function handleSetProvisionPolicy(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleSetProvisionPolicy');
@@ -388,7 +462,6 @@ async function handleGetProvisionPolicy(url, request, env) {
   const row = (result.results || [])[0] || null;
   return Response.json(row);
 }
-
 
 async function handleListEwsItems(url, request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
@@ -457,7 +530,6 @@ async function handleSetEwsSyncState(request, env) {
 
   return Response.json({ success: true });
 }
-
 
 async function handleGetEwsItemById(url, request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
