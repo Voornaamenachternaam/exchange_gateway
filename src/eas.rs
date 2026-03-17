@@ -707,4 +707,96 @@ mod tests {
         let xml = r#"<GetItemEstimate xmlns=\"GetItemEstimate:\"></GetItemEstimate>"#;
         assert!(validate_payload("GetItemEstimate", xml).is_err());
     }
+
+    #[test]
+    fn command_grammar_matrix_positive_cases() {
+        let cases = [
+            (
+                "Sync",
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class></Collection></Collections></Sync>"#,
+            ),
+            (
+                "FolderSync",
+                r#"<FolderSync xmlns="FolderHierarchy:"><SyncKey>1</SyncKey></FolderSync>"#,
+            ),
+            (
+                "Provision",
+                r#"<Provision xmlns="Provision:"><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType></Policy></Policies></Provision>"#,
+            ),
+            (
+                "Settings",
+                r#"<Settings xmlns="Settings:"><UserInformation><Get/></UserInformation></Settings>"#,
+            ),
+            (
+                "ItemOperations",
+                r#"<ItemOperations xmlns="ItemOperations:"><Fetch/></ItemOperations>"#,
+            ),
+            (
+                "Search",
+                r#"<Search xmlns="Search:"><Name>Mailbox</Name><Query>x</Query></Search>"#,
+            ),
+            (
+                "MeetingResponse",
+                r#"<MeetingResponse xmlns="MeetingResponse:"><Request><UserResponse>1</UserResponse></Request></MeetingResponse>"#,
+            ),
+            (
+                "ResolveRecipients",
+                r#"<ResolveRecipients xmlns="ResolveRecipients:"><To>a@example.com</To></ResolveRecipients>"#,
+            ),
+            (
+                "ValidateCert",
+                r#"<ValidateCert xmlns="ValidateCert:"><Certificates/></ValidateCert>"#,
+            ),
+            (
+                "GetItemEstimate",
+                r#"<GetItemEstimate xmlns="GetItemEstimate:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey></Collection></Collections></GetItemEstimate>"#,
+            ),
+            (
+                "MoveItems",
+                r#"<MoveItems xmlns="Move:"><Move><SrcMsgId>1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>3</DstFldId></Move></MoveItems>"#,
+            ),
+            (
+                "Ping",
+                r#"<Ping xmlns="Ping:"><HeartbeatInterval>60</HeartbeatInterval><Folders/></Ping>"#,
+            ),
+        ];
+
+        for (cmd, xml) in cases {
+            assert!(
+                validate_payload(cmd, xml).is_ok(),
+                "{} should validate",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn command_grammar_matrix_negative_namespace() {
+        let cases = [
+            (
+                "FolderSync",
+                r#"<FolderSync xmlns="AirSync:"><SyncKey>1</SyncKey></FolderSync>"#,
+            ),
+            (
+                "Provision",
+                r#"<Provision xmlns="AirSync:"><Policies/></Provision>"#,
+            ),
+            (
+                "Settings",
+                r#"<Settings xmlns="AirSync:"><UserInformation/></Settings>"#,
+            ),
+            (
+                "MoveItems",
+                r#"<MoveItems xmlns="ItemOperations:"><Move/></MoveItems>"#,
+            ),
+        ];
+
+        for (cmd, xml) in cases {
+            assert!(
+                validate_payload(cmd, xml).is_err(),
+                "{} wrong namespace should fail",
+                cmd
+            );
+        }
+    }
 }

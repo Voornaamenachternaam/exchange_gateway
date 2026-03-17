@@ -1072,6 +1072,57 @@ mod tests {
         let xml = r#"<s:Envelope><s:Body><m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemIds /></m:DeleteItem></s:Body></s:Envelope>"#;
         assert!(validate_schema(&EwsAction::DeleteItem, xml).is_ok());
     }
+
+    #[test]
+    fn detects_extended_actions_matrix() {
+        let cases = [
+            (
+                r#"<s:Envelope><s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#,
+                EwsAction::CreateItem,
+            ),
+            (
+                r#"<s:Envelope><s:Body><m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#,
+                EwsAction::UpdateItem,
+            ),
+            (
+                r#"<s:Envelope><s:Body><m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#,
+                EwsAction::DeleteItem,
+            ),
+            (
+                r#"<s:Envelope><s:Body><m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#,
+                EwsAction::ResolveNames,
+            ),
+        ];
+        for (xml, expected) in cases {
+            assert_eq!(detect_action(xml), Some(expected));
+        }
+    }
+
+    #[test]
+    fn validates_schema_matrix_for_extended_actions() {
+        let ok_cases = [
+            (
+                EwsAction::CreateItem,
+                r#"<s:Envelope><s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:SavedItemFolderId/><m:Items/></m:CreateItem></s:Body></s:Envelope>"#,
+            ),
+            (
+                EwsAction::UpdateItem,
+                r#"<s:Envelope><s:Body><m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemChanges/></m:UpdateItem></s:Body></s:Envelope>"#,
+            ),
+            (
+                EwsAction::DeleteItem,
+                r#"<s:Envelope><s:Body><m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemIds/></m:DeleteItem></s:Body></s:Envelope>"#,
+            ),
+            (
+                EwsAction::ResolveNames,
+                r#"<s:Envelope><s:Body><m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:UnresolvedEntry>a@example.com</m:UnresolvedEntry></m:ResolveNames></s:Body></s:Envelope>"#,
+            ),
+        ];
+
+        for (action, xml) in ok_cases {
+            assert!(validate_schema(&action, xml).is_ok());
+        }
+    }
     #[test]
     fn operation_error_uses_response_code() {
         let resp = operation_error_response(
