@@ -106,14 +106,16 @@ async function handleGatewayForward(request, env, ctx) {
   forwardedHeaders.set('X-Forwarded-Host', incoming.host);
   forwardedHeaders.set('X-Forwarded-For', request.headers.get('CF-Connecting-IP') || '');
 
+  const method = (request.method || 'GET').toUpperCase();
   const upstreamRequest = new Request(upstream.toString(), {
-    method: request.method,
+    method,
     headers: forwardedHeaders,
-    body: request.body,
+    body: method === 'GET' || method === 'HEAD' ? undefined : request.body,
     redirect: 'manual'
   });
 
-  return fetch(upstreamRequest);
+  const upstreamResponse = await fetch(upstreamRequest);
+  return withCommonSecurityHeaders(upstreamResponse);
 }
 
 async function enforceRateLimit(request, env, ctx) {
@@ -125,12 +127,19 @@ async function enforceRateLimit(request, env, ctx) {
   const path = new URL(request.url).pathname.toLowerCase();
   const key = `rl:${ip}:${path}`;
 
-  const max = Math.max(1, parseInt(env.RATE_LIMIT_MAX || '120', 10));
-  const windowSec = Math.max(10, parseInt(env.RATE_LIMIT_WINDOW_SEC || '60', 10));
+  const maxRaw = Number.parseInt(env.RATE_LIMIT_MAX || '120', 10);
+  const windowRaw = Number.parseInt(env.RATE_LIMIT_WINDOW_SEC || '60', 10);
+  const max = Math.max(1, Number.isFinite(maxRaw) ? maxRaw : 120);
+  const windowSec = Math.max(10, Number.isFinite(windowRaw) ? windowRaw : 60);
   const now = Math.floor(Date.now() / 1000);
 
   const currentRaw = await env.RATE_LIMIT_KV.get(key);
-  const current = currentRaw ? JSON.parse(currentRaw) : { count: 0, resetAt: now + windowSec };
+  let current;
+  try {
+    current = currentRaw ? JSON.parse(currentRaw) : { count: 0, resetAt: now + windowSec };
+  } catch {
+    current = { count: 0, resetAt: now + windowSec };
+  }
   if (now >= current.resetAt) {
     current.count = 0;
     current.resetAt = now + windowSec;
@@ -144,6 +153,18 @@ async function enforceRateLimit(request, env, ctx) {
   return { allowed, retryAfterSec: Math.max(1, current.resetAt - now) };
 }
 
+
+function withCommonSecurityHeaders(response) {
+  const headers = new Headers(response.headers);
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('Cache-Control', headers.get('Cache-Control') || 'private, no-store');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
 async function handleSetSyncKey(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleSetSyncKey');
