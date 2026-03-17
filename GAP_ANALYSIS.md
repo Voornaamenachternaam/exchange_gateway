@@ -2,54 +2,52 @@
 
 ## Protocol source of truth
 
-All protocol assertions in this document are scoped to `Binder1.txt` only.
-
-## Evaluated implementation set
-
-- Rust gateway: `src/main.rs`, `src/eas.rs`, `src/ews.rs`, `src/sync.rs`, `src/storage.rs`.
-- Cloudflare worker and persistence edge: `worker/index.js`, `d1_schema.sql`.
-- Tests and fixtures: `tests/protocol_fixtures.rs` and unit tests in `src/*`.
+All protocol conclusions below are scoped to `Binder1.txt` only.
 
 ## Definition of Done status (specific use-case)
 
 1. **Native account setup in Outlook Windows 11 + Android 15 via autodiscover/basic auth**
    - **Implemented:** YES
-   - Evidence: Worker autodiscover JSON/XML/SOAP responses + basic-auth EWS/EAS endpoints in gateway.
 
 2. **Calendar create/update/delete/sync/meeting-response convergence for implemented profile**
    - **Implemented:** YES
-   - Evidence: EAS command handling and EWS calendar operation handling in gateway + protocol fixtures/unit tests.
 
 3. **Worker + D1 + tunnel + gateway deployment profile documented and endpoint-verifiable**
    - **Implemented:** YES
-   - Evidence: explicit Cloudflare deployment profile and worker forwarding/rate-limit paths.
 
 4. **Sync/provision/item mapping consistency across retries/restarts**
    - **Implemented:** YES
-   - Evidence: D1-backed sync/provision/item mapping persistence and idempotent typed write API behavior.
 
 5. **TLS termination + request-shaping controls active and verified in production runtime**
-   - **Implemented:** NO (repository cannot itself prove your live production runtime state)
-   - Evidence gap: production verification artifacts from your deployed environment are not stored in this repo.
+   - **Implemented:** NO (requires live deployment evidence, not repository-only evidence)
 
 6. **Binder1 family traceability to code/tests remains current**
    - **Implemented:** YES
-   - Evidence: protocol-family oriented implementation/tests and this updated gap document scoped to Binder1.
 
-## Result against requested target
+### DoD implementation summary
 
-- Implemented DoD items: **5 of 6** (items **1, 2, 3, 4, 6**).
-- Not fully implemented in-repo: **1 of 6** (item **5**, because production-runtime proof is environment-specific).
+- **Implemented:** items **1, 2, 3, 4, 6** (5 of 6)
+- **Not fully implemented in-repo:** item **5**
 
-## Remaining up-to-date gaps
+## Up-to-date remaining gaps
 
-1. **Production-runtime evidence gap (DoD item 5):**
-   - Missing repository-contained proof bundle from your live Cloudflare + tunnel + host deployment.
+1. Production runtime evidence bundle for item 5 is not yet present as repeatable artifacts in this repository.
+2. Full non-calendar Exchange parity from Binder1 remains intentionally out of scope for this calendar-focused deployment.
 
-2. **Out-of-scope parity gap beyond calendar use-case:**
-   - Binder1 contains broader Exchange families/branches not required for this calendar-only target profile.
+## xsd-parser dependency recommendation
 
-## Dependency recommendation
+### Recommendation
 
-- **No new mandatory runtime dependencies are recommended** for this specific calendar-focused use-case at this time.
-- Priority should be on environment validation evidence for DoD item 5 rather than dependency expansion.
+Do **not** integrate `xsd-parser` into the runtime path for this use-case.
+
+### Why
+
+1. Your use-case is calendar-focused EAS/EWS interoperability, not full Exchange family parity.
+2. `xsd-parser` does not by itself provide a complete production-grade runtime conformance gate for all Binder1 branches and Outlook behavior permutations.
+3. It would increase dependency and maintenance surface without closing the highest-priority open gap (live production verification evidence for DoD item 5).
+4. Current gateway validation + operation-scoped checks are aligned to the implemented profile, and improvement priority should remain test depth and deployment evidence.
+
+### Decision applied in repository
+
+- Removed optional `xsd-parser` dependency and the unused `xsd-validation` feature from `Cargo.toml`.
+
