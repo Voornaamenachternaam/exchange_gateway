@@ -59,18 +59,22 @@ function isForwardedPath(path) {
 }
 
 function isAuthorized(request, env) {
+  if (!env.GATEWAY_SECRET) {
+    return false;
+  }
   const bearer = request.headers.get('Authorization');
   const xSecret = request.headers.get('x-gateway-secret');
   const expectedBearer = `Bearer ${env.GATEWAY_SECRET}`;
-  return subtleEqual(bearer ?? '', expectedBearer ?? '') || subtleEqual(xSecret ?? '', env.GATEWAY_SECRET ?? '');
+  return subtleEqual(bearer ?? '', expectedBearer) || subtleEqual(xSecret ?? '', env.GATEWAY_SECRET);
 }
 
 function subtleEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  if (a.length !== b.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < a.length; i += 1) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return mismatch === 0;
+  const encoder = new TextEncoder();
+  const aData = encoder.encode(a);
+  const bData = encoder.encode(b);
+  if (aData.byteLength !== bData.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(aData, bData);
 }
 
 async function readJson(request) {
@@ -112,7 +116,7 @@ async function handleGatewayForward(request, env, ctx) {
   }
 
   const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
-  const maxForwardBodyBytes = Math.max(1024, Number.parseInt(env.MAX_FORWARD_BODY_BYTES || `${DEFAULT_MAX_BODY_BYTES}`, 10) || DEFAULT_MAX_BODY_BYTES);
+  const maxForwardBodyBytes = Math.max(1024, Number.parseInt(env.MAX_FORWARD_BODY_BYTES, 10) ?? DEFAULT_MAX_BODY_BYTES);
   if (Number.isFinite(contentLength) && contentLength > maxForwardBodyBytes) {
     return new Response('Payload too large', { status: 413 });
   }
@@ -145,14 +149,19 @@ async function handleGatewayForward(request, env, ctx) {
   try {
     const upstreamResponse = await fetch(upstreamRequest);
     return withCommonSecurityHeaders(upstreamResponse);
-  } catch {
+  } catch (e) {
+    console.error('Upstream fetch failed:', e);
     return new Response('Bad Gateway', { status: 502, headers: { 'Cache-Control': 'private, no-store' } });
   }
 }
 
 function sanitizeForwardHeaders(inputHeaders) {
   const headers = new Headers(inputHeaders);
-  for (const h of HOP_BY_HOP_HEADERS) {
+  const connectionHeader = headers.get('connection');
+  const connectionOptions = connectionHeader
+    ? connectionHeader.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean)
+    : [];
+  for (const h of [...HOP_BY_HOP_HEADERS, ...connectionOptions]) {
     headers.delete(h);
   }
   return headers;
@@ -174,7 +183,8 @@ async function enforceRateLimit(request, env, ctx) {
 
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   const path = new URL(request.url).pathname.toLowerCase();
-  const key = `rl:${ip}:${path}`;
+  const service = FORWARDED_PATH_PREFIXES.find((prefix) => path.startsWith(prefix)) ?? 'other';
+  const key = `rl:${ip}:${service}`;
 
   const maxRaw = Number.parseInt(env.RATE_LIMIT_MAX || '120', 10);
   const windowRaw = Number.parseInt(env.RATE_LIMIT_WINDOW_SEC || '60', 10);
@@ -316,7 +326,7 @@ async function handleApiRequest(request, env) {
   }
 
   const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
-  const maxBodyBytes = Math.max(1024, Number.parseInt(env.MAX_API_BODY_BYTES || `${DEFAULT_MAX_BODY_BYTES}`, 10) || DEFAULT_MAX_BODY_BYTES);
+  const maxBodyBytes = Math.max(1024, Number.parseInt(env.MAX_API_BODY_BYTES, 10) ?? DEFAULT_MAX_BODY_BYTES);
   if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
     return new Response('Payload too large', { status: 413 });
   }
