@@ -116,7 +116,7 @@ async function handleGatewayForward(request, env, ctx) {
   }
 
   const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
-  const maxForwardBodyBytes = Math.max(1024, Number.parseInt(env.MAX_FORWARD_BODY_BYTES, 10) ?? DEFAULT_MAX_BODY_BYTES);
+  const maxForwardBodyBytes = Math.max(1024, Number.parseInt(env.MAX_FORWARD_BODY_BYTES, 10) || DEFAULT_MAX_BODY_BYTES);
   if (Number.isFinite(contentLength) && contentLength > maxForwardBodyBytes) {
     return new Response('Payload too large', { status: 413 });
   }
