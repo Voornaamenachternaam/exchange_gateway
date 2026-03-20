@@ -16,7 +16,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
 
-    if (isForwardedPath(path)) {
+    if (FORWARDED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))) {
       return handleGatewayForward(request, env, ctx);
     }
 
