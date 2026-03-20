@@ -61,7 +61,7 @@ function isAuthorized(request, env) {
   const bearer = request.headers.get('Authorization');
   const xSecret = request.headers.get('x-gateway-secret');
   const expectedBearer = `Bearer ${env.GATEWAY_SECRET}`;
-  return subtleEqual(bearer ?? '', expectedBearer) || subtleEqual(xSecret ?? '', env.GATEWAY_SECRET);
+  return !!(subtleEqual(bearer ?? '', expectedBearer) | subtleEqual(xSecret ?? '', env.GATEWAY_SECRET));
 }
 
 function subtleEqual(a, b) {
