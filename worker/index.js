@@ -326,7 +326,7 @@ async function handleApiRequest(request, env) {
   }
 
   const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
-  const maxBodyBytes = Math.max(1024, Number.parseInt(env.MAX_API_BODY_BYTES, 10) ?? DEFAULT_MAX_BODY_BYTES);
+  const maxBodyBytes = Math.max(1024, Number.parseInt(env.MAX_API_BODY_BYTES, 10) || DEFAULT_MAX_BODY_BYTES);
   if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
     return new Response('Payload too large', { status: 413 });
   }
