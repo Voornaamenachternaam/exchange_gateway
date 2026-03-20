@@ -54,15 +54,14 @@ export default {
   }
 };
 
-function isForwardedPath(path) {
-  return FORWARDED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
-}
-
 function isAuthorized(request, env) {
+  if (!env.GATEWAY_SECRET) {
+    return false;
+  }
   const bearer = request.headers.get('Authorization');
   const xSecret = request.headers.get('x-gateway-secret');
   const expectedBearer = `Bearer ${env.GATEWAY_SECRET}`;
-  return subtleEqual(bearer ?? '', expectedBearer ?? '') || subtleEqual(xSecret ?? '', env.GATEWAY_SECRET ?? '');
+  return subtleEqual(bearer ?? '', expectedBearer) || subtleEqual(xSecret ?? '', env.GATEWAY_SECRET);
 }
 
 function subtleEqual(a, b) {
