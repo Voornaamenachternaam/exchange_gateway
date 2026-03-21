@@ -65,9 +65,18 @@ lazy_static::lazy_static! {
         m.insert((4, 0x09), "Calendar:Email");
         m.insert((4, 0x0A), "Calendar:Name");
         m.insert((4, 0x0D), "Calendar:BusyStatus");
+        m.insert((4, 0x0E), "Calendar:Categories");
+        m.insert((4, 0x0F), "Calendar:Category");
         m.insert((4, 0x11), "Calendar:DtStamp");
         m.insert((4, 0x12), "Calendar:EndTime");
+        m.insert((4, 0x13), "Calendar:Exception");
+        m.insert((4, 0x14), "Calendar:Exceptions");
+        m.insert((4, 0x15), "Calendar:Deleted");
+        m.insert((4, 0x16), "Calendar:ExceptionStartTime");
         m.insert((4, 0x17), "Calendar:Location");
+        m.insert((4, 0x18), "Calendar:MeetingStatus");
+        m.insert((4, 0x19), "Calendar:OrganizerEmail");
+        m.insert((4, 0x1A), "Calendar:OrganizerName");
         m.insert((4, 0x1B), "Calendar:Recurrence");
         m.insert((4, 0x1C), "Calendar:Type");
         m.insert((4, 0x1D), "Calendar:Until");
@@ -82,7 +91,18 @@ lazy_static::lazy_static! {
         m.insert((4, 0x26), "Calendar:Subject");
         m.insert((4, 0x27), "Calendar:StartTime");
         m.insert((4, 0x28), "Calendar:UID");
-
+        m.insert((4, 0x29), "Calendar:AttendeeStatus");
+        m.insert((4, 0x2A), "Calendar:AttendeeType");
+        m.insert((4, 0x33), "Calendar:DisallowNewTimeProposal");
+        m.insert((4, 0x34), "Calendar:ResponseRequested");
+        m.insert((4, 0x35), "Calendar:AppointmentReplyTime");
+        m.insert((4, 0x36), "Calendar:ResponseType");
+        m.insert((4, 0x37), "Calendar:CalendarType");
+        m.insert((4, 0x38), "Calendar:IsLeapMonth");
+        m.insert((4, 0x39), "Calendar:FirstDayOfWeek");
+        m.insert((4, 0x3A), "Calendar:OnlineMeetingConfLink");
+        m.insert((4, 0x3B), "Calendar:OnlineMeetingExternalLink");
+        m.insert((4, 0x3C), "Calendar:ClientUid");
 
         // Code Page 5: Move
         m.insert((5, 0x05), "MoveItems");

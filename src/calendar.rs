@@ -5,7 +5,7 @@ use quick_xml::events::Event;
 use std::borrow::Cow;
 use uuid::Uuid;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CalendarItem {
     pub uid: String,
     pub subject: String,
@@ -14,16 +14,46 @@ pub struct CalendarItem {
     pub start: chrono::DateTime<Utc>,
     pub end: chrono::DateTime<Utc>,
     pub all_day: bool,
+    pub dtstamp: Option<chrono::DateTime<Utc>>,
+    pub timezone: Option<String>,
     pub rrule: Option<String>,
+    pub exdates: Vec<chrono::DateTime<Utc>>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
     pub attendees: Vec<Attendee>,
+    pub categories: Vec<String>,
+    pub busy_status: Option<u8>,
+    pub sensitivity: Option<u8>,
+    pub reminder: Option<i32>,
     pub response_requested: Option<bool>,
+    pub disallow_new_time_proposal: Option<bool>,
+    pub appointment_reply_time: Option<chrono::DateTime<Utc>>,
     pub meeting_status: Option<u8>,
     pub response_type: Option<u8>,
+    pub online_meeting_conf_link: Option<String>,
+    pub online_meeting_external_link: Option<String>,
+    pub client_uid: Option<String>,
+    pub exceptions: Vec<CalendarException>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
+pub struct CalendarException {
+    pub deleted: bool,
+    pub exception_start: chrono::DateTime<Utc>,
+    pub subject: Option<String>,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub start: Option<chrono::DateTime<Utc>>,
+    pub end: Option<chrono::DateTime<Utc>>,
+    pub all_day: Option<bool>,
+    pub busy_status: Option<u8>,
+    pub sensitivity: Option<u8>,
+    pub reminder: Option<i32>,
+    pub attendees: Option<Vec<Attendee>>,
+    pub categories: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Attendee {
     pub name: Option<String>,
     pub email: String,
@@ -41,13 +71,26 @@ pub struct CalendarPatch {
     pub start: Option<chrono::DateTime<Utc>>,
     pub end: Option<chrono::DateTime<Utc>>,
     pub all_day: Option<bool>,
+    pub dtstamp: Option<chrono::DateTime<Utc>>,
+    pub timezone: Option<String>,
     pub rrule: Option<String>,
+    pub exdates: Option<Vec<chrono::DateTime<Utc>>>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
     pub attendees: Option<Vec<Attendee>>,
+    pub categories: Option<Vec<String>>,
+    pub busy_status: Option<u8>,
+    pub sensitivity: Option<u8>,
+    pub reminder: Option<i32>,
     pub response_requested: Option<bool>,
+    pub disallow_new_time_proposal: Option<bool>,
+    pub appointment_reply_time: Option<chrono::DateTime<Utc>>,
     pub meeting_status: Option<u8>,
     pub response_type: Option<u8>,
+    pub online_meeting_conf_link: Option<String>,
+    pub online_meeting_external_link: Option<String>,
+    pub client_uid: Option<String>,
+    pub exceptions: Option<Vec<CalendarException>>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,15 +125,29 @@ struct EasBuilder {
     start: Option<chrono::DateTime<Utc>>,
     end: Option<chrono::DateTime<Utc>>,
     all_day: Option<bool>,
+    dtstamp: Option<chrono::DateTime<Utc>>,
+    timezone: Option<String>,
     uid: Option<String>,
     recurrence: EasRecurrence,
+    exdates: Vec<chrono::DateTime<Utc>>,
     organizer_name: Option<String>,
     organizer_email: Option<String>,
     attendees: Vec<Attendee>,
     current_attendee: Option<Attendee>,
+    categories: Vec<String>,
+    busy_status: Option<u8>,
+    sensitivity: Option<u8>,
+    reminder: Option<i32>,
     response_requested: Option<bool>,
+    disallow_new_time_proposal: Option<bool>,
+    appointment_reply_time: Option<chrono::DateTime<Utc>>,
     meeting_status: Option<u8>,
     response_type: Option<u8>,
+    online_meeting_conf_link: Option<String>,
+    online_meeting_external_link: Option<String>,
+    client_uid: Option<String>,
+    exceptions: Vec<CalendarException>,
+    current_exception: Option<CalendarException>,
 }
 
 #[derive(Default)]
@@ -103,6 +160,7 @@ struct EasRecurrence {
     month_of_year: Option<u32>,
     until: Option<String>,
     occurrences: Option<u32>,
+    first_day_of_week: Option<u32>,
 }
 
 impl EasBuilder {
@@ -117,13 +175,26 @@ impl EasBuilder {
             start,
             end,
             all_day: self.all_day.unwrap_or(false),
+            dtstamp: self.dtstamp,
+            timezone: self.timezone,
             rrule: self.recurrence.to_rrule(),
+            exdates: self.exdates,
             organizer_name: self.organizer_name,
             organizer_email: self.organizer_email,
             attendees: self.attendees,
+            categories: self.categories,
+            busy_status: self.busy_status,
+            sensitivity: self.sensitivity,
+            reminder: self.reminder,
             response_requested: self.response_requested,
+            disallow_new_time_proposal: self.disallow_new_time_proposal,
+            appointment_reply_time: self.appointment_reply_time,
             meeting_status: self.meeting_status,
             response_type: self.response_type,
+            online_meeting_conf_link: self.online_meeting_conf_link,
+            online_meeting_external_link: self.online_meeting_external_link,
+            client_uid: self.client_uid,
+            exceptions: self.exceptions,
         })
     }
 
@@ -136,17 +207,26 @@ impl EasBuilder {
             start: self.start,
             end: self.end,
             all_day: self.all_day,
+            dtstamp: self.dtstamp,
+            timezone: self.timezone,
             rrule: self.recurrence.to_rrule(),
+            exdates: (!self.exdates.is_empty()).then_some(self.exdates),
             organizer_name: self.organizer_name,
             organizer_email: self.organizer_email,
-            attendees: if self.attendees.is_empty() {
-                None
-            } else {
-                Some(self.attendees)
-            },
+            attendees: (!self.attendees.is_empty()).then_some(self.attendees),
+            categories: (!self.categories.is_empty()).then_some(self.categories),
+            busy_status: self.busy_status,
+            sensitivity: self.sensitivity,
+            reminder: self.reminder,
             response_requested: self.response_requested,
+            disallow_new_time_proposal: self.disallow_new_time_proposal,
+            appointment_reply_time: self.appointment_reply_time,
             meeting_status: self.meeting_status,
             response_type: self.response_type,
+            online_meeting_conf_link: self.online_meeting_conf_link,
+            online_meeting_external_link: self.online_meeting_external_link,
+            client_uid: self.client_uid,
+            exceptions: (!self.exceptions.is_empty()).then_some(self.exceptions),
         }
     }
 }
@@ -190,7 +270,11 @@ impl EasRecurrence {
                     && (kind == 3 || kind == 6)
                     && week > 0
                 {
-                    parts.push(format!("BYDAY={}{}", week, byday[0]));
+                    let ordinal = match week {
+                        5 => -1,
+                        n => n as i32,
+                    };
+                    parts.push(format!("BYDAY={}{}", ordinal, byday[0]));
                 } else {
                     parts.push(format!("BYDAY={}", byday.join(",")));
                 }
@@ -213,6 +297,9 @@ impl EasRecurrence {
         }
         if let Some(count) = self.occurrences {
             parts.push(format!("COUNT={count}"));
+        }
+        if let Some(first_day) = self.first_day_of_week {
+            parts.push(format!("WKST={}", weekday_code_from_eas(first_day)));
         }
         Some(parts.join(";"))
     }
@@ -259,6 +346,28 @@ fn escape_ical_text(input: &str) -> String {
         .replace('\n', "\\n")
 }
 
+fn unescape_ical_text(input: &str) -> String {
+    let mut out = String::new();
+    let mut chars = input.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') | Some('N') => out.push('\n'),
+                Some('\\') => out.push('\\'),
+                Some(';') => out.push(';'),
+                Some(',') => out.push(','),
+                Some(next) => {
+                    out.push(next);
+                }
+                None => break,
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
     let mut properties = Vec::new();
     let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
@@ -275,109 +384,319 @@ pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
     properties
 }
 
-pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
-    let props = parse_ics_content(ics);
-    let mut subject = String::new();
-    let mut description = String::new();
-    let mut location = String::new();
-    let mut uid = String::new();
-    let mut start = None;
-    let mut end = None;
-    let mut all_day = false;
-    let mut rrule = None;
-    let mut organizer_name = None;
-    let mut organizer_email = None;
-    let mut attendees = Vec::new();
-    let mut response_requested = None;
-    let mut meeting_status = None;
-    let mut response_type = None;
+fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
+    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
+    let mut blocks = Vec::new();
+    let mut current = Vec::new();
+    let mut in_vevent = false;
 
-    for (key, value) in props {
-        if key.starts_with("SUMMARY") {
-            subject = value;
-        } else if key.starts_with("DESCRIPTION") {
-            description = value.replace("\\n", "\n");
-        } else if key.starts_with("LOCATION") {
-            location = value;
-        } else if key.starts_with("UID") {
-            uid = value;
-        } else if key.starts_with("DTSTART") {
-            start = parse_datetime(&value);
-            if !value.contains('T') {
-                all_day = true;
+    for line in unfolded.lines() {
+        match line.trim() {
+            "BEGIN:VEVENT" => {
+                in_vevent = true;
+                current = vec!["BEGIN:VEVENT".to_string()];
             }
-        } else if key.starts_with("DTEND") {
-            end = parse_datetime(&value);
-        } else if key.starts_with("RRULE") {
-            rrule = Some(value);
-        } else if key.starts_with("ORGANIZER") {
-            let (cn, email) = parse_ical_actor_line(&key, &value);
-            organizer_name = cn;
-            organizer_email = email;
-        } else if key.starts_with("ATTENDEE") {
-            let (name, email) = parse_ical_actor_line(&key, &value);
-            let partstat = parse_ical_param(&key, "PARTSTAT");
-            attendees.push(Attendee {
-                name,
-                email: email.unwrap_or_default(),
-                attendee_type: parse_ical_param(&key, "ROLE").map(|role| match role.as_str() {
-                    "REQ-PARTICIPANT" => 1,
-                    "OPT-PARTICIPANT" => 2,
-                    "NON-PARTICIPANT" => 3,
-                    _ => 1,
-                }),
-                attendee_status: partstat.as_deref().map(partstat_to_status),
-                partstat,
-            });
-        } else if key.starts_with("X-MS-RESPONSE-REQUESTED") {
-            response_requested = Some(value == "TRUE");
-        } else if key.starts_with("X-MS-MEETING-STATUS") {
-            meeting_status = value.parse().ok();
-        } else if key.starts_with("X-MS-RESPONSE-TYPE") {
-            response_type = value.parse().ok();
+            "END:VEVENT" if in_vevent => {
+                current.push("END:VEVENT".to_string());
+                blocks.push(current.clone());
+                current.clear();
+                in_vevent = false;
+            }
+            _ if in_vevent => current.push(line.to_string()),
+            _ => {}
         }
     }
 
-    Some(CalendarItem {
-        uid: if uid.is_empty() {
-            Uuid::new_v4().to_string()
-        } else {
-            uid
-        },
-        subject,
-        description,
-        location,
-        start: start?,
-        end: end?,
-        all_day,
-        rrule,
-        organizer_name,
-        organizer_email,
-        attendees,
-        response_requested,
-        meeting_status,
-        response_type,
-    })
+    blocks
+}
+
+fn parse_categories_value(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(unescape_ical_text)
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+fn format_ical_datetime(dt: &chrono::DateTime<Utc>, all_day: bool) -> String {
+    if all_day {
+        dt.format("%Y%m%d").to_string()
+    } else {
+        dt.format("%Y%m%dT%H%M%SZ").to_string()
+    }
+}
+
+fn parse_duration_minutes(trigger: &str) -> Option<i32> {
+    let negative = trigger.starts_with('-');
+    let value = trigger
+        .trim_start_matches('-')
+        .trim_start_matches('P')
+        .trim_start_matches('T');
+    if let Some(raw) = value.strip_suffix('M') {
+        let mins = raw.parse::<i32>().ok()?;
+        return Some(if negative { mins } else { -mins });
+    }
+    if let Some(raw) = value.strip_suffix('H') {
+        let hours = raw.parse::<i32>().ok()?;
+        return Some(if negative { hours * 60 } else { -(hours * 60) });
+    }
+    None
+}
+
+fn render_valarm(minutes_before_start: i32) -> Vec<String> {
+    let abs = minutes_before_start.abs();
+    let trigger = if abs % 60 == 0 {
+        format!("-PT{}H", abs / 60)
+    } else {
+        format!("-PT{}M", abs)
+    };
+    vec![
+        "BEGIN:VALARM".to_string(),
+        "ACTION:DISPLAY".to_string(),
+        "DESCRIPTION:Reminder".to_string(),
+        format!("TRIGGER:{trigger}"),
+        "END:VALARM".to_string(),
+    ]
+}
+
+fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
+    let mut fields = CalendarEventFields::default();
+    let mut in_valarm = false;
+
+    for line in lines {
+        if line == "BEGIN:VALARM" {
+            in_valarm = true;
+            continue;
+        }
+        if line == "END:VALARM" {
+            in_valarm = false;
+            continue;
+        }
+        if matches!(line.as_str(), "BEGIN:VEVENT" | "END:VEVENT") {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if in_valarm {
+            if key.starts_with("TRIGGER") {
+                fields.reminder = parse_duration_minutes(value);
+            }
+            continue;
+        }
+
+        match key {
+            k if k.starts_with("SUMMARY") => fields.subject = Some(unescape_ical_text(value)),
+            k if k.starts_with("DESCRIPTION") => {
+                fields.description = Some(unescape_ical_text(value));
+            }
+            k if k.starts_with("LOCATION") => fields.location = Some(unescape_ical_text(value)),
+            k if k.starts_with("UID") => fields.uid = Some(value.to_string()),
+            k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
+            k if k.starts_with("DTSTART") => {
+                fields.start = parse_datetime(value);
+                if !value.contains('T') {
+                    fields.all_day = Some(true);
+                }
+            }
+            k if k.starts_with("DTEND") => fields.end = parse_datetime(value),
+            k if k.starts_with("RECURRENCE-ID") => {
+                fields.recurrence_id = parse_datetime(value);
+                if !value.contains('T') {
+                    fields.all_day = Some(true);
+                }
+            }
+            k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
+            k if k.starts_with("EXDATE") => {
+                for ex in value.split(',') {
+                    if let Some(dt) = parse_datetime(ex) {
+                        fields.exdates.push(dt);
+                    }
+                }
+            }
+            k if k.starts_with("ORGANIZER") => {
+                let (cn, email) = parse_ical_actor_line(k, value);
+                fields.organizer_name = cn;
+                fields.organizer_email = email;
+            }
+            k if k.starts_with("ATTENDEE") => {
+                let (name, email) = parse_ical_actor_line(k, value);
+                let partstat = parse_ical_param(k, "PARTSTAT");
+                fields.attendees.push(Attendee {
+                    name,
+                    email: email.unwrap_or_default(),
+                    attendee_type: parse_ical_param(k, "ROLE").map(|role| match role.as_str() {
+                        "REQ-PARTICIPANT" => 1,
+                        "OPT-PARTICIPANT" => 2,
+                        "NON-PARTICIPANT" => 3,
+                        _ => 1,
+                    }),
+                    attendee_status: partstat.as_deref().map(partstat_to_status),
+                    partstat,
+                });
+            }
+            k if k.starts_with("CATEGORIES") => {
+                fields.categories.extend(parse_categories_value(value));
+            }
+            "CLASS" => fields.sensitivity = class_to_sensitivity(value),
+            "STATUS" if value.eq_ignore_ascii_case("CANCELLED") => fields.deleted = true,
+            "TRANSP" => {
+                fields.busy_status = Some(if value.eq_ignore_ascii_case("TRANSPARENT") {
+                    0
+                } else {
+                    2
+                });
+            }
+            "X-MICROSOFT-CDO-BUSYSTATUS" => fields.busy_status = value.parse().ok(),
+            "X-MICROSOFT-CDO-ALLDAYEVENT" => fields.all_day = Some(value == "TRUE"),
+            "X-MICROSOFT-CDO-REPLYTIME" | "X-MS-APPOINTMENT-REPLY-TIME" => {
+                fields.appointment_reply_time = parse_datetime(value)
+            }
+            "X-MS-OLK-CONFLINK" => fields.online_meeting_conf_link = Some(value.to_string()),
+            "X-MS-OLK-EXTERNALLINK" => {
+                fields.online_meeting_external_link = Some(value.to_string())
+            }
+            "X-MS-RESPONSE-REQUESTED" => fields.response_requested = Some(value == "TRUE"),
+            "X-MS-DISALLOW-COUNTER" => fields.disallow_new_time_proposal = Some(value == "TRUE"),
+            "X-MS-MEETING-STATUS" => fields.meeting_status = value.parse().ok(),
+            "X-MS-RESPONSE-TYPE" => fields.response_type = value.parse().ok(),
+            "X-MS-CLIENT-UID" => fields.client_uid = Some(value.to_string()),
+            "X-EAS-TIMEZONE" => fields.timezone = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
+    fields
+}
+
+#[derive(Default)]
+struct CalendarEventFields {
+    subject: Option<String>,
+    description: Option<String>,
+    location: Option<String>,
+    uid: Option<String>,
+    start: Option<chrono::DateTime<Utc>>,
+    end: Option<chrono::DateTime<Utc>>,
+    all_day: Option<bool>,
+    dtstamp: Option<chrono::DateTime<Utc>>,
+    recurrence_id: Option<chrono::DateTime<Utc>>,
+    rrule: Option<String>,
+    exdates: Vec<chrono::DateTime<Utc>>,
+    organizer_name: Option<String>,
+    organizer_email: Option<String>,
+    attendees: Vec<Attendee>,
+    categories: Vec<String>,
+    busy_status: Option<u8>,
+    sensitivity: Option<u8>,
+    reminder: Option<i32>,
+    response_requested: Option<bool>,
+    disallow_new_time_proposal: Option<bool>,
+    appointment_reply_time: Option<chrono::DateTime<Utc>>,
+    meeting_status: Option<u8>,
+    response_type: Option<u8>,
+    online_meeting_conf_link: Option<String>,
+    online_meeting_external_link: Option<String>,
+    client_uid: Option<String>,
+    timezone: Option<String>,
+    deleted: bool,
+}
+
+pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
+    let mut master: Option<CalendarItem> = None;
+    let mut derived_deleted = Vec::new();
+
+    for block in split_ical_blocks(ics) {
+        let fields = parse_event_lines(&block);
+        if let Some(recurrence_id) = fields.recurrence_id {
+            if let Some(item) = &mut master {
+                item.exceptions.push(CalendarException {
+                    deleted: fields.deleted,
+                    exception_start: recurrence_id,
+                    subject: fields.subject,
+                    description: fields.description,
+                    location: fields.location,
+                    start: fields.start,
+                    end: fields.end,
+                    all_day: fields.all_day,
+                    busy_status: fields.busy_status,
+                    sensitivity: fields.sensitivity,
+                    reminder: fields.reminder,
+                    attendees: (!fields.attendees.is_empty()).then_some(fields.attendees),
+                    categories: (!fields.categories.is_empty()).then_some(fields.categories),
+                });
+            }
+            continue;
+        }
+
+        let uid = fields.uid.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let mut item = CalendarItem {
+            uid,
+            subject: fields.subject.unwrap_or_default(),
+            description: fields.description.unwrap_or_default(),
+            location: fields.location.unwrap_or_default(),
+            start: fields.start?,
+            end: fields.end?,
+            all_day: fields.all_day.unwrap_or(false),
+            dtstamp: fields.dtstamp,
+            timezone: fields.timezone,
+            rrule: fields.rrule,
+            exdates: fields.exdates.clone(),
+            organizer_name: fields.organizer_name,
+            organizer_email: fields.organizer_email,
+            attendees: fields.attendees,
+            categories: fields.categories,
+            busy_status: fields.busy_status,
+            sensitivity: fields.sensitivity,
+            reminder: fields.reminder,
+            response_requested: fields.response_requested,
+            disallow_new_time_proposal: fields.disallow_new_time_proposal,
+            appointment_reply_time: fields.appointment_reply_time,
+            meeting_status: fields.meeting_status,
+            response_type: fields.response_type,
+            online_meeting_conf_link: fields.online_meeting_conf_link,
+            online_meeting_external_link: fields.online_meeting_external_link,
+            client_uid: fields.client_uid,
+            exceptions: Vec::new(),
+        };
+        derived_deleted.append(
+            &mut item
+                .exdates
+                .iter()
+                .copied()
+                .map(|dt| CalendarException {
+                    deleted: true,
+                    exception_start: dt,
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        master = Some(item);
+    }
+
+    let mut item = master?;
+    for deleted in derived_deleted {
+        if !item
+            .exceptions
+            .iter()
+            .any(|existing| existing.exception_start == deleted.exception_start)
+        {
+            item.exceptions.push(deleted);
+        }
+    }
+    item.exceptions.sort_by_key(|v| v.exception_start);
+    Some(item)
 }
 
 pub fn render_ics(item: &CalendarItem) -> String {
-    let dtstamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let dtstamp = item
+        .dtstamp
+        .unwrap_or_else(Utc::now)
+        .format("%Y%m%dT%H%M%SZ")
+        .to_string();
     let uid = if item.uid.is_empty() {
         Uuid::new_v4().to_string()
     } else {
         item.uid.clone()
-    };
-
-    let (dtstart, dtend) = if item.all_day {
-        (
-            item.start.format("%Y%m%d").to_string(),
-            item.end.format("%Y%m%d").to_string(),
-        )
-    } else {
-        (
-            item.start.format("%Y%m%dT%H%M%SZ").to_string(),
-            item.end.format("%Y%m%dT%H%M%SZ").to_string(),
-        )
     };
 
     let mut lines = vec![
@@ -388,8 +707,11 @@ pub fn render_ics(item: &CalendarItem) -> String {
         format!("UID:{uid}"),
         format!("DTSTAMP:{dtstamp}"),
         format!("SUMMARY:{}", escape_ical_text(&item.subject)),
-        format!("DTSTART:{dtstart}"),
-        format!("DTEND:{dtend}"),
+        format!(
+            "DTSTART:{}",
+            format_ical_datetime(&item.start, item.all_day)
+        ),
+        format!("DTEND:{}", format_ical_datetime(&item.end, item.all_day)),
     ];
     if !item.location.is_empty() {
         lines.push(format!("LOCATION:{}", escape_ical_text(&item.location)));
@@ -405,6 +727,23 @@ pub fn render_ics(item: &CalendarItem) -> String {
     {
         lines.push(format!("RRULE:{rrule}"));
     }
+    let deleted_exdates: Vec<_> = item
+        .exceptions
+        .iter()
+        .filter(|v| v.deleted)
+        .map(|v| format_ical_datetime(&v.exception_start, item.all_day))
+        .collect();
+    if !item.exdates.is_empty() || !deleted_exdates.is_empty() {
+        let mut exdates: Vec<String> = item
+            .exdates
+            .iter()
+            .map(|v| format_ical_datetime(v, item.all_day))
+            .collect();
+        exdates.extend(deleted_exdates);
+        exdates.sort();
+        exdates.dedup();
+        lines.push(format!("EXDATE:{}", exdates.join(",")));
+    }
     if let Some(email) = &item.organizer_email {
         let mut line = String::from("ORGANIZER");
         if let Some(name) = &item.organizer_name {
@@ -418,29 +757,47 @@ pub fn render_ics(item: &CalendarItem) -> String {
         if attendee.email.is_empty() {
             continue;
         }
-        let mut line = String::from("ATTENDEE");
-        if let Some(name) = &attendee.name {
-            line.push_str(&format!(";CN={}", escape_ical_text(name)));
-        }
-        if let Some(kind) = attendee.attendee_type {
-            let role = match kind {
-                2 => "OPT-PARTICIPANT",
-                3 => "NON-PARTICIPANT",
-                _ => "REQ-PARTICIPANT",
-            };
-            line.push_str(&format!(";ROLE={role}"));
-        }
-        if let Some(partstat) = &attendee.partstat {
-            line.push_str(&format!(";PARTSTAT={partstat}"));
-        }
-        line.push(':');
-        line.push_str(&normalize_mailto(&attendee.email));
-        lines.push(line);
+        lines.push(render_attendee_line(attendee));
+    }
+    if !item.categories.is_empty() {
+        lines.push(format!(
+            "CATEGORIES:{}",
+            item.categories
+                .iter()
+                .map(|v| escape_ical_text(v))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    if let Some(busy) = item.busy_status {
+        lines.push(format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
+        lines.push(format!(
+            "TRANSP:{}",
+            if busy == 0 { "TRANSPARENT" } else { "OPAQUE" }
+        ));
+    }
+    if let Some(sensitivity) = item.sensitivity {
+        lines.push(format!("CLASS:{}", sensitivity_to_class(sensitivity)));
+    }
+    if let Some(reminder) = item.reminder {
+        lines.extend(render_valarm(reminder));
     }
     if let Some(v) = item.response_requested {
         lines.push(format!(
             "X-MS-RESPONSE-REQUESTED:{}",
             if v { "TRUE" } else { "FALSE" }
+        ));
+    }
+    if let Some(v) = item.disallow_new_time_proposal {
+        lines.push(format!(
+            "X-MS-DISALLOW-COUNTER:{}",
+            if v { "TRUE" } else { "FALSE" }
+        ));
+    }
+    if let Some(v) = item.appointment_reply_time {
+        lines.push(format!(
+            "X-MS-APPOINTMENT-REPLY-TIME:{}",
+            v.format("%Y%m%dT%H%M%SZ")
         ));
     }
     if let Some(v) = item.meeting_status {
@@ -449,9 +806,114 @@ pub fn render_ics(item: &CalendarItem) -> String {
     if let Some(v) = item.response_type {
         lines.push(format!("X-MS-RESPONSE-TYPE:{v}"));
     }
+    if let Some(v) = &item.online_meeting_conf_link {
+        lines.push(format!("X-MS-OLK-CONFLINK:{}", escape_ical_text(v)));
+    }
+    if let Some(v) = &item.online_meeting_external_link {
+        lines.push(format!("X-MS-OLK-EXTERNALLINK:{}", escape_ical_text(v)));
+    }
+    if let Some(v) = &item.client_uid {
+        lines.push(format!("X-MS-CLIENT-UID:{}", escape_ical_text(v)));
+    }
+    if let Some(v) = &item.timezone {
+        lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
+    }
     lines.push("END:VEVENT".to_string());
+
+    for exception in item.exceptions.iter().filter(|v| !v.deleted) {
+        lines.push("BEGIN:VEVENT".to_string());
+        lines.push(format!("UID:{uid}"));
+        lines.push(format!("DTSTAMP:{dtstamp}"));
+        lines.push(format!(
+            "RECURRENCE-ID:{}",
+            format_ical_datetime(
+                &exception.exception_start,
+                exception.all_day.unwrap_or(item.all_day)
+            )
+        ));
+        lines.push(format!(
+            "DTSTART:{}",
+            format_ical_datetime(
+                exception
+                    .start
+                    .as_ref()
+                    .unwrap_or(&exception.exception_start),
+                exception.all_day.unwrap_or(item.all_day)
+            )
+        ));
+        lines.push(format!(
+            "DTEND:{}",
+            format_ical_datetime(
+                exception.end.as_ref().unwrap_or(&item.end),
+                exception.all_day.unwrap_or(item.all_day)
+            )
+        ));
+        lines.push(format!(
+            "SUMMARY:{}",
+            escape_ical_text(exception.subject.as_deref().unwrap_or(&item.subject))
+        ));
+        if let Some(location) = exception.location.as_deref().or(Some(&item.location))
+            && !location.is_empty()
+        {
+            lines.push(format!("LOCATION:{}", escape_ical_text(location)));
+        }
+        if let Some(description) = exception.description.as_deref().or(Some(&item.description))
+            && !description.is_empty()
+        {
+            lines.push(format!("DESCRIPTION:{}", escape_ical_text(description)));
+        }
+        if let Some(attendees) = &exception.attendees {
+            for attendee in attendees {
+                lines.push(render_attendee_line(attendee));
+            }
+        }
+        if let Some(categories) = &exception.categories
+            && !categories.is_empty()
+        {
+            lines.push(format!(
+                "CATEGORIES:{}",
+                categories
+                    .iter()
+                    .map(|v| escape_ical_text(v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        if let Some(busy) = exception.busy_status {
+            lines.push(format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
+        }
+        if let Some(sensitivity) = exception.sensitivity {
+            lines.push(format!("CLASS:{}", sensitivity_to_class(sensitivity)));
+        }
+        if let Some(reminder) = exception.reminder {
+            lines.extend(render_valarm(reminder));
+        }
+        lines.push("END:VEVENT".to_string());
+    }
+
     lines.push("END:VCALENDAR".to_string());
     format!("{}\r\n", lines.join("\r\n"))
+}
+
+fn render_attendee_line(attendee: &Attendee) -> String {
+    let mut line = String::from("ATTENDEE");
+    if let Some(name) = &attendee.name {
+        line.push_str(&format!(";CN={}", escape_ical_text(name)));
+    }
+    if let Some(kind) = attendee.attendee_type {
+        let role = match kind {
+            2 => "OPT-PARTICIPANT",
+            3 => "NON-PARTICIPANT",
+            _ => "REQ-PARTICIPANT",
+        };
+        line.push_str(&format!(";ROLE={role}"));
+    }
+    if let Some(partstat) = &attendee.partstat {
+        line.push_str(&format!(";PARTSTAT={partstat}"));
+    }
+    line.push(':');
+    line.push_str(&normalize_mailto(&attendee.email));
+    line
 }
 
 fn parse_ical_param(key: &str, name: &str) -> Option<String> {
@@ -465,7 +927,7 @@ fn parse_ical_param(key: &str, name: &str) -> Option<String> {
 }
 
 fn parse_ical_actor_line(key: &str, value: &str) -> (Option<String>, Option<String>) {
-    let name = parse_ical_param(key, "CN");
+    let name = parse_ical_param(key, "CN").map(|v| unescape_ical_text(&v));
     let email = value
         .strip_prefix("mailto:")
         .or_else(|| value.strip_prefix("MAILTO:"))
@@ -500,6 +962,49 @@ fn status_to_partstat(value: u8) -> String {
     }
 }
 
+fn class_to_sensitivity(value: &str) -> Option<u8> {
+    match value.to_ascii_uppercase().as_str() {
+        "PRIVATE" => Some(2),
+        "CONFIDENTIAL" => Some(3),
+        "PUBLIC" => Some(0),
+        _ => None,
+    }
+}
+
+fn sensitivity_to_class(value: u8) -> &'static str {
+    match value {
+        2 => "PRIVATE",
+        3 => "CONFIDENTIAL",
+        _ => "PUBLIC",
+    }
+}
+
+fn weekday_code_from_eas(value: u32) -> &'static str {
+    match value {
+        1 => "SU",
+        2 => "MO",
+        3 => "TU",
+        4 => "WE",
+        5 => "TH",
+        6 => "FR",
+        7 => "SA",
+        _ => "MO",
+    }
+}
+
+fn weekday_code_to_eas(value: &str) -> Option<u32> {
+    match value {
+        "SU" => Some(1),
+        "MO" => Some(2),
+        "TU" => Some(3),
+        "WE" => Some(4),
+        "TH" => Some(5),
+        "FR" => Some(6),
+        "SA" => Some(7),
+        _ => None,
+    }
+}
+
 pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -520,6 +1025,8 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         _ => EasOpKind::Delete,
                     });
                     current = EasBuilder::default();
+                } else if name.as_slice() == b"Exception" {
+                    current.current_exception = Some(CalendarException::default());
                 }
                 stack.push(name);
             }
@@ -537,67 +1044,142 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     match stack.last().map(|v| v.as_slice()) {
                         Some(b"ClientId") => current.client_id = Some(value),
                         Some(b"ServerId") => current.server_id = Some(value),
-                        Some(b"Subject") => current.subject = Some(value),
-                        Some(b"Location") => current.location = Some(value),
-                        Some(b"StartTime") => current.start = parse_datetime(&value),
-                        Some(b"EndTime") => current.end = parse_datetime(&value),
-                        Some(b"AllDayEvent") => current.all_day = Some(value == "1"),
+                        Some(b"Subject") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.subject = Some(value);
+                            } else {
+                                current.subject = Some(value);
+                            }
+                        }
+                        Some(b"Location") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.location = Some(value);
+                            } else {
+                                current.location = Some(value);
+                            }
+                        }
+                        Some(b"Timezone") => current.timezone = Some(value),
+                        Some(b"DtStamp") => current.dtstamp = parse_datetime(&value),
+                        Some(b"StartTime") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.start = parse_datetime(&value);
+                            } else {
+                                current.start = parse_datetime(&value);
+                            }
+                        }
+                        Some(b"EndTime") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.end = parse_datetime(&value);
+                            } else {
+                                current.end = parse_datetime(&value);
+                            }
+                        }
+                        Some(b"AllDayEvent") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.all_day = Some(value == "1");
+                            } else {
+                                current.all_day = Some(value == "1");
+                            }
+                        }
                         Some(b"UID") => current.uid = Some(value),
                         Some(b"OrganizerName") => current.organizer_name = Some(value),
                         Some(b"OrganizerEmail") => current.organizer_email = Some(value),
+                        Some(b"BusyStatus") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.busy_status = value.parse().ok();
+                            } else {
+                                current.busy_status = value.parse().ok();
+                            }
+                        }
+                        Some(b"Sensitivity") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.sensitivity = value.parse().ok();
+                            } else {
+                                current.sensitivity = value.parse().ok();
+                            }
+                        }
+                        Some(b"Reminder") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.reminder = value.parse().ok();
+                            } else {
+                                current.reminder = value.parse().ok();
+                            }
+                        }
                         Some(b"ResponseRequested") => {
                             current.response_requested = Some(value == "1")
                         }
+                        Some(b"DisallowNewTimeProposal") => {
+                            current.disallow_new_time_proposal = Some(value == "1")
+                        }
+                        Some(b"AppointmentReplyTime") => {
+                            current.appointment_reply_time = parse_datetime(&value)
+                        }
                         Some(b"MeetingStatus") => current.meeting_status = value.parse().ok(),
                         Some(b"ResponseType") => current.response_type = value.parse().ok(),
+                        Some(b"OnlineMeetingConfLink") => {
+                            current.online_meeting_conf_link = Some(value)
+                        }
+                        Some(b"OnlineMeetingExternalLink") => {
+                            current.online_meeting_external_link = Some(value)
+                        }
+                        Some(b"ClientUid") => current.client_uid = Some(value),
+                        Some(b"Category") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                let categories = exception.categories.get_or_insert_with(Vec::new);
+                                categories.push(value);
+                            } else {
+                                current.categories.push(value);
+                            }
+                        }
                         Some(b"Name") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
-                            let attendee = current.current_attendee.get_or_insert(Attendee {
-                                name: None,
-                                email: String::new(),
-                                attendee_type: None,
-                                attendee_status: None,
-                                partstat: None,
-                            });
+                            let attendee = current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default);
                             attendee.name = Some(value);
                         }
                         Some(b"Email") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
-                            let attendee = current.current_attendee.get_or_insert(Attendee {
-                                name: None,
-                                email: String::new(),
-                                attendee_type: None,
-                                attendee_status: None,
-                                partstat: None,
-                            });
+                            let attendee = current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default);
                             attendee.email = value;
                         }
                         Some(b"AttendeeType")
                             if stack.iter().any(|v| v.as_slice() == b"Attendee") =>
                         {
-                            let attendee = current.current_attendee.get_or_insert(Attendee {
-                                name: None,
-                                email: String::new(),
-                                attendee_type: None,
-                                attendee_status: None,
-                                partstat: None,
-                            });
+                            let attendee = current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default);
                             attendee.attendee_type = value.parse().ok();
                         }
                         Some(b"AttendeeStatus")
                             if stack.iter().any(|v| v.as_slice() == b"Attendee") =>
                         {
-                            let attendee = current.current_attendee.get_or_insert(Attendee {
-                                name: None,
-                                email: String::new(),
-                                attendee_type: None,
-                                attendee_status: None,
-                                partstat: None,
-                            });
+                            let attendee = current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default);
                             let status = value.parse().ok();
                             attendee.attendee_status = status;
                             attendee.partstat = status.map(status_to_partstat);
                         }
+                        Some(b"Deleted") if stack.iter().any(|v| v.as_slice() == b"Exception") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.deleted = value == "1";
+                            }
+                        }
+                        Some(b"ExceptionStartTime")
+                            if stack.iter().any(|v| v.as_slice() == b"Exception") =>
+                        {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.exception_start = parse_datetime(&value)
+                                    .ok_or_else(|| anyhow!("invalid ExceptionStartTime"))?;
+                            }
+                        }
                         Some(b"Data") if stack.iter().any(|v| v.as_slice() == b"Body") => {
-                            current.description = Some(value)
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.description = Some(value);
+                            } else {
+                                current.description = Some(value);
+                            }
                         }
                         Some(b"Type") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
                             current.recurrence.kind = value.parse().ok()
@@ -635,6 +1217,11 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         {
                             current.recurrence.occurrences = value.parse().ok()
                         }
+                        Some(b"FirstDayOfWeek")
+                            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
+                        {
+                            current.recurrence.first_day_of_week = value.parse().ok()
+                        }
                         _ => {
                             let _ = kind;
                         }
@@ -647,7 +1234,17 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     && let Some(attendee) = current.current_attendee.take()
                     && !attendee.email.is_empty()
                 {
-                    current.attendees.push(attendee);
+                    if let Some(exception) = current.current_exception.as_mut() {
+                        let attendees = exception.attendees.get_or_insert_with(Vec::new);
+                        attendees.push(attendee);
+                    } else {
+                        current.attendees.push(attendee);
+                    }
+                }
+                if name.as_slice() == b"Exception"
+                    && let Some(exception) = current.current_exception.take()
+                {
+                    current.exceptions.push(exception);
                 }
                 if matches!(name.as_slice(), b"Add" | b"Change" | b"Delete") {
                     match current_kind.take() {
@@ -698,6 +1295,29 @@ pub fn extract_ews_field(xml: &str, tag: &[u8]) -> Option<String> {
     }
 }
 
+pub fn extract_ews_fields(xml: &str, tag: &[u8]) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut inside = false;
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
+            Ok(Event::Text(t)) if inside => {
+                if let Ok(v) = t.decode() {
+                    out.push(v.into_owned());
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let subject = extract_ews_field(xml, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
     let start = extract_ews_field(xml, b"Start")
@@ -708,7 +1328,9 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         .or_else(|| extract_ews_field(xml, b"EndTime"))
         .and_then(|v| parse_datetime(&v))
         .ok_or_else(|| anyhow!("missing End/EndTime"))?;
-    let uid = extract_ews_field(xml, b"UID").unwrap_or_else(|| Uuid::new_v4().to_string());
+    let uid = extract_ews_field(xml, b"UID")
+        .or_else(|| extract_ews_field(xml, b"ClientUid"))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let description = extract_ews_field(xml, b"Body")
         .or_else(|| extract_ews_field(xml, b"TextBody"))
         .unwrap_or_default();
@@ -718,6 +1340,32 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         .unwrap_or(false);
     let organizer_name = extract_ews_field(xml, b"OrganizerName");
     let organizer_email = extract_ews_field(xml, b"OrganizerEmail");
+    let categories = extract_ews_fields(xml, b"String");
+    let reminder =
+        extract_ews_field(xml, b"ReminderMinutesBeforeStart").and_then(|v| v.parse().ok());
+    let busy_status =
+        extract_ews_field(xml, b"LegacyFreeBusyStatus").and_then(|v| match v.as_str() {
+            "Free" => Some(0),
+            "Tentative" => Some(1),
+            "Busy" => Some(2),
+            "OOF" => Some(3),
+            _ => None,
+        });
+    let sensitivity = extract_ews_field(xml, b"Sensitivity").and_then(|v| match v.as_str() {
+        "Normal" => Some(0),
+        "Personal" => Some(1),
+        "Private" => Some(2),
+        "Confidential" => Some(3),
+        _ => None,
+    });
+    let response_requested =
+        extract_ews_field(xml, b"ResponseRequested").map(|v| v.eq_ignore_ascii_case("true"));
+    let disallow_new_time_proposal =
+        extract_ews_field(xml, b"DisallowNewTimeProposal").map(|v| v.eq_ignore_ascii_case("true"));
+    let online_meeting_conf_link = extract_ews_field(xml, b"OnlineMeetingConfLink");
+    let online_meeting_external_link = extract_ews_field(xml, b"OnlineMeetingExternalLink");
+    let client_uid = extract_ews_field(xml, b"ClientUid");
+
     Ok(CalendarItem {
         uid,
         subject,
@@ -726,13 +1374,26 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         start,
         end,
         all_day,
-        rrule: None,
+        dtstamp: Some(Utc::now()),
+        timezone: extract_ews_field(xml, b"StartTimeZone"),
+        rrule: extract_ews_field(xml, b"Recurrence"),
+        exdates: Vec::new(),
         organizer_name,
         organizer_email,
         attendees: Vec::new(),
-        response_requested: None,
+        categories,
+        busy_status,
+        sensitivity,
+        reminder,
+        response_requested,
+        disallow_new_time_proposal,
+        appointment_reply_time: None,
         meeting_status: None,
         response_type: None,
+        online_meeting_conf_link,
+        online_meeting_external_link,
+        client_uid,
+        exceptions: Vec::new(),
     })
 }
 
@@ -742,13 +1403,21 @@ mod tests {
 
     #[test]
     fn parses_eas_add_mutation() {
-        let xml = r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:"><Collections><Collection><Commands><Add><ClientId>abc</ClientId><ApplicationData><Calendar:Subject>Meeting</Calendar:Subject><Calendar:StartTime>2026-03-21T10:00:00Z</Calendar:StartTime><Calendar:EndTime>2026-03-21T11:00:00Z</Calendar:EndTime></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
+        let xml = r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><Commands><Add><ClientId>abc</ClientId><ApplicationData><Calendar:Subject>Meeting</Calendar:Subject><Calendar:StartTime>2026-03-21T10:00:00Z</Calendar:StartTime><Calendar:EndTime>2026-03-21T11:00:00Z</Calendar:EndTime><Calendar:Categories><Calendar:Category>Blue</Calendar:Category></Calendar:Categories><Calendar:Exceptions><Calendar:Exception><Calendar:ExceptionStartTime>2026-03-22T10:00:00Z</Calendar:ExceptionStartTime><Calendar:Deleted>1</Calendar:Deleted></Calendar:Exception></Calendar:Exceptions></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
         let items = parse_eas_sync_mutations(xml).unwrap();
         assert_eq!(items.len(), 1);
+        match &items[0] {
+            super::EasSyncMutation::Add { item, .. } => {
+                assert_eq!(item.categories, vec!["Blue".to_string()]);
+                assert_eq!(item.exceptions.len(), 1);
+                assert!(item.exceptions[0].deleted);
+            }
+            _ => panic!("expected add"),
+        }
     }
 
     #[test]
-    fn renders_and_parses_ics() {
+    fn renders_and_parses_ics_with_exceptions() {
         let item = super::CalendarItem {
             uid: "uid-1".to_string(),
             subject: "Subject".to_string(),
@@ -761,7 +1430,18 @@ mod tests {
                 .unwrap()
                 .with_timezone(&chrono::Utc),
             all_day: false,
-            rrule: Some("FREQ=DAILY".to_string()),
+            dtstamp: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-03-20T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            ),
+            timezone: Some("AAA=".to_string()),
+            rrule: Some("FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4".to_string()),
+            exdates: vec![
+                chrono::DateTime::parse_from_rfc3339("2026-03-28T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            ],
             organizer_name: Some("Organizer".to_string()),
             organizer_email: Some("organizer@example.com".to_string()),
             attendees: vec![super::Attendee {
@@ -771,13 +1451,62 @@ mod tests {
                 attendee_status: Some(3),
                 partstat: Some("ACCEPTED".to_string()),
             }],
+            categories: vec!["Blue".to_string(), "Green".to_string()],
+            busy_status: Some(2),
+            sensitivity: Some(2),
+            reminder: Some(15),
             response_requested: Some(true),
+            disallow_new_time_proposal: Some(true),
+            appointment_reply_time: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-03-19T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            ),
             meeting_status: Some(3),
             response_type: Some(3),
+            online_meeting_conf_link: Some("https://conf.example.test/1".to_string()),
+            online_meeting_external_link: Some("https://join.example.test/1".to_string()),
+            client_uid: Some("client-uid-1".to_string()),
+            exceptions: vec![
+                super::CalendarException {
+                    deleted: true,
+                    exception_start: chrono::DateTime::parse_from_rfc3339("2026-03-30T10:00:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    ..Default::default()
+                },
+                super::CalendarException {
+                    deleted: false,
+                    exception_start: chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    subject: Some("Shifted subject".to_string()),
+                    start: Some(
+                        chrono::DateTime::parse_from_rfc3339("2026-04-01T12:00:00Z")
+                            .unwrap()
+                            .with_timezone(&chrono::Utc),
+                    ),
+                    end: Some(
+                        chrono::DateTime::parse_from_rfc3339("2026-04-01T13:00:00Z")
+                            .unwrap()
+                            .with_timezone(&chrono::Utc),
+                    ),
+                    ..Default::default()
+                },
+            ],
         };
         let ics = render_ics(&item);
         let parsed = parse_ics_event(&ics).unwrap();
         assert_eq!(parsed.uid, "uid-1");
         assert_eq!(parsed.subject, "Subject");
+        assert_eq!(parsed.categories.len(), 2);
+        assert_eq!(parsed.exceptions.len(), 2);
+        assert!(parsed.exceptions.iter().any(|v| v.deleted));
+        assert!(
+            parsed
+                .exceptions
+                .iter()
+                .any(|v| v.subject.as_deref() == Some("Shifted subject"))
+        );
     }
 }

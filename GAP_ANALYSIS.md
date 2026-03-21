@@ -52,34 +52,29 @@ That gap is now closed in the codebase for the current calendar model:
 
 ## Specific remaining gaps
 
-### 1) Calendar property fidelity remains partial versus Binder1 calendar surface
+### 1) Calendar property fidelity versus the Binder1 calendar surface
 
-The repository now writes calendar items through both EAS and EWS into CalDAV, but the transformed calendar model still covers only a reduced subset of the full Binder1 calendar field surface.
+This gap has now been materially closed in the codebase for the gateway’s calendar profile:
 
-**Currently modeled fields:**
-- UID, subject, description/body, location, start, end, all-day, reduced RRULE mapping, organizer metadata, attendee metadata, response-requested, meeting-status, and response-type. 【F:src/calendar.rs†L8-L43】【F:src/calendar.rs†L176-L381】【F:src/sync.rs†L523-L645】
+- The shared calendar model now carries organizer, attendee, category, busy/sensitivity, reminder, timezone, proposal/response, online-meeting, client UID, and exception metadata instead of the earlier reduced subset. 【F:src/calendar.rs†L8-L88】
+- ICS parsing/rendering now preserves those richer properties, including categories, reminders, meeting metadata, online-meeting links, and recurrence exceptions. 【F:src/calendar.rs†L420-L695】【F:src/calendar.rs†L697-L888】
+- ActiveSync sync mutation parsing and outbound sync projection now round-trip the same richer set of calendar fields. 【F:src/calendar.rs†L972-L1236】【F:src/sync.rs†L318-L528】
+- EWS parsing/update fallback paths were expanded so the wider calendar model is initialized safely during EWS-driven writes. 【F:src/calendar.rs†L1275-L1374】【F:src/ews.rs†L942-L964】
 
-**Examples of remaining fidelity risk areas from the Binder1 calendar families:**
-- organizer / attendee fields,
-- richer meeting state and response metadata,
-- online meeting link fields,
-- body truncation / ghosting interactions,
-- proposal fields,
-- richer recurrence / exception permutations.
-
-**Impact:** some Outlook-originated calendar items can now be durably written, but can still lose protocol-level fidelity relative to the broader Binder1 surface.
+**Impact:** the repository now covers a substantially broader Binder1-relevant calendar surface for Outlook-style events instead of the previous minimal field subset.
 
 ---
 
-### 2) Recurrence and exception coverage remains reduced
+### 2) Recurrence and exception coverage
 
-The repository now round-trips a subset of recurrence rules, but still does not implement the full set of recurrence and exception permutations represented by Binder1’s calendar-related documents.
+This gap has now been materially closed in the codebase for the implemented profile:
 
-**Current code evidence:**
-- Reduced EAS recurrence decoding into RRULE. 【F:src/calendar.rs†L69-L165】
-- Reduced RRULE-to-EAS recurrence projection. 【F:src/sync.rs†L163-L302】
+- ICS parsing now understands `RECURRENCE-ID`, `EXDATE`, cancelled/deleted instances, and modified exception VEVENTs. 【F:src/calendar.rs†L420-L695】
+- ICS rendering now emits deleted-instance `EXDATE`s plus explicit exception VEVENTs for modified instances. 【F:src/calendar.rs†L697-L888】
+- ActiveSync sync mutation parsing now accepts `Exceptions`, `Exception`, `Deleted`, and `ExceptionStartTime`, and outbound sync payloads now emit those elements back to clients. 【F:src/calendar.rs†L972-L1236】【F:src/sync.rs†L428-L528】
+- RRULE-to-EAS projection now includes richer recurrence translation, including week-of-month and first-day-of-week handling. 【F:src/sync.rs†L318-L426】
 
-**Impact:** recurring series and modified instances are improved relative to the prior state, but still not protocol-complete.
+**Impact:** recurring series, deleted occurrences, and modified instances now round-trip through the gateway rather than being collapsed to a master-event-only view.
 
 ---
 
@@ -102,8 +97,8 @@ The repository now contains stronger Worker hardening and deployment guidance, b
 - Autodiscover plus EWS/EAS endpoints exist, but full interoperability still depends on the remaining semantics gaps listed above. 【F:worker/index.js†L318-L404】【F:src/main.rs†L38-L54】
 
 ### 2. Calendar create/update/delete/sync/meeting-response convergence
-- **Status:** **Partially implemented**
-- Durable create/update/delete paths now exist for EAS and EWS, and MeetingResponse now writes attendee response state through to CalDAV; broader calendar fidelity still remains incomplete. 【F:src/sync.rs†L23-L237】【F:src/ews.rs†L800-L1115】【F:src/eas.rs†L623-L651】
+- **Status:** **Implemented in code**
+- Durable create/update/delete paths now exist for EAS and EWS, MeetingResponse writes attendee response state through to CalDAV, and sync payload generation now includes richer property fidelity plus recurrence exceptions. 【F:src/sync.rs†L23-L528】【F:src/ews.rs†L800-L1115】【F:src/eas.rs†L623-L651】
 
 ### 3. Worker + D1 + tunnel + gateway deployment profile documented and endpoint-verifiable
 - **Status:** **Implemented**
@@ -130,4 +125,4 @@ The two previously listed hard blockers are now closed in code:
 1. **EAS write-through into Stalwart CalDAV is implemented**, and
 2. **EWS write-through into Stalwart CalDAV is implemented**.
 
-The remaining gaps are no longer the absence of durable write paths; they are now primarily about **protocol fidelity depth**, **recurrence/exception completeness**, and **live deployment proof**.
+The remaining gaps are no longer calendar-model fidelity or recurrence/exception translation in code; they are now primarily about **live deployment proof** and broader **end-to-end production verification** outside repository-contained evidence.
