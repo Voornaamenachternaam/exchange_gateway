@@ -529,6 +529,32 @@ pub async fn handle(
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
 
+            if xml.contains("<Add")
+                || xml.contains("<Change")
+                || xml.contains("<Delete")
+                || xml.contains(":Add")
+                || xml.contains(":Change")
+                || xml.contains(":Delete")
+            {
+                if let Err(e) = sync::apply_client_sync_mutations(
+                    state.clone(),
+                    &username,
+                    &username,
+                    &password,
+                    &xml,
+                )
+                .await
+                {
+                    tracing::error!(
+                        "request_id={} failed applying Sync mutations: {}",
+                        request_id,
+                        e
+                    );
+                    let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
+                    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                }
+            }
+
             match sync::perform_sync(
                 state,
                 &username,

@@ -1,6 +1,9 @@
 // src/ews.rs
+use crate::caldav::CaldavClient;
+use crate::calendar::{extract_ews_field, parse_ews_calendar_item, parse_ics_event, render_ics};
 use crate::models::AppState;
 use crate::storage::EwsItemRow;
+use crate::sync::generate_server_id;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -21,6 +24,7 @@ const EWS_TYPE_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/t
 #[derive(Clone, Debug)]
 struct AuthContext {
     username: String,
+    password: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +89,7 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     let idx = pair.find(':')?;
     Some(AuthContext {
         username: pair[..idx].to_string(),
+        password: pair[idx + 1..].to_string(),
     })
 }
 
@@ -798,43 +803,55 @@ async fn handle_sync_folder_items(
     soap_ok(response)
 }
 
-fn generate_server_id(owner: &str, seed: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(owner.as_bytes());
-    h.update(seed.as_bytes());
-    h.update(now_unix().to_string().as_bytes());
-    let digest = h.finalize();
-    format!(
-        "AAMk{}",
-        digest[..16]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>()
-    )
-}
-
 async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
-    let uid = extract_first_tag_text(body, b"UID").unwrap_or_else(|| "new-item".to_string());
-    let subject =
-        extract_first_tag_text(body, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
-    let seed = format!("{}:{}", uid, subject);
-    let server_id = generate_server_id(owner, &seed);
-    let href = format!("/ews/{}/{}.ics", owner.replace('@', "_"), server_id);
-    let etag = format!(
-        "\"{}\"",
-        changekey_for_item(&EwsItemRow {
-            server_id: server_id.clone(),
-            resource_href: href.clone(),
-            uid: Some(uid.clone()),
-            etag: None,
-            updated_at: Some(now_unix().to_string())
-        })
-    );
+    let caldav = CaldavClient::new(&state.cfg);
+    let item = match parse_ews_calendar_item(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorSchemaValidation",
+                &format!("Failed to parse CalendarItem payload: {e}"),
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+    let calendars = match caldav.find_user_calendars(owner, &auth.password).await {
+        Ok(v) => v,
+        Err(_) => Vec::new(),
+    };
+    let collection_href = match calendars.first() {
+        Some(v) => v.clone(),
+        None => {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorFolderNotFound",
+                "No writable calendar collection discovered",
+                StatusCode::OK,
+            );
+        }
+    };
+    let ics = render_ics(&item);
+    let (href, etag) = match caldav
+        .put_event(&collection_href, None, &ics, owner, &auth.password, None)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                &format!("Failed to persist created item: {e}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+    let server_id = generate_server_id(&state.cfg.hmac_secret, &href);
 
     if let Err(e) = state
         .storage
-        .upsert_item_map(owner, &href, &href, &server_id, &uid, &etag)
+        .upsert_item_map(owner, &collection_href, &href, &server_id, &item.uid, &etag)
         .await
     {
         return operation_error_response(
@@ -863,9 +880,9 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         EWS_MSG_NS,
         EWS_TYPE_NS,
         xml_escape(&server_id),
-        xml_escape(etag.trim_matches('"')),
-        xml_escape(&subject),
-        xml_escape(&uid),
+        xml_escape(&etag),
+        xml_escape(&item.subject),
+        xml_escape(&item.uid),
     );
     soap_ok(response)
 }
@@ -906,18 +923,84 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     };
 
-    let new_subject = extract_first_tag_text(body, b"Value")
-        .or_else(|| extract_first_tag_text(body, b"Subject"))
-        .or_else(|| item.uid.clone())
-        .unwrap_or_else(|| "updated-item".to_string());
-    let uid = item.uid.clone().unwrap_or_else(|| item.server_id.clone());
-    let new_etag = format!("\"upd-{}\"", now_unix());
+    let caldav = CaldavClient::new(&state.cfg);
+    let (existing_ics, existing_etag) = match caldav
+        .get_event(&item.resource_href, owner, &auth.password)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                &format!("Failed to fetch existing event: {e}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+    let mut current_item =
+        parse_ics_event(&existing_ics).unwrap_or_else(|| crate::calendar::CalendarItem {
+            uid: item.uid.clone().unwrap_or_else(|| item.server_id.clone()),
+            subject: String::new(),
+            description: String::new(),
+            location: String::new(),
+            start: chrono::Utc::now(),
+            end: chrono::Utc::now() + chrono::Duration::hours(1),
+            all_day: false,
+            rrule: None,
+        });
+    if let Some(v) =
+        extract_ews_field(body, b"Subject").or_else(|| extract_ews_field(body, b"Value"))
+    {
+        current_item.subject = v;
+    }
+    if let Some(v) =
+        extract_ews_field(body, b"Start").and_then(|v| crate::calendar::parse_datetime(&v))
+    {
+        current_item.start = v;
+    }
+    if let Some(v) =
+        extract_ews_field(body, b"End").and_then(|v| crate::calendar::parse_datetime(&v))
+    {
+        current_item.end = v;
+    }
+    if let Some(v) = extract_ews_field(body, b"Location") {
+        current_item.location = v;
+    }
+    if let Some(v) =
+        extract_ews_field(body, b"Body").or_else(|| extract_ews_field(body, b"TextBody"))
+    {
+        current_item.description = v;
+    }
+    let uid = current_item.uid.clone();
+    let ics = render_ics(&current_item);
+    let (resource_href, new_etag) = match caldav
+        .put_event(
+            &item.resource_href,
+            Some(&item.resource_href),
+            &ics,
+            owner,
+            &auth.password,
+            existing_etag.as_deref().or(item.etag.as_deref()),
+        )
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                &format!("Failed to persist update: {e}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
     if let Err(e) = state
         .storage
         .upsert_item_map(
             owner,
-            &item.resource_href,
-            &item.resource_href,
+            &resource_href,
+            &resource_href,
             &item.server_id,
             &uid,
             &new_etag,
@@ -950,8 +1033,8 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         EWS_MSG_NS,
         EWS_TYPE_NS,
         xml_escape(&item.server_id),
-        xml_escape(new_etag.trim_matches('"')),
-        xml_escape(&new_subject),
+        xml_escape(&new_etag),
+        xml_escape(&current_item.subject),
         xml_escape(&uid),
     );
     soap_ok(response)
@@ -969,20 +1052,57 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     }
 
-    match state
+    let existing = match state
         .storage
-        .delete_item_by_server_id(owner, &item_id)
+        .get_ews_item_by_server_id(owner, &item_id)
         .await
     {
-        Ok(_) => {}
+        Ok(v) => v,
         Err(e) => {
             return operation_error_response(
                 &EwsAction::DeleteItem,
                 "ErrorInternalServerError",
-                &format!("Failed to delete item: {}", e),
+                &format!("Failed to resolve item: {}", e),
                 StatusCode::INTERNAL_SERVER_ERROR,
             );
         }
+    };
+    let Some(existing) = existing else {
+        return operation_error_response(
+            &EwsAction::DeleteItem,
+            "ErrorItemNotFound",
+            "Requested item does not exist",
+            StatusCode::OK,
+        );
+    };
+    let caldav = CaldavClient::new(&state.cfg);
+    if let Err(e) = caldav
+        .delete_event(
+            &existing.resource_href,
+            owner,
+            &auth.password,
+            existing.etag.as_deref(),
+        )
+        .await
+    {
+        return operation_error_response(
+            &EwsAction::DeleteItem,
+            "ErrorInternalServerError",
+            &format!("Failed to delete CalDAV item: {}", e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+    if let Err(e) = state
+        .storage
+        .delete_item_by_server_id(owner, &item_id)
+        .await
+    {
+        return operation_error_response(
+            &EwsAction::DeleteItem,
+            "ErrorInternalServerError",
+            &format!("Failed to delete mapping: {}", e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
     }
 
     let response = format!(

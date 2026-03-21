@@ -1,5 +1,6 @@
 // src/sync.rs
 use crate::caldav::CaldavClient;
+use crate::calendar::{EasSyncMutation, parse_eas_sync_mutations, parse_ics_event, render_ics};
 use crate::models::AppState;
 use anyhow::{Result, anyhow};
 use base64::Engine;
@@ -18,6 +19,139 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     mac.update(resource_href.as_bytes());
     let result = mac.finalize().into_bytes();
     URL_SAFE_NO_PAD.encode(result)
+}
+
+pub async fn apply_client_sync_mutations(
+    state: Arc<AppState>,
+    owner: &str,
+    username: &str,
+    password: &str,
+    xml: &str,
+) -> Result<()> {
+    let mutations = parse_eas_sync_mutations(xml)?;
+    if mutations.is_empty() {
+        return Ok(());
+    }
+
+    let caldav = CaldavClient::new(&state.cfg);
+    let calendars = caldav.find_user_calendars(username, password).await?;
+    let collection_href = calendars
+        .first()
+        .ok_or_else(|| anyhow!("no calendars found"))?
+        .clone();
+
+    for mutation in mutations {
+        match mutation {
+            EasSyncMutation::Add { client_id, item } => {
+                let ics = render_ics(&item);
+                let (resource_href, etag) = caldav
+                    .put_event(&collection_href, None, &ics, username, password, None)
+                    .await?;
+                let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
+                let uid = if item.uid.is_empty() {
+                    client_id.unwrap_or_else(|| Uuid::new_v4().to_string())
+                } else {
+                    item.uid
+                };
+                state
+                    .storage
+                    .upsert_item_map(
+                        owner,
+                        &collection_href,
+                        &resource_href,
+                        &server_id,
+                        &uid,
+                        &etag,
+                    )
+                    .await?;
+            }
+            EasSyncMutation::Change { server_id, patch } => {
+                let Some(existing) = state
+                    .storage
+                    .get_ews_item_by_server_id(owner, &server_id)
+                    .await?
+                else {
+                    return Err(anyhow!("unknown server id in EAS Change: {server_id}"));
+                };
+
+                let (existing_ics, existing_etag) = caldav
+                    .get_event(&existing.resource_href, username, password)
+                    .await?;
+                let mut item = parse_ics_event(&existing_ics)
+                    .ok_or_else(|| anyhow!("failed parsing existing calendar item"))?;
+                if let Some(v) = patch.uid {
+                    item.uid = v;
+                }
+                if let Some(v) = patch.subject {
+                    item.subject = v;
+                }
+                if let Some(v) = patch.description {
+                    item.description = v;
+                }
+                if let Some(v) = patch.location {
+                    item.location = v;
+                }
+                if let Some(v) = patch.start {
+                    item.start = v;
+                }
+                if let Some(v) = patch.end {
+                    item.end = v;
+                }
+                if let Some(v) = patch.all_day {
+                    item.all_day = v;
+                }
+                if let Some(v) = patch.rrule {
+                    item.rrule = Some(v);
+                }
+
+                let ics = render_ics(&item);
+                let (resource_href, etag) = caldav
+                    .put_event(
+                        &collection_href,
+                        Some(&existing.resource_href),
+                        &ics,
+                        username,
+                        password,
+                        existing_etag.as_deref().or(existing.etag.as_deref()),
+                    )
+                    .await?;
+                state
+                    .storage
+                    .upsert_item_map(
+                        owner,
+                        &collection_href,
+                        &resource_href,
+                        &server_id,
+                        &item.uid,
+                        &etag,
+                    )
+                    .await?;
+            }
+            EasSyncMutation::Delete { server_id } => {
+                let Some(existing) = state
+                    .storage
+                    .get_ews_item_by_server_id(owner, &server_id)
+                    .await?
+                else {
+                    continue;
+                };
+                caldav
+                    .delete_event(
+                        &existing.resource_href,
+                        username,
+                        password,
+                        existing.etag.as_deref(),
+                    )
+                    .await?;
+                state
+                    .storage
+                    .delete_item_by_server_id(owner, &server_id)
+                    .await?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn xml_escape(input: &str) -> String {

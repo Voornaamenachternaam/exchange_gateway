@@ -9,6 +9,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 mod caldav;
+mod calendar;
 mod config;
 mod eas;
 mod ews;
