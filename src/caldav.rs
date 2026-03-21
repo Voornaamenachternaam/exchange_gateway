@@ -13,7 +13,11 @@ pub struct CaldavClient {
 
 impl CaldavClient {
     pub fn new(cfg: &Config) -> Self {
-        let client = Client::builder().build().unwrap();
+        let client = Client::builder()
+            .http1_only()
+            .pool_max_idle_per_host(8)
+            .build()
+            .expect("reqwest client construction should be infallible for static config");
         CaldavClient {
             base: cfg.caldav_base.clone(),
             client,

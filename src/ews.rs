@@ -1,6 +1,9 @@
 // src/ews.rs
 use crate::caldav::CaldavClient;
-use crate::calendar::{extract_ews_field, parse_ews_calendar_item, parse_ics_event, render_ics};
+use crate::calendar::{
+    extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
+    parse_ews_recurrence, parse_ics_event, render_ics,
+};
 use crate::models::AppState;
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
@@ -990,6 +993,63 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         extract_ews_field(body, b"Body").or_else(|| extract_ews_field(body, b"TextBody"))
     {
         current_item.description = v;
+    }
+    if body.contains("Categories") {
+        current_item.categories = extract_ews_fields(body, b"String");
+    }
+    if let Some(v) =
+        extract_ews_field(body, b"ReminderMinutesBeforeStart").and_then(|v| v.parse().ok())
+    {
+        current_item.reminder = Some(v);
+    }
+    if let Some(v) = extract_ews_field(body, b"LegacyFreeBusyStatus") {
+        current_item.busy_status = match v.as_str() {
+            "Free" => Some(0),
+            "Tentative" => Some(1),
+            "Busy" => Some(2),
+            "OOF" => Some(3),
+            _ => current_item.busy_status,
+        };
+    }
+    if let Some(v) = extract_ews_field(body, b"Sensitivity") {
+        current_item.sensitivity = match v.as_str() {
+            "Normal" => Some(0),
+            "Personal" => Some(1),
+            "Private" => Some(2),
+            "Confidential" => Some(3),
+            _ => current_item.sensitivity,
+        };
+    }
+    if body.contains("ResponseRequested")
+        && let Some(v) = extract_ews_field(body, b"ResponseRequested")
+    {
+        current_item.response_requested = Some(v.eq_ignore_ascii_case("true"));
+    }
+    if body.contains("DisallowNewTimeProposal")
+        && let Some(v) = extract_ews_field(body, b"DisallowNewTimeProposal")
+    {
+        current_item.disallow_new_time_proposal = Some(v.eq_ignore_ascii_case("true"));
+    }
+    if let Some(v) = extract_ews_field(body, b"OrganizerName") {
+        current_item.organizer_name = Some(v);
+    }
+    if let Some(v) = extract_ews_field(body, b"OrganizerEmail") {
+        current_item.organizer_email = Some(v);
+    }
+    if body.contains("RequiredAttendees") || body.contains("OptionalAttendees") {
+        current_item.attendees = parse_ews_attendees(body);
+    }
+    if body.contains("Recurrence") {
+        current_item.rrule = parse_ews_recurrence(body);
+    }
+    if let Some(v) = extract_ews_field(body, b"OnlineMeetingConfLink") {
+        current_item.online_meeting_conf_link = Some(v);
+    }
+    if let Some(v) = extract_ews_field(body, b"OnlineMeetingExternalLink") {
+        current_item.online_meeting_external_link = Some(v);
+    }
+    if let Some(v) = extract_ews_field(body, b"ClientUid") {
+        current_item.client_uid = Some(v);
     }
     let uid = current_item.uid.clone();
     let ics = render_ics(&current_item);
