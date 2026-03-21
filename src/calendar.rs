@@ -15,6 +15,21 @@ pub struct CalendarItem {
     pub end: chrono::DateTime<Utc>,
     pub all_day: bool,
     pub rrule: Option<String>,
+    pub organizer_name: Option<String>,
+    pub organizer_email: Option<String>,
+    pub attendees: Vec<Attendee>,
+    pub response_requested: Option<bool>,
+    pub meeting_status: Option<u8>,
+    pub response_type: Option<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Attendee {
+    pub name: Option<String>,
+    pub email: String,
+    pub attendee_type: Option<u8>,
+    pub attendee_status: Option<u8>,
+    pub partstat: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -27,6 +42,12 @@ pub struct CalendarPatch {
     pub end: Option<chrono::DateTime<Utc>>,
     pub all_day: Option<bool>,
     pub rrule: Option<String>,
+    pub organizer_name: Option<String>,
+    pub organizer_email: Option<String>,
+    pub attendees: Option<Vec<Attendee>>,
+    pub response_requested: Option<bool>,
+    pub meeting_status: Option<u8>,
+    pub response_type: Option<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -63,6 +84,13 @@ struct EasBuilder {
     all_day: Option<bool>,
     uid: Option<String>,
     recurrence: EasRecurrence,
+    organizer_name: Option<String>,
+    organizer_email: Option<String>,
+    attendees: Vec<Attendee>,
+    current_attendee: Option<Attendee>,
+    response_requested: Option<bool>,
+    meeting_status: Option<u8>,
+    response_type: Option<u8>,
 }
 
 #[derive(Default)]
@@ -90,6 +118,12 @@ impl EasBuilder {
             end,
             all_day: self.all_day.unwrap_or(false),
             rrule: self.recurrence.to_rrule(),
+            organizer_name: self.organizer_name,
+            organizer_email: self.organizer_email,
+            attendees: self.attendees,
+            response_requested: self.response_requested,
+            meeting_status: self.meeting_status,
+            response_type: self.response_type,
         })
     }
 
@@ -103,6 +137,16 @@ impl EasBuilder {
             end: self.end,
             all_day: self.all_day,
             rrule: self.recurrence.to_rrule(),
+            organizer_name: self.organizer_name,
+            organizer_email: self.organizer_email,
+            attendees: if self.attendees.is_empty() {
+                None
+            } else {
+                Some(self.attendees)
+            },
+            response_requested: self.response_requested,
+            meeting_status: self.meeting_status,
+            response_type: self.response_type,
         }
     }
 }
@@ -241,6 +285,12 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     let mut end = None;
     let mut all_day = false;
     let mut rrule = None;
+    let mut organizer_name = None;
+    let mut organizer_email = None;
+    let mut attendees = Vec::new();
+    let mut response_requested = None;
+    let mut meeting_status = None;
+    let mut response_type = None;
 
     for (key, value) in props {
         if key.starts_with("SUMMARY") {
@@ -260,6 +310,31 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             end = parse_datetime(&value);
         } else if key.starts_with("RRULE") {
             rrule = Some(value);
+        } else if key.starts_with("ORGANIZER") {
+            let (cn, email) = parse_ical_actor_line(&key, &value);
+            organizer_name = cn;
+            organizer_email = email;
+        } else if key.starts_with("ATTENDEE") {
+            let (name, email) = parse_ical_actor_line(&key, &value);
+            let partstat = parse_ical_param(&key, "PARTSTAT");
+            attendees.push(Attendee {
+                name,
+                email: email.unwrap_or_default(),
+                attendee_type: parse_ical_param(&key, "ROLE").map(|role| match role.as_str() {
+                    "REQ-PARTICIPANT" => 1,
+                    "OPT-PARTICIPANT" => 2,
+                    "NON-PARTICIPANT" => 3,
+                    _ => 1,
+                }),
+                attendee_status: partstat.as_deref().map(partstat_to_status),
+                partstat,
+            });
+        } else if key.starts_with("X-MS-RESPONSE-REQUESTED") {
+            response_requested = Some(value == "TRUE");
+        } else if key.starts_with("X-MS-MEETING-STATUS") {
+            meeting_status = value.parse().ok();
+        } else if key.starts_with("X-MS-RESPONSE-TYPE") {
+            response_type = value.parse().ok();
         }
     }
 
@@ -276,6 +351,12 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
         end: end?,
         all_day,
         rrule,
+        organizer_name,
+        organizer_email,
+        attendees,
+        response_requested,
+        meeting_status,
+        response_type,
     })
 }
 
@@ -324,9 +405,99 @@ pub fn render_ics(item: &CalendarItem) -> String {
     {
         lines.push(format!("RRULE:{rrule}"));
     }
+    if let Some(email) = &item.organizer_email {
+        let mut line = String::from("ORGANIZER");
+        if let Some(name) = &item.organizer_name {
+            line.push_str(&format!(";CN={}", escape_ical_text(name)));
+        }
+        line.push(':');
+        line.push_str(&normalize_mailto(email));
+        lines.push(line);
+    }
+    for attendee in &item.attendees {
+        if attendee.email.is_empty() {
+            continue;
+        }
+        let mut line = String::from("ATTENDEE");
+        if let Some(name) = &attendee.name {
+            line.push_str(&format!(";CN={}", escape_ical_text(name)));
+        }
+        if let Some(kind) = attendee.attendee_type {
+            let role = match kind {
+                2 => "OPT-PARTICIPANT",
+                3 => "NON-PARTICIPANT",
+                _ => "REQ-PARTICIPANT",
+            };
+            line.push_str(&format!(";ROLE={role}"));
+        }
+        if let Some(partstat) = &attendee.partstat {
+            line.push_str(&format!(";PARTSTAT={partstat}"));
+        }
+        line.push(':');
+        line.push_str(&normalize_mailto(&attendee.email));
+        lines.push(line);
+    }
+    if let Some(v) = item.response_requested {
+        lines.push(format!(
+            "X-MS-RESPONSE-REQUESTED:{}",
+            if v { "TRUE" } else { "FALSE" }
+        ));
+    }
+    if let Some(v) = item.meeting_status {
+        lines.push(format!("X-MS-MEETING-STATUS:{v}"));
+    }
+    if let Some(v) = item.response_type {
+        lines.push(format!("X-MS-RESPONSE-TYPE:{v}"));
+    }
     lines.push("END:VEVENT".to_string());
     lines.push("END:VCALENDAR".to_string());
     format!("{}\r\n", lines.join("\r\n"))
+}
+
+fn parse_ical_param(key: &str, name: &str) -> Option<String> {
+    for part in key.split(';').skip(1) {
+        let (k, v) = part.split_once('=')?;
+        if k.eq_ignore_ascii_case(name) {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+fn parse_ical_actor_line(key: &str, value: &str) -> (Option<String>, Option<String>) {
+    let name = parse_ical_param(key, "CN");
+    let email = value
+        .strip_prefix("mailto:")
+        .or_else(|| value.strip_prefix("MAILTO:"))
+        .unwrap_or(value)
+        .to_string();
+    (name, Some(email))
+}
+
+fn normalize_mailto(email: &str) -> String {
+    if email.to_ascii_lowercase().starts_with("mailto:") {
+        email.to_string()
+    } else {
+        format!("mailto:{email}")
+    }
+}
+
+fn partstat_to_status(value: &str) -> u8 {
+    match value {
+        "ACCEPTED" => 3,
+        "DECLINED" => 4,
+        "TENTATIVE" => 2,
+        _ => 5,
+    }
+}
+
+fn status_to_partstat(value: u8) -> String {
+    match value {
+        3 => "ACCEPTED".to_string(),
+        4 => "DECLINED".to_string(),
+        2 => "TENTATIVE".to_string(),
+        _ => "NEEDS-ACTION".to_string(),
+    }
 }
 
 pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
@@ -372,6 +543,59 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         Some(b"EndTime") => current.end = parse_datetime(&value),
                         Some(b"AllDayEvent") => current.all_day = Some(value == "1"),
                         Some(b"UID") => current.uid = Some(value),
+                        Some(b"OrganizerName") => current.organizer_name = Some(value),
+                        Some(b"OrganizerEmail") => current.organizer_email = Some(value),
+                        Some(b"ResponseRequested") => {
+                            current.response_requested = Some(value == "1")
+                        }
+                        Some(b"MeetingStatus") => current.meeting_status = value.parse().ok(),
+                        Some(b"ResponseType") => current.response_type = value.parse().ok(),
+                        Some(b"Name") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
+                            let attendee = current.current_attendee.get_or_insert(Attendee {
+                                name: None,
+                                email: String::new(),
+                                attendee_type: None,
+                                attendee_status: None,
+                                partstat: None,
+                            });
+                            attendee.name = Some(value);
+                        }
+                        Some(b"Email") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
+                            let attendee = current.current_attendee.get_or_insert(Attendee {
+                                name: None,
+                                email: String::new(),
+                                attendee_type: None,
+                                attendee_status: None,
+                                partstat: None,
+                            });
+                            attendee.email = value;
+                        }
+                        Some(b"AttendeeType")
+                            if stack.iter().any(|v| v.as_slice() == b"Attendee") =>
+                        {
+                            let attendee = current.current_attendee.get_or_insert(Attendee {
+                                name: None,
+                                email: String::new(),
+                                attendee_type: None,
+                                attendee_status: None,
+                                partstat: None,
+                            });
+                            attendee.attendee_type = value.parse().ok();
+                        }
+                        Some(b"AttendeeStatus")
+                            if stack.iter().any(|v| v.as_slice() == b"Attendee") =>
+                        {
+                            let attendee = current.current_attendee.get_or_insert(Attendee {
+                                name: None,
+                                email: String::new(),
+                                attendee_type: None,
+                                attendee_status: None,
+                                partstat: None,
+                            });
+                            let status = value.parse().ok();
+                            attendee.attendee_status = status;
+                            attendee.partstat = status.map(status_to_partstat);
+                        }
                         Some(b"Data") if stack.iter().any(|v| v.as_slice() == b"Body") => {
                             current.description = Some(value)
                         }
@@ -419,6 +643,12 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
             }
             Ok(Event::End(e)) => {
                 let name = e.name().local_name().as_ref().to_vec();
+                if name.as_slice() == b"Attendee"
+                    && let Some(attendee) = current.current_attendee.take()
+                    && !attendee.email.is_empty()
+                {
+                    current.attendees.push(attendee);
+                }
                 if matches!(name.as_slice(), b"Add" | b"Change" | b"Delete") {
                     match current_kind.take() {
                         Some(EasOpKind::Add) => out.push(EasSyncMutation::Add {
@@ -486,6 +716,8 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let all_day = extract_ews_field(xml, b"IsAllDayEvent")
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let organizer_name = extract_ews_field(xml, b"OrganizerName");
+    let organizer_email = extract_ews_field(xml, b"OrganizerEmail");
     Ok(CalendarItem {
         uid,
         subject,
@@ -495,6 +727,12 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         end,
         all_day,
         rrule: None,
+        organizer_name,
+        organizer_email,
+        attendees: Vec::new(),
+        response_requested: None,
+        meeting_status: None,
+        response_type: None,
     })
 }
 
@@ -524,6 +762,18 @@ mod tests {
                 .with_timezone(&chrono::Utc),
             all_day: false,
             rrule: Some("FREQ=DAILY".to_string()),
+            organizer_name: Some("Organizer".to_string()),
+            organizer_email: Some("organizer@example.com".to_string()),
+            attendees: vec![super::Attendee {
+                name: Some("Alice".to_string()),
+                email: "alice@example.com".to_string(),
+                attendee_type: Some(1),
+                attendee_status: Some(3),
+                partstat: Some("ACCEPTED".to_string()),
+            }],
+            response_requested: Some(true),
+            meeting_status: Some(3),
+            response_type: Some(3),
         };
         let ics = render_ics(&item);
         let parsed = parse_ics_event(&ics).unwrap();

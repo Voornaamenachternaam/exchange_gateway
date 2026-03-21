@@ -1,6 +1,8 @@
 // src/sync.rs
 use crate::caldav::CaldavClient;
-use crate::calendar::{EasSyncMutation, parse_eas_sync_mutations, parse_ics_event, render_ics};
+use crate::calendar::{
+    Attendee, EasSyncMutation, parse_eas_sync_mutations, parse_ics_event, render_ics,
+};
 use crate::models::AppState;
 use anyhow::{Result, anyhow};
 use base64::Engine;
@@ -103,6 +105,24 @@ pub async fn apply_client_sync_mutations(
                 if let Some(v) = patch.rrule {
                     item.rrule = Some(v);
                 }
+                if let Some(v) = patch.organizer_name {
+                    item.organizer_name = Some(v);
+                }
+                if let Some(v) = patch.organizer_email {
+                    item.organizer_email = Some(v);
+                }
+                if let Some(v) = patch.attendees {
+                    item.attendees = v;
+                }
+                if let Some(v) = patch.response_requested {
+                    item.response_requested = Some(v);
+                }
+                if let Some(v) = patch.meeting_status {
+                    item.meeting_status = Some(v);
+                }
+                if let Some(v) = patch.response_type {
+                    item.response_type = Some(v);
+                }
 
                 let ics = render_ics(&item);
                 let (resource_href, etag) = caldav
@@ -151,6 +171,80 @@ pub async fn apply_client_sync_mutations(
         }
     }
 
+    Ok(())
+}
+
+pub async fn apply_meeting_response(
+    state: Arc<AppState>,
+    owner: &str,
+    username: &str,
+    password: &str,
+    request_id: &str,
+    user_response: u8,
+) -> Result<()> {
+    let Some(existing) = state
+        .storage
+        .get_ews_item_by_server_id(owner, request_id)
+        .await?
+    else {
+        return Err(anyhow!("unknown meeting request id: {request_id}"));
+    };
+
+    let caldav = CaldavClient::new(&state.cfg);
+    let (existing_ics, existing_etag) = caldav
+        .get_event(&existing.resource_href, username, password)
+        .await?;
+    let mut item =
+        parse_ics_event(&existing_ics).ok_or_else(|| anyhow!("failed parsing existing event"))?;
+
+    let (status, partstat) = match user_response {
+        1 => (3, "ACCEPTED"),
+        2 => (2, "TENTATIVE"),
+        3 => (4, "DECLINED"),
+        _ => (5, "NEEDS-ACTION"),
+    };
+
+    if let Some(attendee) = item
+        .attendees
+        .iter_mut()
+        .find(|a| a.email.eq_ignore_ascii_case(owner))
+    {
+        attendee.attendee_status = Some(status);
+        attendee.partstat = Some(partstat.to_string());
+    } else {
+        item.attendees.push(Attendee {
+            name: None,
+            email: owner.to_string(),
+            attendee_type: Some(1),
+            attendee_status: Some(status),
+            partstat: Some(partstat.to_string()),
+        });
+    }
+    item.response_type = Some(status);
+
+    let ics = render_ics(&item);
+    let (resource_href, etag) = caldav
+        .put_event(
+            &existing.resource_href,
+            Some(&existing.resource_href),
+            &ics,
+            username,
+            password,
+            existing_etag.as_deref().or(existing.etag.as_deref()),
+        )
+        .await?;
+
+    state
+        .storage
+        .upsert_item_map(
+            owner,
+            &resource_href,
+            &resource_href,
+            request_id,
+            &item.uid,
+            &etag,
+        )
+        .await?;
     Ok(())
 }
 
@@ -507,6 +601,12 @@ pub async fn perform_sync(
         let mut description = String::new();
         let mut uid = Uuid::new_v4().to_string();
         let mut is_all_day = false;
+        let mut organizer_name = String::new();
+        let mut organizer_email = String::new();
+        let mut attendees: Vec<(String, String, u8, u8)> = Vec::new();
+        let mut meeting_status: Option<String> = None;
+        let mut response_type: Option<String> = None;
+        let mut response_requested: Option<String> = None;
 
         for (key, val) in &props {
             if key.starts_with("SUMMARY") {
@@ -525,6 +625,59 @@ pub async fn perform_sync(
                 description = val.clone();
             } else if key.starts_with("UID") {
                 uid = val.clone();
+            } else if key.starts_with("ORGANIZER") {
+                organizer_email = val
+                    .strip_prefix("mailto:")
+                    .or_else(|| val.strip_prefix("MAILTO:"))
+                    .unwrap_or(val)
+                    .to_string();
+                for part in key.split(';').skip(1) {
+                    if let Some((k, v)) = part.split_once('=')
+                        && k.eq_ignore_ascii_case("CN")
+                    {
+                        organizer_name = v.to_string();
+                    }
+                }
+            } else if key.starts_with("ATTENDEE") {
+                let email = val
+                    .strip_prefix("mailto:")
+                    .or_else(|| val.strip_prefix("MAILTO:"))
+                    .unwrap_or(val)
+                    .to_string();
+                let mut name = String::new();
+                let mut attendee_type = 1u8;
+                let mut attendee_status = 5u8;
+                for part in key.split(';').skip(1) {
+                    if let Some((k, v)) = part.split_once('=') {
+                        if k.eq_ignore_ascii_case("CN") {
+                            name = v.to_string();
+                        } else if k.eq_ignore_ascii_case("ROLE") {
+                            attendee_type = match v {
+                                "OPT-PARTICIPANT" => 2,
+                                "NON-PARTICIPANT" => 3,
+                                _ => 1,
+                            };
+                        } else if k.eq_ignore_ascii_case("PARTSTAT") {
+                            attendee_status = match v {
+                                "TENTATIVE" => 2,
+                                "ACCEPTED" => 3,
+                                "DECLINED" => 4,
+                                _ => 5,
+                            };
+                        }
+                    }
+                }
+                attendees.push((email, name, attendee_type, attendee_status));
+            } else if key.starts_with("X-MS-MEETING-STATUS") {
+                meeting_status = Some(val.clone());
+            } else if key.starts_with("X-MS-RESPONSE-TYPE") {
+                response_type = Some(val.clone());
+            } else if key.starts_with("X-MS-RESPONSE-REQUESTED") {
+                response_requested = Some(if val.eq_ignore_ascii_case("TRUE") {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                });
             }
         }
 
@@ -572,6 +725,42 @@ pub async fn perform_sync(
                 xml_escape(&location)
             ));
         }
+        if !organizer_name.is_empty() {
+            commands.push_str(&format!(
+                "<Calendar:OrganizerName>{}</Calendar:OrganizerName>",
+                xml_escape(&organizer_name)
+            ));
+        }
+        if !organizer_email.is_empty() {
+            commands.push_str(&format!(
+                "<Calendar:OrganizerEmail>{}</Calendar:OrganizerEmail>",
+                xml_escape(&organizer_email)
+            ));
+        }
+        if !attendees.is_empty() {
+            commands.push_str("<Calendar:Attendees>");
+            for (email, name, attendee_type, attendee_status) in &attendees {
+                commands.push_str("<Calendar:Attendee>");
+                if !email.is_empty() {
+                    commands.push_str(&format!(
+                        "<Calendar:Email>{}</Calendar:Email>",
+                        xml_escape(email)
+                    ));
+                }
+                if !name.is_empty() {
+                    commands.push_str(&format!(
+                        "<Calendar:Name>{}</Calendar:Name>",
+                        xml_escape(name)
+                    ));
+                }
+                commands.push_str(&format!(
+                    "<Calendar:AttendeeType>{}</Calendar:AttendeeType><Calendar:AttendeeStatus>{}</Calendar:AttendeeStatus>",
+                    attendee_type, attendee_status
+                ));
+                commands.push_str("</Calendar:Attendee>");
+            }
+            commands.push_str("</Calendar:Attendees>");
+        }
 
         let body_len = description.len();
         commands.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
@@ -595,6 +784,24 @@ pub async fn perform_sync(
 
         if let Some(rec_xml) = map_rrule_to_recurrence_xml(&props, &dtstart) {
             commands.push_str(&rec_xml);
+        }
+        if let Some(v) = meeting_status {
+            commands.push_str(&format!(
+                "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
+                xml_escape(&v)
+            ));
+        }
+        if let Some(v) = response_type {
+            commands.push_str(&format!(
+                "<Calendar:ResponseType>{}</Calendar:ResponseType>",
+                xml_escape(&v)
+            ));
+        }
+        if let Some(v) = response_requested {
+            commands.push_str(&format!(
+                "<Calendar:ResponseRequested>{}</Calendar:ResponseRequested>",
+                xml_escape(&v)
+            ));
         }
 
         if is_new {

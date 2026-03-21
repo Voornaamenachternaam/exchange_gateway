@@ -249,7 +249,7 @@ fn options_response(request_id: &str) -> Response {
             ("MS-ASProtocolVersions", "12.0,12.1,14.0,14.1,16.0,16.1"),
             (
                 "MS-ASProtocolCommands",
-                "Sync,SendMail,SmartForward,SmartReply,GetAttachment,FolderSync,FolderCreate,FolderDelete,FolderUpdate,MoveItems,GetItemEstimate,MeetingResponse,Search,Settings,Ping,ItemOperations,Provision,ResolveRecipients,ValidateCert",
+                "Sync,FolderSync,Provision,MeetingResponse",
             ),
         ],
         "",
@@ -623,15 +623,39 @@ pub async fn handle(
             "<Response><Store><Status>1</Status><Result></Result></Store></Response>",
             &request_id,
         ),
-        "MeetingResponse" => success_status_response(
-            &wbxml,
-            wants_wbxml,
-            "MeetingResponse",
-            "MeetingResponse:",
-            "1",
-            "",
-            &request_id,
-        ),
+        "MeetingResponse" => {
+            if let Some(req_id) = extract_first_tag_text(&xml, b"RequestId") {
+                let user_response = extract_first_tag_text(&xml, b"UserResponse")
+                    .and_then(|v| v.parse::<u8>().ok())
+                    .unwrap_or(0);
+                if let Err(e) = sync::apply_meeting_response(
+                    state.clone(),
+                    &username,
+                    &username,
+                    &password,
+                    &req_id,
+                    user_response,
+                )
+                .await
+                {
+                    tracing::error!(
+                        "request_id={} failed applying MeetingResponse: {}",
+                        request_id,
+                        e
+                    );
+                    let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"><Result><Status>6</Status></Result></MeetingResponse>"#;
+                    xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id)
+                } else {
+                    let payload = format!(
+                        r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"><Result><RequestId>{}</RequestId><Status>1</Status></Result></MeetingResponse>"#,
+                        req_id
+                    );
+                    xml_or_wbxml_response(&wbxml, wants_wbxml, &payload, &request_id)
+                }
+            } else {
+                bad_request_response(&request_id, "MeetingResponse requires RequestId")
+            }
+        }
         "ResolveRecipients" => success_status_response(
             &wbxml,
             wants_wbxml,

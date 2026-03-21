@@ -948,6 +948,12 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             end: chrono::Utc::now() + chrono::Duration::hours(1),
             all_day: false,
             rrule: None,
+            organizer_name: None,
+            organizer_email: None,
+            attendees: Vec::new(),
+            response_requested: None,
+            meeting_status: None,
+            response_type: None,
         });
     if let Some(v) =
         extract_ews_field(body, b"Subject").or_else(|| extract_ews_field(body, b"Value"))

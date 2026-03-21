@@ -32,40 +32,32 @@ That blocker is now closed in the codebase:
 - EWS `UpdateItem` now fetches the existing CalDAV resource, merges updated fields, writes the updated `.ics` body back to CalDAV, and updates mapping state. 【F:src/ews.rs†L884-L1035】
 - EWS `DeleteItem` now deletes the real CalDAV resource before removing the mapping record. 【F:src/ews.rs†L1037-L1115】
 
+### 3) ActiveSync command advertisement versus implementation
+
+The prior gap was that `OPTIONS` advertised a much wider ActiveSync command surface than the repository actually implemented with durable semantics.
+
+That gap is now closed in the codebase for the calendar-focused profile:
+
+- The advertised command list has been reduced to the calendar-relevant commands that the gateway actually handles for this profile. 【F:src/eas.rs†L246-L260】
+
+### 4) Meeting-response semantics
+
+The prior gap was that `MeetingResponse` returned a success envelope without updating the underlying event state.
+
+That gap is now closed in the codebase for the current calendar model:
+
+- `MeetingResponse` now updates the attendee response on the real CalDAV resource and persists the updated mapping state before returning a response. 【F:src/eas.rs†L623-L651】【F:src/sync.rs†L172-L237】
+
 ---
 
 ## Specific remaining gaps
 
-### 1) ActiveSync command advertisement still exceeds implemented semantics
-
-`OPTIONS` still advertises a broader command surface than the repository currently implements with full durable semantics. Several branches still return generic success-shaped responses rather than protocol-complete behavior.  
-
-**Current code evidence:**
-- Advertised command list in `OPTIONS`. 【F:src/eas.rs†L246-L260】
-- Generic success wrappers remain for `Ping`, `Settings`, `SendMail`, `SmartReply`, `SmartForward`, `ItemOperations`, `Search`, `MeetingResponse`, `ResolveRecipients`, `ValidateCert`, `GetItemEstimate`, and `MoveItems`. 【F:src/eas.rs†L574-L668】
-
-**Why it remains a Binder1 gap:** `Binder1.txt` includes the corresponding ActiveSync command families and namespaces; placeholder success responses are not the same thing as protocol-complete implementations.
-
----
-
-### 2) Meeting-response semantics remain incomplete
-
-Although calendar create/update/delete now write through to CalDAV, `MeetingResponse` still does not translate accept / tentative / decline into attendee response semantics against the underlying calendar data.
-
-**Current code evidence:**
-- Shape-level validation exists. 【F:src/eas.rs†L77-L80】
-- Runtime handling is still a generic success response. 【F:src/eas.rs†L623-L630】
-
-**Why it remains a Binder1/use-case gap:** meeting workflow fidelity is part of your calendar-focused Outlook use-case and part of the ActiveSync family represented in `Binder1.txt`.
-
----
-
-### 3) Calendar property fidelity remains partial versus Binder1 calendar surface
+### 1) Calendar property fidelity remains partial versus Binder1 calendar surface
 
 The repository now writes calendar items through both EAS and EWS into CalDAV, but the transformed calendar model still covers only a reduced subset of the full Binder1 calendar field surface.
 
 **Currently modeled fields:**
-- UID, subject, description/body, location, start, end, all-day, and a reduced RRULE mapping. 【F:src/calendar.rs†L8-L26】【F:src/calendar.rs†L176-L312】
+- UID, subject, description/body, location, start, end, all-day, reduced RRULE mapping, organizer metadata, attendee metadata, response-requested, meeting-status, and response-type. 【F:src/calendar.rs†L8-L43】【F:src/calendar.rs†L176-L381】【F:src/sync.rs†L523-L645】
 
 **Examples of remaining fidelity risk areas from the Binder1 calendar families:**
 - organizer / attendee fields,
@@ -79,7 +71,7 @@ The repository now writes calendar items through both EAS and EWS into CalDAV, b
 
 ---
 
-### 4) Recurrence and exception coverage remains reduced
+### 2) Recurrence and exception coverage remains reduced
 
 The repository now round-trips a subset of recurrence rules, but still does not implement the full set of recurrence and exception permutations represented by Binder1’s calendar-related documents.
 
@@ -91,7 +83,7 @@ The repository now round-trips a subset of recurrence rules, but still does not 
 
 ---
 
-### 5) Live deployment proof against real Cloudflare + Stalwart remains external to the repository
+### 3) Live deployment proof against real Cloudflare + Stalwart remains external to the repository
 
 The repository now contains stronger Worker hardening and deployment guidance, but it still does not itself contain repeatable proof artifacts from a live Stalwart v0.15.5 + Cloudflare deployment.
 
@@ -111,7 +103,7 @@ The repository now contains stronger Worker hardening and deployment guidance, b
 
 ### 2. Calendar create/update/delete/sync/meeting-response convergence
 - **Status:** **Partially implemented**
-- Durable create/update/delete paths now exist for EAS and EWS, but meeting-response semantics and broader calendar fidelity remain incomplete. 【F:src/sync.rs†L23-L109】【F:src/ews.rs†L800-L1115】【F:src/eas.rs†L623-L630】
+- Durable create/update/delete paths now exist for EAS and EWS, and MeetingResponse now writes attendee response state through to CalDAV; broader calendar fidelity still remains incomplete. 【F:src/sync.rs†L23-L237】【F:src/ews.rs†L800-L1115】【F:src/eas.rs†L623-L651】
 
 ### 3. Worker + D1 + tunnel + gateway deployment profile documented and endpoint-verifiable
 - **Status:** **Implemented**
@@ -138,4 +130,4 @@ The two previously listed hard blockers are now closed in code:
 1. **EAS write-through into Stalwart CalDAV is implemented**, and
 2. **EWS write-through into Stalwart CalDAV is implemented**.
 
-The remaining gaps are no longer the absence of durable write paths; they are now primarily about **protocol fidelity depth**, **meeting-response semantics**, **recurrence/exception completeness**, and **live deployment proof**.
+The remaining gaps are no longer the absence of durable write paths; they are now primarily about **protocol fidelity depth**, **recurrence/exception completeness**, and **live deployment proof**.
