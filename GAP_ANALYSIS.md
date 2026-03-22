@@ -23,6 +23,7 @@ The repository has materially improved compared with the earlier partial prototy
 - D1-backed sync state persistence;
 - deletion tombstones for incremental sync;
 - a stricter `FolderSync` surface focused on the calendar folder;
+- device-scoped EAS sync-state namespacing instead of a single shared mailbox-wide sync-key timeline;
 - improved incremental `GetItemEstimate` behavior;
 - richer recurrence/exception field handling than the original minimal implementation;
 - preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision.
@@ -50,6 +51,7 @@ The repository now does more than simply emit calendar data:
 - client `Sync` mutations are parsed and written back to CalDAV;
 - invalid sync-key handling is now explicit rather than silently ignored;
 - sync state is persisted and used for incremental responses;
+- EAS collection state is now scoped per device instead of sharing one sync-key slot across every client;
 - delete tombstones are tracked so that incremental sync can emit deletions;
 - `FolderSync` now exposes the calendar folder instead of a synthetic multi-workload folder set;
 - `GetItemEstimate` now uses stored sync state instead of always returning a trivial success shell;
@@ -121,7 +123,7 @@ This gap is also improved, but **not fully closed**.
    Even though the surface is narrower and more accurate, the repository still does not implement a complete Exchange folder model. It exposes a deliberately simplified calendar-only hierarchy.
 
 2. **State journaling remains lighter than Exchange.**
-   D1 state plus tombstones is a meaningful improvement, but it is still not a full Exchange-grade journal of item lifecycle transitions, per-device progression, and recovery semantics.
+   D1 state plus tombstones plus device-scoped sync keys is a meaningful improvement, but it is still not a full Exchange-grade journal of item lifecycle transitions, per-device progression, and recovery semantics.
 
 3. **Sync-key recovery behavior is still simplified.**
    Invalid-key handling is present, but the recovery and replay model remains narrower than the complete Binder-defined Exchange behavior.
@@ -209,7 +211,7 @@ This remains **open**.
 ### Specific remaining gaps
 
 1. **Meeting workflow semantics are still simplified.**
-   Meeting requests, updates, organizer/attendee state, and related Exchange response behaviors are only partially represented.
+   Organizer, attendee, meeting-status, response-type, and related fields are now surfaced more richly than before, but full Exchange meeting workflow behavior is still only partially represented.
 
 2. **Free/busy semantics are still absent.**
    Outlook-native Exchange behavior often depends on availability semantics that are still not implemented here.

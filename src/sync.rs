@@ -803,6 +803,7 @@ pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,
     collection_id: &str,
+    state_collection_id: &str,
     incoming_sync_key: &str,
     content_class: &str,
     _window_size: usize,
@@ -820,7 +821,7 @@ pub async fn perform_sync(
         };
         let new_sync_key = Uuid::new_v4().to_string();
         storage
-            .set_sync_key(owner, collection_id, &new_sync_key, Some("token"))
+            .set_sync_key(owner, state_collection_id, &new_sync_key, Some("token"))
             .await?;
 
         let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
@@ -855,7 +856,7 @@ pub async fn perform_sync(
         return Ok(xml);
     }
 
-    let previous_state = storage.get_sync_key(owner, collection_id).await?;
+    let previous_state = storage.get_sync_key(owner, state_collection_id).await?;
     if incoming_sync_key != "0" {
         match previous_state.as_ref() {
             Some((expected_sync_key, _)) if expected_sync_key == incoming_sync_key => {}
@@ -1024,7 +1025,12 @@ pub async fn perform_sync(
 
     let new_sync_key = Uuid::new_v4().to_string();
     storage
-        .set_sync_key(owner, collection_id, &new_sync_key, Some(&sync_token_for_now()))
+        .set_sync_key(
+            owner,
+            state_collection_id,
+            &new_sync_key,
+            Some(&sync_token_for_now()),
+        )
         .await?;
 
     let xml = format!(

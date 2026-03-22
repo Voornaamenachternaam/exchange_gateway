@@ -471,8 +471,36 @@ fn render_ews_calendar_item_xml(
     if let Some(v) = item.disallow_new_time_proposal {
         xml.push_str(&format!("<t:DisallowNewTimeProposal>{}</t:DisallowNewTimeProposal>", if v { "true" } else { "false" }));
     }
+    if let Some(v) = &item.organizer_email {
+        xml.push_str(&format!(
+            r#"<t:Organizer><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Organizer>"#,
+            xml_escape(item.organizer_name.as_deref().unwrap_or(v)),
+            xml_escape(v)
+        ));
+    }
+    if let Some(v) = item.meeting_status {
+        xml.push_str(&format!("<t:MeetingStatus>{}</t:MeetingStatus>", v));
+    }
+    if let Some(v) = item.response_type {
+        xml.push_str(&format!("<t:ResponseType>{}</t:ResponseType>", v));
+    }
+    if let Some(v) = item.appointment_reply_time {
+        xml.push_str(&format!("<t:AppointmentReplyTime>{}</t:AppointmentReplyTime>", v.to_rfc3339()));
+    }
     if let Some(v) = &item.timezone {
         xml.push_str(&format!("<t:StartTimeZone>{}</t:StartTimeZone>", xml_escape(v)));
+    }
+    if let Some(v) = &item.timezone_blob {
+        xml.push_str(&format!("<t:MeetingTimeZone>{}</t:MeetingTimeZone>", xml_escape(v)));
+    }
+    if let Some(v) = &item.online_meeting_conf_link {
+        xml.push_str(&format!("<t:OnlineMeetingConfLink>{}</t:OnlineMeetingConfLink>", xml_escape(v)));
+    }
+    if let Some(v) = &item.online_meeting_external_link {
+        xml.push_str(&format!("<t:OnlineMeetingExternalLink>{}</t:OnlineMeetingExternalLink>", xml_escape(v)));
+    }
+    if let Some(v) = &item.client_uid {
+        xml.push_str(&format!("<t:ClientUid>{}</t:ClientUid>", xml_escape(v)));
     }
     xml.push_str(&render_ews_categories(item));
     xml.push_str(&render_ews_attendees(item));

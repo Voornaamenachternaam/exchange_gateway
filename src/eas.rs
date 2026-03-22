@@ -393,6 +393,10 @@ fn parse_request(query: &HashMap<String, String>, xml: &str) -> EasRequest {
     }
 }
 
+fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String {
+    format!("{visible_collection_id}::{device_id}")
+}
+
 async fn handle_provision(
     state: &Arc<AppState>,
     owner: &str,
@@ -466,9 +470,17 @@ async fn handle_folder_sync(
     as_wbxml: bool,
     request_id: &str,
 ) -> Response {
-    let collection_id = "folderhierarchy";
+    let collection_id = scoped_collection_id(
+        "folderhierarchy",
+        req.device_id.as_deref().unwrap_or("unknown-device"),
+    );
     let incoming = req.sync_key.as_deref().unwrap_or("0");
-    let stored = state.storage.get_sync_key(owner, collection_id).await.ok().flatten();
+    let stored = state
+        .storage
+        .get_sync_key(owner, &collection_id)
+        .await
+        .ok()
+        .flatten();
 
     if incoming != "0" {
         match stored.as_ref() {
@@ -484,7 +496,12 @@ async fn handle_folder_sync(
     let new_sync_key = Uuid::new_v4().simple().to_string();
     let _ = state
         .storage
-        .set_sync_key(owner, collection_id, &new_sync_key, Some(&format!("ts:{}", chrono::Utc::now().timestamp())))
+        .set_sync_key(
+            owner,
+            &collection_id,
+            &new_sync_key,
+            Some(&format!("ts:{}", chrono::Utc::now().timestamp())),
+        )
         .await;
 
     let changes = if incoming == "0" {
@@ -508,9 +525,18 @@ async fn handle_get_item_estimate(
     as_wbxml: bool,
     request_id: &str,
 ) -> Response {
-    let collection_id = req.collection_id.as_deref().unwrap_or("1");
+    let visible_collection_id = req.collection_id.as_deref().unwrap_or("1");
+    let collection_id = scoped_collection_id(
+        visible_collection_id,
+        req.device_id.as_deref().unwrap_or("unknown-device"),
+    );
     let incoming = req.sync_key.as_deref().unwrap_or("0");
-    let stored = state.storage.get_sync_key(owner, collection_id).await.ok().flatten();
+    let stored = state
+        .storage
+        .get_sync_key(owner, &collection_id)
+        .await
+        .ok()
+        .flatten();
 
     if incoming != "0" {
         match stored.as_ref() {
@@ -519,7 +545,7 @@ async fn handle_get_item_estimate(
                 let xml = format!(
                     r#"<?xml version="1.0" encoding="utf-8"?><GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>{}</Status><Collection><CollectionId>{}</CollectionId><Estimate>0</Estimate></Collection></Response></GetItemEstimate>"#,
                     crate::sync::INVALID_SYNC_KEY_STATUS,
-                    collection_id
+                    visible_collection_id
                 );
                 return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
             }
@@ -542,7 +568,7 @@ async fn handle_get_item_estimate(
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>1</Status><Collection><CollectionId>{}</CollectionId><Estimate>{}</Estimate></Collection></Response></GetItemEstimate>"#,
-        collection_id, estimate
+        visible_collection_id, estimate
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
@@ -611,6 +637,8 @@ pub async fn handle(
         }
         "Sync" => {
             let collection_id = req.collection_id.as_deref().unwrap_or("1");
+            let state_collection_id =
+                scoped_collection_id(collection_id, req.device_id.as_deref().unwrap_or("unknown-device"));
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
 
@@ -642,10 +670,11 @@ pub async fn handle(
 
             match sync::perform_sync(
                 state,
-                &username,
-                collection_id,
-                incoming_key,
-                class,
+                    &username,
+                    collection_id,
+                    &state_collection_id,
+                    incoming_key,
+                    class,
                 100,
                 &username,
                 &password,
