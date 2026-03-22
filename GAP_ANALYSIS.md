@@ -34,6 +34,7 @@ The repository has materially improved compared with the earlier partial prototy
 - EWS `GetUserAvailability` merged free/busy output sourced from CalDAV event windows;
 - EWS `GetUserAvailability` now also emits a concrete calendar-event array instead of only a merged bitmap;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
+- Binder-aligned validation for common EWS operation attributes such as `SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related meeting-cancellation knobs;
 - derived `MeetingStatus` / `ResponseType` emission when the upstream item data does not already provide them explicitly;
 - exception-level `AppointmentReplyTime` / `MeetingStatus` / `ResponseType` fields are now preserved through the local calendar model and emitted back out on Sync/ICS paths;
 - a slightly less synthetic EWS folder shape by including the calendar folder’s parent linkage under `MsgFolderRoot`;
@@ -65,6 +66,7 @@ The top-level gaps above are still only **partially** closed overall, but this r
 10. **The calendar folder shape lacking parent linkage under `MsgFolderRoot`** is now reduced by returning an explicit parent folder reference in EWS folder responses.
 11. **Monthly/yearly ActiveSync recurrence responses omitting `CalendarType`** is now closed for the implemented recurrence response shapes.
 12. **Exception-level meeting reply/status metadata being dropped from local round-tripping** is now reduced by preserving and re-emitting those fields in the calendar model.
+13. **Common EWS operation attributes being accepted without any enum validation** is now reduced by validating supported values for `CreateItem`, `UpdateItem`, and `DeleteItem`.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -215,7 +217,7 @@ This gap is improved, but **not fully closed**.
 ### Specific remaining gaps
 
 1. **EWS schema coverage is still selective.**
-   The implementation now returns richer calendar item XML for key item operations, but it still supports only a subset of the full property and update surface that Outlook can emit.
+   The implementation now returns richer calendar item XML for key item operations and validates several common operation attributes (`SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related flags), but it still supports only a subset of the full property and update surface that Outlook can emit.
 
 2. **Folder and mailbox modeling remain simplified.**
    The gateway now validates requested folder IDs more consistently across EWS operations and exposes a slightly less synthetic `MsgFolderRoot -> Calendar` shape, but it still exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.

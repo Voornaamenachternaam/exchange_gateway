@@ -208,18 +208,67 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
             if !xml.contains("SavedItemFolderId") || !xml.contains("Items") {
                 return Err("CreateItem requires SavedItemFolderId and Items");
             }
+            validate_attr_enum(
+                xml,
+                b"CreateItem",
+                b"SendMeetingInvitations",
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
+                "CreateItem SendMeetingInvitations value is unsupported",
+            )?;
             Ok(())
         }
         EwsAction::UpdateItem => {
             if !xml.contains("ItemChanges") {
                 return Err("UpdateItem requires ItemChanges");
             }
+            validate_attr_enum(
+                xml,
+                b"UpdateItem",
+                b"ConflictResolution",
+                &["NeverOverwrite", "AutoResolve", "AlwaysOverwrite"],
+                "UpdateItem ConflictResolution value is unsupported",
+            )?;
+            validate_attr_enum(
+                xml,
+                b"UpdateItem",
+                b"MessageDisposition",
+                &["SaveOnly", "SendOnly", "SendAndSaveCopy"],
+                "UpdateItem MessageDisposition value is unsupported",
+            )?;
+            validate_attr_enum(
+                xml,
+                b"UpdateItem",
+                b"SendMeetingInvitationsOrCancellations",
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
+                "UpdateItem SendMeetingInvitationsOrCancellations value is unsupported",
+            )?;
             Ok(())
         }
         EwsAction::DeleteItem => {
             if !xml.contains("ItemIds") {
                 return Err("DeleteItem requires ItemIds");
             }
+            validate_attr_enum(
+                xml,
+                b"DeleteItem",
+                b"DeleteType",
+                &["HardDelete", "SoftDelete", "MoveToDeletedItems"],
+                "DeleteItem DeleteType value is unsupported",
+            )?;
+            validate_attr_enum(
+                xml,
+                b"DeleteItem",
+                b"SendMeetingCancellations",
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
+                "DeleteItem SendMeetingCancellations value is unsupported",
+            )?;
+            validate_attr_enum(
+                xml,
+                b"DeleteItem",
+                b"AffectedTaskOccurrences",
+                &["AllOccurrences", "SpecifiedOccurrenceOnly"],
+                "DeleteItem AffectedTaskOccurrences value is unsupported",
+            )?;
             Ok(())
         }
         EwsAction::ResolveNames => {
@@ -274,6 +323,23 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
     extract_first_tag_text(xml, tag)
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+fn validate_attr_enum(
+    xml: &str,
+    tag: &[u8],
+    attr: &[u8],
+    allowed: &[&str],
+    err: &'static str,
+) -> Result<(), &'static str> {
+    if let Some(value) = extract_first_attr(xml, tag, attr)
+        && !allowed
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&value))
+    {
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn owner_from_username(username: &str) -> &str {
@@ -1968,5 +2034,17 @@ mod tests {
     fn sync_folder_items_rejects_include_mime_content() {
         let xml = r#"<s:Envelope><s:Body><m:SyncFolderItems xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemShape><t:BaseShape xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">AllProperties</t:BaseShape><t:IncludeMimeContent xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">true</t:IncludeMimeContent></m:ItemShape><m:SyncFolderId /><m:MaxChangesReturned>10</m:MaxChangesReturned></m:SyncFolderItems></s:Body></s:Envelope>"#;
         assert!(validate_schema(&EwsAction::SyncFolderItems, xml).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_create_update_delete_attributes() {
+        let create_xml = r#"<s:Envelope><s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" SendMeetingInvitations="BadValue"><m:SavedItemFolderId/><m:Items/></m:CreateItem></s:Body></s:Envelope>"#;
+        assert!(validate_schema(&EwsAction::CreateItem, create_xml).is_err());
+
+        let update_xml = r#"<s:Envelope><s:Body><m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ConflictResolution="BadValue"><m:ItemChanges/></m:UpdateItem></s:Body></s:Envelope>"#;
+        assert!(validate_schema(&EwsAction::UpdateItem, update_xml).is_err());
+
+        let delete_xml = r#"<s:Envelope><s:Body><m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" DeleteType="BadValue"><m:ItemIds/></m:DeleteItem></s:Body></s:Envelope>"#;
+        assert!(validate_schema(&EwsAction::DeleteItem, delete_xml).is_err());
     }
 }
