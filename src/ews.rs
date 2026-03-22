@@ -35,6 +35,7 @@ enum EwsAction {
     FindFolder,
     FindItem,
     GetItem,
+    GetUserAvailability,
     SyncFolderItems,
     CreateItem,
     UpdateItem,
@@ -74,6 +75,7 @@ pub async fn handle(
         EwsAction::FindFolder => handle_find_folder(&auth, &body).await,
         EwsAction::FindItem => handle_find_item(&state, &auth, &body).await,
         EwsAction::GetItem => handle_get_item(&state, &auth, &body).await,
+        EwsAction::GetUserAvailability => handle_get_user_availability(&state, &auth, &body).await,
         EwsAction::SyncFolderItems => handle_sync_folder_items(&state, &auth, &body).await,
         EwsAction::CreateItem => handle_create_item(&state, &auth, &body).await,
         EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
@@ -114,6 +116,9 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                 }
                 if name.as_ref() == b"GetItem" {
                     return Some(EwsAction::GetItem);
+                }
+                if name.as_ref() == b"GetUserAvailabilityRequest" {
+                    return Some(EwsAction::GetUserAvailability);
                 }
                 if name.as_ref() == b"SyncFolderItems" {
                     return Some(EwsAction::SyncFolderItems);
@@ -176,6 +181,14 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
         EwsAction::GetItem => {
             if !xml.contains("ItemShape") || !xml.contains("ItemIds") {
                 return Err("GetItem requires ItemShape and ItemIds");
+            }
+            Ok(())
+        }
+        EwsAction::GetUserAvailability => {
+            if !xml.contains("MailboxDataArray") || !xml.contains("FreeBusyViewOptions") {
+                return Err(
+                    "GetUserAvailability requires MailboxDataArray and FreeBusyViewOptions",
+                );
             }
             Ok(())
         }
@@ -318,6 +331,29 @@ fn sensitivity_to_ews(value: u8) -> &'static str {
         3 => "Confidential",
         _ => "Normal",
     }
+}
+
+fn extract_requested_change_key(xml: &str) -> Option<String> {
+    extract_first_attr(xml, b"ItemId", b"ChangeKey")
+}
+
+fn validate_item_change_key(
+    action: &EwsAction,
+    body: &str,
+    item: &EwsItemRow,
+) -> Result<(), Response> {
+    if let Some(requested) = extract_requested_change_key(body) {
+        let expected = changekey_for_item(item);
+        if requested != expected {
+            return Err(operation_error_response(
+                action,
+                "ErrorIrresolvableConflict",
+                "Item ChangeKey does not match the current stored version",
+                StatusCode::OK,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn render_ews_attendees(item: &crate::calendar::CalendarItem) -> String {
@@ -571,6 +607,79 @@ fn render_ews_calendar_item_xml(
     xml
 }
 
+async fn merged_freebusy_for_mailbox(
+    state: &Arc<AppState>,
+    mailbox: &str,
+    password: &str,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+    interval_minutes: i64,
+) -> String {
+    let safe_interval = interval_minutes.clamp(5, 1440);
+    let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
+        / (safe_interval * 60)) as usize;
+    let mut merged = vec!['0'; slot_count];
+
+    let caldav = CaldavClient::new(&state.cfg);
+    if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
+        && let Some(collection_href) = calendars.first()
+        && let Ok(events_xml) = caldav
+            .query_events(
+                collection_href,
+                &start.format("%Y%m%dT%H%M%SZ").to_string(),
+                &end.format("%Y%m%dT%H%M%SZ").to_string(),
+                mailbox,
+                password,
+            )
+            .await
+    {
+        let mut reader = Reader::from_str(&events_xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        let mut in_calendar_data = false;
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    in_calendar_data = true;
+                }
+                Ok(Event::Text(t)) if in_calendar_data => {
+                    if let Ok(ics) = t.decode()
+                        && let Some(item) = parse_ics_event(&ics)
+                    {
+                        let status_digit = match item.busy_status.unwrap_or(2) {
+                            0 => '0',
+                            1 => '1',
+                            3 => '3',
+                            _ => '2',
+                        };
+                        for (index, slot) in merged.iter_mut().enumerate() {
+                            let slot_start =
+                                start + chrono::Duration::minutes((index as i64) * safe_interval);
+                            let slot_end = slot_start + chrono::Duration::minutes(safe_interval);
+                            if item.start < slot_end
+                                && item.end > slot_start
+                                && status_digit > *slot
+                            {
+                                *slot = status_digit;
+                            }
+                        }
+                    }
+                }
+                Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    in_calendar_data = false;
+                }
+                Ok(Event::Eof) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+    } else {
+        merged.fill('4');
+    }
+
+    merged.into_iter().collect()
+}
+
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -578,6 +687,46 @@ fn unauthorized() -> Response {
         "Unauthorized",
     )
         .into_response()
+}
+
+async fn handle_get_user_availability(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let mailbox =
+        extract_first_tag_text(body, b"EmailAddress").unwrap_or_else(|| auth.username.clone());
+    let start = extract_first_tag_text(body, b"StartTime")
+        .and_then(|v| crate::calendar::parse_datetime(&v))
+        .unwrap_or_else(chrono::Utc::now);
+    let end = extract_first_tag_text(body, b"EndTime")
+        .and_then(|v| crate::calendar::parse_datetime(&v))
+        .unwrap_or_else(|| start + chrono::Duration::days(7));
+    let interval = extract_first_tag_text(body, b"MergedFreeBusyIntervalInMinutes")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(30);
+
+    let merged =
+        merged_freebusy_for_mailbox(state, &mailbox, &auth.password, start, end, interval).await;
+    let response = format!(
+        r#"<m:GetUserAvailabilityResponse xmlns:m="{msg_ns}" xmlns:t="{type_ns}">
+  <m:FreeBusyResponseArray>
+    <m:FreeBusyResponse>
+      <m:ResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+      </m:ResponseMessage>
+      <m:FreeBusyView>
+        <t:FreeBusyViewType>MergedOnly</t:FreeBusyViewType>
+        <t:MergedFreeBusy>{merged}</t:MergedFreeBusy>
+      </m:FreeBusyView>
+    </m:FreeBusyResponse>
+  </m:FreeBusyResponseArray>
+</m:GetUserAvailabilityResponse>"#,
+        msg_ns = EWS_MSG_NS,
+        type_ns = EWS_TYPE_NS,
+        merged = merged
+    );
+    soap_ok(response)
 }
 
 fn soap_ok(inner: String) -> Response {
@@ -627,6 +776,7 @@ fn operation_error_response(
         EwsAction::FindFolder => "FindFolderResponseMessage",
         EwsAction::FindItem => "FindItemResponseMessage",
         EwsAction::GetItem => "GetItemResponseMessage",
+        EwsAction::GetUserAvailability => "GetUserAvailabilityResponseMessage",
         EwsAction::SyncFolderItems => "SyncFolderItemsResponseMessage",
         EwsAction::CreateItem => "CreateItemResponseMessage",
         EwsAction::UpdateItem => "UpdateItemResponseMessage",
@@ -638,6 +788,7 @@ fn operation_error_response(
         EwsAction::FindFolder => "FindFolderResponse",
         EwsAction::FindItem => "FindItemResponse",
         EwsAction::GetItem => "GetItemResponse",
+        EwsAction::GetUserAvailability => "GetUserAvailabilityResponse",
         EwsAction::SyncFolderItems => "SyncFolderItemsResponse",
         EwsAction::CreateItem => "CreateItemResponse",
         EwsAction::UpdateItem => "UpdateItemResponse",
@@ -1241,6 +1392,13 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         }
     };
     let server_id = generate_server_id(&state.cfg.hmac_secret, &href);
+    let response_row = EwsItemRow {
+        server_id: server_id.clone(),
+        resource_href: href.clone(),
+        uid: Some(item.uid.clone()),
+        etag: Some(etag.clone()),
+        updated_at: None,
+    };
 
     if let Err(e) = state
         .storage
@@ -1268,7 +1426,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 </m:CreateItemResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        render_ews_calendar_item_xml(&server_id, &etag, &item),
+        render_ews_calendar_item_xml(&server_id, &changekey_for_item(&response_row), &item),
     );
     soap_ok(response)
 }
@@ -1308,6 +1466,9 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::OK,
         );
     };
+    if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &item) {
+        return resp;
+    }
 
     let caldav = CaldavClient::new(&state.cfg);
     let (existing_ics, existing_etag) = match caldav
@@ -1483,6 +1644,13 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::INTERNAL_SERVER_ERROR,
         );
     }
+    let response_row = EwsItemRow {
+        server_id: item.server_id.clone(),
+        resource_href: resource_href.clone(),
+        uid: Some(uid.clone()),
+        etag: Some(new_etag.clone()),
+        updated_at: None,
+    };
 
     let response = format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}">
@@ -1497,7 +1665,11 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 </m:UpdateItemResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        render_ews_calendar_item_xml(&item.server_id, &new_etag, &current_item),
+        render_ews_calendar_item_xml(
+            &item.server_id,
+            &changekey_for_item(&response_row),
+            &current_item,
+        ),
     );
     soap_ok(response)
 }
@@ -1537,6 +1709,9 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::OK,
         );
     };
+    if let Err(resp) = validate_item_change_key(&EwsAction::DeleteItem, body, &existing) {
+        return resp;
+    }
     let caldav = CaldavClient::new(&state.cfg);
     if let Err(e) = caldav
         .delete_event(
@@ -1680,6 +1855,10 @@ mod tests {
                 r#"<s:Envelope><s:Body><m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#,
                 EwsAction::ResolveNames,
             ),
+            (
+                r#"<s:Envelope><s:Body><m:GetUserAvailabilityRequest xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#,
+                EwsAction::GetUserAvailability,
+            ),
         ];
         for (xml, expected) in cases {
             assert_eq!(detect_action(xml), Some(expected));
@@ -1704,6 +1883,10 @@ mod tests {
             (
                 EwsAction::ResolveNames,
                 r#"<s:Envelope><s:Body><m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:UnresolvedEntry>a@example.com</m:UnresolvedEntry></m:ResolveNames></s:Body></s:Envelope>"#,
+            ),
+            (
+                EwsAction::GetUserAvailability,
+                r#"<s:Envelope><s:Body><m:GetUserAvailabilityRequest xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:MailboxDataArray/><m:FreeBusyViewOptions/></m:GetUserAvailabilityRequest></s:Body></s:Envelope>"#,
             ),
         ];
 

@@ -58,6 +58,12 @@ struct SyncKeyRow {
 }
 
 #[derive(Deserialize)]
+struct ClientSyncCommandRow {
+    server_id: Option<String>,
+    status: String,
+}
+
+#[derive(Deserialize)]
 struct TombstoneRow {
     seq: Option<i64>,
     server_id: String,
@@ -194,6 +200,51 @@ impl Storage {
             etag,
         };
         self.post_json("upsert_item_map", &body).await
+    }
+
+    pub async fn get_client_sync_command(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        client_id: &str,
+    ) -> Result<Option<(Option<String>, String)>> {
+        let path = format!(
+            "get_client_sync_command?owner={}&collection_id={}&client_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(collection_id),
+            urlencoding::encode(client_id)
+        );
+        let row: Option<ClientSyncCommandRow> = self.get_json(&path).await?;
+        Ok(row.map(|r| (r.server_id, r.status)))
+    }
+
+    pub async fn put_client_sync_command(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        client_id: &str,
+        server_id: Option<&str>,
+        status: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            collection_id: &'a str,
+            client_id: &'a str,
+            server_id: Option<&'a str>,
+            status: &'a str,
+        }
+        self.post_json(
+            "put_client_sync_command",
+            &Req {
+                owner,
+                collection_id,
+                client_id,
+                server_id,
+                status,
+            },
+        )
+        .await
     }
 
     pub async fn delete_item_by_server_id(&self, owner: &str, server_id: &str) -> Result<()> {

@@ -953,6 +953,7 @@ pub async fn handle(
                 match sync::apply_client_sync_mutations(
                     state.clone(),
                     &username,
+                    &state_collection_id,
                     &username,
                     &password,
                     &xml,

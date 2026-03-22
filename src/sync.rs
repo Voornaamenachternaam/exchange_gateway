@@ -77,6 +77,7 @@ pub fn invalid_sync_key_response(collection_id: &str, content_class: &str) -> St
 pub async fn apply_client_sync_mutations(
     state: Arc<AppState>,
     owner: &str,
+    collection_id: &str,
     username: &str,
     password: &str,
     xml: &str,
@@ -97,6 +98,20 @@ pub async fn apply_client_sync_mutations(
     for mutation in mutations {
         match mutation {
             EasSyncMutation::Add { client_id, item } => {
+                if let Some(client_id) = client_id.as_deref()
+                    && let Some((server_id, status)) = state
+                        .storage
+                        .get_client_sync_command(owner, collection_id, client_id)
+                        .await?
+                {
+                    results.push(ClientMutationResult::Add {
+                        client_id: Some(client_id.to_string()),
+                        server_id,
+                        status: if status == "1" { "1" } else { "6" },
+                    });
+                    continue;
+                }
+
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(&collection_href, None, &ics, username, password, None)
@@ -122,17 +137,37 @@ pub async fn apply_client_sync_mutations(
                                 &etag,
                             )
                             .await?;
+                        if let Some(client_id) = client_id.as_deref() {
+                            state
+                                .storage
+                                .put_client_sync_command(
+                                    owner,
+                                    collection_id,
+                                    client_id,
+                                    Some(&server_id),
+                                    "1",
+                                )
+                                .await?;
+                        }
                         results.push(ClientMutationResult::Add {
                             client_id,
                             server_id: Some(server_id),
                             status: "1",
                         });
                     }
-                    Err(_) => results.push(ClientMutationResult::Add {
-                        client_id,
-                        server_id: None,
-                        status: "6",
-                    }),
+                    Err(_) => {
+                        if let Some(client_id) = client_id.as_deref() {
+                            let _ = state
+                                .storage
+                                .put_client_sync_command(owner, collection_id, client_id, None, "6")
+                                .await;
+                        }
+                        results.push(ClientMutationResult::Add {
+                            client_id,
+                            server_id: None,
+                            status: "6",
+                        })
+                    }
                 }
             }
             EasSyncMutation::Change { server_id, patch } => {

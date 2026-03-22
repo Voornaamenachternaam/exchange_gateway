@@ -26,8 +26,12 @@ The repository has materially improved compared with the earlier partial prototy
 - device-scoped EAS sync-state namespacing instead of a single shared mailbox-wide sync-key timeline;
 - improved incremental `GetItemEstimate` behavior;
 - per-command EAS mutation result reporting, Binder-aligned Ping heartbeat/max-folder/change-found behavior, and basic `ResolveRecipients` free/busy output that are richer than the previous minimal shells;
+- durable device-scoped `ClientId` replay suppression for EAS `Sync/Add` retries via D1-backed command journaling rather than re-creating duplicate events;
 - richer recurrence/exception field handling than the original minimal implementation;
-- preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision.
+- preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision;
+- EWS `GetUserAvailability` merged free/busy output sourced from CalDAV event windows;
+- stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
+- richer Autodiscover XML / JSON / SOAP payloads that advertise EWS and ActiveSync endpoints more explicitly for Outlook bootstrap.
 
 However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
 
@@ -38,6 +42,16 @@ However, even after those improvements, the repository is **still not yet equiva
 3. **Recurring series, exceptions, and time-zone handling are still materially incomplete** → **partially reduced, not fully closed**.
 4. **EWS support is still only a partial subset of what Outlook actually relies on** → **partially reduced, not fully closed**.
 5. **Calendar-specific Exchange semantics are not fully modeled** → **still open**.
+
+### Specific remaining gaps closed in this revision
+
+The top-level gaps above are still only **partially** closed overall, but this revision does fully close at least the following previously-listed **specific remaining gaps**:
+
+1. **EAS duplicate-submission / retry replay handling for `Sync/Add` `ClientId` values** is now durably implemented with worker-backed dedupe state, instead of re-creating duplicate CalDAV items on identical replay.
+2. **EWS `ChangeKey` conflict validation** is now enforced for `UpdateItem` and `DeleteItem`, so stale item revisions are rejected with conflict semantics instead of being silently accepted.
+3. **EWS response `ChangeKey` consistency** is now corrected so created/updated item payloads return gateway-computed change keys rather than mixing in raw CalDAV ETags.
+4. **EWS free/busy support being absent outside EAS `ResolveRecipients`** is now closed by adding a real `GetUserAvailability` path that returns merged free/busy strings from CalDAV-backed calendar data.
+5. **Autodiscover setting coverage being too narrow for Outlook bootstrap** is now materially expanded across JSON, XML, and SOAP responses with explicit EWS / ECP / OAB / MobileSync settings suitable for the stated Cloudflare-published gateway shape.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -93,7 +107,7 @@ This gap is improved, but **not fully closed**.
    The gateway now returns richer per-command mutation results than before, but it still does not implement the full Exchange-grade command-state machine and all status combinations expected by Binder-driven clients.
 
 2. **Conflict semantics are still incomplete.**
-   Binder1-driven sync correctness requires reliable handling of stale client state, duplicate submissions, retries, partial failure, and write conflicts. The current implementation improves validation, but it still does not implement a complete conflict-resolution model.
+   Binder1-driven sync correctness requires reliable handling of stale client state, partial failure, and all write-conflict cases. Duplicate `Sync/Add` retries keyed by `ClientId` are now durably suppressed, but the implementation still does not model every Exchange conflict branch end-to-end.
 
 3. **Some server-generated sync semantics remain synthetic.**
    Sync keys, tombstones, and replay behavior are gateway-generated rather than equivalent to the richer Exchange state machine that Outlook clients are built against.
@@ -215,7 +229,7 @@ This remains **open**.
    Organizer, attendee, meeting-status, response-type, and related fields are now surfaced more richly than before, but full Exchange meeting workflow behavior is still only partially represented.
 
 2. **Free/busy semantics are no longer completely absent, but they are still partial.**
-   The gateway can now return a basic `MergedFreeBusy` string through `ResolveRecipients` availability handling, but this is still narrower than full Exchange availability semantics and does not amount to complete Outlook-grade free/busy coverage.
+   The gateway can now return `MergedFreeBusy` output through both EAS `ResolveRecipients` and EWS `GetUserAvailability`, but it still does not implement the full Exchange availability detail surface such as suggestions, detailed event arrays, or full attendee/organizer availability workflows.
 
 3. **Change-key / identity semantics remain gateway-defined.**
    The gateway provides stable IDs and change material, but not a true Exchange item-identity and mutation model.
@@ -234,9 +248,9 @@ This remains **open**.
 
 ## Additional remaining gaps outside the five requested areas
 
-## 6) Autodiscover remains simplified
+## 6) Autodiscover is richer, but still not fully Exchange-topology aware
 
-The Worker provides Autodiscover payloads, but the behavior is still synthetic rather than fully mailbox-topology aware. The repository still lacks proof that all current Outlook bootstrap paths work reliably with the exact Cloudflare deployment model and the current gateway behavior.
+The Worker now provides materially richer JSON, XML, and SOAP Autodiscover payloads, including explicit EWS / MobileSync / ECP / OAB-style settings aligned to the gateway endpoint shape. It is still synthetic rather than fully mailbox-topology aware, and the repository still lacks proof that all current Outlook bootstrap paths work reliably with the exact Cloudflare deployment model and the current gateway behavior.
 
 ## 7) Cloudflare operational proof is still incomplete
 

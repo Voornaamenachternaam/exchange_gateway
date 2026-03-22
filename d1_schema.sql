@@ -5,6 +5,7 @@ DROP TABLE IF EXISTS device_info;
 DROP TABLE IF EXISTS provision_state;
 DROP TABLE IF EXISTS deleted_item_tombstone;
 DROP TABLE IF EXISTS change_journal;
+DROP TABLE IF EXISTS client_sync_command;
 DROP TABLE IF EXISTS api_idempotency;
 DROP TABLE IF EXISTS schema_version;
 
@@ -50,6 +51,19 @@ CREATE TABLE change_journal (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Durable EAS ClientId dedupe journal used for retry-safe Add semantics.
+CREATE TABLE client_sync_command (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    server_id TEXT,
+    status TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id, client_id)
+);
+
 
 -- Provisioning policy state by owner/device used by /api/set_provision_policy and /api/get_provision_policy
 CREATE TABLE provision_state (
@@ -88,6 +102,7 @@ CREATE INDEX idx_item_map_owner_time ON item_map(owner, updated_at);
 CREATE INDEX idx_item_map_resource ON item_map(owner, resource_href);
 CREATE INDEX idx_deleted_item_owner_time ON deleted_item_tombstone(owner, deleted_at);
 CREATE INDEX idx_change_journal_owner_id ON change_journal(owner, id);
+CREATE INDEX idx_client_sync_lookup ON client_sync_command(owner, collection_id, client_id);
 CREATE INDEX idx_ews_sync_lookup ON ews_sync_state(user_email, folder_id);
 
 CREATE INDEX idx_provision_lookup ON provision_state(owner, device_id);
