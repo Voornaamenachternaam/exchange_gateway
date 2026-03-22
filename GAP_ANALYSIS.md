@@ -39,6 +39,7 @@ The repository has materially improved compared with the earlier partial prototy
 - exception-level `AppointmentReplyTime` / `MeetingStatus` / `ResponseType` fields are now preserved through the local calendar model and emitted back out on Sync/ICS paths;
 - a slightly less synthetic EWS folder shape by including the calendar folder’s parent linkage under `MsgFolderRoot`;
 - richer Autodiscover XML / JSON / SOAP payloads that advertise EWS and ActiveSync endpoints more explicitly for Outlook bootstrap.
+- a repo-contained live-environment smoke harness for the exact Cloudflare-published gateway surface (`ActiveSync OPTIONS`, Autodiscover, EWS folder/availability, and optional EWS create/update/delete).
 
 However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
 
@@ -67,6 +68,7 @@ The top-level gaps above are still only **partially** closed overall, but this r
 11. **Monthly/yearly ActiveSync recurrence responses omitting `CalendarType`** is now closed for the implemented recurrence response shapes.
 12. **Exception-level meeting reply/status metadata being dropped from local round-tripping** is now reduced by preserving and re-emitting those fields in the calendar model.
 13. **Common EWS operation attributes being accepted without any enum validation** is now reduced by validating supported values for `CreateItem`, `UpdateItem`, and `DeleteItem`.
+14. **The repository lacking a reproducible live smoke package for the Cloudflare/Stalwart deployment surface** is now reduced by adding a scriptable smoke harness and runbook for the published gateway endpoints.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -130,8 +132,8 @@ This gap is improved, but **not fully closed**.
 4. **Protocol-version-specific calendar behavior is still not fully modeled.**
    Binder1.txt describes version- and element-specific behavior, especially around exceptions and child elements. The current implementation is richer, now including `CalendarType` in implemented monthly/yearly recurrence responses and preserving more exception reply/status fields, but it is not yet exhaustive.
 
-5. **No repository-contained proof exists for real Outlook write workflows.**
-   There is still no in-repo interoperability evidence covering create/update/delete under real Outlook Windows 11 and Outlook Android 15 behavior, including retries and offline edits.
+5. **No complete repository-contained proof exists for real Outlook write workflows.**
+   The repository now includes a live smoke harness that can exercise EWS create/update/delete and the Cloudflare-published Autodiscover/EAS/EWS surface, but it still does not include genuine Outlook Windows 11 / Android 15 automation, retries, offline edits, or packet captures proving native-client behavior end-to-end.
 
 ### Conclusion
 
@@ -269,7 +271,7 @@ The Worker now provides materially richer JSON, XML, and SOAP Autodiscover paylo
 
 ## 7) Cloudflare operational proof is still incomplete
 
-The repository still does not contain a production-grade benchmark and compatibility package proving that the Worker, D1, tunnel, and Rust gateway remain reliable within the real request patterns of Outlook clients on the intended free-service footprint.
+The repository now includes a concrete smoke-harness runbook for the Cloudflare-published gateway surface, but it still does not contain a production-grade benchmark and compatibility package proving that the Worker, D1, tunnel, and Rust gateway remain reliable within the real request patterns of Outlook clients on the intended free-service footprint.
 
 ## 8) Security hardening is improved but still not “perfectly closed”
 
@@ -277,7 +279,7 @@ This analysis respects your stated use-case: **Basic authentication remains part
 
 ## 9) Stalwart-specific proof remains incomplete
 
-The gateway is clearly designed around Stalwart CalDAV, but the repository still lacks a full in-repo proof package showing exact interoperability with Stalwart Mailserver v0.15.5 under the target Outlook client matrix.
+The gateway is clearly designed around Stalwart CalDAV, and the repository now includes a Stalwart/Cloudflare-targeted live smoke harness, but it still lacks a full in-repo proof package showing exact interoperability with Stalwart Mailserver v0.15.5 under the target Outlook client matrix.
 
 ---
 
