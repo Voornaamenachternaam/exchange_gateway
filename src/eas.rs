@@ -397,6 +397,52 @@ fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String 
     format!("{visible_collection_id}::{device_id}")
 }
 
+async fn handle_ping(
+    state: &Arc<AppState>,
+    owner: &str,
+    req: &EasRequest,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let mut changed_folders = Vec::new();
+    let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
+    if xml.contains("<Folder>1</Folder>") || xml.contains("<FolderId>1</FolderId>") {
+        let collection_id = scoped_collection_id("1", device_id);
+        let since = state
+            .storage
+            .get_sync_key(owner, &collection_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(_, token)| token)
+            .and_then(|token| token.strip_prefix("ts:").map(|v| v.to_string()))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        let changed = state.storage.list_changes_since(owner, since).await.unwrap_or_default();
+        let deleted = state.storage.list_deleted_since(owner, since).await.unwrap_or_default();
+        if !changed.is_empty() || !deleted.is_empty() {
+            changed_folders.push("1");
+        }
+    }
+
+    let xml = if changed_folders.is_empty() {
+        r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#
+            .to_string()
+    } else {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
+            changed_folders
+                .iter()
+                .map(|id| format!("<Folder>{}</Folder>", id))
+                .collect::<Vec<_>>()
+                .join("")
+        )
+    };
+    xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
+}
+
 async fn handle_provision(
     state: &Arc<AppState>,
     owner: &str,
@@ -641,6 +687,7 @@ pub async fn handle(
                 scoped_collection_id(collection_id, req.device_id.as_deref().unwrap_or("unknown-device"));
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
+            let mut mutation_responses = String::new();
 
             if xml.contains("<Add")
                 || xml.contains("<Change")
@@ -649,7 +696,7 @@ pub async fn handle(
                 || xml.contains(":Change")
                 || xml.contains(":Delete")
             {
-                if let Err(e) = sync::apply_client_sync_mutations(
+                match sync::apply_client_sync_mutations(
                     state.clone(),
                     &username,
                     &username,
@@ -658,13 +705,18 @@ pub async fn handle(
                 )
                 .await
                 {
-                    tracing::error!(
-                        "request_id={} failed applying Sync mutations: {}",
-                        request_id,
-                        e
-                    );
-                    let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
-                    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    Ok(results) => {
+                        mutation_responses = sync::render_client_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "request_id={} failed applying Sync mutations: {}",
+                            request_id,
+                            e
+                        );
+                        let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
+                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    }
                 }
             }
 
@@ -678,6 +730,7 @@ pub async fn handle(
                 100,
                 &username,
                 &password,
+                &mutation_responses,
             )
             .await
             {
@@ -689,9 +742,7 @@ pub async fn handle(
                 }
             }
         }
-        "Ping" => {
-            success_status_response(&wbxml, wants_wbxml, "Ping", "Ping:", "1", "", &request_id)
-        }
+        "Ping" => handle_ping(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
         "Settings" => success_status_response(
             &wbxml,
             wants_wbxml,

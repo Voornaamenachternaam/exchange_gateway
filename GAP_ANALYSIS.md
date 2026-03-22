@@ -25,6 +25,7 @@ The repository has materially improved compared with the earlier partial prototy
 - a stricter `FolderSync` surface focused on the calendar folder;
 - device-scoped EAS sync-state namespacing instead of a single shared mailbox-wide sync-key timeline;
 - improved incremental `GetItemEstimate` behavior;
+- per-command EAS mutation result reporting and change-aware Ping responses that are richer than the previous minimal shells;
 - richer recurrence/exception field handling than the original minimal implementation;
 - preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision.
 
@@ -50,6 +51,7 @@ The repository now does more than simply emit calendar data:
 
 - client `Sync` mutations are parsed and written back to CalDAV;
 - invalid sync-key handling is now explicit rather than silently ignored;
+- sync responses can now return per-command mutation results instead of only an aggregate success/failure shape;
 - sync state is persisted and used for incremental responses;
 - EAS collection state is now scoped per device instead of sharing one sync-key slot across every client;
 - delete tombstones are tracked so that incremental sync can emit deletions;
@@ -86,8 +88,8 @@ This gap is improved, but **not fully closed**.
 
 ### Specific remaining gaps
 
-1. **Per-command status fidelity is still incomplete.**
-   Exchange ActiveSync expects detailed command/collection/status semantics. The gateway still behaves more like a consolidated best-effort sync operation than a fully Exchange-grade command-state machine.
+1. **Per-command status fidelity is improved but still incomplete.**
+   The gateway now returns richer per-command mutation results than before, but it still does not implement the full Exchange-grade command-state machine and all status combinations expected by Binder-driven clients.
 
 2. **Conflict semantics are still incomplete.**
    Binder1-driven sync correctness requires reliable handling of stale client state, duplicate submissions, retries, partial failure, and write conflicts. The current implementation improves validation, but it still does not implement a complete conflict-resolution model.
@@ -128,8 +130,8 @@ This gap is also improved, but **not fully closed**.
 3. **Sync-key recovery behavior is still simplified.**
    Invalid-key handling is present, but the recovery and replay model remains narrower than the complete Binder-defined Exchange behavior.
 
-4. **`Ping` remains minimal.**
-   The repository still does not provide a full long-lived monitored-folder heartbeat implementation equivalent to Exchange server behavior across all real-client timing patterns.
+4. **`Ping` remains partial.**
+   The repository can now report simple change-aware Ping results, but it still does not provide a full long-lived monitored-folder heartbeat implementation equivalent to Exchange server behavior across all real-client timing patterns.
 
 5. **No complete concurrency proof exists.**
    There is still no repository-contained proof for multi-device, out-of-order, retry-heavy sync behavior under production-like load.
