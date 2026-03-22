@@ -29,6 +29,13 @@ struct AuthContext {
     password: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemShape {
+    IdOnly,
+    Default,
+    AllProperties,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum EwsAction {
     GetFolder,
@@ -555,6 +562,20 @@ fn ews_deleted_occurrences_xml(item: &crate::calendar::CalendarItem) -> String {
     )
 }
 
+fn ews_response_objects_xml(item: &crate::calendar::CalendarItem) -> String {
+    let is_meeting = !item.attendees.is_empty();
+    let is_organizer = item
+        .organizer_email
+        .as_deref()
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let response_requested = item.response_requested.unwrap_or(is_meeting);
+    if !is_meeting || is_organizer || !response_requested {
+        return String::new();
+    }
+    "<t:ResponseObjects><t:AcceptItem /><t:TentativelyAcceptItem /><t:DeclineItem /></t:ResponseObjects>".to_string()
+}
+
 fn render_ews_recurrence_xml(rrule: &str) -> String {
     let mut freq = "";
     let mut interval = "1".to_string();
@@ -638,10 +659,11 @@ fn render_ews_recurrence_xml(rrule: &str) -> String {
     format!("<t:Recurrence>{}{}</t:Recurrence>", pattern, range)
 }
 
-fn render_ews_calendar_item_xml(
+fn render_ews_calendar_item_xml_with_shape(
     item_id: &str,
     change_key: &str,
     item: &crate::calendar::CalendarItem,
+    shape: ItemShape,
 ) -> String {
     let created = item.dtstamp.unwrap_or_else(chrono::Utc::now);
     let duration = item.end - item.start;
@@ -668,6 +690,10 @@ fn render_ews_calendar_item_xml(
         item.end.to_rfc3339(),
         if item.all_day { "true" } else { "false" }
     );
+    if shape == ItemShape::IdOnly {
+        xml.push_str("</t:CalendarItem>");
+        return xml;
+    }
     if !item.location.is_empty() {
         xml.push_str(&format!(
             "<t:Location>{}</t:Location>",
@@ -756,6 +782,18 @@ fn render_ews_calendar_item_xml(
         if is_cancelled { "true" } else { "false" }
     ));
     xml.push_str(&format!(
+        "<t:MeetingRequestWasSent>{}</t:MeetingRequestWasSent>",
+        if is_meeting { "true" } else { "false" }
+    ));
+    xml.push_str(&format!(
+        "<t:AllowNewTimeProposal>{}</t:AllowNewTimeProposal>",
+        if item.disallow_new_time_proposal.unwrap_or(false) {
+            "false"
+        } else {
+            "true"
+        }
+    ));
+    xml.push_str(&format!(
         "<t:MeetingStatus>{}</t:MeetingStatus>",
         derived_meeting_status(item)
     ));
@@ -796,14 +834,29 @@ fn render_ews_calendar_item_xml(
     if let Some(v) = &item.client_uid {
         xml.push_str(&format!("<t:ClientUid>{}</t:ClientUid>", xml_escape(v)));
     }
+    xml.push_str("<t:AdjacentMeetingCount>0</t:AdjacentMeetingCount><t:ConflictingMeetingCount>0</t:ConflictingMeetingCount>");
+    if shape == ItemShape::Default {
+        xml.push_str(&ews_response_objects_xml(item));
+        xml.push_str("</t:CalendarItem>");
+        return xml;
+    }
     xml.push_str(&render_ews_categories(item));
     xml.push_str(&render_ews_attendees(item));
     xml.push_str(&ews_deleted_occurrences_xml(item));
     if let Some(rrule) = &item.rrule {
         xml.push_str(&render_ews_recurrence_xml(rrule));
     }
+    xml.push_str(&ews_response_objects_xml(item));
     xml.push_str("</t:CalendarItem>");
     xml
+}
+
+fn render_ews_calendar_item_xml(
+    item_id: &str,
+    change_key: &str,
+    item: &crate::calendar::CalendarItem,
+) -> String {
+    render_ews_calendar_item_xml_with_shape(item_id, change_key, item, ItemShape::AllProperties)
 }
 
 async fn merged_freebusy_for_mailbox(
@@ -921,6 +974,16 @@ async fn handle_get_user_availability(
     let (merged, events_xml) =
         merged_freebusy_for_mailbox(state, &mailbox, &auth.password, start, end, interval).await;
     let view_type = requested_freebusy_view_type(body);
+    let suggestions_xml = if body.contains("SuggestionsViewOptions") {
+        r#"<m:SuggestionsResponse>
+  <m:ResponseMessage ResponseClass="Success">
+    <m:ResponseCode>NoError</m:ResponseCode>
+  </m:ResponseMessage>
+  <m:SuggestionDayResultArray />
+</m:SuggestionsResponse>"#
+    } else {
+        ""
+    };
     let response = format!(
         r#"<m:GetUserAvailabilityResponse xmlns:m="{msg_ns}" xmlns:t="{type_ns}">
   <m:FreeBusyResponseArray>
@@ -935,11 +998,13 @@ async fn handle_get_user_availability(
       </m:FreeBusyView>
     </m:FreeBusyResponse>
   </m:FreeBusyResponseArray>
+  {suggestions_xml}
 </m:GetUserAvailabilityResponse>"#,
         msg_ns = EWS_MSG_NS,
         type_ns = EWS_TYPE_NS,
         merged = merged,
-        view_type = view_type
+        view_type = view_type,
+        suggestions_xml = suggestions_xml
     );
     soap_ok(response)
 }
@@ -1118,6 +1183,18 @@ fn requested_freebusy_view_type(body: &str) -> &'static str {
         "freebusydetailed" => "Detailed",
         "detailedmerged" => "DetailedMerged",
         _ => "MergedOnly",
+    }
+}
+
+fn requested_item_shape(body: &str) -> ItemShape {
+    match extract_first_tag_text(body, b"BaseShape")
+        .unwrap_or_else(|| "AllProperties".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "idonly" => ItemShape::IdOnly,
+        "default" => ItemShape::Default,
+        _ => ItemShape::AllProperties,
     }
 }
 
@@ -1337,6 +1414,7 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     }
 
     let view_window = parse_calendar_view_window(body);
+    let shape = requested_item_shape(body);
     let items = match load_current_calendar_items(state, owner, &auth.password, view_window).await {
         Ok(v) => v,
         Err(e) => {
@@ -1355,10 +1433,11 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     let mut item_xml = String::new();
     for current in &paged_items {
         let change_key = changekey_for_item(&current.row);
-        item_xml.push_str(&render_ews_calendar_item_xml(
+        item_xml.push_str(&render_ews_calendar_item_xml_with_shape(
             &current.row.server_id,
             &change_key,
             &current.item,
+            shape,
         ));
     }
 
@@ -1428,6 +1507,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     };
 
     let ck = changekey_for_item(&item);
+    let shape = requested_item_shape(body);
     let caldav = CaldavClient::new(&state.cfg);
     let calendar_item_xml = match caldav
         .get_event(&item.resource_href, owner, &auth.password)
@@ -1435,9 +1515,9 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     {
         Ok((ics, _)) => match parse_ics_event(&ics) {
             Some(calendar_item) => {
-                render_ews_calendar_item_xml(&item.server_id, &ck, &calendar_item)
+                render_ews_calendar_item_xml_with_shape(&item.server_id, &ck, &calendar_item, shape)
             }
-            None => render_ews_calendar_item_xml(
+            None => render_ews_calendar_item_xml_with_shape(
                 &item.server_id,
                 &ck,
                 &crate::calendar::CalendarItem {
@@ -1473,6 +1553,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                     client_uid: None,
                     exceptions: Vec::new(),
                 },
+                shape,
             ),
         },
         Err(_) => format!(
@@ -1538,6 +1619,7 @@ async fn handle_sync_folder_items(
         return resp;
     }
     let max_changes = extract_int(body, b"MaxChangesReturned", 100);
+    let shape = requested_item_shape(body);
     let folder_id = folder_id_for_owner(owner);
 
     if max_changes == 0 || max_changes > 512 {
@@ -1641,7 +1723,12 @@ async fn handle_sync_folder_items(
             changes_xml.push_str(&format!(
                 r#"<t:{change_tag}>{}</t:{change_tag}>"#,
                 change_tag = change_tag,
-                render_ews_calendar_item_xml(&item.row.server_id, &change_key, &item.item)
+                render_ews_calendar_item_xml_with_shape(
+                    &item.row.server_id,
+                    &change_key,
+                    &item.item,
+                    shape
+                )
             ));
         }
     }
@@ -2142,7 +2229,7 @@ mod tests {
     use super::{
         EwsAction, detect_action, operation_error_response, parse_calendar_view_window,
         parse_sync_state_marker, render_ews_calendar_item_xml, requested_freebusy_view_type,
-        validate_schema,
+        requested_item_shape, validate_schema,
     };
     use crate::calendar::{CalendarException, CalendarItem};
     use chrono::{TimeZone, Utc};
@@ -2281,6 +2368,12 @@ mod tests {
     }
 
     #[test]
+    fn parses_requested_item_shape() {
+        let xml = r#"<m:GetItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemShape><t:BaseShape xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">IdOnly</t:BaseShape></m:ItemShape></m:GetItem>"#;
+        assert_eq!(requested_item_shape(xml), super::ItemShape::IdOnly);
+    }
+
+    #[test]
     fn renders_richer_calendar_item_metadata() {
         let item = CalendarItem {
             uid: "uid-1".to_string(),
@@ -2305,5 +2398,6 @@ mod tests {
         assert!(xml.contains("<t:EndTimeZone>Europe/Stockholm</t:EndTimeZone>"));
         assert!(xml.contains("<t:DeletedOccurrences>"));
         assert!(xml.contains("<t:Duration>PT1H30M</t:Duration>"));
+        assert!(xml.contains("<t:AllowNewTimeProposal>true</t:AllowNewTimeProposal>"));
     }
 }

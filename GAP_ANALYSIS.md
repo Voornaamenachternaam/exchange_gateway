@@ -39,6 +39,9 @@ The repository has materially improved compared with the earlier partial prototy
 - EWS `GetFolder` / `FindFolder` folder counts now reflect current calendar item totals rather than hard-coded zeroes;
 - EWS availability responses now honor the requested free/busy view type instead of always replying as `MergedOnly`;
 - EWS calendar item payloads now expose substantially richer Exchange-style metadata such as `CalendarItemType`, `MyResponseType`, `IsMeeting`, `IsOrganizer`, `IsRecurring`, `ReminderIsSet`, `DateTimeStamp`, `Duration`, `EndTimeZone`, and `DeletedOccurrences`;
+- EWS `GetItem` / `FindItem` / `SyncFolderItems` now respect requested `BaseShape` values (`IdOnly`, `Default`, `AllProperties`) instead of always returning a single unqualified shape;
+- EWS availability responses now emit a basic `SuggestionsResponse` block when `SuggestionsViewOptions` is requested, instead of omitting that branch entirely;
+- EWS meeting items now expose `ResponseObjects`, `AllowNewTimeProposal`, `MeetingRequestWasSent`, `AdjacentMeetingCount`, and `ConflictingMeetingCount` metadata rather than leaving those Exchange-facing semantics absent;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
 - Binder-aligned validation for common EWS operation attributes such as `SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related meeting-cancellation knobs;
 - derived `MeetingStatus` / `ResponseType` emission when the upstream item data does not already provide them explicitly;
@@ -87,6 +90,9 @@ The top-level gaps above are still only **partially** closed overall, but this r
 23. **EWS `GetFolder` / `FindFolder` reporting hard-coded folder totals** is now reduced by deriving the calendar item count from current CalDAV-backed data.
 24. **EWS `GetUserAvailability` always returning `MergedOnly` regardless of requested view type** is now reduced by reflecting the requested free/busy view mode in the response.
 25. **EWS calendar item responses lacking common Exchange calendar metadata that Outlook often inspects** is now reduced by emitting `CalendarItemType`, `MyResponseType`, `IsMeeting`, `IsOrganizer`, `IsRecurring`, `ReminderIsSet`, `DateTimeStamp`, `Duration`, `EndTimeZone`, and `DeletedOccurrences`.
+26. **EWS item-shape requests (`IdOnly` / `Default` / `AllProperties`) not being honored** is now reduced by selecting the rendered item shape from the requested `BaseShape`.
+27. **EWS `GetUserAvailability` omitting the suggestions branch when `SuggestionsViewOptions` is requested** is now reduced by returning a success-shaped `SuggestionsResponse`.
+28. **EWS meeting-item response objects and adjacent/conflict counters being absent** is now reduced by emitting `ResponseObjects`, `AllowNewTimeProposal`, `MeetingRequestWasSent`, `AdjacentMeetingCount`, and `ConflictingMeetingCount`.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -234,7 +240,8 @@ This gap is improved, but **not fully closed**.
 - deletion tombstones improve incremental behavior;
 - `SyncFolderItems` now uses an opaque stored sync-state cursor and ordered journal-window pagination rather than an unbounded plaintext timestamp marker, including a bounded continuation window for `MaxChangesReturned`;
 - `GetItem`, `CreateItem`, and `UpdateItem` responses now return much richer calendar item shapes than the previous subject-only responses, including much more Exchange-like meeting, recurrence, reminder, timezone, and deleted-occurrence metadata;
-- `FindItem` now honors `CalendarView` windows and renders full calendar item XML from live CalDAV state, while `SyncFolderItems` now emits those richer payloads for create/update changes instead of minimal shells.
+- `FindItem` now honors `CalendarView` windows and renders full calendar item XML from live CalDAV state, while `SyncFolderItems` now emits those richer payloads for create/update changes instead of minimal shells;
+- EWS item rendering now also tracks requested `BaseShape`, emits meeting response objects / counters, and returns a basic suggestions branch when availability suggestions are requested.
 
 ### Specific remaining gaps
 
