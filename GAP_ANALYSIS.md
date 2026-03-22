@@ -27,10 +27,14 @@ The repository has materially improved compared with the earlier partial prototy
 - improved incremental `GetItemEstimate` behavior;
 - per-command EAS mutation result reporting, Binder-aligned Ping heartbeat/max-folder/change-found behavior, and basic `ResolveRecipients` free/busy output that are richer than the previous minimal shells;
 - durable device-scoped `ClientId` replay suppression for EAS `Sync/Add` retries via D1-backed command journaling rather than re-creating duplicate events;
+- Binder-aligned validation that `Sync/Add` requests carry `ClientId`, and rejection of response-only ActiveSync calendar fields such as `AppointmentReplyTime` / `ResponseType` in client `Sync` writes;
 - richer recurrence/exception field handling than the original minimal implementation;
 - preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision;
 - EWS `GetUserAvailability` merged free/busy output sourced from CalDAV event windows;
+- EWS `GetUserAvailability` now also emits a concrete calendar-event array instead of only a merged bitmap;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
+- derived `MeetingStatus` / `ResponseType` emission when the upstream item data does not already provide them explicitly;
+- a slightly less synthetic EWS folder shape by including the calendar folder’s parent linkage under `MsgFolderRoot`;
 - richer Autodiscover XML / JSON / SOAP payloads that advertise EWS and ActiveSync endpoints more explicitly for Outlook bootstrap.
 
 However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
@@ -52,6 +56,11 @@ The top-level gaps above are still only **partially** closed overall, but this r
 3. **EWS response `ChangeKey` consistency** is now corrected so created/updated item payloads return gateway-computed change keys rather than mixing in raw CalDAV ETags.
 4. **EWS free/busy support being absent outside EAS `ResolveRecipients`** is now closed by adding a real `GetUserAvailability` path that returns merged free/busy strings from CalDAV-backed calendar data.
 5. **Autodiscover setting coverage being too narrow for Outlook bootstrap** is now materially expanded across JSON, XML, and SOAP responses with explicit EWS / ECP / OAB / MobileSync settings suitable for the stated Cloudflare-published gateway shape.
+6. **Missing Binder-level validation around `Sync/Add` `ClientId` and response-only calendar fields** is now closed for the implemented request surface.
+7. **MeetingResponse request validation being too permissive** is now narrowed by requiring `UserResponse`.
+8. **Merged free/busy responses lacking concrete event windows** is now reduced by emitting a `CalendarEventArray` alongside `MergedFreeBusy`.
+9. **Meeting-status / response-type emission depending entirely on upstream storage values** is now reduced by deriving Exchange-like values from organizer/attendee context when absent.
+10. **The calendar folder shape lacking parent linkage under `MsgFolderRoot`** is now reduced by returning an explicit parent folder reference in EWS folder responses.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -104,7 +113,7 @@ This gap is improved, but **not fully closed**.
 ### Specific remaining gaps
 
 1. **Per-command status fidelity is improved but still incomplete.**
-   The gateway now returns richer per-command mutation results than before, but it still does not implement the full Exchange-grade command-state machine and all status combinations expected by Binder-driven clients.
+   The gateway now returns richer per-command mutation results than before, enforces `ClientId` on `Sync/Add`, rejects some response-only request fields, and requires `UserResponse` for `MeetingResponse`, but it still does not implement the full Exchange-grade command-state machine and all status combinations expected by Binder-driven clients.
 
 2. **Conflict semantics are still incomplete.**
    Binder1-driven sync correctness requires reliable handling of stale client state, partial failure, and all write-conflict cases. Duplicate `Sync/Add` retries keyed by `ClientId` are now durably suppressed, but the implementation still does not model every Exchange conflict branch end-to-end.
@@ -137,7 +146,7 @@ This gap is also improved, but **not fully closed**.
 ### Specific remaining gaps
 
 1. **Folder hierarchy remains synthetic.**
-   Even though the surface is narrower and more accurate, the repository still does not implement a complete Exchange folder model. It exposes a deliberately simplified calendar-only hierarchy.
+   Even though the surface is narrower and more accurate, and the EWS calendar folder now carries an explicit parent link under `MsgFolderRoot`, the repository still does not implement a complete Exchange folder model. It exposes a deliberately simplified calendar-only hierarchy.
 
 2. **State journaling remains lighter than Exchange.**
    D1 state plus tombstones plus device-scoped sync keys is a meaningful improvement, but it is still not a full Exchange-grade journal of item lifecycle transitions, per-device progression, and recovery semantics.
@@ -226,7 +235,7 @@ This remains **open**.
 ### Specific remaining gaps
 
 1. **Meeting workflow semantics are still simplified.**
-   Organizer, attendee, meeting-status, response-type, and related fields are now surfaced more richly than before, but full Exchange meeting workflow behavior is still only partially represented.
+   Organizer, attendee, meeting-status, and response-type fields are now surfaced more richly than before, including derived fallback meeting-status / response-type values, but full Exchange meeting workflow behavior is still only partially represented.
 
 2. **Free/busy semantics are no longer completely absent, but they are still partial.**
    The gateway can now return `MergedFreeBusy` output through both EAS `ResolveRecipients` and EWS `GetUserAvailability`, but it still does not implement the full Exchange availability detail surface such as suggestions, detailed event arrays, or full attendee/organizer availability workflows.

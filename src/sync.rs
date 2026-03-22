@@ -668,10 +668,15 @@ fn render_attendee_xml(attendee: &Attendee) -> String {
             xml_escape(&attendee.email)
         ));
     }
-    if let Some(name) = &attendee.name {
+    if let Some(name) = attendee.name.as_deref().filter(|v| !v.is_empty()) {
         xml.push_str(&format!(
             "<Calendar:Name>{}</Calendar:Name>",
             xml_escape(name)
+        ));
+    } else if !attendee.email.is_empty() {
+        xml.push_str(&format!(
+            "<Calendar:Name>{}</Calendar:Name>",
+            xml_escape(&attendee.email)
         ));
     }
     if let Some(v) = attendee.attendee_type {
@@ -688,6 +693,43 @@ fn render_attendee_xml(attendee: &Attendee) -> String {
     }
     xml.push_str("</Calendar:Attendee>");
     xml
+}
+
+fn derived_meeting_status(item: &CalendarItem) -> u8 {
+    if let Some(v) = item.meeting_status {
+        return v;
+    }
+    let is_meeting = !item.attendees.is_empty();
+    let organizer = item
+        .organizer_email
+        .as_deref()
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !is_meeting {
+        0
+    } else if organizer {
+        1
+    } else {
+        3
+    }
+}
+
+fn derived_response_type(item: &CalendarItem) -> Option<u8> {
+    if let Some(v) = item.response_type {
+        return Some(v);
+    }
+    if derived_meeting_status(item) == 1 {
+        return Some(1);
+    }
+    item.attendees
+        .iter()
+        .find_map(|attendee| match attendee.attendee_status {
+            Some(2) => Some(2),
+            Some(3) => Some(3),
+            Some(4) => Some(4),
+            Some(5) => Some(5),
+            _ => None,
+        })
 }
 
 fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> String {
@@ -892,12 +934,10 @@ fn render_calendar_app_data(item: &CalendarItem) -> String {
         }
         xml.push_str("</Calendar:Exceptions>");
     }
-    if let Some(v) = item.meeting_status {
-        xml.push_str(&format!(
-            "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
-            v
-        ));
-    }
+    xml.push_str(&format!(
+        "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
+        derived_meeting_status(item)
+    ));
     if let Some(v) = item.response_requested {
         xml.push_str(&format!(
             "<Calendar:ResponseRequested>{}</Calendar:ResponseRequested>",
@@ -916,7 +956,7 @@ fn render_calendar_app_data(item: &CalendarItem) -> String {
             v.format("%Y-%m-%dT%H:%M:%SZ")
         ));
     }
-    if let Some(v) = item.response_type {
+    if let Some(v) = derived_response_type(item) {
         xml.push_str(&format!(
             "<Calendar:ResponseType>{}</Calendar:ResponseType>",
             v

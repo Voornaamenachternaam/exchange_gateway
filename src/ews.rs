@@ -333,6 +333,50 @@ fn sensitivity_to_ews(value: u8) -> &'static str {
     }
 }
 
+fn derived_meeting_status(item: &crate::calendar::CalendarItem) -> u8 {
+    if let Some(v) = item.meeting_status {
+        return v;
+    }
+    let is_meeting = !item.attendees.is_empty();
+    let organizer = item
+        .organizer_email
+        .as_deref()
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !is_meeting {
+        0
+    } else if organizer {
+        1
+    } else {
+        3
+    }
+}
+
+fn derived_response_type(item: &crate::calendar::CalendarItem) -> Option<&'static str> {
+    if let Some(v) = item.response_type {
+        return Some(match v {
+            1 => "Organizer",
+            2 => "Tentative",
+            3 => "Accept",
+            4 => "Decline",
+            5 => "NoResponseReceived",
+            _ => "Unknown",
+        });
+    }
+    if derived_meeting_status(item) == 1 {
+        return Some("Organizer");
+    }
+    item.attendees
+        .iter()
+        .find_map(|attendee| match attendee.attendee_status {
+            Some(2) => Some("Tentative"),
+            Some(3) => Some("Accept"),
+            Some(4) => Some("Decline"),
+            Some(5) => Some("NoResponseReceived"),
+            _ => None,
+        })
+}
+
 fn extract_requested_change_key(xml: &str) -> Option<String> {
     extract_first_attr(xml, b"ItemId", b"ChangeKey")
 }
@@ -559,10 +603,11 @@ fn render_ews_calendar_item_xml(
             xml_escape(v)
         ));
     }
-    if let Some(v) = item.meeting_status {
-        xml.push_str(&format!("<t:MeetingStatus>{}</t:MeetingStatus>", v));
-    }
-    if let Some(v) = item.response_type {
+    xml.push_str(&format!(
+        "<t:MeetingStatus>{}</t:MeetingStatus>",
+        derived_meeting_status(item)
+    ));
+    if let Some(v) = derived_response_type(item) {
         xml.push_str(&format!("<t:ResponseType>{}</t:ResponseType>", v));
     }
     if let Some(v) = item.appointment_reply_time {
@@ -614,11 +659,12 @@ async fn merged_freebusy_for_mailbox(
     start: chrono::DateTime<chrono::Utc>,
     end: chrono::DateTime<chrono::Utc>,
     interval_minutes: i64,
-) -> String {
+) -> (String, String) {
     let safe_interval = interval_minutes.clamp(5, 1440);
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
         / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
+    let mut events_xml = String::new();
 
     let caldav = CaldavClient::new(&state.cfg);
     if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
@@ -663,6 +709,18 @@ async fn merged_freebusy_for_mailbox(
                                 *slot = status_digit;
                             }
                         }
+                        let busy_type = match item.busy_status.unwrap_or(2) {
+                            0 => "Free",
+                            1 => "Tentative",
+                            3 => "OOF",
+                            _ => "Busy",
+                        };
+                        events_xml.push_str(&format!(
+                            "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType></t:CalendarEvent>",
+                            item.start.to_rfc3339(),
+                            item.end.to_rfc3339(),
+                            busy_type
+                        ));
                     }
                 }
                 Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
@@ -677,7 +735,7 @@ async fn merged_freebusy_for_mailbox(
         merged.fill('4');
     }
 
-    merged.into_iter().collect()
+    (merged.into_iter().collect(), events_xml)
 }
 
 fn unauthorized() -> Response {
@@ -706,7 +764,7 @@ async fn handle_get_user_availability(
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(30);
 
-    let merged =
+    let (merged, events_xml) =
         merged_freebusy_for_mailbox(state, &mailbox, &auth.password, start, end, interval).await;
     let response = format!(
         r#"<m:GetUserAvailabilityResponse xmlns:m="{msg_ns}" xmlns:t="{type_ns}">
@@ -718,6 +776,7 @@ async fn handle_get_user_availability(
       <m:FreeBusyView>
         <t:FreeBusyViewType>MergedOnly</t:FreeBusyViewType>
         <t:MergedFreeBusy>{merged}</t:MergedFreeBusy>
+        <t:CalendarEventArray>{events_xml}</t:CalendarEventArray>
       </m:FreeBusyView>
     </m:FreeBusyResponse>
   </m:FreeBusyResponseArray>
@@ -890,7 +949,7 @@ async fn handle_get_folder(auth: &AuthContext, body: &str) -> Response {
         )
     } else {
         format!(
-            r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount></t:CalendarFolder>"#,
+            r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:ParentFolderId Id="root" ChangeKey="root" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount></t:CalendarFolder>"#,
             fid,
             &fid[4..]
         )
@@ -923,7 +982,7 @@ async fn handle_find_folder(auth: &AuthContext, body: &str) -> Response {
         (
             1,
             format!(
-                r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:ChildFolderCount>0</t:ChildFolderCount><t:TotalCount>0</t:TotalCount></t:CalendarFolder>"#,
+                r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:ParentFolderId Id="root" ChangeKey="root" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:ChildFolderCount>0</t:ChildFolderCount><t:TotalCount>0</t:TotalCount></t:CalendarFolder>"#,
                 fid,
                 &fid[4..]
             ),

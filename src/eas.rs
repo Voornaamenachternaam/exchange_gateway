@@ -265,6 +265,19 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         if !supported.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
             return Err("Unsupported Sync class");
         }
+        if xml.contains("<Add") && !xml.contains("<ClientId>") {
+            return Err("Sync Add requires ClientId");
+        }
+        if xml.contains("AppointmentReplyTime") {
+            return Err("AppointmentReplyTime is response-only in Sync requests");
+        }
+        if xml.contains("ResponseType") {
+            return Err("ResponseType is response-only in Sync requests");
+        }
+    }
+
+    if cmd == "meetingresponse" && !xml.contains("<UserResponse>") {
+        return Err("MeetingResponse requires UserResponse");
     }
 
     Ok(())
@@ -1185,6 +1198,24 @@ mod tests {
     fn validates_getitemestimate_required_tags() {
         let xml = r#"<GetItemEstimate xmlns=\"GetItemEstimate:\"></GetItemEstimate>"#;
         assert!(validate_payload("GetItemEstimate", xml).is_err());
+    }
+
+    #[test]
+    fn validates_sync_add_requires_client_id() {
+        let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class><Commands><Add><ApplicationData /></Add></Commands></Collection></Collections></Sync>"#;
+        assert!(validate_payload("Sync", xml).is_err());
+    }
+
+    #[test]
+    fn validates_sync_rejects_response_only_calendar_fields() {
+        let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class><Commands><Change><ServerId>abc</ServerId><ApplicationData><Calendar:AppointmentReplyTime xmlns:Calendar="Calendar:">20260322T120000Z</Calendar:AppointmentReplyTime></ApplicationData></Change></Commands></Collection></Collections></Sync>"#;
+        assert!(validate_payload("Sync", xml).is_err());
+    }
+
+    #[test]
+    fn validates_meeting_response_requires_user_response() {
+        let xml = r#"<MeetingResponse xmlns="MeetingResponse:"><Request><RequestId>abc</RequestId></Request></MeetingResponse>"#;
+        assert!(validate_payload("MeetingResponse", xml).is_err());
     }
 
     #[test]
