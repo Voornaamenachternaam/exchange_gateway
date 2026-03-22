@@ -518,6 +518,43 @@ fn render_ews_categories(item: &crate::calendar::CalendarItem) -> String {
     )
 }
 
+fn ews_calendar_item_type(item: &crate::calendar::CalendarItem) -> &'static str {
+    if item.rrule.is_some() {
+        "RecurringMaster"
+    } else {
+        "Single"
+    }
+}
+
+fn ews_my_response_type(item: &crate::calendar::CalendarItem) -> &'static str {
+    derived_response_type(item).unwrap_or("Unknown")
+}
+
+fn ews_deleted_occurrences_xml(item: &crate::calendar::CalendarItem) -> String {
+    let mut starts = item
+        .exceptions
+        .iter()
+        .filter(|exception| exception.deleted)
+        .map(|exception| exception.exception_start)
+        .collect::<Vec<_>>();
+    starts.extend(item.exdates.iter().copied());
+    starts.sort();
+    starts.dedup();
+    if starts.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<t:DeletedOccurrences>{}</t:DeletedOccurrences>",
+        starts
+            .iter()
+            .map(|start| format!(
+                "<t:DeletedOccurrence><t:Start>{}</t:Start></t:DeletedOccurrence>",
+                start.to_rfc3339()
+            ))
+            .collect::<String>()
+    )
+}
+
 fn render_ews_recurrence_xml(rrule: &str) -> String {
     let mut freq = "";
     let mut interval = "1".to_string();
@@ -606,6 +643,21 @@ fn render_ews_calendar_item_xml(
     change_key: &str,
     item: &crate::calendar::CalendarItem,
 ) -> String {
+    let created = item.dtstamp.unwrap_or_else(chrono::Utc::now);
+    let duration = item.end - item.start;
+    let duration_minutes = duration.num_minutes().max(0);
+    let hours = duration_minutes / 60;
+    let minutes = duration_minutes % 60;
+    let is_meeting = !item.attendees.is_empty();
+    let is_organizer = item
+        .organizer_email
+        .as_deref()
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let is_cancelled = item
+        .meeting_status
+        .map(|status| (status & 0x04) != 0)
+        .unwrap_or(false);
     let mut xml = format!(
         r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:UID>{}</t:UID><t:Start>{}</t:Start><t:End>{}</t:End><t:IsAllDayEvent>{}</t:IsAllDayEvent>"#,
         xml_escape(item_id),
@@ -638,6 +690,14 @@ fn render_ews_calendar_item_xml(
             v
         ));
     }
+    xml.push_str(&format!(
+        "<t:ReminderIsSet>{}</t:ReminderIsSet>",
+        if item.reminder.is_some() {
+            "true"
+        } else {
+            "false"
+        }
+    ));
     if let Some(v) = item.busy_status {
         xml.push_str(&format!(
             "<t:LegacyFreeBusyStatus>{}</t:LegacyFreeBusyStatus>",
@@ -670,6 +730,32 @@ fn render_ews_calendar_item_xml(
         ));
     }
     xml.push_str(&format!(
+        "<t:DateTimeCreated>{}</t:DateTimeCreated><t:DateTimeReceived>{}</t:DateTimeReceived><t:DateTimeSent>{}</t:DateTimeSent><t:DateTimeStamp>{}</t:DateTimeStamp>",
+        created.to_rfc3339(),
+        created.to_rfc3339(),
+        created.to_rfc3339(),
+        created.to_rfc3339()
+    ));
+    xml.push_str(&format!(
+        "<t:Duration>PT{}H{}M</t:Duration>",
+        hours, minutes
+    ));
+    xml.push_str(&format!(
+        "<t:CalendarItemType>{}</t:CalendarItemType>",
+        ews_calendar_item_type(item)
+    ));
+    xml.push_str(&format!(
+        "<t:MyResponseType>{}</t:MyResponseType>",
+        ews_my_response_type(item)
+    ));
+    xml.push_str(&format!(
+        "<t:IsMeeting>{}</t:IsMeeting><t:IsOrganizer>{}</t:IsOrganizer><t:IsRecurring>{}</t:IsRecurring><t:IsCancelled>{}</t:IsCancelled><t:HasAttachments>false</t:HasAttachments>",
+        if is_meeting { "true" } else { "false" },
+        if is_organizer { "true" } else { "false" },
+        if item.rrule.is_some() { "true" } else { "false" },
+        if is_cancelled { "true" } else { "false" }
+    ));
+    xml.push_str(&format!(
         "<t:MeetingStatus>{}</t:MeetingStatus>",
         derived_meeting_status(item)
     ));
@@ -687,6 +773,7 @@ fn render_ews_calendar_item_xml(
             "<t:StartTimeZone>{}</t:StartTimeZone>",
             xml_escape(v)
         ));
+        xml.push_str(&format!("<t:EndTimeZone>{}</t:EndTimeZone>", xml_escape(v)));
     }
     if let Some(v) = &item.timezone_blob {
         xml.push_str(&format!(
@@ -711,6 +798,7 @@ fn render_ews_calendar_item_xml(
     }
     xml.push_str(&render_ews_categories(item));
     xml.push_str(&render_ews_attendees(item));
+    xml.push_str(&ews_deleted_occurrences_xml(item));
     if let Some(rrule) = &item.rrule {
         xml.push_str(&render_ews_recurrence_xml(rrule));
     }
@@ -2053,8 +2141,10 @@ async fn handle_resolve_names(auth: &AuthContext, body: &str) -> Response {
 mod tests {
     use super::{
         EwsAction, detect_action, operation_error_response, parse_calendar_view_window,
-        parse_sync_state_marker, requested_freebusy_view_type, validate_schema,
+        parse_sync_state_marker, render_ews_calendar_item_xml, requested_freebusy_view_type,
+        validate_schema,
     };
+    use crate::calendar::{CalendarException, CalendarItem};
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -2188,5 +2278,32 @@ mod tests {
     fn maps_requested_freebusy_view_type() {
         let xml = r#"<m:GetUserAvailabilityRequest xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><t:RequestedView xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">DetailedMerged</t:RequestedView></m:GetUserAvailabilityRequest>"#;
         assert_eq!(requested_freebusy_view_type(xml), "DetailedMerged");
+    }
+
+    #[test]
+    fn renders_richer_calendar_item_metadata() {
+        let item = CalendarItem {
+            uid: "uid-1".to_string(),
+            subject: "Planning".to_string(),
+            start: Utc.with_ymd_and_hms(2026, 3, 22, 9, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 3, 22, 10, 30, 0).unwrap(),
+            dtstamp: Some(Utc.with_ymd_and_hms(2026, 3, 20, 12, 0, 0).unwrap()),
+            timezone: Some("Europe/Stockholm".to_string()),
+            reminder: Some(15),
+            rrule: Some("FREQ=WEEKLY".to_string()),
+            exdates: vec![Utc.with_ymd_and_hms(2026, 3, 29, 9, 0, 0).unwrap()],
+            exceptions: vec![CalendarException {
+                deleted: true,
+                exception_start: Utc.with_ymd_and_hms(2026, 4, 5, 9, 0, 0).unwrap(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let xml = render_ews_calendar_item_xml("item-1", "ck-1", &item);
+        assert!(xml.contains("<t:CalendarItemType>RecurringMaster</t:CalendarItemType>"));
+        assert!(xml.contains("<t:ReminderIsSet>true</t:ReminderIsSet>"));
+        assert!(xml.contains("<t:EndTimeZone>Europe/Stockholm</t:EndTimeZone>"));
+        assert!(xml.contains("<t:DeletedOccurrences>"));
+        assert!(xml.contains("<t:Duration>PT1H30M</t:Duration>"));
     }
 }

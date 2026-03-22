@@ -38,6 +38,7 @@ The repository has materially improved compared with the earlier partial prototy
 - EWS `SyncFolderItems` now emits richer create/update calendar payloads from live CalDAV-backed item state instead of minimal subject/UID stubs;
 - EWS `GetFolder` / `FindFolder` folder counts now reflect current calendar item totals rather than hard-coded zeroes;
 - EWS availability responses now honor the requested free/busy view type instead of always replying as `MergedOnly`;
+- EWS calendar item payloads now expose substantially richer Exchange-style metadata such as `CalendarItemType`, `MyResponseType`, `IsMeeting`, `IsOrganizer`, `IsRecurring`, `ReminderIsSet`, `DateTimeStamp`, `Duration`, `EndTimeZone`, and `DeletedOccurrences`;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
 - Binder-aligned validation for common EWS operation attributes such as `SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related meeting-cancellation knobs;
 - derived `MeetingStatus` / `ResponseType` emission when the upstream item data does not already provide them explicitly;
@@ -85,6 +86,7 @@ The top-level gaps above are still only **partially** closed overall, but this r
 22. **EWS `SyncFolderItems` create/update changes carrying only minimal subject/UID shells** is now reduced by emitting full calendar item XML for current items in sync changes.
 23. **EWS `GetFolder` / `FindFolder` reporting hard-coded folder totals** is now reduced by deriving the calendar item count from current CalDAV-backed data.
 24. **EWS `GetUserAvailability` always returning `MergedOnly` regardless of requested view type** is now reduced by reflecting the requested free/busy view mode in the response.
+25. **EWS calendar item responses lacking common Exchange calendar metadata that Outlook often inspects** is now reduced by emitting `CalendarItemType`, `MyResponseType`, `IsMeeting`, `IsOrganizer`, `IsRecurring`, `ReminderIsSet`, `DateTimeStamp`, `Duration`, `EndTimeZone`, and `DeletedOccurrences`.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -231,7 +233,7 @@ This gap is improved, but **not fully closed**.
 - `SyncFolderItems` uses persisted state rather than a pure placeholder model;
 - deletion tombstones improve incremental behavior;
 - `SyncFolderItems` now uses an opaque stored sync-state cursor and ordered journal-window pagination rather than an unbounded plaintext timestamp marker, including a bounded continuation window for `MaxChangesReturned`;
-- `GetItem`, `CreateItem`, and `UpdateItem` responses now return much richer calendar item shapes than the previous subject-only responses;
+- `GetItem`, `CreateItem`, and `UpdateItem` responses now return much richer calendar item shapes than the previous subject-only responses, including much more Exchange-like meeting, recurrence, reminder, timezone, and deleted-occurrence metadata;
 - `FindItem` now honors `CalendarView` windows and renders full calendar item XML from live CalDAV state, while `SyncFolderItems` now emits those richer payloads for create/update changes instead of minimal shells.
 
 ### Specific remaining gaps
