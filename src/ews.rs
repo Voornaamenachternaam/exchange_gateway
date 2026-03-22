@@ -164,6 +164,9 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
             if !xml.contains("ParentFolderIds") || !xml.contains("ItemShape") {
                 return Err("FindItem requires ParentFolderIds and ItemShape");
             }
+            if xml.contains("IncludeMimeContent") {
+                return Err("FindItem does not support IncludeMimeContent in this gateway");
+            }
             let max = extract_int(xml, b"MaxEntriesReturned", 50);
             if max == 0 {
                 return Err("FindItem MaxEntriesReturned must be greater than zero");
@@ -182,6 +185,9 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
             }
             if !xml.contains("MaxChangesReturned") {
                 return Err("SyncFolderItems requires MaxChangesReturned");
+            }
+            if xml.contains("IncludeMimeContent") {
+                return Err("SyncFolderItems does not support IncludeMimeContent");
             }
             Ok(())
         }
@@ -666,16 +672,38 @@ fn operation_error_response(
         .into_response()
 }
 
-fn validate_requested_folder(owner: &str, body: &str) -> Result<(), Response> {
+fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Result<(), Response> {
     let expected_folder_id = folder_id_for_owner(owner);
 
     if let Some(fid) = extract_first_attr(body, b"FolderId", b"Id")
         && fid != expected_folder_id
     {
         return Err(operation_error_response(
-            &EwsAction::GetFolder,
+            action,
             "ErrorFolderNotFound",
             "Requested folder was not found for this mailbox",
+            StatusCode::OK,
+        ));
+    }
+
+    if let Some(fid) = extract_first_attr(body, b"ParentFolderId", b"Id")
+        && fid != expected_folder_id
+    {
+        return Err(operation_error_response(
+            action,
+            "ErrorFolderNotFound",
+            "Requested parent folder was not found for this mailbox",
+            StatusCode::OK,
+        ));
+    }
+
+    if let Some(fid) = extract_first_attr(body, b"SyncFolderId", b"Id")
+        && fid != expected_folder_id
+    {
+        return Err(operation_error_response(
+            action,
+            "ErrorFolderNotFound",
+            "Requested sync folder was not found for this mailbox",
             StatusCode::OK,
         ));
     }
@@ -684,7 +712,7 @@ fn validate_requested_folder(owner: &str, body: &str) -> Result<(), Response> {
         let d = did.to_ascii_lowercase();
         if d != "calendar" && d != "msgfolderroot" {
             return Err(operation_error_response(
-                &EwsAction::GetFolder,
+                action,
                 "ErrorFolderNotFound",
                 "Only Calendar and MsgFolderRoot distinguished folders are available",
                 StatusCode::OK,
@@ -697,7 +725,7 @@ fn validate_requested_folder(owner: &str, body: &str) -> Result<(), Response> {
 
 async fn handle_get_folder(auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
-    if let Err(resp) = validate_requested_folder(owner, body) {
+    if let Err(resp) = validate_requested_folder(&EwsAction::GetFolder, owner, body) {
         return resp;
     }
 
@@ -727,8 +755,13 @@ async fn handle_get_folder(auth: &AuthContext, body: &str) -> Response {
     soap_ok(response)
 }
 
-async fn handle_find_folder(auth: &AuthContext, _body: &str) -> Response {
-    let fid = folder_id_for_owner(owner_from_username(&auth.username));
+async fn handle_find_folder(auth: &AuthContext, body: &str) -> Response {
+    let owner = owner_from_username(&auth.username);
+    if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
+        return resp;
+    }
+
+    let fid = folder_id_for_owner(owner);
     let response = format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
@@ -758,6 +791,9 @@ async fn handle_find_folder(auth: &AuthContext, _body: &str) -> Response {
 
 async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
+    if let Err(resp) = validate_requested_folder(&EwsAction::FindItem, owner, body) {
+        return resp;
+    }
     let max = extract_int(body, b"MaxEntriesReturned", 50);
     let offset = extract_int(body, b"Offset", 0);
     let traversal = extract_first_attr(body, b"IndexedPageItemView", b"BasePoint")
@@ -988,6 +1024,9 @@ async fn handle_sync_folder_items(
     body: &str,
 ) -> Response {
     let owner = owner_from_username(&auth.username);
+    if let Err(resp) = validate_requested_folder(&EwsAction::SyncFolderItems, owner, body) {
+        return resp;
+    }
     let max_changes = extract_int(body, b"MaxChangesReturned", 100);
     let folder_id = folder_id_for_owner(owner);
 
@@ -1151,6 +1190,9 @@ async fn handle_sync_folder_items(
 
 async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
+    if let Err(resp) = validate_requested_folder(&EwsAction::CreateItem, owner, body) {
+        return resp;
+    }
     let caldav = CaldavClient::new(&state.cfg);
     let item = match parse_ews_calendar_item(body) {
         Ok(v) => v,
@@ -1674,5 +1716,10 @@ mod tests {
         );
         let body = format!("{:?}", resp);
         assert!(!body.is_empty());
+    }
+    #[test]
+    fn sync_folder_items_rejects_include_mime_content() {
+        let xml = r#"<s:Envelope><s:Body><m:SyncFolderItems xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemShape><t:BaseShape xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">AllProperties</t:BaseShape><t:IncludeMimeContent xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">true</t:IncludeMimeContent></m:ItemShape><m:SyncFolderId /><m:MaxChangesReturned>10</m:MaxChangesReturned></m:SyncFolderItems></s:Body></s:Envelope>"#;
+        assert!(validate_schema(&EwsAction::SyncFolderItems, xml).is_err());
     }
 }

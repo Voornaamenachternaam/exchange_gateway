@@ -67,7 +67,7 @@ The repository now does more than simply emit calendar data:
 The repository already had CRUD handlers, but the current state is stronger because:
 
 - deleted items now persist tombstones that can be surfaced in later incremental sync responses;
-- `SyncFolderItems` can distinguish initial sync from later sync windows, emit deletion tombstones, page ordered journal windows with opaque sync-state cursors, and respect `MaxChangesReturned` more accurately;
+- `SyncFolderItems` can distinguish initial sync from later sync windows, emit deletion tombstones, page ordered journal windows with opaque sync-state cursors, respect `MaxChangesReturned` more accurately, and reject unsupported MIME-content requests more explicitly;
 - item and folder identifiers are at least stable within the gateway’s own state model.
 
 **Impact:** EWS is less stub-like than before, especially for sync continuity.
@@ -191,7 +191,7 @@ This gap is improved, but **not fully closed**.
    The implementation now returns richer calendar item XML for key item operations, but it still supports only a subset of the full property and update surface that Outlook can emit.
 
 2. **Folder and mailbox modeling remain simplified.**
-   The gateway exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
+   The gateway now validates requested folder IDs more consistently across EWS operations, but it still exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
 
 3. **Sync fidelity is improved again but still not fully equivalent to Exchange.**
    `SyncFolderItems` now uses an opaque persisted cursor and an ordered journal window that respects `MaxChangesReturned` with bounded continuation behavior, which removes another earlier protocol mismatch. It is still a gateway-managed approximation rather than full Exchange item-state behavior.
