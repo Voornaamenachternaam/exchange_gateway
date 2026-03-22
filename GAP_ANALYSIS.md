@@ -28,6 +28,7 @@ The repository has materially improved compared with the earlier partial prototy
 - per-command EAS mutation result reporting, Binder-aligned Ping heartbeat/max-folder/change-found behavior, and basic `ResolveRecipients` free/busy output that are richer than the previous minimal shells;
 - durable device-scoped `ClientId` replay suppression for EAS `Sync/Add` retries via D1-backed command journaling rather than re-creating duplicate events;
 - Binder-aligned validation that `Sync/Add` requests carry `ClientId`, and rejection of response-only ActiveSync calendar fields such as `AppointmentReplyTime` / `ResponseType` in client `Sync` writes;
+- non-stub EAS `Settings`, `ItemOperations`, and `Search` responses that now return user/account metadata and real calendar-item payloads from CalDAV instead of empty success shells;
 - richer recurrence/exception field handling than the original minimal implementation;
 - ActiveSync recurrence responses now include `CalendarType` for the monthly/yearly recurrence shapes where Binder1 requires it in command responses;
 - preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision;
@@ -71,6 +72,11 @@ The top-level gaps above are still only **partially** closed overall, but this r
 13. **Common EWS operation attributes being accepted without any enum validation** is now reduced by validating supported values for `CreateItem`, `UpdateItem`, and `DeleteItem`.
 14. **The repository lacking a reproducible live smoke package for the Cloudflare/Stalwart deployment surface** is now reduced by adding a scriptable smoke harness and runbook for the published gateway endpoints.
 15. **The repository lacking concrete deployment templates for the exact `cloudflared` + Worker + gateway layout** is now reduced by shipping example config files for that topology.
+16. **EAS `Settings` being an empty success stub rather than returning Binder-shaped user/account metadata** is now reduced by emitting concrete `UserInformation -> Accounts -> Account -> EmailAddresses` content.
+17. **EAS `ItemOperations` being an empty shell instead of fetching actual calendar items** is now reduced by resolving requested `ServerId`/`LongId` values to CalDAV events and returning calendar properties.
+18. **EAS `Search` being an empty shell instead of returning calendar hits** is now reduced by querying CalDAV over Binder-shaped date windows and returning real `Calendar` search results with range accounting.
+19. **EAS `MeetingResponse` success payloads omitting the returned `CalendarId`** is now reduced by returning `CalendarId` alongside `RequestId` on successful meeting replies.
+20. **EAS `MoveItems` falsely reporting success on a calendar-only mailbox surface** is now reduced by explicitly rejecting it rather than advertising a capability the gateway does not actually provide.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -91,6 +97,7 @@ The repository now does more than simply emit calendar data:
 - `FolderSync` now exposes the calendar folder instead of a synthetic multi-workload folder set;
 - `GetItemEstimate` now uses stored sync state instead of always returning a trivial success shell;
 - `Ping` now validates heartbeat ranges / monitored-folder counts, caches heartbeat+folder state across subsequent requests, parses monitored folder `Id`/`Class` pairs, and can hold the request open until changes or heartbeat expiry instead of always responding immediately;
+- `Settings` now returns concrete user/account metadata, `ItemOperations` can fetch real calendar items by `ServerId`/`LongId`, and `Search` can return actual calendar hits across query/range windows instead of empty placeholder payloads;
 - calendar timezone blocks can now be preserved through ICS parsing/rendering instead of being discarded outright, and IANA `TZID` values are now parsed/rendered against real timezone rules rather than always being collapsed into UTC-only text.
 
 **Impact:** the EAS layer is no longer just a full-resync calendar projection. It now behaves more like a real stateful sync pipeline.

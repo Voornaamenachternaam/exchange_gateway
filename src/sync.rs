@@ -472,7 +472,7 @@ pub async fn apply_meeting_response(
     Ok(())
 }
 
-fn xml_escape(input: &str) -> String {
+pub(crate) fn xml_escape(input: &str) -> String {
     input
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -859,7 +859,7 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
     xml
 }
 
-fn render_calendar_app_data(item: &CalendarItem) -> String {
+pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     let mut xml = String::new();
     xml.push_str(&format!(
         "<Calendar:Subject>{}</Calendar:Subject>",
