@@ -20,6 +20,19 @@ use uuid::Uuid;
 
 lazy_static! {
     static ref DEVICE_WINDOW: Mutex<HashMap<String, Vec<Instant>>> = Mutex::new(HashMap::new());
+    static ref PING_CACHE: Mutex<HashMap<String, PingCacheEntry>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Clone, Debug)]
+struct PingFolder {
+    id: String,
+    class_name: String,
+}
+
+#[derive(Clone, Debug)]
+struct PingCacheEntry {
+    heartbeat: u64,
+    folders: Vec<PingFolder>,
 }
 
 const MAX_REQUESTS_PER_WINDOW: usize = 60;
@@ -155,6 +168,47 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
         }
         buf.clear();
     }
+}
+
+fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_folder = false;
+    let mut current_id: Option<String> = None;
+    let mut current_class: Option<String> = None;
+    let mut folders = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Folder" => {
+                in_folder = true;
+                current_id = None;
+                current_class = None;
+            }
+            Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == b"Id" => {
+                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                    current_id = t.decode().ok().map(|v| v.into_owned());
+                }
+            }
+            Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == b"Class" => {
+                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                    current_class = t.decode().ok().map(|v| v.into_owned());
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Folder" => {
+                if let (Some(id), Some(class_name)) = (current_id.take(), current_class.take()) {
+                    folders.push(PingFolder { id, class_name });
+                }
+                in_folder = false;
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    folders
 }
 
 fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
@@ -410,11 +464,26 @@ async fn handle_ping(
     const MAX_HEARTBEAT_SECS: u64 = 3540;
     const MAX_PING_FOLDERS: usize = 200;
 
-    let heartbeat =
-        extract_first_tag_text(xml, b"HeartbeatInterval").and_then(|v| v.parse::<u64>().ok());
-    let folder_count =
-        xml.match_indices("<Folder>").count() + xml.match_indices("<FolderId>").count();
-    if heartbeat.is_none() || folder_count == 0 {
+    let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
+    let cache_key = format!("{}:{}", owner, device_id);
+    let cached = PING_CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&cache_key).cloned());
+
+    let heartbeat = extract_first_tag_text(xml, b"HeartbeatInterval")
+        .and_then(|v| v.parse::<u64>().ok())
+        .or_else(|| cached.as_ref().map(|entry| entry.heartbeat));
+    let folders = {
+        let parsed = parse_ping_folders(xml);
+        if parsed.is_empty() {
+            cached.map(|entry| entry.folders).unwrap_or_default()
+        } else {
+            parsed
+        }
+    };
+
+    if heartbeat.is_none() || folders.is_empty() {
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>3</Status></Ping>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
@@ -429,7 +498,7 @@ async fn handle_ping(
         return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
     }
 
-    if folder_count > MAX_PING_FOLDERS {
+    if folders.len() > MAX_PING_FOLDERS {
         let xml = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>6</Status><MaxFolders>{}</MaxFolders></Ping>"#,
             MAX_PING_FOLDERS
@@ -437,13 +506,33 @@ async fn handle_ping(
         return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
     }
 
-    let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
+    if folders
+        .iter()
+        .any(|folder| !folder.id.eq("1") || !folder.class_name.eq_ignore_ascii_case("Calendar"))
+    {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>7</Status></Ping>"#;
+        return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+    }
+
+    if let Ok(mut cache) = PING_CACHE.lock() {
+        cache.insert(
+            cache_key,
+            PingCacheEntry {
+                heartbeat,
+                folders: folders.clone(),
+            },
+        );
+    }
+
     let deadline = Instant::now() + Duration::from_secs(heartbeat);
 
     loop {
         let mut changed_folders = Vec::new();
-        if xml.contains("<Folder>1</Folder>") || xml.contains("<FolderId>1</FolderId>") {
-            let collection_id = scoped_collection_id("1", device_id);
+        for folder in &folders {
+            if folder.id != "1" {
+                continue;
+            }
+            let collection_id = scoped_collection_id(&folder.id, device_id);
             let since = state
                 .storage
                 .get_sync_key(owner, &collection_id)
@@ -465,7 +554,7 @@ async fn handle_ping(
                 .await
                 .unwrap_or_default();
             if !changed.is_empty() || !deleted.is_empty() {
-                changed_folders.push("1");
+                changed_folders.push(folder.id.as_str());
             }
         }
 
@@ -1079,5 +1168,13 @@ mod tests {
                 cmd
             );
         }
+    }
+    #[test]
+    fn parses_ping_folder_entries() {
+        let xml = r#"<Ping xmlns="Ping:"><Folders><Folder><Id>1</Id><Class>Calendar</Class></Folder></Folders></Ping>"#;
+        let folders = parse_ping_folders(xml);
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, "1");
+        assert_eq!(folders[0].class_name, "Calendar");
     }
 }

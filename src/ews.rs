@@ -1031,7 +1031,7 @@ async fn handle_sync_folder_items(
 
     let journal_rows = match state
         .storage
-        .list_journal_since_seq(owner, since, upper_bound, max_changes)
+        .list_journal_since_seq(owner, since, upper_bound, max_changes.saturating_add(1))
         .await
     {
         Ok(v) => v,
@@ -1062,10 +1062,17 @@ async fn handle_sync_folder_items(
         current_map.insert(item.server_id.clone(), item);
     }
 
+    let has_more = journal_rows.len() > max_changes;
+    let visible_rows = if has_more {
+        &journal_rows[..max_changes]
+    } else {
+        &journal_rows[..]
+    };
+
     let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
     let mut last_returned_seq = since;
-    for row in &journal_rows {
+    for row in visible_rows {
         last_returned_seq = row.seq;
         if !emitted_ids.insert(row.server_id.clone()) {
             continue;
@@ -1104,14 +1111,8 @@ async fn handle_sync_folder_items(
         }
     }
 
-    let includes_last = if journal_rows.len() < max_changes && last_returned_seq >= upper_bound {
-        "true"
-    } else if journal_rows.is_empty() {
-        "true"
-    } else {
-        "false"
-    };
-    let next_seen_seq = if journal_rows.is_empty() {
+    let includes_last = if has_more { "false" } else { "true" };
+    let next_seen_seq = if visible_rows.is_empty() {
         since.max(upper_bound)
     } else {
         last_returned_seq

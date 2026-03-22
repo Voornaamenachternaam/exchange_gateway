@@ -57,7 +57,7 @@ The repository now does more than simply emit calendar data:
 - delete tombstones are tracked so that incremental sync can emit deletions;
 - `FolderSync` now exposes the calendar folder instead of a synthetic multi-workload folder set;
 - `GetItemEstimate` now uses stored sync state instead of always returning a trivial success shell;
-- `Ping` now validates heartbeat ranges / monitored-folder counts and can hold the request open until changes or heartbeat expiry instead of always responding immediately;
+- `Ping` now validates heartbeat ranges / monitored-folder counts, caches heartbeat+folder state across subsequent requests, parses monitored folder `Id`/`Class` pairs, and can hold the request open until changes or heartbeat expiry instead of always responding immediately;
 - calendar timezone blocks can now be preserved through ICS parsing/rendering instead of being discarded outright.
 
 **Impact:** the EAS layer is no longer just a full-resync calendar projection. It now behaves more like a real stateful sync pipeline.
@@ -67,7 +67,7 @@ The repository now does more than simply emit calendar data:
 The repository already had CRUD handlers, but the current state is stronger because:
 
 - deleted items now persist tombstones that can be surfaced in later incremental sync responses;
-- `SyncFolderItems` can distinguish initial sync from later sync windows, emit deletion tombstones, and paginate ordered journal windows with opaque sync-state cursors;
+- `SyncFolderItems` can distinguish initial sync from later sync windows, emit deletion tombstones, page ordered journal windows with opaque sync-state cursors, and respect `MaxChangesReturned` more accurately;
 - item and folder identifiers are at least stable within the gateway’s own state model.
 
 **Impact:** EWS is less stub-like than before, especially for sync continuity.
@@ -182,7 +182,7 @@ This gap is improved, but **not fully closed**.
 - EWS has real CRUD paths into CalDAV;
 - `SyncFolderItems` uses persisted state rather than a pure placeholder model;
 - deletion tombstones improve incremental behavior;
-- `SyncFolderItems` now uses an opaque stored sync-state cursor and ordered journal-window pagination rather than an unbounded plaintext timestamp marker;
+- `SyncFolderItems` now uses an opaque stored sync-state cursor and ordered journal-window pagination rather than an unbounded plaintext timestamp marker, including a bounded continuation window for `MaxChangesReturned`;
 - `GetItem`, `CreateItem`, and `UpdateItem` responses now return much richer calendar item shapes than the previous subject-only responses.
 
 ### Specific remaining gaps
@@ -194,7 +194,7 @@ This gap is improved, but **not fully closed**.
    The gateway exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
 
 3. **Sync fidelity is improved again but still not fully equivalent to Exchange.**
-   `SyncFolderItems` now uses an opaque persisted cursor and an ordered journal window that respects `MaxChangesReturned`, which removes one of the earlier protocol mismatches. It is still a gateway-managed approximation rather than full Exchange item-state behavior.
+   `SyncFolderItems` now uses an opaque persisted cursor and an ordered journal window that respects `MaxChangesReturned` with bounded continuation behavior, which removes another earlier protocol mismatch. It is still a gateway-managed approximation rather than full Exchange item-state behavior.
 
 4. **No real Outlook-for-Windows EWS proof is present in-repo.**
    The repository still does not contain end-to-end captures or regression artifacts showing successful native Outlook desktop operation through Autodiscover, EWS, and ongoing calendar sync.
