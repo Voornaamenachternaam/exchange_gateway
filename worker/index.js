@@ -459,10 +459,7 @@ async function handleAutodiscoverJson(env) {
   };
 
   return new Response(JSON.stringify(payload), {
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'private, no-store'
-    }
+    headers: privateNoStoreHeaders({ 'Content-Type': 'application/json' })
   });
 }
 
@@ -513,10 +510,7 @@ async function handleAutodiscoverXml(request, env) {
 </Autodiscover>`;
 
   return new Response(xml, {
-    headers: {
-      'Content-Type': 'application/xml; charset=utf-8',
-      'Cache-Control': 'private, no-store'
-    }
+    headers: privateNoStoreHeaders({ 'Content-Type': 'application/xml; charset=utf-8' })
   });
 }
 
@@ -571,11 +565,31 @@ async function handleAutodiscoverSoap(request, env) {
 </s:Envelope>`;
 
   return new Response(xml, {
-    headers: {
-      'Content-Type': 'application/soap+xml; charset=utf-8',
-      'Cache-Control': 'private, no-store'
-    }
+    headers: privateNoStoreHeaders({ 'Content-Type': 'application/soap+xml; charset=utf-8' })
   });
+}
+
+
+function mergeHeaders(...sets) {
+  const headers = new Headers();
+  for (const set of sets) {
+    if (!set) continue;
+    const source = set instanceof Headers ? set : new Headers(set);
+    source.forEach((value, key) => headers.set(key, value));
+  }
+  return headers;
+}
+
+function privateNoStoreHeaders(extra = {}) {
+  return mergeHeaders(
+    {
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'X-Frame-Options': 'DENY'
+    },
+    extra
+  );
 }
 
 function escapeXml(unsafe = '') {

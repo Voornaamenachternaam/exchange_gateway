@@ -244,7 +244,7 @@ The repository still does not contain a production-grade benchmark and compatibi
 
 ## 8) Security hardening is improved but still not “perfectly closed”
 
-This analysis respects your stated use-case: **Basic authentication remains part of the design and is not treated as disqualifying by itself**. The remaining security gaps are instead around total deployment proof, operational hardening depth, malformed-input validation coverage, and end-to-end production verification.
+This analysis respects your stated use-case: **Basic authentication remains part of the design and is not treated as disqualifying by itself**. The remaining security gaps are instead around total deployment proof, operational hardening depth, malformed-input validation coverage, and end-to-end production verification. The Worker surface is now somewhat less permissive because the exposed control-plane responses use stricter no-store / nosniff / no-referrer / DENY response headers, but that does not by itself close the deployment-hardening gap.
 
 ## 9) Stalwart-specific proof remains incomplete
 
