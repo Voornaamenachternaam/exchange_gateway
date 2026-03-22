@@ -21,9 +21,12 @@ export default {
     }
 
     if (path === '/api/set_sync_key') return handleSetSyncKey(request, env);
+    if (path === '/api/get_sync_key') return handleGetSyncKey(url, request, env);
     if (path === '/api/upsert_item_map') return handleUpsertItemMap(request, env);
     if (path === '/api/delete_item_by_server_id') return handleDeleteItemByServerId(request, env);
+    if (path === '/api/add_delete_tombstone') return handleAddDeleteTombstone(request, env);
     if (path === '/api/list_changes_since') return handleListChangesSince(url, request, env);
+    if (path === '/api/list_deleted_since') return handleListDeletedSince(url, request, env);
     if (path === '/api/set_provision_policy') return handleSetProvisionPolicy(request, env);
     if (path === '/api/get_provision_policy') return handleGetProvisionPolicy(url, request, env);
     if (path === '/api/list_ews_items') return handleListEwsItems(url, request, env);
@@ -241,6 +244,26 @@ async function handleSetSyncKey(request, env) {
   return Response.json({ success: true });
 }
 
+async function handleGetSyncKey(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const collectionId = url.searchParams.get('collection_id') || '';
+  if (!owner || !collectionId) return new Response('Missing owner/collection_id', { status: 400 });
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT sync_key, token
+      FROM sync_state
+      WHERE owner = ? AND collection_id = ?
+      LIMIT 1
+    `)
+    .bind(owner, collectionId)
+    .all();
+
+  const row = (result.results || [])[0] || null;
+  return Response.json(row);
+}
+
 async function handleUpsertItemMap(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleUpsertItemMap');
@@ -265,6 +288,11 @@ async function handleUpsertItemMap(request, env) {
     .bind(owner, caldav_href, resource_href, server_id, uid, etag)
     .run();
 
+  await env.EXCHANGE_DB
+    .prepare('DELETE FROM deleted_item_tombstone WHERE owner = ? AND server_id = ?')
+    .bind(owner, server_id)
+    .run();
+
   return Response.json({ success: true });
 }
 
@@ -278,6 +306,27 @@ async function handleDeleteItemByServerId(request, env) {
 
   await env.EXCHANGE_DB
     .prepare('DELETE FROM item_map WHERE owner = ? AND server_id = ?')
+    .bind(owner, serverId)
+    .run();
+
+  return Response.json({ success: true });
+}
+
+async function handleAddDeleteTombstone(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleAddDeleteTombstone');
+  const body = await readJson(request);
+  const owner = body.owner || '';
+  const serverId = body.server_id || '';
+  if (!owner || !serverId) return new Response('Missing owner/server_id', { status: 400 });
+
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO deleted_item_tombstone (owner, server_id, deleted_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner, server_id)
+      DO UPDATE SET deleted_at = CURRENT_TIMESTAMP
+    `)
     .bind(owner, serverId)
     .run();
 
@@ -298,6 +347,27 @@ async function handleListChangesSince(url, request, env) {
       WHERE owner = ?
         AND strftime('%s', updated_at) >= ?
       ORDER BY updated_at ASC
+    `)
+    .bind(owner, sinceExpr)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+async function handleListDeletedSince(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = url.searchParams.get('since') || '0';
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const sinceExpr = Number.isFinite(Number(since)) ? Number(since) : 0;
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT server_id
+      FROM deleted_item_tombstone
+      WHERE owner = ?
+        AND strftime('%s', deleted_at) >= ?
+      ORDER BY deleted_at ASC
     `)
     .bind(owner, sinceExpr)
     .all();

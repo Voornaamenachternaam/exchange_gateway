@@ -458,10 +458,93 @@ async fn handle_provision(
     )
 }
 
-fn handle_folder_sync(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> Response {
-    let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?>
-<FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>5</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add><Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Contacts</DisplayName><Type>9</Type></Add><Add><ServerId>3</ServerId><ParentId>0</ParentId><DisplayName>Tasks</DisplayName><Type>7</Type></Add><Add><ServerId>4</ServerId><ParentId>0</ParentId><DisplayName>Notes</DisplayName><Type>11</Type></Add><Add><ServerId>5</ServerId><ParentId>0</ParentId><DisplayName>Documents</DisplayName><Type>19</Type></Add></Changes></FolderSync>"#;
-    xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id)
+async fn handle_folder_sync(
+    state: &Arc<AppState>,
+    owner: &str,
+    req: &EasRequest,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let collection_id = "folderhierarchy";
+    let incoming = req.sync_key.as_deref().unwrap_or("0");
+    let stored = state.storage.get_sync_key(owner, collection_id).await.ok().flatten();
+
+    if incoming != "0" {
+        match stored.as_ref() {
+            Some((expected, _)) if expected == incoming => {}
+            _ => {
+                let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<FolderSync xmlns="FolderHierarchy:"><Status>9</Status><SyncKey>0</SyncKey></FolderSync>"#;
+                return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+            }
+        }
+    }
+
+    let new_sync_key = Uuid::new_v4().simple().to_string();
+    let _ = state
+        .storage
+        .set_sync_key(owner, collection_id, &new_sync_key, Some(&format!("ts:{}", chrono::Utc::now().timestamp())))
+        .await;
+
+    let changes = if incoming == "0" {
+        r#"<Changes><Count>1</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes>"#
+    } else {
+        r#"<Changes><Count>0</Count></Changes>"#
+    };
+    let resp_xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>{}</SyncKey>{}</FolderSync>"#,
+        new_sync_key, changes
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
+}
+
+async fn handle_get_item_estimate(
+    state: &Arc<AppState>,
+    owner: &str,
+    req: &EasRequest,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let collection_id = req.collection_id.as_deref().unwrap_or("1");
+    let incoming = req.sync_key.as_deref().unwrap_or("0");
+    let stored = state.storage.get_sync_key(owner, collection_id).await.ok().flatten();
+
+    if incoming != "0" {
+        match stored.as_ref() {
+            Some((expected, _)) if expected == incoming => {}
+            _ => {
+                let xml = format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?><GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>{}</Status><Collection><CollectionId>{}</CollectionId><Estimate>0</Estimate></Collection></Response></GetItemEstimate>"#,
+                    crate::sync::INVALID_SYNC_KEY_STATUS,
+                    collection_id
+                );
+                return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+            }
+        }
+    }
+
+    let since = if incoming == "0" {
+        0
+    } else {
+        stored
+            .as_ref()
+            .and_then(|(_, token)| token.as_deref())
+            .and_then(|token| token.strip_prefix("ts:"))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+    };
+    let changed = state.storage.list_changes_since(owner, since).await.unwrap_or_default();
+    let deleted = state.storage.list_deleted_since(owner, since).await.unwrap_or_default();
+    let estimate = changed.len() + deleted.len();
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>1</Status><Collection><CollectionId>{}</CollectionId><Estimate>{}</Estimate></Collection></Response></GetItemEstimate>"#,
+        collection_id, estimate
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
 pub async fn handle(
@@ -520,7 +603,9 @@ pub async fn handle(
     }
 
     match req.command.as_str() {
-        "FolderSync" => handle_folder_sync(&wbxml, wants_wbxml, &request_id),
+        "FolderSync" => {
+            handle_folder_sync(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
+        }
         "Provision" => {
             handle_provision(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
         }
@@ -674,15 +759,10 @@ pub async fn handle(
             "",
             &request_id,
         ),
-        "GetItemEstimate" => success_status_response(
-            &wbxml,
-            wants_wbxml,
-            "GetItemEstimate",
-            "GetItemEstimate:",
-            "1",
-            "",
-            &request_id,
-        ),
+        "GetItemEstimate" => {
+            handle_get_item_estimate(&state, &username, &req, &wbxml, wants_wbxml, &request_id)
+                .await
+        }
         "MoveItems" => success_status_response(
             &wbxml,
             wants_wbxml,
@@ -787,7 +867,7 @@ mod tests {
             ),
             (
                 "MeetingResponse",
-                r#"<MeetingResponse xmlns="MeetingResponse:"><Request><UserResponse>1</UserResponse></Request></MeetingResponse>"#,
+                r#"<MeetingResponse xmlns="MeetingResponse:"><Request><RequestId>abc</RequestId><UserResponse>1</UserResponse></Request></MeetingResponse>"#,
             ),
             (
                 "ResolveRecipients",

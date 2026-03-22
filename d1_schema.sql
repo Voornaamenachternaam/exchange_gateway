@@ -3,6 +3,7 @@ DROP TABLE IF EXISTS item_map;
 DROP TABLE IF EXISTS ews_sync_state;
 DROP TABLE IF EXISTS device_info;
 DROP TABLE IF EXISTS provision_state;
+DROP TABLE IF EXISTS deleted_item_tombstone;
 DROP TABLE IF EXISTS api_idempotency;
 DROP TABLE IF EXISTS schema_version;
 
@@ -27,6 +28,15 @@ CREATE TABLE item_map (
     uid TEXT,
     etag TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, server_id)
+);
+
+-- Deleted item journal used for incremental sync tombstones.
+CREATE TABLE deleted_item_tombstone (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, server_id)
 );
 
@@ -66,6 +76,7 @@ CREATE TABLE device_info (
 CREATE INDEX idx_sync_lookup ON sync_state(owner, collection_id);
 CREATE INDEX idx_item_map_owner_time ON item_map(owner, updated_at);
 CREATE INDEX idx_item_map_resource ON item_map(owner, resource_href);
+CREATE INDEX idx_deleted_item_owner_time ON deleted_item_tombstone(owner, deleted_at);
 CREATE INDEX idx_ews_sync_lookup ON ews_sync_state(user_email, folder_id);
 
 CREATE INDEX idx_provision_lookup ON provision_state(owner, device_id);

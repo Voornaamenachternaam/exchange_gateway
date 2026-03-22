@@ -51,6 +51,17 @@ struct ChangeRow {
 }
 
 #[derive(Deserialize)]
+struct SyncKeyRow {
+    sync_key: String,
+    token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TombstoneRow {
+    server_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct EwsItemRow {
     pub server_id: String,
     pub resource_href: String,
@@ -136,6 +147,20 @@ impl Storage {
         self.post_json("set_sync_key", &body).await
     }
 
+    pub async fn get_sync_key(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<(String, Option<String>)>> {
+        let path = format!(
+            "get_sync_key?owner={}&collection_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(collection_id)
+        );
+        let row: Option<SyncKeyRow> = self.get_json(&path).await?;
+        Ok(row.map(|r| (r.sync_key, r.token)))
+    }
+
     pub async fn upsert_item_map(
         &self,
         owner: &str,
@@ -166,6 +191,16 @@ impl Storage {
             .await
     }
 
+    pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            server_id: &'a str,
+        }
+        self.post_json("add_delete_tombstone", &Req { owner, server_id })
+            .await
+    }
+
     pub async fn list_changes_since(
         &self,
         owner: &str,
@@ -181,6 +216,16 @@ impl Storage {
             .into_iter()
             .map(|r| (r.server_id, r.resource_href))
             .collect())
+    }
+
+    pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
+        let path = format!(
+            "list_deleted_since?owner={}&since={}",
+            urlencoding::encode(owner),
+            since_unix_ts
+        );
+        let rows: Vec<TombstoneRow> = self.get_json(&path).await?;
+        Ok(rows.into_iter().map(|r| r.server_id).collect())
     }
 
     pub async fn set_provision_policy(

@@ -745,14 +745,16 @@ async fn handle_sync_folder_items(
                 .clone()
                 .unwrap_or_else(|| item.resource_href.clone())
                 .replace(".ics", "");
+            let change_tag = if since == 0 { "Create" } else { "Update" };
             changes_xml.push_str(&format!(
-                r#"<t:Create>
+                r#"<t:{change_tag}>
   <t:CalendarItem>
     <t:ItemId Id="{}" ChangeKey="{}" />
     <t:Subject>{}</t:Subject>
     <t:UID>{}</t:UID>
   </t:CalendarItem>
-</t:Create>"#,
+</t:{change_tag}>"#,
+                change_tag = change_tag,
                 xml_escape(&item.server_id),
                 xml_escape(&change_key),
                 xml_escape(&subject),
@@ -1168,6 +1170,18 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             &EwsAction::DeleteItem,
             "ErrorInternalServerError",
             &format!("Failed to delete CalDAV item: {}", e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+    if let Err(e) = state
+        .storage
+        .add_delete_tombstone(owner, &item_id)
+        .await
+    {
+        return operation_error_response(
+            &EwsAction::DeleteItem,
+            "ErrorInternalServerError",
+            &format!("Failed to persist delete tombstone: {}", e),
             StatusCode::INTERNAL_SERVER_ERROR,
         );
     }

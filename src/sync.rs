@@ -11,10 +11,13 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{TimeZone, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
+
+pub const INVALID_SYNC_KEY_STATUS: &str = "9";
 
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     let key = secret.as_bytes();
@@ -22,6 +25,39 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     mac.update(resource_href.as_bytes());
     let result = mac.finalize().into_bytes();
     URL_SAFE_NO_PAD.encode(result)
+}
+
+fn now_unix() -> i64 {
+    Utc::now().timestamp()
+}
+
+fn sync_token_for_now() -> String {
+    format!("ts:{}", now_unix())
+}
+
+fn sync_since_from_token(token: Option<&str>) -> i64 {
+    token.and_then(|raw| raw.strip_prefix("ts:"))
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+pub fn invalid_sync_key_response(collection_id: &str, content_class: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:">
+  <Collections>
+    <Collection>
+      <Class>{}</Class>
+      <SyncKey>0</SyncKey>
+      <CollectionId>{}</CollectionId>
+      <Status>{}</Status>
+    </Collection>
+  </Collections>
+</Sync>"#,
+        xml_escape(content_class),
+        xml_escape(collection_id),
+        INVALID_SYNC_KEY_STATUS
+    )
 }
 
 pub async fn apply_client_sync_mutations(
@@ -204,6 +240,7 @@ pub async fn apply_client_sync_mutations(
                         existing.etag.as_deref(),
                     )
                     .await?;
+                state.storage.add_delete_tombstone(owner, &server_id).await?;
                 state
                     .storage
                     .delete_item_by_server_id(owner, &server_id)
@@ -763,7 +800,7 @@ pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,
     collection_id: &str,
-    _incoming_sync_key: &str,
+    incoming_sync_key: &str,
     content_class: &str,
     _window_size: usize,
     username: &str,
@@ -814,6 +851,20 @@ pub async fn perform_sync(
         );
         return Ok(xml);
     }
+
+    let previous_state = storage.get_sync_key(owner, collection_id).await?;
+    if incoming_sync_key != "0" {
+        match previous_state.as_ref() {
+            Some((expected_sync_key, _)) if expected_sync_key == incoming_sync_key => {}
+            _ => return Ok(invalid_sync_key_response(collection_id, "Calendar")),
+        }
+    }
+
+    let since = if incoming_sync_key == "0" {
+        0
+    } else {
+        sync_since_from_token(previous_state.as_ref().and_then(|(_, token)| token.as_deref()))
+    };
 
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username, password).await?;
@@ -887,9 +938,15 @@ pub async fn perform_sync(
         buf.clear();
     }
 
-    let old_items = storage.list_changes_since(owner, 0).await?;
+    let existing_map: HashMap<String, crate::storage::EwsItemRow> = storage
+        .list_ews_items(owner, 4096, 0)
+        .await?
+        .into_iter()
+        .map(|item| (item.server_id.clone(), item))
+        .collect();
     let mut commands = String::new();
-    let mut seen_ids = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let initial_sync = incoming_sync_key == "0";
 
     for ev in events {
         if ev.href.is_empty() {
@@ -901,19 +958,30 @@ pub async fn perform_sync(
             continue;
         };
         let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
-        seen_ids.push(server_id.clone());
+        seen_ids.insert(server_id.clone());
 
-        storage
-            .upsert_item_map(
-                owner,
-                &collection_href,
-                &resource_href,
-                &server_id,
-                &item.uid,
-                &etag,
-            )
-            .await?;
-        let is_new = !old_items.iter().any(|(id, _)| id == &server_id);
+        let existing = existing_map.get(&server_id);
+        let is_new = existing.is_none();
+        let changed = existing
+            .map(|row| row.etag.as_deref() != Some(etag.as_str()))
+            .unwrap_or(true);
+
+        if changed {
+            storage
+                .upsert_item_map(
+                    owner,
+                    &collection_href,
+                    &resource_href,
+                    &server_id,
+                    &item.uid,
+                    &etag,
+                )
+                .await?;
+        }
+
+        if !initial_sync && !changed {
+            continue;
+        }
 
         if is_new {
             commands.push_str("<Add><ServerId>");
@@ -930,16 +998,30 @@ pub async fn perform_sync(
         }
     }
 
-    for (old_id, _) in old_items {
-        if !seen_ids.contains(&old_id) {
-            commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", old_id));
-            let _ = storage.delete_item_by_server_id(owner, &old_id).await;
+    for server_id in existing_map.keys() {
+        if !seen_ids.contains(server_id) {
+            let _ = storage.add_delete_tombstone(owner, server_id).await;
+            let _ = storage.delete_item_by_server_id(owner, server_id).await;
+        }
+    }
+
+    let deleted_ids = if initial_sync {
+        Vec::new()
+    } else {
+        storage.list_deleted_since(owner, since).await?
+    };
+    for deleted_id in deleted_ids {
+        if !seen_ids.contains(&deleted_id) {
+            commands.push_str(&format!(
+                "<Delete><ServerId>{}</ServerId></Delete>",
+                xml_escape(&deleted_id)
+            ));
         }
     }
 
     let new_sync_key = Uuid::new_v4().to_string();
     storage
-        .set_sync_key(owner, collection_id, &new_sync_key, Some("token"))
+        .set_sync_key(owner, collection_id, &new_sync_key, Some(&sync_token_for_now()))
         .await?;
 
     let xml = format!(

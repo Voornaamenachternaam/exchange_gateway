@@ -1,621 +1,271 @@
 # GAP_ANALYSIS.md
 
-## Purpose and source-of-truth
+## Scope and source of truth
 
-This document replaces the previous gap analysis and is intentionally stricter.
+This file compares the **current repository state** of `exchange_gateway` and its Cloudflare components against:
 
-It compares the **actual current repository state** of `exchange_gateway` and its Cloudflare components against all three of the following at the same time:
+1. **`Binder1.txt`**, treated as the Microsoft Exchange protocol source of truth for this repository.
+2. **Your specific use-case**: an existing **Stalwart Mailserver v0.15.5** container, using **Basic username/password authentication** over **IPv4 and IPv6**, exposed through **free Cloudflare services** and an existing **`cloudflared`** tunnel, with the goal of **native Outlook calendar support on Windows 11 and Android 15 without client-side extensions**.
+3. Your required quality bar: **March 2026**, **security hardened**, **production-ready**, **fully robust**, **no stubs**, **no caveats**, and **fully compatible**.
 
-1. **Your specific use-case**: native Outlook calendar use on **Windows 11 Outlook** and **Android 15 Outlook**, with **no client-side extensions**, against an existing **Stalwart Mailserver v0.15.5** deployment.
-2. **`Binder1.txt`** as the Microsoft Exchange protocol source of truth.
-3. The target quality bar you explicitly set: **production-ready, security-hardened, fully robust, fully compatible, no stubs, no caveats, no compromise, current as of March 2026**.
+This document is intentionally strict. The question it answers is:
 
-This file therefore does **not** ask whether the repository is "better than before". It asks a narrower and much harder question:
-
-> **What specific gaps still remain before this repository can honestly be described as a complete Exchange-compatible gateway for the stated Outlook/Stalwart/Cloudflare use-case?**
-
-The answer is: **many critical gaps still remain**. Some earlier blockers are partially addressed in code, but the implementation is still far from the standard required by Binder1.txt and your stated definition of done.
+> **What specific gaps still remain between the actual codebase and the required final Outlook/Stalwart/Cloudflare result?**
 
 ---
 
 ## Executive summary
 
-The current repository is best described as:
+The repository has materially improved compared with the earlier partial prototype. In particular, it now includes:
 
-- a **calendar-focused prototype / partial gateway**;
-- with **basic** EAS and EWS request handling;
-- with **CalDAV read/write translation for a subset of event fields**;
-- with **Cloudflare Worker + D1 helper services** for state and forwarding;
-- but **not yet a complete, protocol-correct, production-ready Exchange facade** for Outlook.
+- real EAS `Sync` write handling for `Add` / `Change` / `Delete` into CalDAV;
+- real EWS `CreateItem` / `UpdateItem` / `DeleteItem` write-through into CalDAV;
+- D1-backed sync state persistence;
+- deletion tombstones for incremental sync;
+- a stricter `FolderSync` surface focused on the calendar folder;
+- improved incremental `GetItemEstimate` behavior;
+- richer recurrence/exception field handling than the original minimal implementation.
 
-### Bottom line
+However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
 
-For your use-case, the repository is **not yet sufficient** to claim:
+### Direct status of the five gaps you explicitly asked to close
 
-- full native Outlook Windows 11 compatibility;
-- full native Outlook Android 15 compatibility;
-- full Binder1.txt conformance for the relevant Exchange protocols;
-- complete production hardening;
-- complete recurrence/time-zone correctness;
-- complete EAS sync semantics;
-- complete EWS calendar semantics.
+1. **EAS Sync protocol correctness is incomplete** → **partially reduced, not fully closed**.
+2. **FolderSync / SyncKey / delta-state behavior is not Exchange-grade** → **partially reduced, not fully closed**.
+3. **Recurring series, exceptions, and time-zone handling are still materially incomplete** → **partially reduced, not fully closed**.
+4. **EWS support is still only a partial subset of what Outlook actually relies on** → **partially reduced, not fully closed**.
+5. **Calendar-specific Exchange semantics are not fully modeled** → **still open**.
 
-The most important unresolved gaps are in these areas:
-
-1. **EAS Sync protocol correctness is incomplete.**
-2. **FolderSync / SyncKey / delta-state behavior is not Exchange-grade.**
-3. **Recurring series, exceptions, and time-zone handling are still materially incomplete.**
-4. **EWS support is still only a partial subset of what Outlook actually relies on.**
-5. **Calendar-specific Exchange semantics are not fully modeled.**
-6. **Autodiscover and Outlook endpoint behavior are still simplified.**
-7. **Cloudflare free-tier operational limits and state design are not fully resolved for production.**
-8. **Security hardening is improved but still not complete enough to support the "perfect / no caveats" requirement.**
-9. **There is no repository-contained proof of end-to-end compatibility with real Outlook clients and real Stalwart v0.15.5.**
+The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
 ---
 
-## What is actually closed versus what is only partially closed
+## What has materially improved in the current repository
 
-### Gaps that are partially closed in code
+## 1) EAS sync/state improvements that are now present
 
-The repository **does now contain real code paths** for several items that used to be obviously missing:
+The repository now does more than simply emit calendar data:
 
-- EAS `Sync` request parsing includes `Add`, `Change`, and `Delete` mutation parsing and attempts to write those changes back to CalDAV.
-- EWS includes implementations for `FindItem`, `GetItem`, `SyncFolderItems`, `CreateItem`, `UpdateItem`, and `DeleteItem`.
-- The shared calendar model includes more fields than a minimal subject/start/end projection.
-- ICS parsing/rendering includes some recurrence, exception, attendee, reminder, and organizer handling.
-- Worker/D1 state exists for sync keys, item mappings, and provision state.
+- client `Sync` mutations are parsed and written back to CalDAV;
+- invalid sync-key handling is now explicit rather than silently ignored;
+- sync state is persisted and used for incremental responses;
+- delete tombstones are tracked so that incremental sync can emit deletions;
+- `FolderSync` now exposes the calendar folder instead of a synthetic multi-workload folder set;
+- `GetItemEstimate` now uses stored sync state instead of always returning a trivial success shell.
 
-These are important improvements.
+**Impact:** the EAS layer is no longer just a full-resync calendar projection. It now behaves more like a real stateful sync pipeline.
 
-### However: none of the requested “perfectly closed” protocol gaps are actually closed to the standard you asked for
+## 2) EWS sync behavior has also improved
 
-The fact that a handler exists does **not** mean the Binder-defined protocol surface is complete, Outlook-compatible, or production-ready.
+The repository already had CRUD handlers, but the current state is stronger because:
 
-For the six gaps you explicitly required to be closed:
+- deleted items now persist tombstones that can be surfaced in later incremental sync responses;
+- `SyncFolderItems` can distinguish initial sync from later sync windows and can emit deletion tombstones;
+- item and folder identifiers are at least stable within the gateway’s own state model.
 
-- **Write Sync (Add/Change/Delete)** → **partially closed only**.
-- **Incomplete EAS Commands** → **not closed**.
-- **Recurrence and Time Zones** → **not closed**.
-- **FolderSync and Pings** → **not closed**.
-- **Minimal EWS Support** → **partially closed only**.
-- **Calendar-Specific EWS Features** → **not closed**.
-
-The remainder of this file explains the precise reasons.
+**Impact:** EWS is less stub-like than before, especially for sync continuity.
 
 ---
 
 ## Remaining gaps in detail
 
-## 1) Exchange ActiveSync (EAS) gaps
+## 1) EAS Sync protocol correctness is still not fully closed
 
-### 1.1 Write Sync (Add / Change / Delete) is implemented only at a partial translation level
+This gap is improved, but **not fully closed**.
 
-The current implementation can parse some inbound `Sync` mutations and convert them to CalDAV `PUT` / `DELETE`, but that is **not the same** as complete Exchange ActiveSync write-sync support.
+### What is now materially better
 
-#### Remaining gaps
+- inbound `Add`, `Change`, and `Delete` exist and write to CalDAV;
+- invalid sync keys are no longer silently accepted;
+- incremental sync uses persisted sync state instead of always behaving like a first sync;
+- delete tombstones are now tracked.
 
-1. **Conflict semantics are incomplete.**
-   - Exchange ActiveSync expects well-defined sync conflict behavior, status handling, and client/server reconciliation semantics.
-   - The current implementation writes directly to CalDAV and persists mappings, but it does not implement the full range of protocol-level conflict statuses, per-command statuses, or robust rollback/compensation behavior expected by clients.
+### Specific remaining gaps
 
-2. **Change application is field-subset based, not protocol-complete.**
-   - `Change` updates only the fields the local model knows how to parse and write.
-   - Binder1.txt covers a much larger calendar property surface than the repository currently models.
+1. **Per-command status fidelity is still incomplete.**
+   Exchange ActiveSync expects detailed command/collection/status semantics. The gateway still behaves more like a consolidated best-effort sync operation than a fully Exchange-grade command-state machine.
 
-3. **Collection semantics are oversimplified.**
-   - Mutations are effectively written to the first discovered calendar collection.
-   - For the specific use-case, this may be workable only if there is exactly one relevant calendar collection and the Outlook behavior never requires richer folder semantics.
-   - That is not a safe production assumption for Exchange protocol emulation.
+2. **Conflict semantics are still incomplete.**
+   Binder1-driven sync correctness requires reliable handling of stale client state, duplicate submissions, retries, partial failure, and write conflicts. The current implementation improves validation, but it still does not implement a complete conflict-resolution model.
 
-4. **Server status fidelity is incomplete.**
-   - A complete EAS implementation must return command/collection/status values that accurately reflect each mutation result.
-   - The current design is closer to “best-effort apply then respond” than full EAS state-machine fidelity.
+3. **Some server-generated sync semantics remain synthetic.**
+   Sync keys, tombstones, and replay behavior are gateway-generated rather than equivalent to the richer Exchange state machine that Outlook clients are built against.
 
-5. **No repository-contained proof of Outlook write interoperability.**
-   - There is no evidence in the repository of real Outlook Windows 11 or Outlook Android 15 test matrices showing successful create/update/delete, retries, conflicts, offline edits, or meeting update propagation.
+4. **Protocol-version-specific calendar behavior is still not fully modeled.**
+   Binder1.txt describes version- and element-specific behavior, especially around exceptions and child elements. The current implementation is richer, but it is not yet exhaustive.
 
-#### Practical conclusion
+5. **No repository-contained proof exists for real Outlook write workflows.**
+   There is still no in-repo interoperability evidence covering create/update/delete under real Outlook Windows 11 and Outlook Android 15 behavior, including retries and offline edits.
 
-This gap is **improved**, but **not fully closed** to the standard of “100% perfectly, completely, no caveats”.
+### Conclusion
 
----
-
-### 1.2 Incomplete EAS command coverage remains a major gap
-
-The repository only meaningfully supports a small subset of EAS commands.
-
-#### What exists now
-
-The command grammar and routing mention several commands, but the actually usable calendar profile is still narrow.
-
-#### Remaining gaps
-
-1. **`Settings` is not implemented as a complete Exchange settings surface.**
-   - Grammar recognition exists, but the repository does not provide complete, Outlook-grade Settings semantics.
-
-2. **`ItemOperations`, `Search`, `ResolveRecipients`, `MoveItems`, `ValidateCert`, `SendMail`, `SmartReply`, `SmartForward` are not implemented to production Exchange behavior.**
-   - Recognition or validation of a command name is not equivalent to implementation.
-   - For your use-case, not all of these must necessarily be supported at full depth, but Outlook compatibility often depends on more than just `Sync` and `FolderSync`.
-
-3. **`GetItemEstimate` is superficial.**
-   - It returns a success envelope, but there is no evidence of accurate estimate calculation tied to actual pending changes.
-
-4. **Provisioning is minimal.**
-   - The current implementation stores a policy key/state, but does not implement a realistic Exchange-grade device policy system.
-   - If clients request security policy details, remote wipe semantics, or richer policy negotiation, the gateway is not equivalent to Exchange.
-
-5. **No capability/version negotiation proof per real clients.**
-   - Advertising support and satisfying actual Outlook/Android client behavior are different things.
-
-#### Practical conclusion
-
-This gap is **not closed**.
+**Status:** **partially reduced, not fully closed**.
 
 ---
 
-### 1.3 FolderSync is still not correct for the stated single-calendar use-case
+## 2) FolderSync / SyncKey / delta-state behavior is improved, but still not Exchange-grade
 
-Your use-case is specifically about a Stalwart calendar being exposed natively to Outlook. The current `FolderSync` behavior remains problematic.
+This gap is also improved, but **not fully closed**.
 
-#### Remaining gaps
+### What is now materially better
 
-1. **Folder list is hard-coded rather than derived from actual backend capabilities.**
-   - The implementation returns a fixed folder payload including Calendar, Contacts, Tasks, Notes, and Documents.
-   - That is not an accurate representation of the real backend if only calendar is actually supported.
+- `FolderSync` is now aligned to the actual single-calendar profile instead of advertising a synthetic multi-folder Exchange mailbox surface;
+- sync-key validation now exists for both `Sync` and `FolderSync` paths;
+- sync responses use stored state and delete tombstones instead of always behaving like full-resync snapshots.
 
-2. **Folder identity/state semantics are oversimplified.**
-   - Exchange clients expect syncable, evolving folder state.
-   - Static synthetic folder identities are not sufficient for a protocol-perfect implementation.
+### Specific remaining gaps
 
-3. **Misleading capability surface.**
-   - Advertising folders such as Contacts and Tasks without implementing those workloads creates protocol inconsistency.
+1. **Folder hierarchy remains synthetic.**
+   Even though the surface is narrower and more accurate, the repository still does not implement a complete Exchange folder model. It exposes a deliberately simplified calendar-only hierarchy.
 
-4. **No robust folder hierarchy model.**
-   - There is no true mapping between Exchange folder identifiers and Stalwart/CalDAV resources beyond a simplified approach.
+2. **State journaling remains lighter than Exchange.**
+   D1 state plus tombstones is a meaningful improvement, but it is still not a full Exchange-grade journal of item lifecycle transitions, per-device progression, and recovery semantics.
 
-#### Practical conclusion
+3. **Sync-key recovery behavior is still simplified.**
+   Invalid-key handling is present, but the recovery and replay model remains narrower than the complete Binder-defined Exchange behavior.
 
-This gap is **not closed**.
+4. **`Ping` remains minimal.**
+   The repository still does not provide a full long-lived monitored-folder heartbeat implementation equivalent to Exchange server behavior across all real-client timing patterns.
 
----
+5. **No complete concurrency proof exists.**
+   There is still no repository-contained proof for multi-device, out-of-order, retry-heavy sync behavior under production-like load.
 
-### 1.4 SyncKey / delta sync behavior is still not Exchange-grade
+### Conclusion
 
-A production-ready Exchange-style sync implementation requires strict, durable, replay-safe sync state handling.
-
-#### Remaining gaps
-
-1. **Sync state is too simple for full EAS correctness.**
-   - D1 stores sync keys, but the repository does not implement a full, protocol-robust sync state machine with complete invalid-key handling, replay semantics, and per-collection change tracking fidelity.
-
-2. **Change tracking is timestamp-centric and mapping-centric, not protocol-complete.**
-   - The Worker tracks updates using timestamps and item mappings.
-   - That is not equivalent to full Exchange delta semantics, especially under concurrent edits, retries, and multi-device sync races.
-
-3. **No full tombstone/change journal model.**
-   - Robust incremental sync requires durable change journaling, not just current-row state and update timestamps.
-
-4. **No demonstrated sync reset and resync correctness.**
-   - Outlook clients can and do force recovery flows.
-   - There is no repository-contained proof that invalid sync keys, state corruption, partial replay, or out-of-order retries are handled exactly as clients expect.
-
-#### Practical conclusion
-
-This gap is **not closed**.
+**Status:** **partially reduced, not fully closed**.
 
 ---
 
-### 1.5 Ping support is minimal and likely insufficient for long-lived client expectations
+## 3) Recurring series, exceptions, and time-zone handling are still materially incomplete
 
-The repository returns a simple successful Ping-style response.
+This remains one of the most important remaining blockers.
 
-#### Remaining gaps
+### What is now materially better
 
-1. **No evidence of full folder-monitoring semantics.**
-   - Proper EAS Ping behavior is tied to monitored folders, heartbeat intervals, and change detection semantics.
+- recurrence information is parsed and projected in both EAS and EWS paths;
+- exceptions and deleted occurrences are modeled and emitted more explicitly than in the original implementation;
+- incremental sync can now preserve and transmit recurring-item deletions more consistently.
 
-2. **No proof of client-observed long-poll compatibility through Cloudflare.**
-   - Outlook/mobile behavior behind Cloudflare edge/tunnel/worker timeouts needs explicit validation.
+### Specific remaining gaps
 
-3. **No robust heartbeat policy logic.**
-   - Real EAS clients adapt heartbeat values; the server side must behave predictably.
+1. **Time-zone fidelity is still insufficient for a perfect Outlook claim.**
+   The implementation still normalizes most date-time handling into UTC-centered internal state. That is useful operationally, but it is not equivalent to full Exchange time-zone fidelity.
 
-#### Practical conclusion
+2. **`VTIMEZONE` / Exchange time-zone equivalence is still incomplete.**
+   Binder1.txt ties Exchange calendar behavior to richer time-zone semantics than the current gateway preserves end-to-end.
 
-This gap is **not closed**.
+3. **All-day / recurrence / timezone edge-case behavior is not fully proven.**
+   Binder1.txt contains strict rules for all-day events, recurrence elements, and timezone interactions. The code handles a useful subset but not the entire edge-case surface.
 
----
+4. **Exception semantics remain partial.**
+   The gateway supports exception payloads and deleted instances, but not the entire Exchange recurrence model such as richer exception metadata, range semantics, and all instance-type distinctions.
 
-### 1.6 Recurrence and time-zone support remains materially incomplete
+5. **No proof exists for DST-sensitive Outlook scenarios.**
+   There is still no repository-contained validation for recurring meetings spanning DST changes, cross-zone organizers/attendees, or historical zone transitions.
 
-This is one of the most important remaining issues for Outlook interoperability.
+### Conclusion
 
-#### What the code does now
-
-The repository does parse and render:
-
-- `RRULE`
-- `EXDATE`
-- `RECURRENCE-ID`
-- some attendee/exception data
-- a custom `X-EAS-TIMEZONE` field
-
-That is useful, but it is not enough.
-
-#### Remaining gaps
-
-1. **Time-zone handling is mostly normalized to UTC rather than fully modeled.**
-   - The internal calendar item stores `start` and `end` as UTC datetimes.
-   - `parse_datetime` converts non-UTC forms into UTC without preserving full original zone rules.
-   - Outlook calendar correctness often depends on preserving time-zone identity and recurrence interpretation in local zone context.
-
-2. **No full `VTIMEZONE` round-trip fidelity.**
-   - Binder1.txt includes rich Exchange time-zone semantics and mappings.
-   - The current implementation does not preserve a full `VTIMEZONE` block or perform complete bidirectional conversion between Exchange zone concepts and iCalendar zone definitions.
-
-3. **The custom `X-EAS-TIMEZONE` approach is not enough.**
-   - A private field can help carry some context, but it is not equivalent to fully correct Exchange/EAS/EWS time-zone semantics.
-
-4. **Recurrence translation is partial.**
-   - The repository supports a subset of RRULE/EAS recurrence mappings, but not the complete recurrence model and edge cases required for Outlook-grade behavior.
-
-5. **Exception handling is partial.**
-   - Modified exceptions and deleted instances are represented, but not all Exchange recurrence exception semantics are modeled.
-   - Range operations such as “this and future” semantics are not fully represented.
-
-6. **No complete orphan-instance / instance-type model.**
-   - Binder1.txt describes recurring masters, instances, exceptions, and related semantics.
-   - The repository’s shared calendar model is much simpler than the Exchange recurrence object model.
-
-7. **DST-sensitive behavior is not proven.**
-   - There is no repository-contained proof for recurring events spanning daylight-saving transitions, historical zone changes, or cross-zone organizer/attendee scenarios.
-
-#### Practical conclusion
-
-This gap is **not closed** and remains a high-risk blocker for “perfect Outlook compatibility”.
+**Status:** **partially reduced, not fully closed**.
 
 ---
 
-## 2) Exchange Web Services (EWS) gaps
+## 4) EWS support is stronger, but still only a partial subset of what Outlook can rely on
 
-### 2.1 EWS is no longer “minimal”, but it is still far from complete Outlook-grade EWS calendar support
+This gap is improved, but **not fully closed**.
 
-The repository now has more than just a `GetFolder` stub, but it is still a partial implementation.
+### What is now materially better
 
-#### What exists now
+- EWS has real CRUD paths into CalDAV;
+- `SyncFolderItems` uses persisted state rather than a pure placeholder model;
+- deletion tombstones improve incremental behavior.
 
-Handlers exist for:
+### Specific remaining gaps
 
-- `GetFolder`
-- `FindFolder`
-- `FindItem`
-- `GetItem`
-- `SyncFolderItems`
-- `CreateItem`
-- `UpdateItem`
-- `DeleteItem`
-- `ResolveNames`
+1. **EWS schema coverage is still selective.**
+   The implementation supports a useful subset of EWS request/response shapes, but not the full property and update surface that Outlook can emit.
 
-#### Remaining gaps
+2. **Folder and mailbox modeling remain simplified.**
+   The gateway exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
 
-1. **Schema coverage is still selective and simplified.**
-   - The parser/renderer recognizes only a subset of EWS calendar fields and update forms.
-   - Exchange clients can emit richer SOAP shapes than the repository currently handles.
+3. **Sync fidelity is still not fully equivalent to Exchange.**
+   `SyncFolderItems` is meaningfully better, but it is still a gateway-managed approximation rather than full Exchange item-state behavior.
 
-2. **Folder model is still synthetic.**
-   - `GetFolder` / `FindFolder` behavior is not backed by a complete Exchange folder hierarchy or mailbox model.
+4. **No real Outlook-for-Windows EWS proof is present in-repo.**
+   The repository still does not contain end-to-end captures or regression artifacts showing successful native Outlook desktop operation through Autodiscover, EWS, and ongoing calendar sync.
 
-3. **`SyncFolderItems` is partial.**
-   - True Exchange sync state semantics are more detailed than a simple stored sync token with item enumeration.
+### Conclusion
 
-4. **Response fidelity is incomplete.**
-   - EWS clients rely on specific response classes, item shapes, identifiers, and property sets.
-   - The implementation focuses on a useful subset, not full fidelity.
-
-5. **No proof of Outlook-for-Windows real-world EWS interoperability.**
-   - Outlook desktop behavior is extremely sensitive to EWS details.
-   - There is no repository-contained client verification proving this works as a native Outlook account end-to-end.
-
-#### Practical conclusion
-
-This gap is **partially closed only**.
+**Status:** **partially reduced, not fully closed**.
 
 ---
 
-### 2.2 Calendar-specific EWS semantics remain incomplete
+## 5) Calendar-specific Exchange semantics are still not fully modeled
 
-This is distinct from merely having CRUD handlers.
+This remains **open**.
 
-#### Remaining gaps
+### Specific remaining gaps
 
-1. **Meeting workflow semantics are incomplete.**
-   - Exchange calendar behavior includes meeting requests, responses, organizer/attendee semantics, response objects, and related status transitions.
-   - The repository updates attendee response state in a simplified manner, but that is not a full Exchange meeting workflow implementation.
+1. **Meeting workflow semantics are still simplified.**
+   Meeting requests, updates, organizer/attendee state, and related Exchange response behaviors are only partially represented.
 
-2. **Free/busy semantics are absent.**
-   - Outlook commonly depends on Exchange availability semantics.
-   - There is no complete free/busy implementation here.
+2. **Free/busy semantics are still absent.**
+   Outlook-native Exchange behavior often depends on availability semantics that are still not implemented here.
 
-3. **Reminder semantics are partial.**
-   - A simple reminder offset does not equal complete Exchange reminder behavior.
+3. **Change-key / identity semantics remain gateway-defined.**
+   The gateway provides stable IDs and change material, but not a true Exchange item-identity and mutation model.
 
-4. **Recurrence exception semantics are incomplete in EWS shape terms.**
-   - Exchange represents recurring masters, occurrences, exceptions, and associated identifiers with richer semantics than the repository currently models.
+4. **The Binder1 calendar property universe is still broader than the current local model.**
+   The repository models more fields than before, but not the entire Exchange calendar semantics surface implied by the Binder corpus.
 
-5. **Server-generated metadata and item identity semantics are simplified.**
-   - Exchange item IDs, change keys, and related update semantics are richer than the current server-id + mapping approach.
+5. **Native Outlook behavioral proof is still missing.**
+   Even if individual request handlers exist, the repository still lacks the proof required to assert “fully and perfectly compatible” for Windows 11 Outlook and Android 15 Outlook.
 
-6. **No support for the broader calendar property universe expected by Outlook.**
-   - The current local model still excludes many Exchange calendar properties and behaviors defined across the Binder corpus.
+### Conclusion
 
-#### Practical conclusion
-
-This gap is **not closed**.
+**Status:** **still open**.
 
 ---
 
-## 3) Autodiscover and Outlook account bootstrap gaps
+## Additional remaining gaps outside the five requested areas
 
-Autodiscover exists in the Worker, but it remains a simplified implementation.
+## 6) Autodiscover remains simplified
 
-### Remaining gaps
+The Worker provides Autodiscover payloads, but the behavior is still synthetic rather than fully mailbox-topology aware. The repository still lacks proof that all current Outlook bootstrap paths work reliably with the exact Cloudflare deployment model and the current gateway behavior.
 
-1. **Responses are synthetic rather than mailbox-topology aware.**
-   - The Worker emits static-looking XML/JSON/SOAP payloads.
-   - Outlook behavior can depend on more than just the presence of an endpoint URL.
+## 7) Cloudflare operational proof is still incomplete
 
-2. **No proof of complete Outlook autodiscover negotiation.**
-   - There is no repository-contained capture showing full account bootstrap succeeds on current Outlook Windows 11 and Android 15 without client workarounds.
+The repository still does not contain a production-grade benchmark and compatibility package proving that the Worker, D1, tunnel, and Rust gateway remain reliable within the real request patterns of Outlook clients on the intended free-service footprint.
 
-3. **Protocol advertisements may exceed real backend capability.**
-   - If autodiscover advertises EWS/EAS routes as Exchange-like but the backend semantics remain partial, Outlook can configure successfully and still fail functionally later.
+## 8) Security hardening is improved but still not “perfectly closed”
 
-4. **Realm / challenge / auth discovery behavior is not exhaustively demonstrated.**
-   - Binder1.txt includes Basic-auth related realm challenge behavior.
-   - The repository does not provide full proof that these flows match Outlook expectations in all bootstrap scenarios.
+This analysis respects your stated use-case: **Basic authentication remains part of the design and is not treated as disqualifying by itself**. The remaining security gaps are instead around total deployment proof, operational hardening depth, malformed-input validation coverage, and end-to-end production verification.
 
-### Practical conclusion
+## 9) Stalwart-specific proof remains incomplete
 
-This gap is **not closed**.
-
----
-
-## 4) Cloudflare architecture and production operations gaps
-
-Your use-case specifically requires free Cloudflare services plus a Rust container beside Stalwart and a `cloudflared` tunnel. The repository still leaves important production gaps.
-
-### 4.1 Worker runtime and request-model risk remains
-
-#### Remaining gaps
-
-1. **No demonstrated margin against Worker runtime/resource constraints.**
-   - The code path includes SOAP/WBXML/XML processing, request validation, forwarding, and D1 lookups.
-   - There is no repository-contained benchmark suite proving the target workloads remain safe and reliable on the intended Cloudflare plan profile.
-
-2. **Long-lived or large sync response behavior is not validated.**
-   - Calendar sync responses can grow nontrivially with recurring events and exceptions.
-
-3. **No replayable load test evidence.**
-   - A production-ready statement requires measured behavior under concurrent Outlook clients, retries, and bursts.
-
-### 4.2 D1-backed state remains too lightweight for Exchange-grade sync durability
-
-#### Remaining gaps
-
-1. **D1 schema is mapping/state oriented, not a full event journal.**
-   - This is useful, but still too thin for full Exchange sync semantics under all failure and concurrency conditions.
-
-2. **No complete migration / recovery / backup / corruption handling story in repository code.**
-   - Production readiness requires more than a schema file.
-
-3. **No demonstrated resilience under eventual consistency / transient failure patterns.**
-   - Exchange-style sync state machines are sensitive to precisely this class of issue.
-
-### 4.3 Tunnel/origin deployment proof remains external
-
-#### Remaining gaps
-
-1. **No repository-contained end-to-end deployment validation with actual `cloudflared` + Stalwart v0.15.5.**
-2. **No formal verification of IPv4 + IPv6 behavior for all relevant paths.**
-3. **No repository-contained validation that origin exposure is sufficiently locked down in the exact target deployment.**
-
-### Practical conclusion
-
-Cloudflare support is **usable as infrastructure scaffolding**, but **not yet proven production-complete** for the target claim.
-
----
-
-## 5) Security gaps relative to your stated “security hardened” requirement
-
-You explicitly require a hardened production system. Relative to that requirement, important gaps remain even though Basic authentication is acceptable in your specific use-case.
-
-### Important note about Basic auth in this use-case
-
-Per your instruction, this analysis does **not** treat Exchange Online deprecation as a source of truth for your design because your target is **not Exchange Online**. Also, you explicitly state that **Stalwart v0.15.5 uses Basic username/password authentication and that this will not change**.
-
-Therefore, the correct standard here is not “remove Basic because Exchange Online did.”
-
-The correct standard is:
-
-> **If Basic authentication remains part of the use-case, the gateway must harden everything around it and implement the protocol correctly with Basic over properly protected transport.**
-
-### Remaining security gaps
-
-1. **Origin transport hardening is not fully enforced by repository code alone.**
-   - The Worker accepts `http` or `https` origin URLs.
-   - For the stated “perfectly security hardened” target, this should be locked down more strictly or at least proven safe in the exact deployment.
-
-2. **Request signing / trust boundary design is still relatively simple.**
-   - The Worker-to-gateway trust model uses a shared secret and forwarded requests.
-   - This can be acceptable, but the repository does not yet provide a full hardening story covering rotation, replay boundaries, and deployment misconfiguration prevention.
-
-3. **No full audit/security test suite is included.**
-   - There is no repository-contained penetration-style validation for malformed SOAP/WBXML/XML, oversized payloads, authentication edge cases, or state-tampering attempts.
-
-4. **No complete secrets lifecycle management inside the repository.**
-   - The docs mention secret handling patterns, but the repository itself does not enforce end-to-end operational security posture.
-
-5. **No complete abuse-handling posture proven for exposed Exchange-like endpoints.**
-   - Rate limiting exists in the Worker, which is good.
-   - That still does not prove robust protection against all practical abuse patterns for EWS/EAS endpoints.
-
-### Practical conclusion
-
-Security is **improved**, but **not yet at the “fully security hardened, no caveats” level**.
-
----
-
-## 6) Stalwart integration gaps
-
-Your use-case is specifically tied to **Stalwart Mailserver v0.15.5**.
-
-### Remaining gaps
-
-1. **The repository assumes a simplified CalDAV collection model.**
-   - It discovers calendars by probing a predictable path and then uses the first calendar collection.
-   - That is not a complete Stalwart integration layer.
-
-2. **No repository-contained proof for all relevant Stalwart calendar behaviors.**
-   - Recurrence, exceptions, attendee state, ETag behavior, PUT preconditions, and collection layouts need explicit verification against Stalwart v0.15.5.
-
-3. **Config-level Stalwart requirements are not fully codified.**
-   - The request mentions that Stalwart `config.toml` may need modifications.
-   - The repository does not yet provide a definitive, proven, end-to-end Stalwart configuration profile guaranteeing the required Exchange-like behavior.
-
-### Practical conclusion
-
-This gap is **not closed**.
-
----
-
-## 7) Testing and verification gaps
-
-This is one of the largest remaining blockers to your required standard.
-
-### Remaining gaps
-
-1. **No complete protocol conformance test suite tied to Binder1.txt.**
-   - There are unit-level tests and parser checks, but not a comprehensive Binder-derived compatibility suite.
-
-2. **No full client interoperability matrix in-repo.**
-   - Missing: Outlook Windows 11 native account setup, Outlook Android 15 native account setup, create/update/delete, recurring meetings, meeting responses, reminders, offline changes, conflict resolution, and resync behavior.
-
-3. **No production-style fault-injection tests.**
-   - Missing: Worker failure, D1 failure, network retries, stale ETags, duplicate submissions, out-of-order syncs, tunnel interruptions, and large recurrence sets.
-
-4. **No performance qualification artifacts.**
-   - Missing: latency, throughput, memory, Worker CPU/runtime, and D1 usage evidence.
-
-### Practical conclusion
-
-Without this verification, the repository cannot honestly claim “fully and perfectly compatible” for the use-case.
-
----
-
-## 8) Specific status of the gaps you explicitly required to be closed
-
-Below is the direct answer to your instruction to “perfectly close” the following gaps.
-
-### 8.1 Write Sync (Add/Change/Delete)
-- **Status:** **Partially closed only**.
-- **Why not fully closed:** translation exists, but full EAS sync semantics, conflict handling, status fidelity, and proven Outlook interoperability are still missing.
-
-### 8.2 Incomplete EAS Commands
-- **Status:** **Not closed**.
-- **Why not fully closed:** command surface remains partial, and some commands are recognized more than they are fully implemented.
-
-### 8.3 Recurrence and Time Zones
-- **Status:** **Not closed**.
-- **Why not fully closed:** recurrence support is partial, exception semantics are incomplete, and time-zone fidelity is insufficient for a “perfect Outlook” claim.
-
-### 8.4 FolderSync and Pings
-- **Status:** **Not closed**.
-- **Why not fully closed:** FolderSync is synthetic and Ping behavior is minimal.
-
-### 8.5 Minimal EWS Support
-- **Status:** **Partially closed only**.
-- **Why not fully closed:** CRUD/read sync handlers exist, but the EWS surface remains simplified and not fully Outlook-grade.
-
-### 8.6 Calendar-Specific EWS Features
-- **Status:** **Not closed**.
-- **Why not fully closed:** full meeting workflow, free/busy, recurrence exception semantics, and broader calendar property fidelity remain incomplete.
-
----
-
-## 9) What would still need to be true before this repository could satisfy the requested standard
-
-The following would still need to be delivered and verified before the repository could reasonably claim to meet your requirement.
-
-### Protocol completeness
-
-1. A much more complete EAS state machine:
-   - robust `Sync` state handling;
-   - accurate per-command/per-collection statuses;
-   - complete delta/tombstone logic;
-   - correct invalid-sync-key recovery;
-   - Outlook-proven `FolderSync`, `Ping`, `GetItemEstimate`, and provisioning behavior.
-
-2. A much more complete EWS calendar implementation:
-   - richer property set coverage;
-   - better item identity/change-key semantics;
-   - complete recurring-series/exception handling in EWS shapes;
-   - meeting-response / meeting-object fidelity;
-   - Outlook-proven behavior for desktop account setup and ongoing sync.
-
-3. Stronger recurrence/time-zone correctness:
-   - preserved time-zone identity;
-   - robust `VTIMEZONE` / Exchange zone mapping;
-   - DST-safe recurrence behavior;
-   - exception and range semantics such as “this and future” where relevant.
-
-### Infrastructure and operations
-
-4. Exchange-grade sync durability on Cloudflare state services.
-5. A fully proven `cloudflared` + Worker + gateway + Stalwart deployment guide.
-6. Benchmarks and operational SLO evidence for realistic Outlook workloads.
-
-### Security and hardening
-
-7. Stronger transport and deployment lock-down.
-8. Expanded abuse, malformed-input, and state-tampering testing.
-9. Complete operational secret rotation and recovery guidance.
-
-### Proof
-
-10. A repository-contained validation package showing successful real-client operation with:
-    - Outlook on Windows 11;
-    - Outlook on Android 15;
-    - Stalwart v0.15.5;
-    - IPv4 and IPv6;
-    - Cloudflare free-service deployment constraints.
+The gateway is clearly designed around Stalwart CalDAV, but the repository still lacks a full in-repo proof package showing exact interoperability with Stalwart Mailserver v0.15.5 under the target Outlook client matrix.
 
 ---
 
 ## Final conclusion
 
-The current repository is **not yet** a complete answer to your stated goal.
+The repository is **substantially stronger than the earlier partial prototype**, and some of the previously identified gaps are now **materially reduced**.
 
-It does contain meaningful progress beyond a trivial prototype:
+However, measured strictly against:
 
-- EAS writes exist in some form.
-- EWS CRUD/read/sync handlers exist in some form.
-- Calendar modeling is richer than before.
-- Worker/D1 support is present.
+- **Binder1.txt**,
+- your exact **Stalwart v0.15.5 + Cloudflare + `cloudflared` + Outlook Windows 11 / Android 15** use-case, and
+- your required **March 2026 production-ready / no-caveats / fully compatible** standard,
 
-But measured against **Binder1.txt**, **your exact Outlook/Stalwart/Cloudflare use-case**, and your required March 2026 standard of **perfect, complete, production-ready compatibility with no caveats**, the repository still has **substantial remaining gaps**.
+there are still **specific remaining gaps**.
 
-### Most important conclusion
+### Final status of the five required target gaps
 
-The previously cited gaps are **not actually all closed**.
+1. **EAS Sync protocol correctness is incomplete** → **partially reduced, not fully closed**.
+2. **FolderSync / SyncKey / delta-state behavior is not Exchange-grade** → **partially reduced, not fully closed**.
+3. **Recurring series, exceptions, and time-zone handling are still materially incomplete** → **partially reduced, not fully closed**.
+4. **EWS support is still only a partial subset of what Outlook actually relies on** → **partially reduced, not fully closed**.
+5. **Calendar-specific Exchange semantics are not fully modeled** → **still open**.
 
-In particular, the following are **still open** at a material level:
+So the honest current-state answer is:
 
-- **Write Sync (Add/Change/Delete)** — partially closed only.
-- **Incomplete EAS Commands** — open.
-- **Recurrence and Time Zones** — open.
-- **FolderSync and Pings** — open.
-- **Minimal EWS Support** — partially closed only.
-- **Calendar-Specific EWS Features** — open.
-
-Therefore, the repository should **not** currently be represented as delivering a fully complete Exchange-compatible native Outlook calendar solution for the specified Stalwart v0.15.5 + Cloudflare use-case.
+> The codebase has moved forward and now closes part of the earlier gap set in implementation, but it still does **not yet** satisfy the standard of a perfectly complete, fully Outlook-compatible Exchange gateway for the stated Stalwart/Cloudflare use-case.
