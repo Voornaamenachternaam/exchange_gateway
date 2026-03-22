@@ -29,11 +29,13 @@ The repository has materially improved compared with the earlier partial prototy
 - durable device-scoped `ClientId` replay suppression for EAS `Sync/Add` retries via D1-backed command journaling rather than re-creating duplicate events;
 - Binder-aligned validation that `Sync/Add` requests carry `ClientId`, and rejection of response-only ActiveSync calendar fields such as `AppointmentReplyTime` / `ResponseType` in client `Sync` writes;
 - richer recurrence/exception field handling than the original minimal implementation;
+- ActiveSync recurrence responses now include `CalendarType` for the monthly/yearly recurrence shapes where Binder1 requires it in command responses;
 - preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision;
 - EWS `GetUserAvailability` merged free/busy output sourced from CalDAV event windows;
 - EWS `GetUserAvailability` now also emits a concrete calendar-event array instead of only a merged bitmap;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
 - derived `MeetingStatus` / `ResponseType` emission when the upstream item data does not already provide them explicitly;
+- exception-level `AppointmentReplyTime` / `MeetingStatus` / `ResponseType` fields are now preserved through the local calendar model and emitted back out on Sync/ICS paths;
 - a slightly less synthetic EWS folder shape by including the calendar folder’s parent linkage under `MsgFolderRoot`;
 - richer Autodiscover XML / JSON / SOAP payloads that advertise EWS and ActiveSync endpoints more explicitly for Outlook bootstrap.
 
@@ -61,6 +63,8 @@ The top-level gaps above are still only **partially** closed overall, but this r
 8. **Merged free/busy responses lacking concrete event windows** is now reduced by emitting a `CalendarEventArray` alongside `MergedFreeBusy`.
 9. **Meeting-status / response-type emission depending entirely on upstream storage values** is now reduced by deriving Exchange-like values from organizer/attendee context when absent.
 10. **The calendar folder shape lacking parent linkage under `MsgFolderRoot`** is now reduced by returning an explicit parent folder reference in EWS folder responses.
+11. **Monthly/yearly ActiveSync recurrence responses omitting `CalendarType`** is now closed for the implemented recurrence response shapes.
+12. **Exception-level meeting reply/status metadata being dropped from local round-tripping** is now reduced by preserving and re-emitting those fields in the calendar model.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -122,7 +126,7 @@ This gap is improved, but **not fully closed**.
    Sync keys, tombstones, and replay behavior are gateway-generated rather than equivalent to the richer Exchange state machine that Outlook clients are built against.
 
 4. **Protocol-version-specific calendar behavior is still not fully modeled.**
-   Binder1.txt describes version- and element-specific behavior, especially around exceptions and child elements. The current implementation is richer, but it is not yet exhaustive.
+   Binder1.txt describes version- and element-specific behavior, especially around exceptions and child elements. The current implementation is richer, now including `CalendarType` in implemented monthly/yearly recurrence responses and preserving more exception reply/status fields, but it is not yet exhaustive.
 
 5. **No repository-contained proof exists for real Outlook write workflows.**
    There is still no in-repo interoperability evidence covering create/update/delete under real Outlook Windows 11 and Outlook Android 15 behavior, including retries and offline edits.
@@ -185,7 +189,7 @@ This remains one of the most important remaining blockers.
    Binder1.txt contains strict rules for all-day events, recurrence elements, and timezone interactions. The code handles a useful subset but not the entire edge-case surface.
 
 4. **Exception semantics remain partial.**
-   The gateway supports exception payloads and deleted instances, but not the entire Exchange recurrence model such as richer exception metadata, range semantics, and all instance-type distinctions.
+   The gateway supports exception payloads, deleted instances, and more exception reply/status metadata than before, but not the entire Exchange recurrence model such as richer range semantics and all instance-type distinctions.
 
 5. **No proof exists for DST-sensitive Outlook scenarios.**
    There is still no repository-contained validation for recurring meetings spanning DST changes, cross-zone organizers/attendees, or historical zone transitions.

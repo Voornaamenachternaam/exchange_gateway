@@ -51,6 +51,9 @@ pub struct CalendarException {
     pub busy_status: Option<u8>,
     pub sensitivity: Option<u8>,
     pub reminder: Option<i32>,
+    pub appointment_reply_time: Option<chrono::DateTime<Utc>>,
+    pub meeting_status: Option<u8>,
+    pub response_type: Option<u8>,
     pub attendees: Option<Vec<Attendee>>,
     pub categories: Option<Vec<String>>,
 }
@@ -165,6 +168,7 @@ struct EasRecurrence {
     until: Option<String>,
     occurrences: Option<u32>,
     first_day_of_week: Option<u32>,
+    calendar_type: Option<u8>,
 }
 
 impl EasBuilder {
@@ -1052,6 +1056,18 @@ pub fn render_ics(item: &CalendarItem) -> String {
         if let Some(reminder) = exception.reminder {
             lines.extend(render_valarm(reminder));
         }
+        if let Some(v) = exception.appointment_reply_time {
+            lines.push(format!(
+                "X-MS-APPOINTMENT-REPLY-TIME:{}",
+                v.format("%Y%m%dT%H%M%SZ")
+            ));
+        }
+        if let Some(v) = exception.meeting_status {
+            lines.push(format!("X-MS-MEETING-STATUS:{v}"));
+        }
+        if let Some(v) = exception.response_type {
+            lines.push(format!("X-MS-RESPONSE-TYPE:{v}"));
+        }
         lines.push("END:VEVENT".to_string());
     }
 
@@ -1276,10 +1292,26 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                             current.disallow_new_time_proposal = Some(value == "1")
                         }
                         Some(b"AppointmentReplyTime") => {
-                            current.appointment_reply_time = parse_datetime(&value)
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.appointment_reply_time = parse_datetime(&value);
+                            } else {
+                                current.appointment_reply_time = parse_datetime(&value)
+                            }
                         }
-                        Some(b"MeetingStatus") => current.meeting_status = value.parse().ok(),
-                        Some(b"ResponseType") => current.response_type = value.parse().ok(),
+                        Some(b"MeetingStatus") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.meeting_status = value.parse().ok();
+                            } else {
+                                current.meeting_status = value.parse().ok()
+                            }
+                        }
+                        Some(b"ResponseType") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.response_type = value.parse().ok();
+                            } else {
+                                current.response_type = value.parse().ok()
+                            }
+                        }
                         Some(b"OnlineMeetingConfLink") => {
                             current.online_meeting_conf_link = Some(value)
                         }
@@ -1385,6 +1417,11 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                             if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
                         {
                             current.recurrence.first_day_of_week = value.parse().ok()
+                        }
+                        Some(b"CalendarType")
+                            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
+                        {
+                            current.recurrence.calendar_type = value.parse().ok()
                         }
                         _ => {
                             let _ = kind;
@@ -1893,6 +1930,13 @@ mod tests {
                             .unwrap()
                             .with_timezone(&chrono::Utc),
                     ),
+                    appointment_reply_time: Some(
+                        chrono::DateTime::parse_from_rfc3339("2026-03-25T08:00:00Z")
+                            .unwrap()
+                            .with_timezone(&chrono::Utc),
+                    ),
+                    meeting_status: Some(3),
+                    response_type: Some(2),
                     ..Default::default()
                 },
             ],
@@ -1910,6 +1954,7 @@ mod tests {
                 .iter()
                 .any(|v| v.subject.as_deref() == Some("Shifted subject"))
         );
+        assert!(parsed.exceptions.iter().any(|v| v.response_type == Some(2)));
     }
 
     #[test]

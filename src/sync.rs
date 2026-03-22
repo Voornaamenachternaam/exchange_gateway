@@ -638,6 +638,9 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
             month_of_year
         ));
     }
+    if matches!(freq_val, 2 | 3 | 5 | 6) {
+        xml.push_str("<Calendar:CalendarType>0</Calendar:CalendarType>");
+    }
     if let Some(v) = until {
         xml.push_str(&format!(
             "<Calendar:Until>{}</Calendar:Until>",
@@ -785,6 +788,32 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
     }
     if let Some(v) = exception.reminder {
         xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
+    }
+    if let Some(v) = exception.appointment_reply_time {
+        xml.push_str(&format!(
+            "<Calendar:AppointmentReplyTime>{}</Calendar:AppointmentReplyTime>",
+            v.format("%Y-%m-%dT%H:%M:%SZ")
+        ));
+    }
+    if let Some(v) = exception.meeting_status {
+        xml.push_str(&format!(
+            "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
+            v
+        ));
+    } else {
+        xml.push_str(&format!(
+            "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
+            derived_meeting_status(item)
+        ));
+    }
+    if let Some(v) = exception
+        .response_type
+        .or_else(|| derived_response_type(item))
+    {
+        xml.push_str(&format!(
+            "<Calendar:ResponseType>{}</Calendar:ResponseType>",
+            v
+        ));
     }
     if let Some(v) = &exception.categories {
         if !v.is_empty() {
