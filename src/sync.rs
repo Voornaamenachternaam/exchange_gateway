@@ -146,6 +146,9 @@ pub async fn apply_client_sync_mutations(
                 if let Some(v) = patch.timezone {
                     item.timezone = Some(v);
                 }
+                if let Some(v) = patch.timezone_blob {
+                    item.timezone_blob = Some(v);
+                }
                 if let Some(v) = patch.rrule {
                     item.rrule = Some(v);
                 }
@@ -668,7 +671,7 @@ fn render_calendar_app_data(item: &CalendarItem) -> String {
     } else {
         "<Calendar:AllDayEvent>0</Calendar:AllDayEvent>"
     });
-    if let Some(v) = &item.timezone {
+    if !item.all_day && let Some(v) = &item.timezone {
         xml.push_str(&format!(
             "<Calendar:Timezone>{}</Calendar:Timezone>",
             xml_escape(v)

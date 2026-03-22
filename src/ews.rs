@@ -297,6 +297,192 @@ fn xml_escape(v: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn busy_status_to_ews(value: u8) -> &'static str {
+    match value {
+        0 => "Free",
+        1 => "Tentative",
+        3 => "OOF",
+        _ => "Busy",
+    }
+}
+
+fn sensitivity_to_ews(value: u8) -> &'static str {
+    match value {
+        1 => "Personal",
+        2 => "Private",
+        3 => "Confidential",
+        _ => "Normal",
+    }
+}
+
+fn render_ews_attendees(item: &crate::calendar::CalendarItem) -> String {
+    let mut required = String::new();
+    let mut optional = String::new();
+    for attendee in &item.attendees {
+        let response = match attendee.attendee_status.unwrap_or(5) {
+            3 => "Accept",
+            2 => "Tentative",
+            4 => "Decline",
+            _ => "Unknown",
+        };
+        let xml = format!(
+            r#"<t:Attendee><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox><t:ResponseType>{}</t:ResponseType></t:Attendee>"#,
+            xml_escape(attendee.name.as_deref().unwrap_or(&attendee.email)),
+            xml_escape(&attendee.email),
+            response
+        );
+        if attendee.attendee_type == Some(2) {
+            optional.push_str(&xml);
+        } else {
+            required.push_str(&xml);
+        }
+    }
+    let mut out = String::new();
+    if !required.is_empty() {
+        out.push_str(&format!("<t:RequiredAttendees>{}</t:RequiredAttendees>", required));
+    }
+    if !optional.is_empty() {
+        out.push_str(&format!("<t:OptionalAttendees>{}</t:OptionalAttendees>", optional));
+    }
+    out
+}
+
+fn render_ews_categories(item: &crate::calendar::CalendarItem) -> String {
+    if item.categories.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<t:Categories>{}</t:Categories>",
+        item.categories
+            .iter()
+            .map(|v| format!("<t:String>{}</t:String>", xml_escape(v)))
+            .collect::<Vec<_>>()
+            .join("")
+    )
+}
+
+fn render_ews_recurrence_xml(rrule: &str) -> String {
+    let mut freq = "";
+    let mut interval = "1".to_string();
+    let mut byday = None;
+    let mut bymonthday = None;
+    let mut count = None;
+    let mut until = None;
+    let mut bymonth = None;
+    for part in rrule.split(';') {
+        if let Some((k, v)) = part.split_once('=') {
+            match k {
+                "FREQ" => freq = v,
+                "INTERVAL" => interval = v.to_string(),
+                "BYDAY" => byday = Some(v.to_string()),
+                "BYMONTHDAY" => bymonthday = Some(v.to_string()),
+                "COUNT" => count = Some(v.to_string()),
+                "UNTIL" => until = Some(v.to_string()),
+                "BYMONTH" => bymonth = Some(v.to_string()),
+                _ => {}
+            }
+        }
+    }
+    let pattern = match freq {
+        "DAILY" => format!("<t:DailyRecurrence><t:Interval>{}</t:Interval></t:DailyRecurrence>", interval),
+        "WEEKLY" => format!(
+            "<t:WeeklyRecurrence><t:Interval>{}</t:Interval><t:DaysOfWeek>{}</t:DaysOfWeek></t:WeeklyRecurrence>",
+            interval,
+            byday.unwrap_or_default()
+                .replace("MO", "Monday")
+                .replace("TU", "Tuesday")
+                .replace("WE", "Wednesday")
+                .replace("TH", "Thursday")
+                .replace("FR", "Friday")
+                .replace("SA", "Saturday")
+                .replace("SU", "Sunday")
+                .replace(',', " ")
+        ),
+        "MONTHLY" => format!(
+            "<t:AbsoluteMonthlyRecurrence><t:Interval>{}</t:Interval><t:DayOfMonth>{}</t:DayOfMonth></t:AbsoluteMonthlyRecurrence>",
+            interval,
+            bymonthday.unwrap_or_else(|| "1".to_string())
+        ),
+        "YEARLY" => format!(
+            "<t:AbsoluteYearlyRecurrence><t:Month>{}</t:Month><t:DayOfMonth>{}</t:DayOfMonth></t:AbsoluteYearlyRecurrence>",
+            match bymonth.as_deref().unwrap_or("1") {
+                "1" => "January",
+                "2" => "February",
+                "3" => "March",
+                "4" => "April",
+                "5" => "May",
+                "6" => "June",
+                "7" => "July",
+                "8" => "August",
+                "9" => "September",
+                "10" => "October",
+                "11" => "November",
+                "12" => "December",
+                _ => "January",
+            },
+            bymonthday.unwrap_or_else(|| "1".to_string())
+        ),
+        _ => return String::new(),
+    };
+    let range = if let Some(count) = count {
+        format!("<t:NumberedRecurrence><t:NumberOfOccurrences>{}</t:NumberOfOccurrences></t:NumberedRecurrence>", count)
+    } else if let Some(until) = until {
+        format!("<t:EndDateRecurrence><t:EndDate>{}</t:EndDate></t:EndDateRecurrence>", until)
+    } else {
+        "<t:NoEndRecurrence />".to_string()
+    };
+    format!("<t:Recurrence>{}{}</t:Recurrence>", pattern, range)
+}
+
+fn render_ews_calendar_item_xml(
+    item_id: &str,
+    change_key: &str,
+    item: &crate::calendar::CalendarItem,
+) -> String {
+    let mut xml = format!(
+        r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:UID>{}</t:UID><t:Start>{}</t:Start><t:End>{}</t:End><t:IsAllDayEvent>{}</t:IsAllDayEvent>"#,
+        xml_escape(item_id),
+        xml_escape(change_key),
+        xml_escape(&item.subject),
+        xml_escape(&item.uid),
+        item.start.to_rfc3339(),
+        item.end.to_rfc3339(),
+        if item.all_day { "true" } else { "false" }
+    );
+    if !item.location.is_empty() {
+        xml.push_str(&format!("<t:Location>{}</t:Location>", xml_escape(&item.location)));
+    }
+    if !item.description.is_empty() {
+        xml.push_str(&format!(r#"<t:Body BodyType="Text">{}</t:Body>"#, xml_escape(&item.description)));
+        xml.push_str(&format!("<t:TextBody>{}</t:TextBody>", xml_escape(&item.description)));
+    }
+    if let Some(v) = item.reminder {
+        xml.push_str(&format!("<t:ReminderMinutesBeforeStart>{}</t:ReminderMinutesBeforeStart>", v));
+    }
+    if let Some(v) = item.busy_status {
+        xml.push_str(&format!("<t:LegacyFreeBusyStatus>{}</t:LegacyFreeBusyStatus>", busy_status_to_ews(v)));
+    }
+    if let Some(v) = item.sensitivity {
+        xml.push_str(&format!("<t:Sensitivity>{}</t:Sensitivity>", sensitivity_to_ews(v)));
+    }
+    if let Some(v) = item.response_requested {
+        xml.push_str(&format!("<t:ResponseRequested>{}</t:ResponseRequested>", if v { "true" } else { "false" }));
+    }
+    if let Some(v) = item.disallow_new_time_proposal {
+        xml.push_str(&format!("<t:DisallowNewTimeProposal>{}</t:DisallowNewTimeProposal>", if v { "true" } else { "false" }));
+    }
+    if let Some(v) = &item.timezone {
+        xml.push_str(&format!("<t:StartTimeZone>{}</t:StartTimeZone>", xml_escape(v)));
+    }
+    xml.push_str(&render_ews_categories(item));
+    xml.push_str(&render_ews_attendees(item));
+    if let Some(rrule) = &item.rrule {
+        xml.push_str(&render_ews_recurrence_xml(rrule));
+    }
+    xml.push_str("</t:CalendarItem>");
+    xml
+}
+
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -614,11 +800,56 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     };
 
     let ck = changekey_for_item(&item);
-    let subject = item
-        .uid
-        .clone()
-        .unwrap_or_else(|| item.resource_href.clone())
-        .replace(".ics", "");
+    let caldav = CaldavClient::new(&state.cfg);
+    let calendar_item_xml = match caldav
+        .get_event(&item.resource_href, owner, &auth.password)
+        .await
+    {
+        Ok((ics, _)) => match parse_ics_event(&ics) {
+            Some(calendar_item) => render_ews_calendar_item_xml(&item.server_id, &ck, &calendar_item),
+            None => render_ews_calendar_item_xml(
+                &item.server_id,
+                &ck,
+                &crate::calendar::CalendarItem {
+                    uid: item.uid.clone().unwrap_or_else(|| item.server_id.clone()),
+                    subject: item.uid.clone().unwrap_or_else(|| item.resource_href.clone()),
+                    description: String::new(),
+                    location: String::new(),
+                    start: chrono::Utc::now(),
+                    end: chrono::Utc::now() + chrono::Duration::hours(1),
+                    all_day: false,
+                    dtstamp: Some(chrono::Utc::now()),
+                    timezone: None,
+                    timezone_blob: None,
+                    rrule: None,
+                    exdates: Vec::new(),
+                    organizer_name: None,
+                    organizer_email: None,
+                    attendees: Vec::new(),
+                    categories: Vec::new(),
+                    busy_status: None,
+                    sensitivity: None,
+                    reminder: None,
+                    response_requested: None,
+                    disallow_new_time_proposal: None,
+                    appointment_reply_time: None,
+                    meeting_status: None,
+                    response_type: None,
+                    online_meeting_conf_link: None,
+                    online_meeting_external_link: None,
+                    client_uid: None,
+                    exceptions: Vec::new(),
+                },
+            ),
+        },
+        Err(_) => format!(
+            r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:UID>{}</t:UID></t:CalendarItem>"#,
+            xml_escape(&item.server_id),
+            xml_escape(&ck),
+            xml_escape(item.uid.as_deref().unwrap_or(&item.server_id)),
+            xml_escape(item.uid.as_deref().unwrap_or(&item.server_id))
+        ),
+    };
 
     let response = format!(
         r#"<m:GetItemResponse xmlns:m="{}" xmlns:t="{}">
@@ -626,21 +857,14 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     <m:GetItemResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
       <m:Items>
-        <t:CalendarItem>
-          <t:ItemId Id="{}" ChangeKey="{}" />
-          <t:Subject>{}</t:Subject>
-          <t:UID>{}</t:UID>
-        </t:CalendarItem>
+        {}
       </m:Items>
     </m:GetItemResponseMessage>
   </m:ResponseMessages>
 </m:GetItemResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&item.server_id),
-        xml_escape(&ck),
-        xml_escape(&subject),
-        xml_escape(item.uid.as_deref().unwrap_or(&item.server_id))
+        calendar_item_xml
     );
     soap_ok(response)
 }
@@ -873,21 +1097,14 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     <m:CreateItemResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
       <m:Items>
-        <t:CalendarItem>
-          <t:ItemId Id="{}" ChangeKey="{}" />
-          <t:Subject>{}</t:Subject>
-          <t:UID>{}</t:UID>
-        </t:CalendarItem>
+        {}
       </m:Items>
     </m:CreateItemResponseMessage>
   </m:ResponseMessages>
 </m:CreateItemResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&server_id),
-        xml_escape(&etag),
-        xml_escape(&item.subject),
-        xml_escape(&item.uid),
+        render_ews_calendar_item_xml(&server_id, &etag, &item),
     );
     soap_ok(response)
 }
@@ -954,6 +1171,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             all_day: false,
             dtstamp: Some(chrono::Utc::now()),
             timezone: None,
+            timezone_blob: None,
             rrule: None,
             exdates: Vec::new(),
             organizer_name: None,
@@ -1044,6 +1262,12 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     if body.contains("Recurrence") {
         current_item.rrule = parse_ews_recurrence(body);
     }
+    if let Some(v) = extract_ews_field(body, b"StartTimeZone") {
+        current_item.timezone = Some(v);
+    }
+    if let Some(v) = extract_ews_field(body, b"MeetingTimeZone") {
+        current_item.timezone_blob = Some(v);
+    }
     if let Some(v) = extract_ews_field(body, b"OnlineMeetingConfLink") {
         current_item.online_meeting_conf_link = Some(v);
     }
@@ -1102,21 +1326,14 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     <m:UpdateItemResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
       <m:Items>
-        <t:CalendarItem>
-          <t:ItemId Id="{}" ChangeKey="{}" />
-          <t:Subject>{}</t:Subject>
-          <t:UID>{}</t:UID>
-        </t:CalendarItem>
+        {}
       </m:Items>
     </m:UpdateItemResponseMessage>
   </m:ResponseMessages>
 </m:UpdateItemResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&item.server_id),
-        xml_escape(&new_etag),
-        xml_escape(&current_item.subject),
-        xml_escape(&uid),
+        render_ews_calendar_item_xml(&item.server_id, &new_etag, &current_item),
     );
     soap_ok(response)
 }

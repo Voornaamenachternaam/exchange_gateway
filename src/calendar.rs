@@ -16,6 +16,7 @@ pub struct CalendarItem {
     pub all_day: bool,
     pub dtstamp: Option<chrono::DateTime<Utc>>,
     pub timezone: Option<String>,
+    pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
     pub exdates: Vec<chrono::DateTime<Utc>>,
     pub organizer_name: Option<String>,
@@ -73,6 +74,7 @@ pub struct CalendarPatch {
     pub all_day: Option<bool>,
     pub dtstamp: Option<chrono::DateTime<Utc>>,
     pub timezone: Option<String>,
+    pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
     pub exdates: Option<Vec<chrono::DateTime<Utc>>>,
     pub organizer_name: Option<String>,
@@ -127,6 +129,7 @@ struct EasBuilder {
     all_day: Option<bool>,
     dtstamp: Option<chrono::DateTime<Utc>>,
     timezone: Option<String>,
+    timezone_blob: Option<String>,
     uid: Option<String>,
     recurrence: EasRecurrence,
     exdates: Vec<chrono::DateTime<Utc>>,
@@ -177,6 +180,7 @@ impl EasBuilder {
             all_day: self.all_day.unwrap_or(false),
             dtstamp: self.dtstamp,
             timezone: self.timezone,
+            timezone_blob: self.timezone_blob,
             rrule: self.recurrence.to_rrule(),
             exdates: self.exdates,
             organizer_name: self.organizer_name,
@@ -209,6 +213,7 @@ impl EasBuilder {
             all_day: self.all_day,
             dtstamp: self.dtstamp,
             timezone: self.timezone,
+            timezone_blob: self.timezone_blob,
             rrule: self.recurrence.to_rrule(),
             exdates: (!self.exdates.is_empty()).then_some(self.exdates),
             organizer_name: self.organizer_name,
@@ -410,12 +415,37 @@ fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
     blocks
 }
 
+fn extract_vtimezone_block(ics: &str) -> Option<String> {
+    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
+    let mut lines = Vec::new();
+    let mut in_vtimezone = false;
+    for line in unfolded.lines() {
+        match line.trim() {
+            "BEGIN:VTIMEZONE" => {
+                in_vtimezone = true;
+                lines.push("BEGIN:VTIMEZONE".to_string());
+            }
+            "END:VTIMEZONE" if in_vtimezone => {
+                lines.push("END:VTIMEZONE".to_string());
+                break;
+            }
+            _ if in_vtimezone => lines.push(line.to_string()),
+            _ => {}
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\r\n"))
+}
+
 fn parse_categories_value(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(unescape_ical_text)
         .filter(|v| !v.is_empty())
         .collect()
+}
+
+fn parse_tzid_from_key(key: &str) -> Option<String> {
+    parse_ical_param(key, "TZID").map(|v| v.trim_matches('"').to_string())
 }
 
 fn format_ical_datetime(dt: &chrono::DateTime<Utc>, all_day: bool) -> String {
@@ -495,13 +525,24 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
             k if k.starts_with("DTSTART") => {
                 fields.start = parse_datetime(value);
+                if fields.timezone.is_none() {
+                    fields.timezone = parse_tzid_from_key(k);
+                }
                 if !value.contains('T') {
                     fields.all_day = Some(true);
                 }
             }
-            k if k.starts_with("DTEND") => fields.end = parse_datetime(value),
+            k if k.starts_with("DTEND") => {
+                fields.end = parse_datetime(value);
+                if fields.timezone.is_none() {
+                    fields.timezone = parse_tzid_from_key(k);
+                }
+            }
             k if k.starts_with("RECURRENCE-ID") => {
                 fields.recurrence_id = parse_datetime(value);
+                if fields.timezone.is_none() {
+                    fields.timezone = parse_tzid_from_key(k);
+                }
                 if !value.contains('T') {
                     fields.all_day = Some(true);
                 }
@@ -602,6 +643,7 @@ struct CalendarEventFields {
 }
 
 pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
+    let timezone_blob = extract_vtimezone_block(ics);
     let mut master: Option<CalendarItem> = None;
     let mut derived_deleted = Vec::new();
     let mut pending_exceptions = Vec::new();
@@ -643,6 +685,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             all_day: fields.all_day.unwrap_or(false),
             dtstamp: fields.dtstamp,
             timezone: fields.timezone,
+            timezone_blob: timezone_blob.clone(),
             rrule: fields.rrule,
             exdates: fields.exdates.clone(),
             organizer_name: fields.organizer_name,
@@ -708,6 +751,16 @@ pub fn render_ics(item: &CalendarItem) -> String {
         "BEGIN:VCALENDAR".to_string(),
         "VERSION:2.0".to_string(),
         "PRODID:-//exchange_gateway//EN".to_string(),
+    ];
+    if let Some(blob) = &item.timezone_blob {
+        for line in blob.lines() {
+            let trimmed = line.trim_end();
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
+    }
+    lines.extend([
         "BEGIN:VEVENT".to_string(),
         format!("UID:{uid}"),
         format!("DTSTAMP:{dtstamp}"),
@@ -717,7 +770,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
             format_ical_datetime(&item.start, item.all_day)
         ),
         format!("DTEND:{}", format_ical_datetime(&item.end, item.all_day)),
-    ];
+    ]);
     if !item.location.is_empty() {
         lines.push(format!("LOCATION:{}", escape_ical_text(&item.location)));
     }
@@ -820,8 +873,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
     if let Some(v) = &item.client_uid {
         lines.push(format!("X-MS-CLIENT-UID:{}", escape_ical_text(v)));
     }
-    if let Some(v) = &item.timezone {
+    if !item.all_day {
+        if let Some(v) = &item.timezone {
         lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
+        }
     }
     lines.push("END:VEVENT".to_string());
 
@@ -1608,6 +1663,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         all_day,
         dtstamp: Some(Utc::now()),
         timezone: extract_ews_field(xml, b"StartTimeZone"),
+        timezone_blob: extract_ews_field(xml, b"MeetingTimeZone"),
         rrule,
         exdates: Vec::new(),
         organizer_name,
@@ -1671,6 +1727,7 @@ mod tests {
                     .with_timezone(&chrono::Utc),
             ),
             timezone: Some("AAA=".to_string()),
+            timezone_blob: Some("BEGIN:VTIMEZONE\r\nTZID:AAA=\r\nEND:VTIMEZONE".to_string()),
             rrule: Some("FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4".to_string()),
             exdates: vec![
                 chrono::DateTime::parse_from_rfc3339("2026-03-28T10:00:00Z")

@@ -24,7 +24,8 @@ The repository has materially improved compared with the earlier partial prototy
 - deletion tombstones for incremental sync;
 - a stricter `FolderSync` surface focused on the calendar folder;
 - improved incremental `GetItemEstimate` behavior;
-- richer recurrence/exception field handling than the original minimal implementation.
+- richer recurrence/exception field handling than the original minimal implementation;
+- preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision.
 
 However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
 
@@ -51,7 +52,8 @@ The repository now does more than simply emit calendar data:
 - sync state is persisted and used for incremental responses;
 - delete tombstones are tracked so that incremental sync can emit deletions;
 - `FolderSync` now exposes the calendar folder instead of a synthetic multi-workload folder set;
-- `GetItemEstimate` now uses stored sync state instead of always returning a trivial success shell.
+- `GetItemEstimate` now uses stored sync state instead of always returning a trivial success shell;
+- calendar timezone blocks can now be preserved through ICS parsing/rendering instead of being discarded outright.
 
 **Impact:** the EAS layer is no longer just a full-resync calendar projection. It now behaves more like a real stateful sync pipeline.
 
@@ -151,8 +153,8 @@ This remains one of the most important remaining blockers.
 1. **Time-zone fidelity is still insufficient for a perfect Outlook claim.**
    The implementation still normalizes most date-time handling into UTC-centered internal state. That is useful operationally, but it is not equivalent to full Exchange time-zone fidelity.
 
-2. **`VTIMEZONE` / Exchange time-zone equivalence is still incomplete.**
-   Binder1.txt ties Exchange calendar behavior to richer time-zone semantics than the current gateway preserves end-to-end.
+2. **`VTIMEZONE` / Exchange time-zone equivalence is improved but still incomplete.**
+   The gateway now preserves raw `VTIMEZONE` blocks more faithfully than before, but Binder1.txt still requires richer Exchange-specific time-zone behavior than the current implementation fully models end-to-end.
 
 3. **All-day / recurrence / timezone edge-case behavior is not fully proven.**
    Binder1.txt contains strict rules for all-day events, recurrence elements, and timezone interactions. The code handles a useful subset but not the entire edge-case surface.
@@ -177,12 +179,13 @@ This gap is improved, but **not fully closed**.
 
 - EWS has real CRUD paths into CalDAV;
 - `SyncFolderItems` uses persisted state rather than a pure placeholder model;
-- deletion tombstones improve incremental behavior.
+- deletion tombstones improve incremental behavior;
+- `GetItem`, `CreateItem`, and `UpdateItem` responses now return much richer calendar item shapes than the previous subject-only responses.
 
 ### Specific remaining gaps
 
 1. **EWS schema coverage is still selective.**
-   The implementation supports a useful subset of EWS request/response shapes, but not the full property and update surface that Outlook can emit.
+   The implementation now returns richer calendar item XML for key item operations, but it still supports only a subset of the full property and update surface that Outlook can emit.
 
 2. **Folder and mailbox modeling remain simplified.**
    The gateway exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
