@@ -719,6 +719,9 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
                 busy_status: fields.busy_status,
                 sensitivity: fields.sensitivity,
                 reminder: fields.reminder,
+                appointment_reply_time: fields.appointment_reply_time,
+                meeting_status: fields.meeting_status,
+                response_type: fields.response_type,
                 attendees: (!fields.attendees.is_empty()).then_some(fields.attendees),
                 categories: (!fields.categories.is_empty()).then_some(fields.categories),
             };
@@ -1970,6 +1973,45 @@ mod tests {
             recurrence.to_rrule().as_deref(),
             Some("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=5")
         );
+    }
+
+    #[test]
+    fn preserves_exception_reply_status_metadata_from_ics() {
+        let ics = "BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:test
+DTSTAMP:20260101T000000Z
+DTSTART:20260322T090000Z
+DTEND:20260322T100000Z
+SUMMARY:Series
+RRULE:FREQ=WEEKLY;COUNT=2
+END:VEVENT
+BEGIN:VEVENT
+UID:test
+DTSTAMP:20260101T000000Z
+RECURRENCE-ID:20260329T090000Z
+DTSTART:20260329T100000Z
+DTEND:20260329T110000Z
+SUMMARY:Moved
+X-MS-APPOINTMENT-REPLY-TIME:20260320T120000Z
+X-MS-MEETING-STATUS:3
+X-MS-RESPONSE-TYPE:2
+END:VEVENT
+END:VCALENDAR
+";
+        let parsed = parse_ics_event(ics).expect("parsed item");
+        let exception = parsed
+            .exceptions
+            .iter()
+            .find(|v| !v.deleted)
+            .expect("exception");
+        assert_eq!(
+            exception.appointment_reply_time,
+            parse_datetime("20260320T120000Z")
+        );
+        assert_eq!(exception.meeting_status, Some(3));
+        assert_eq!(exception.response_type, Some(2));
     }
 
     #[test]

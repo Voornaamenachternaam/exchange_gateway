@@ -547,6 +547,31 @@ fn ews_my_response_type(item: &crate::calendar::CalendarItem) -> &'static str {
     derived_response_type(item).unwrap_or("Unknown")
 }
 
+fn ews_calendar_event_details_xml(item: &crate::calendar::CalendarItem) -> String {
+    let is_private = item.sensitivity.map(|value| value >= 2).unwrap_or(false);
+    format!(
+        "<t:CalendarEventDetails><t:Subject>{}</t:Subject><t:Location>{}</t:Location><t:IsMeeting>{}</t:IsMeeting><t:IsRecurring>{}</t:IsRecurring><t:IsException>false</t:IsException><t:IsReminderSet>{}</t:IsReminderSet><t:IsPrivate>{}</t:IsPrivate></t:CalendarEventDetails>",
+        xml_escape(&item.subject),
+        xml_escape(&item.location),
+        if item.attendees.is_empty() {
+            "false"
+        } else {
+            "true"
+        },
+        if item.rrule.is_some() {
+            "true"
+        } else {
+            "false"
+        },
+        if item.reminder.is_some() {
+            "true"
+        } else {
+            "false"
+        },
+        if is_private { "true" } else { "false" }
+    )
+}
+
 fn ews_deleted_occurrences_xml(item: &crate::calendar::CalendarItem) -> String {
     let mut starts = item
         .exceptions
@@ -1046,10 +1071,11 @@ async fn merged_freebusy_for_mailbox(
                             _ => "Busy",
                         };
                         events_xml.push_str(&format!(
-                            "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType></t:CalendarEvent>",
+                            "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
                             item.start.to_rfc3339(),
                             item.end.to_rfc3339(),
-                            busy_type
+                            busy_type,
+                            ews_calendar_event_details_xml(&item)
                         ));
                     }
                 }
@@ -2668,6 +2694,29 @@ mod tests {
         assert!(xml.contains("<t:AllowNewTimeProposal>true</t:AllowNewTimeProposal>"));
         assert!(xml.contains("<t:ModifiedOccurrences>"));
         assert!(xml.contains("<t:ResponseObjects>"));
+    }
+
+    #[test]
+    fn renders_calendar_event_details_for_availability_items() {
+        let item = CalendarItem {
+            subject: "Planning".to_string(),
+            location: "Room 1".to_string(),
+            attendees: vec![Attendee {
+                email: "peer@example.com".to_string(),
+                ..Default::default()
+            }],
+            rrule: Some("FREQ=WEEKLY".to_string()),
+            reminder: Some(15),
+            sensitivity: Some(2),
+            ..Default::default()
+        };
+        let xml = ews_calendar_event_details_xml(&item);
+        assert!(xml.contains("<t:Subject>Planning</t:Subject>"));
+        assert!(xml.contains("<t:Location>Room 1</t:Location>"));
+        assert!(xml.contains("<t:IsMeeting>true</t:IsMeeting>"));
+        assert!(xml.contains("<t:IsRecurring>true</t:IsRecurring>"));
+        assert!(xml.contains("<t:IsReminderSet>true</t:IsReminderSet>"));
+        assert!(xml.contains("<t:IsPrivate>true</t:IsPrivate>"));
     }
 
     #[test]

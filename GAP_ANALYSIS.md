@@ -47,6 +47,8 @@ The repository has materially improved compared with the earlier partial prototy
 - EWS suggestion day results now retain explicit `Poor` days for requested dates that have no viable meeting slots rather than silently omitting those days;
 - EWS recurrence rendering now preserves relative monthly/yearly Exchange recurrence shapes plus explicit recurrence range start dates for numbered, end-date, and no-end series instead of collapsing those cases into narrower absolute/no-start shapes;
 - recurrence normalization now prefers `COUNT` over `UNTIL` when both are present in EAS/EWS-derived inputs so the gateway does not emit illegal dual-boundary RRULEs;
+- ICS exception parsing now preserves exception-level `AppointmentReplyTime`, `MeetingStatus`, and `ResponseType` values instead of dropping them on round-trip;
+- EWS `CalendarEventArray` entries now carry `CalendarEventDetails` blocks with subject/location and basic meeting/recurrence/reminder/privacy flags instead of only bare start/end/busy triples;
 - EWS recurring calendar items now emit `ModifiedOccurrences` in addition to deleted occurrences for exception instances that carry updated start/end/subject data;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
 - Binder-aligned validation for common EWS operation attributes such as `SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related meeting-cancellation knobs;
@@ -111,6 +113,16 @@ The top-level gaps above are still only **partially** closed overall, but this r
 38. **EWS no-end recurrence ranges omitting `StartDate`** is now reduced by emitting the series start date for `NoEndRecurrence`.
 39. **EAS recurrence generation emitting both `COUNT` and `UNTIL` when both are present** is now reduced by normalizing to the numbered recurrence boundary.
 40. **EWS recurrence parsing emitting both `COUNT` and `UNTIL` when both range forms are present** is now reduced by preferring `NumberOfOccurrences` over `EndDate`.
+41. **ICS exception VEVENT parsing dropping `AppointmentReplyTime` metadata** is now reduced by preserving exception reply timestamps on the local exception model.
+42. **ICS exception VEVENT parsing dropping exception `MeetingStatus` values** is now reduced by preserving exception-level meeting status on round-trip.
+43. **ICS exception VEVENT parsing dropping exception `ResponseType` values** is now reduced by preserving exception-level response type on round-trip.
+44. **EWS `CalendarEventArray` entries exposing only start/end/busy information** is now reduced by adding `CalendarEventDetails` blocks.
+45. **Availability event details omitting the underlying subject** is now reduced by emitting `CalendarEventDetails -> Subject`.
+46. **Availability event details omitting the underlying location** is now reduced by emitting `CalendarEventDetails -> Location`.
+47. **Availability event details omitting whether the item is a meeting** is now reduced by emitting `CalendarEventDetails -> IsMeeting`.
+48. **Availability event details omitting whether the item is recurring** is now reduced by emitting `CalendarEventDetails -> IsRecurring`.
+49. **Availability event details omitting whether a reminder is set** is now reduced by emitting `CalendarEventDetails -> IsReminderSet`.
+50. **Availability event details omitting basic privacy signaling** is now reduced by emitting `CalendarEventDetails -> IsPrivate`.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -222,6 +234,7 @@ This remains one of the most important remaining blockers.
 
 - recurrence information is parsed and projected in both EAS and EWS paths;
 - exceptions and deleted occurrences are modeled and emitted more explicitly than in the original implementation;
+- ICS exception parsing now preserves exception-level reply/status metadata that was previously rendered but not re-ingested;
 - EWS recurrence responses now preserve relative monthly/yearly series shapes and explicit start-date range boundaries more faithfully than before;
 - EAS/EWS recurrence normalization now avoids generating dual-boundary `COUNT`+`UNTIL` rules when both appear in upstream request state;
 - incremental sync can now preserve and transmit recurring-item deletions more consistently.
@@ -238,7 +251,7 @@ This remains one of the most important remaining blockers.
    Binder1.txt contains strict rules for all-day events, recurrence elements, and timezone interactions. The code handles a useful subset but not the entire edge-case surface.
 
 4. **Exception semantics remain partial.**
-   The gateway supports exception payloads, deleted instances, and more exception reply/status metadata than before, but not the entire Exchange recurrence model such as richer range semantics and all instance-type distinctions.
+   The gateway supports exception payloads, deleted instances, preserved exception reply/status metadata, and richer recurrence rendering than before, but not the entire Exchange recurrence model such as richer range semantics and all instance-type distinctions.
 
 5. **No proof exists for DST-sensitive Outlook scenarios.**
    There is still no repository-contained validation for recurring meetings spanning DST changes, cross-zone organizers/attendees, or historical zone transitions.
@@ -262,7 +275,7 @@ This gap is improved, but **not fully closed**.
 - `GetItem`, `CreateItem`, and `UpdateItem` responses now return much richer calendar item shapes than the previous subject-only responses, including much more Exchange-like meeting, recurrence, reminder, timezone, and deleted-occurrence metadata;
 - `FindItem` now honors `CalendarView` windows and renders full calendar item XML from live CalDAV state, while `SyncFolderItems` now emits those richer payloads for create/update changes instead of minimal shells;
 - EWS item rendering now also tracks requested `BaseShape`, emits meeting response objects / counters plus modified occurrences, and availability responses now derive concrete suggestion slots when suggestions are requested;
-- EWS availability processing now parses every mailbox in `MailboxDataArray`, merges busy-slot severity across the requested attendee set for suggestion generation, and keeps explicit poor-quality days in the returned suggestion results;
+- EWS availability processing now parses every mailbox in `MailboxDataArray`, merges busy-slot severity across the requested attendee set for suggestion generation, keeps explicit poor-quality days in the returned suggestion results, and emits concrete `CalendarEventDetails` metadata for each returned event window;
 - EWS recurrence output now preserves relative monthly/yearly patterns and includes explicit recurrence range start dates instead of reducing those cases to narrower absolute/no-start forms.
 
 ### Specific remaining gaps
@@ -295,7 +308,7 @@ This remains **open**.
    Organizer, attendee, meeting-status, and response-type fields are now surfaced more richly than before, including derived fallback meeting-status / response-type values, but full Exchange meeting workflow behavior is still only partially represented.
 
 2. **Free/busy semantics are no longer completely absent, but they are still partial.**
-   The gateway can now return `MergedFreeBusy` output through both EAS `ResolveRecipients` and EWS `GetUserAvailability`, emit concrete `CalendarEventArray` data, derive suggestion slots/day-quality output, and aggregate multiple requested mailboxes into one availability request. It still does not implement the full Exchange availability detail surface such as attendee-by-attendee diagnostic detail, organizer policy semantics, or the richer suggestion heuristics Outlook can rely on.
+   The gateway can now return `MergedFreeBusy` output through both EAS `ResolveRecipients` and EWS `GetUserAvailability`, emit concrete `CalendarEventArray` data with `CalendarEventDetails`, derive suggestion slots/day-quality output, and aggregate multiple requested mailboxes into one availability request. It still does not implement the full Exchange availability detail surface such as attendee-by-attendee diagnostic detail, organizer policy semantics, or the richer suggestion heuristics Outlook can rely on.
 
 3. **Change-key / identity semantics remain gateway-defined.**
    The gateway provides stable IDs and change material, but not a true Exchange item-identity and mutation model.
