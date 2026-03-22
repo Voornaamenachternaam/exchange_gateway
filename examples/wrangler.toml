@@ -1,0 +1,22 @@
+name = "exchange-gateway-edge"
+main = "worker/index.js"
+compatibility_date = "2026-03-22"
+
+[vars]
+GATEWAY_HOST = "exchange.example.com"
+ORIGIN_BASE_URL = "https://exchange-origin.example.com"
+RATE_LIMIT_ENABLED = "true"
+RATE_LIMIT_MAX = "120"
+RATE_LIMIT_WINDOW_SEC = "60"
+SQL_API_ENABLED = "false"
+MAX_FORWARD_BODY_BYTES = "1048576"
+MAX_API_BODY_BYTES = "262144"
+
+[[d1_databases]]
+binding = "EXCHANGE_DB"
+database_name = "exchange-gateway"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

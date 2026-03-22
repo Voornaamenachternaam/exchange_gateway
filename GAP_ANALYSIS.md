@@ -40,6 +40,7 @@ The repository has materially improved compared with the earlier partial prototy
 - a slightly less synthetic EWS folder shape by including the calendar folder’s parent linkage under `MsgFolderRoot`;
 - richer Autodiscover XML / JSON / SOAP payloads that advertise EWS and ActiveSync endpoints more explicitly for Outlook bootstrap.
 - a repo-contained live-environment smoke harness for the exact Cloudflare-published gateway surface (`ActiveSync OPTIONS`, `FolderSync`, invalid `SyncKey` handling, Autodiscover XML/SOAP/JSON, EWS folder/availability, and optional EWS create/update/delete).
+- concrete example deployment templates for `cloudflared`, Worker/Wrangler, and the Rust gateway config that match the stated Stalwart + Cloudflare + Ubuntu host profile.
 
 However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
 
@@ -69,6 +70,7 @@ The top-level gaps above are still only **partially** closed overall, but this r
 12. **Exception-level meeting reply/status metadata being dropped from local round-tripping** is now reduced by preserving and re-emitting those fields in the calendar model.
 13. **Common EWS operation attributes being accepted without any enum validation** is now reduced by validating supported values for `CreateItem`, `UpdateItem`, and `DeleteItem`.
 14. **The repository lacking a reproducible live smoke package for the Cloudflare/Stalwart deployment surface** is now reduced by adding a scriptable smoke harness and runbook for the published gateway endpoints.
+15. **The repository lacking concrete deployment templates for the exact `cloudflared` + Worker + gateway layout** is now reduced by shipping example config files for that topology.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -271,7 +273,7 @@ The Worker now provides materially richer JSON, XML, and SOAP Autodiscover paylo
 
 ## 7) Cloudflare operational proof is still incomplete
 
-The repository now includes a concrete smoke-harness runbook for the Cloudflare-published gateway surface, but it still does not contain a production-grade benchmark and compatibility package proving that the Worker, D1, tunnel, and Rust gateway remain reliable within the real request patterns of Outlook clients on the intended free-service footprint.
+The repository now includes a concrete smoke-harness runbook and example deployment templates for the Cloudflare-published gateway surface, but it still does not contain a production-grade benchmark and compatibility package proving that the Worker, D1, tunnel, and Rust gateway remain reliable within the real request patterns of Outlook clients on the intended free-service footprint.
 
 ## 8) Security hardening is improved but still not “perfectly closed”
 

@@ -67,6 +67,10 @@ Attach the worker to all of the following routes on the same hostname:
 - Use this origin hostname as `ORIGIN_BASE_URL` in the worker.
 - Public clients use `exchange.example.com` (worker route hostname).
 - Rust gateway uses `worker_url = "https://exchange.example.com/api"`.
+- Example files for this exact layout are provided in:
+  - `examples/cloudflared-exchange-origin.yml`
+  - `examples/exchange-gateway.config.toml`
+  - `examples/wrangler.toml`
 
 ## Rust gateway config alignment
 
