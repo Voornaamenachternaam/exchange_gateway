@@ -58,7 +58,7 @@ The repository now does more than simply emit calendar data:
 - `FolderSync` now exposes the calendar folder instead of a synthetic multi-workload folder set;
 - `GetItemEstimate` now uses stored sync state instead of always returning a trivial success shell;
 - `Ping` now validates heartbeat ranges / monitored-folder counts, caches heartbeat+folder state across subsequent requests, parses monitored folder `Id`/`Class` pairs, and can hold the request open until changes or heartbeat expiry instead of always responding immediately;
-- calendar timezone blocks can now be preserved through ICS parsing/rendering instead of being discarded outright.
+- calendar timezone blocks can now be preserved through ICS parsing/rendering instead of being discarded outright, and IANA `TZID` values are now parsed/rendered against real timezone rules rather than always being collapsed into UTC-only text.
 
 **Impact:** the EAS layer is no longer just a full-resync calendar projection. It now behaves more like a real stateful sync pipeline.
 
@@ -156,7 +156,7 @@ This remains one of the most important remaining blockers.
    The implementation still normalizes most date-time handling into UTC-centered internal state. That is useful operationally, but it is not equivalent to full Exchange time-zone fidelity.
 
 2. **`VTIMEZONE` / Exchange time-zone equivalence is improved but still incomplete.**
-   The gateway now preserves raw `VTIMEZONE` blocks more faithfully than before, but Binder1.txt still requires richer Exchange-specific time-zone behavior than the current implementation fully models end-to-end.
+   The gateway now preserves raw `VTIMEZONE` blocks more faithfully than before and can parse/render IANA `TZID` values against real timezone rules, but Binder1.txt still requires richer Exchange-specific time-zone behavior than the current implementation fully models end-to-end.
 
 3. **All-day / recurrence / timezone edge-case behavior is not fully proven.**
    Binder1.txt contains strict rules for all-day events, recurrence elements, and timezone interactions. The code handles a useful subset but not the entire edge-case surface.

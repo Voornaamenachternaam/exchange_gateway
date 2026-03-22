@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::borrow::Cow;
@@ -448,6 +449,53 @@ fn parse_tzid_from_key(key: &str) -> Option<String> {
     parse_ical_param(key, "TZID").map(|v| v.trim_matches('"').to_string())
 }
 
+fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::DateTime<Utc>> {
+    if let Some(tzid) = tzid {
+        if !val.ends_with('Z') && val.contains('T') {
+            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S") {
+                if let Ok(tz) = tzid.parse::<Tz>() {
+                    if let Some(dt) = tz.from_local_datetime(&local).single() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                    if let Some(dt) = tz.from_local_datetime(&local).earliest() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                }
+            }
+            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S") {
+                if let Ok(tz) = tzid.parse::<Tz>() {
+                    if let Some(dt) = tz.from_local_datetime(&local).single() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                    if let Some(dt) = tz.from_local_datetime(&local).earliest() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                }
+            }
+        }
+    }
+    parse_datetime(val)
+}
+
+fn format_ical_datetime_with_timezone(
+    dt: &chrono::DateTime<Utc>,
+    all_day: bool,
+    timezone: Option<&str>,
+) -> (Option<String>, String) {
+    if all_day {
+        return (None, dt.format("%Y%m%d").to_string());
+    }
+    if let Some(tzid) = timezone {
+        if let Ok(tz) = tzid.parse::<Tz>() {
+            return (
+                Some(tzid.to_string()),
+                dt.with_timezone(&tz).format("%Y%m%dT%H%M%S").to_string(),
+            );
+        }
+    }
+    (None, dt.format("%Y%m%dT%H%M%SZ").to_string())
+}
+
 fn format_ical_datetime(dt: &chrono::DateTime<Utc>, all_day: bool) -> String {
     if all_day {
         dt.format("%Y%m%d").to_string()
@@ -524,24 +572,27 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             k if k.starts_with("UID") => fields.uid = Some(value.to_string()),
             k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
             k if k.starts_with("DTSTART") => {
-                fields.start = parse_datetime(value);
+                let tzid = parse_tzid_from_key(k);
+                fields.start = parse_datetime_with_tzid(value, tzid.as_deref());
                 if fields.timezone.is_none() {
-                    fields.timezone = parse_tzid_from_key(k);
+                    fields.timezone = tzid;
                 }
                 if !value.contains('T') {
                     fields.all_day = Some(true);
                 }
             }
             k if k.starts_with("DTEND") => {
-                fields.end = parse_datetime(value);
+                let tzid = parse_tzid_from_key(k);
+                fields.end = parse_datetime_with_tzid(value, tzid.as_deref());
                 if fields.timezone.is_none() {
-                    fields.timezone = parse_tzid_from_key(k);
+                    fields.timezone = tzid;
                 }
             }
             k if k.starts_with("RECURRENCE-ID") => {
-                fields.recurrence_id = parse_datetime(value);
+                let tzid = parse_tzid_from_key(k);
+                fields.recurrence_id = parse_datetime_with_tzid(value, tzid.as_deref());
                 if fields.timezone.is_none() {
-                    fields.timezone = parse_tzid_from_key(k);
+                    fields.timezone = tzid;
                 }
                 if !value.contains('T') {
                     fields.all_day = Some(true);
@@ -550,7 +601,9 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
             k if k.starts_with("EXDATE") => {
                 for ex in value.split(',') {
-                    if let Some(dt) = parse_datetime(ex) {
+                    if let Some(dt) =
+                        parse_datetime_with_tzid(ex, parse_tzid_from_key(k).as_deref())
+                    {
                         fields.exdates.push(dt);
                     }
                 }
@@ -760,16 +813,27 @@ pub fn render_ics(item: &CalendarItem) -> String {
             }
         }
     }
+    let (dtstart_tzid, dtstart_value) =
+        format_ical_datetime_with_timezone(&item.start, item.all_day, item.timezone.as_deref());
+    let (dtend_tzid, dtend_value) =
+        format_ical_datetime_with_timezone(&item.end, item.all_day, item.timezone.as_deref());
+    let dtstart_line = if let Some(tzid) = dtstart_tzid {
+        format!("DTSTART;TZID={}:{}", escape_ical_text(&tzid), dtstart_value)
+    } else {
+        format!("DTSTART:{}", dtstart_value)
+    };
+    let dtend_line = if let Some(tzid) = dtend_tzid {
+        format!("DTEND;TZID={}:{}", escape_ical_text(&tzid), dtend_value)
+    } else {
+        format!("DTEND:{}", dtend_value)
+    };
     lines.extend([
         "BEGIN:VEVENT".to_string(),
         format!("UID:{uid}"),
         format!("DTSTAMP:{dtstamp}"),
         format!("SUMMARY:{}", escape_ical_text(&item.subject)),
-        format!(
-            "DTSTART:{}",
-            format_ical_datetime(&item.start, item.all_day)
-        ),
-        format!("DTEND:{}", format_ical_datetime(&item.end, item.all_day)),
+        dtstart_line,
+        dtend_line,
     ]);
     if !item.location.is_empty() {
         lines.push(format!("LOCATION:{}", escape_ical_text(&item.location)));
@@ -795,12 +859,28 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let mut exdates: Vec<String> = item
             .exdates
             .iter()
-            .map(|v| format_ical_datetime(v, item.all_day))
+            .map(|v| {
+                format_ical_datetime_with_timezone(v, item.all_day, item.timezone.as_deref()).1
+            })
             .collect();
         exdates.extend(deleted_exdates);
         exdates.sort();
         exdates.dedup();
-        lines.push(format!("EXDATE:{}", exdates.join(",")));
+        if !item.all_day {
+            if let Some(tzid) = &item.timezone
+                && tzid.parse::<Tz>().is_ok()
+            {
+                lines.push(format!(
+                    "EXDATE;TZID={}:{}",
+                    escape_ical_text(tzid),
+                    exdates.join(",")
+                ));
+            } else {
+                lines.push(format!("EXDATE:{}", exdates.join(",")));
+            }
+        } else {
+            lines.push(format!("EXDATE:{}", exdates.join(",")));
+        }
     }
     if let Some(email) = &item.organizer_email {
         let mut line = String::from("ORGANIZER");
@@ -890,18 +970,48 @@ pub fn render_ics(item: &CalendarItem) -> String {
         lines.push("BEGIN:VEVENT".to_string());
         lines.push(format!("UID:{uid}"));
         lines.push(format!("DTSTAMP:{dtstamp}"));
-        lines.push(format!(
-            "RECURRENCE-ID:{}",
-            format_ical_datetime(&exception.exception_start, effective_all_day)
-        ));
-        lines.push(format!(
-            "DTSTART:{}",
-            format_ical_datetime(&effective_start, effective_all_day)
-        ));
-        lines.push(format!(
-            "DTEND:{}",
-            format_ical_datetime(&effective_end, effective_all_day)
-        ));
+        let (recurrence_tzid, recurrence_value) = format_ical_datetime_with_timezone(
+            &exception.exception_start,
+            effective_all_day,
+            item.timezone.as_deref(),
+        );
+        let (exception_start_tzid, exception_start_value) = format_ical_datetime_with_timezone(
+            &effective_start,
+            effective_all_day,
+            item.timezone.as_deref(),
+        );
+        let (exception_end_tzid, exception_end_value) = format_ical_datetime_with_timezone(
+            &effective_end,
+            effective_all_day,
+            item.timezone.as_deref(),
+        );
+        lines.push(if let Some(tzid) = recurrence_tzid {
+            format!(
+                "RECURRENCE-ID;TZID={}:{}",
+                escape_ical_text(&tzid),
+                recurrence_value
+            )
+        } else {
+            format!("RECURRENCE-ID:{}", recurrence_value)
+        });
+        lines.push(if let Some(tzid) = exception_start_tzid {
+            format!(
+                "DTSTART;TZID={}:{}",
+                escape_ical_text(&tzid),
+                exception_start_value
+            )
+        } else {
+            format!("DTSTART:{}", exception_start_value)
+        });
+        lines.push(if let Some(tzid) = exception_end_tzid {
+            format!(
+                "DTEND;TZID={}:{}",
+                escape_ical_text(&tzid),
+                exception_end_value
+            )
+        } else {
+            format!("DTEND:{}", exception_end_value)
+        });
         lines.push(format!(
             "SUMMARY:{}",
             escape_ical_text(exception.subject.as_deref().unwrap_or(&item.subject))
@@ -1843,5 +1953,24 @@ mod tests {
         assert_eq!(attendees.len(), 2);
         assert_eq!(attendees[0].attendee_type, Some(1));
         assert_eq!(attendees[1].attendee_type, Some(2));
+    }
+    #[test]
+    fn preserves_ianna_tzid_local_times() {
+        let ics = "BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:test
+DTSTAMP:20260101T000000Z
+DTSTART;TZID=Europe/Stockholm:20260329T090000
+DTEND;TZID=Europe/Stockholm:20260329T100000
+SUMMARY:TZ Test
+END:VEVENT
+END:VCALENDAR
+";
+        let item = parse_ics_event(ics).unwrap();
+        assert_eq!(item.timezone.as_deref(), Some("Europe/Stockholm"));
+        let rendered = render_ics(&item);
+        assert!(rendered.contains("DTSTART;TZID=Europe/Stockholm:20260329T090000"));
+        assert!(rendered.contains("DTEND;TZID=Europe/Stockholm:20260329T100000"));
     }
 }
