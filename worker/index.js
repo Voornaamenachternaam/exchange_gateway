@@ -21,9 +21,18 @@ export default {
     }
 
     if (path === '/api/set_sync_key') return handleSetSyncKey(request, env);
+    if (path === '/api/get_sync_key') return handleGetSyncKey(url, request, env);
+    if (path === '/api/get_client_sync_command') return handleGetClientSyncCommand(url, request, env);
     if (path === '/api/upsert_item_map') return handleUpsertItemMap(request, env);
+    if (path === '/api/put_client_sync_command') return handlePutClientSyncCommand(request, env);
     if (path === '/api/delete_item_by_server_id') return handleDeleteItemByServerId(request, env);
+    if (path === '/api/add_delete_tombstone') return handleAddDeleteTombstone(request, env);
     if (path === '/api/list_changes_since') return handleListChangesSince(url, request, env);
+    if (path === '/api/list_deleted_since') return handleListDeletedSince(url, request, env);
+    if (path === '/api/get_latest_change_seq') return handleGetLatestChangeSeq(request, env);
+    if (path === '/api/list_changes_since_seq') return handleListChangesSinceSeq(url, request, env);
+    if (path === '/api/list_deleted_since_seq') return handleListDeletedSinceSeq(url, request, env);
+    if (path === '/api/list_journal_since_seq') return handleListJournalSinceSeq(url, request, env);
     if (path === '/api/set_provision_policy') return handleSetProvisionPolicy(request, env);
     if (path === '/api/get_provision_policy') return handleGetProvisionPolicy(url, request, env);
     if (path === '/api/list_ews_items') return handleListEwsItems(url, request, env);
@@ -241,6 +250,58 @@ async function handleSetSyncKey(request, env) {
   return Response.json({ success: true });
 }
 
+async function handleGetSyncKey(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const collectionId = url.searchParams.get('collection_id') || '';
+  if (!owner || !collectionId) return new Response('Missing owner/collection_id', { status: 400 });
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT sync_key, token
+      FROM sync_state
+      WHERE owner = ? AND collection_id = ?
+      LIMIT 1
+    `)
+    .bind(owner, collectionId)
+    .all();
+
+  const row = (result.results || [])[0] || null;
+  return Response.json(row);
+}
+
+async function handleGetClientSyncCommand(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const collectionId = url.searchParams.get('collection_id') || '';
+  const clientId = url.searchParams.get('client_id') || '';
+  if (!owner || !collectionId || !clientId) {
+    return new Response('Missing owner/collection_id/client_id', { status: 400 });
+  }
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT server_id, status
+      FROM client_sync_command
+      WHERE owner = ? AND collection_id = ? AND client_id = ?
+      LIMIT 1
+    `)
+    .bind(owner, collectionId, clientId)
+    .all();
+
+  return Response.json((result.results || [])[0] || null);
+}
+
+async function recordChangeJournal(env, owner, serverId, op) {
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO change_journal (owner, server_id, op, created_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    `)
+    .bind(owner, serverId, op)
+    .run();
+}
+
 async function handleUpsertItemMap(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleUpsertItemMap');
@@ -265,6 +326,42 @@ async function handleUpsertItemMap(request, env) {
     .bind(owner, caldav_href, resource_href, server_id, uid, etag)
     .run();
 
+  await env.EXCHANGE_DB
+    .prepare('DELETE FROM deleted_item_tombstone WHERE owner = ? AND server_id = ?')
+    .bind(owner, server_id)
+    .run();
+
+  await recordChangeJournal(env, owner, server_id, 'upsert');
+
+  return Response.json({ success: true });
+}
+
+async function handlePutClientSyncCommand(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handlePutClientSyncCommand');
+  const body = await readJson(request);
+  const owner = body.owner || '';
+  const collectionId = body.collection_id || '';
+  const clientId = body.client_id || '';
+  const serverId = body.server_id || null;
+  const status = body.status || '';
+  if (!owner || !collectionId || !clientId || !status) {
+    return new Response('Missing owner/collection_id/client_id/status', { status: 400 });
+  }
+
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO client_sync_command (owner, collection_id, client_id, server_id, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner, collection_id, client_id)
+      DO UPDATE SET
+        server_id = excluded.server_id,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `)
+    .bind(owner, collectionId, clientId, serverId, status)
+    .run();
+
   return Response.json({ success: true });
 }
 
@@ -284,6 +381,29 @@ async function handleDeleteItemByServerId(request, env) {
   return Response.json({ success: true });
 }
 
+async function handleAddDeleteTombstone(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleAddDeleteTombstone');
+  const body = await readJson(request);
+  const owner = body.owner || '';
+  const serverId = body.server_id || '';
+  if (!owner || !serverId) return new Response('Missing owner/server_id', { status: 400 });
+
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO deleted_item_tombstone (owner, server_id, deleted_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner, server_id)
+      DO UPDATE SET deleted_at = CURRENT_TIMESTAMP
+    `)
+    .bind(owner, serverId)
+    .run();
+
+  await recordChangeJournal(env, owner, serverId, 'delete');
+
+  return Response.json({ success: true });
+}
+
 async function handleListChangesSince(url, request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   const owner = url.searchParams.get('owner') || '';
@@ -298,6 +418,27 @@ async function handleListChangesSince(url, request, env) {
       WHERE owner = ?
         AND strftime('%s', updated_at) >= ?
       ORDER BY updated_at ASC
+    `)
+    .bind(owner, sinceExpr)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+async function handleListDeletedSince(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = url.searchParams.get('since') || '0';
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const sinceExpr = Number.isFinite(Number(since)) ? Number(since) : 0;
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT server_id
+      FROM deleted_item_tombstone
+      WHERE owner = ?
+        AND strftime('%s', deleted_at) >= ?
+      ORDER BY deleted_at ASC
     `)
     .bind(owner, sinceExpr)
     .all();
@@ -367,14 +508,14 @@ async function handleAutodiscoverJson(env) {
     Protocol: 'Exchange',
     Url: `https://${domain}/EWS/Exchange.asmx`,
     EwsUrl: `https://${domain}/EWS/Exchange.asmx`,
-    ActiveSyncUrl: `https://${domain}/Microsoft-Server-ActiveSync`
+    ActiveSyncUrl: `https://${domain}/Microsoft-Server-ActiveSync`,
+    MobileSyncUrl: `https://${domain}/Microsoft-Server-ActiveSync`,
+    ExternalEwsUrl: `https://${domain}/EWS/Exchange.asmx`,
+    InternalEwsUrl: `https://${domain}/EWS/Exchange.asmx`
   };
 
   return new Response(JSON.stringify(payload), {
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'private, no-store'
-    }
+    headers: privateNoStoreHeaders({ 'Content-Type': 'application/json' })
   });
 }
 
@@ -404,20 +545,43 @@ async function handleAutodiscoverXml(request, env) {
         <Type>EXCH</Type>
         <Server>${domain}</Server>
         <ServerDN>/o=Exchange/ou=Exchange Administrative Group/cn=Recipients/cn=user</ServerDN>
+        <ServerVersion>15.20.0.0</ServerVersion>
+        <MdbDN />
         <ASUrl>https://${domain}/Microsoft-Server-ActiveSync</ASUrl>
         <EwsUrl>https://${domain}/EWS/Exchange.asmx</EwsUrl>
+        <EcpUrl>https://${domain}/EWS/Exchange.asmx</EcpUrl>
         <EmwsUrl>https://${domain}/EWS/Exchange.asmx</EmwsUrl>
+        <EwsPartnerUrl>https://${domain}/EWS/Exchange.asmx</EwsPartnerUrl>
+        <OOFUrl>https://${domain}/EWS/Exchange.asmx</OOFUrl>
+        <UMUrl>https://${domain}/EWS/Exchange.asmx</UMUrl>
+        <OABUrl>https://${domain}/EWS/Exchange.asmx</OABUrl>
+        <PublicFolderServer>${domain}</PublicFolderServer>
+        <Internal>${domain}</Internal>
+        <ASUrl>https://${domain}/Microsoft-Server-ActiveSync</ASUrl>
+        <AuthPackage>Basic</AuthPackage>
       </Protocol>
       <Protocol>
         <Type>EXPR</Type>
         <Server>${domain}</Server>
         <SSL>On</SSL>
+        <CertPrincipalName />
+        <ServerExclusiveConnect>Off</ServerExclusiveConnect>
+        <TTL>30</TTL>
+        <SPA>Off</SPA>
         <AuthPackage>Basic</AuthPackage>
         <ASUrl>https://${domain}/Microsoft-Server-ActiveSync</ASUrl>
         <EwsUrl>https://${domain}/EWS/Exchange.asmx</EwsUrl>
+        <EcpUrl>https://${domain}/EWS/Exchange.asmx</EcpUrl>
+        <EmwsUrl>https://${domain}/EWS/Exchange.asmx</EmwsUrl>
+        <EwsPartnerUrl>https://${domain}/EWS/Exchange.asmx</EwsPartnerUrl>
+        <OOFUrl>https://${domain}/EWS/Exchange.asmx</OOFUrl>
+        <UMUrl>https://${domain}/EWS/Exchange.asmx</UMUrl>
+        <OABUrl>https://${domain}/EWS/Exchange.asmx</OABUrl>
       </Protocol>
       <Protocol>
         <Type>MobileSync</Type>
+        <Server>${domain}</Server>
+        <Name>Exchange Gateway</Name>
         <Url>https://${domain}/Microsoft-Server-ActiveSync</Url>
       </Protocol>
     </Account>
@@ -425,10 +589,7 @@ async function handleAutodiscoverXml(request, env) {
 </Autodiscover>`;
 
   return new Response(xml, {
-    headers: {
-      'Content-Type': 'application/xml; charset=utf-8',
-      'Cache-Control': 'private, no-store'
-    }
+    headers: privateNoStoreHeaders({ 'Content-Type': 'application/xml; charset=utf-8' })
   });
 }
 
@@ -463,6 +624,10 @@ async function handleAutodiscoverSoap(request, env) {
                 <a:Value>${escapeXml(email)}</a:Value>
               </a:UserSetting>
               <a:UserSetting>
+                <a:Name>AutoDiscoverSMTPAddress</a:Name>
+                <a:Value>${escapeXml(email)}</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
                 <a:Name>ExternalEwsUrl</a:Name>
                 <a:Value>https://${domain}/EWS/Exchange.asmx</a:Value>
               </a:UserSetting>
@@ -474,6 +639,30 @@ async function handleAutodiscoverSoap(request, env) {
                 <a:Name>MobileSyncServer</a:Name>
                 <a:Value>${domain}</a:Value>
               </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>InternalEcpUrl</a:Name>
+                <a:Value>https://${domain}/EWS/Exchange.asmx</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>ExternalEcpUrl</a:Name>
+                <a:Value>https://${domain}/EWS/Exchange.asmx</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>InternalOABUrl</a:Name>
+                <a:Value>https://${domain}/EWS/Exchange.asmx</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>ExternalOABUrl</a:Name>
+                <a:Value>https://${domain}/EWS/Exchange.asmx</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>ExternalEwsVersion</a:Name>
+                <a:Value>Exchange2016</a:Value>
+              </a:UserSetting>
+              <a:UserSetting>
+                <a:Name>EwsSupportedSchemas</a:Name>
+                <a:Value>Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2016</a:Value>
+              </a:UserSetting>
             </a:UserSettings>
           </a:UserResponse>
         </a:UserResponses>
@@ -483,11 +672,31 @@ async function handleAutodiscoverSoap(request, env) {
 </s:Envelope>`;
 
   return new Response(xml, {
-    headers: {
-      'Content-Type': 'application/soap+xml; charset=utf-8',
-      'Cache-Control': 'private, no-store'
-    }
+    headers: privateNoStoreHeaders({ 'Content-Type': 'application/soap+xml; charset=utf-8' })
   });
+}
+
+
+function mergeHeaders(...sets) {
+  const headers = new Headers();
+  for (const set of sets) {
+    if (!set) continue;
+    const source = set instanceof Headers ? set : new Headers(set);
+    source.forEach((value, key) => headers.set(key, value));
+  }
+  return headers;
+}
+
+function privateNoStoreHeaders(extra = {}) {
+  return mergeHeaders(
+    {
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'X-Frame-Options': 'DENY'
+    },
+    extra
+  );
 }
 
 function escapeXml(unsafe = '') {
@@ -637,4 +846,88 @@ async function handleGetEwsItemById(url, request, env) {
 
   const row = (result.results || [])[0] || null;
   return Response.json(row);
+}
+
+
+async function handleGetLatestChangeSeq(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT COALESCE(MAX(id), 0) AS seq FROM change_journal')
+    .all();
+  const row = (result.results || [])[0] || { seq: 0 };
+  return Response.json(row);
+}
+
+async function handleListChangesSinceSeq(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = Number(url.searchParams.get('since') || '0');
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const safeSince = Number.isFinite(since) ? since : 0;
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT cj.id AS seq, cj.server_id, im.resource_href
+      FROM change_journal cj
+      LEFT JOIN item_map im ON im.owner = cj.owner AND im.server_id = cj.server_id
+      WHERE cj.owner = ?
+        AND cj.id > ?
+        AND cj.op != 'delete'
+      ORDER BY cj.id ASC
+    `)
+    .bind(owner, safeSince)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+async function handleListDeletedSinceSeq(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = Number(url.searchParams.get('since') || '0');
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const safeSince = Number.isFinite(since) ? since : 0;
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT id AS seq, server_id
+      FROM change_journal
+      WHERE owner = ?
+        AND id > ?
+        AND op = 'delete'
+      ORDER BY id ASC
+    `)
+    .bind(owner, safeSince)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+
+async function handleListJournalSinceSeq(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = Number(url.searchParams.get('since') || '0');
+  const until = Number(url.searchParams.get('until') || '0');
+  const limit = Number(url.searchParams.get('limit') || '100');
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const safeSince = Number.isFinite(since) ? since : 0;
+  const safeUntil = Number.isFinite(until) && until > 0 ? until : Number.MAX_SAFE_INTEGER;
+  const safeLimit = Math.max(1, Math.min(512, Number.isFinite(limit) ? limit : 100));
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT cj.id AS seq, cj.server_id, cj.op, im.resource_href
+      FROM change_journal cj
+      LEFT JOIN item_map im ON im.owner = cj.owner AND im.server_id = cj.server_id
+      WHERE cj.owner = ?
+        AND cj.id > ?
+        AND cj.id <= ?
+      ORDER BY cj.id ASC
+      LIMIT ?
+    `)
+    .bind(owner, safeSince, safeUntil, safeLimit)
+    .all();
+
+  return Response.json(result.results || []);
 }

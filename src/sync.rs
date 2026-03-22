@@ -11,10 +11,30 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{TimeZone, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
+
+pub const INVALID_SYNC_KEY_STATUS: &str = "9";
+
+#[derive(Clone, Debug)]
+pub enum ClientMutationResult {
+    Add {
+        client_id: Option<String>,
+        server_id: Option<String>,
+        status: &'static str,
+    },
+    Change {
+        server_id: String,
+        status: &'static str,
+    },
+    Delete {
+        server_id: String,
+        status: &'static str,
+    },
+}
 
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     let key = secret.as_bytes();
@@ -24,16 +44,47 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     URL_SAFE_NO_PAD.encode(result)
 }
 
+fn sync_seq_to_token(seq: i64) -> String {
+    format!("seq:{}", seq.max(0))
+}
+
+fn sync_since_from_token(token: Option<&str>) -> i64 {
+    token
+        .and_then(|raw| raw.strip_prefix("seq:"))
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+pub fn invalid_sync_key_response(collection_id: &str, content_class: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:">
+  <Collections>
+    <Collection>
+      <Class>{}</Class>
+      <SyncKey>0</SyncKey>
+      <CollectionId>{}</CollectionId>
+      <Status>{}</Status>
+    </Collection>
+  </Collections>
+</Sync>"#,
+        xml_escape(content_class),
+        xml_escape(collection_id),
+        INVALID_SYNC_KEY_STATUS
+    )
+}
+
 pub async fn apply_client_sync_mutations(
     state: Arc<AppState>,
     owner: &str,
+    collection_id: &str,
     username: &str,
     password: &str,
     xml: &str,
-) -> Result<()> {
+) -> Result<Vec<ClientMutationResult>> {
     let mutations = parse_eas_sync_mutations(xml)?;
     if mutations.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let caldav = CaldavClient::new(&state.cfg);
@@ -43,30 +94,81 @@ pub async fn apply_client_sync_mutations(
         .ok_or_else(|| anyhow!("no calendars found"))?
         .clone();
 
+    let mut results = Vec::new();
     for mutation in mutations {
         match mutation {
             EasSyncMutation::Add { client_id, item } => {
+                if let Some(client_id) = client_id.as_deref()
+                    && let Some((server_id, status)) = state
+                        .storage
+                        .get_client_sync_command(owner, collection_id, client_id)
+                        .await?
+                {
+                    results.push(ClientMutationResult::Add {
+                        client_id: Some(client_id.to_string()),
+                        server_id,
+                        status: if status == "1" { "1" } else { "6" },
+                    });
+                    continue;
+                }
+
                 let ics = render_ics(&item);
-                let (resource_href, etag) = caldav
+                match caldav
                     .put_event(&collection_href, None, &ics, username, password, None)
-                    .await?;
-                let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
-                let uid = if item.uid.is_empty() {
-                    client_id.unwrap_or_else(|| Uuid::new_v4().to_string())
-                } else {
-                    item.uid
-                };
-                state
-                    .storage
-                    .upsert_item_map(
-                        owner,
-                        &collection_href,
-                        &resource_href,
-                        &server_id,
-                        &uid,
-                        &etag,
-                    )
-                    .await?;
+                    .await
+                {
+                    Ok((resource_href, etag)) => {
+                        let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
+                        let uid = if item.uid.is_empty() {
+                            client_id
+                                .clone()
+                                .unwrap_or_else(|| Uuid::new_v4().to_string())
+                        } else {
+                            item.uid
+                        };
+                        state
+                            .storage
+                            .upsert_item_map(
+                                owner,
+                                &collection_href,
+                                &resource_href,
+                                &server_id,
+                                &uid,
+                                &etag,
+                            )
+                            .await?;
+                        if let Some(client_id) = client_id.as_deref() {
+                            state
+                                .storage
+                                .put_client_sync_command(
+                                    owner,
+                                    collection_id,
+                                    client_id,
+                                    Some(&server_id),
+                                    "1",
+                                )
+                                .await?;
+                        }
+                        results.push(ClientMutationResult::Add {
+                            client_id,
+                            server_id: Some(server_id),
+                            status: "1",
+                        });
+                    }
+                    Err(_) => {
+                        if let Some(client_id) = client_id.as_deref() {
+                            let _ = state
+                                .storage
+                                .put_client_sync_command(owner, collection_id, client_id, None, "6")
+                                .await;
+                        }
+                        results.push(ClientMutationResult::Add {
+                            client_id,
+                            server_id: None,
+                            status: "6",
+                        })
+                    }
+                }
             }
             EasSyncMutation::Change { server_id, patch } => {
                 let Some(existing) = state
@@ -74,7 +176,11 @@ pub async fn apply_client_sync_mutations(
                     .get_ews_item_by_server_id(owner, &server_id)
                     .await?
                 else {
-                    return Err(anyhow!("unknown server id in EAS Change: {server_id}"));
+                    results.push(ClientMutationResult::Change {
+                        server_id,
+                        status: "6",
+                    });
+                    continue;
                 };
 
                 let (existing_ics, existing_etag) = caldav
@@ -109,6 +215,9 @@ pub async fn apply_client_sync_mutations(
                 }
                 if let Some(v) = patch.timezone {
                     item.timezone = Some(v);
+                }
+                if let Some(v) = patch.timezone_blob {
+                    item.timezone_blob = Some(v);
                 }
                 if let Some(v) = patch.rrule {
                     item.rrule = Some(v);
@@ -166,7 +275,7 @@ pub async fn apply_client_sync_mutations(
                 }
 
                 let ics = render_ics(&item);
-                let (resource_href, etag) = caldav
+                match caldav
                     .put_event(
                         &collection_href,
                         Some(&existing.resource_href),
@@ -175,18 +284,30 @@ pub async fn apply_client_sync_mutations(
                         password,
                         existing_etag.as_deref().or(existing.etag.as_deref()),
                     )
-                    .await?;
-                state
-                    .storage
-                    .upsert_item_map(
-                        owner,
-                        &collection_href,
-                        &resource_href,
-                        &server_id,
-                        &item.uid,
-                        &etag,
-                    )
-                    .await?;
+                    .await
+                {
+                    Ok((resource_href, etag)) => {
+                        state
+                            .storage
+                            .upsert_item_map(
+                                owner,
+                                &collection_href,
+                                &resource_href,
+                                &server_id,
+                                &item.uid,
+                                &etag,
+                            )
+                            .await?;
+                        results.push(ClientMutationResult::Change {
+                            server_id,
+                            status: "1",
+                        });
+                    }
+                    Err(_) => results.push(ClientMutationResult::Change {
+                        server_id,
+                        status: "6",
+                    }),
+                }
             }
             EasSyncMutation::Delete { server_id } => {
                 let Some(existing) = state
@@ -194,25 +315,86 @@ pub async fn apply_client_sync_mutations(
                     .get_ews_item_by_server_id(owner, &server_id)
                     .await?
                 else {
+                    results.push(ClientMutationResult::Delete {
+                        server_id,
+                        status: "6",
+                    });
                     continue;
                 };
-                caldav
+                match caldav
                     .delete_event(
                         &existing.resource_href,
                         username,
                         password,
                         existing.etag.as_deref(),
                     )
-                    .await?;
-                state
-                    .storage
-                    .delete_item_by_server_id(owner, &server_id)
-                    .await?;
+                    .await
+                {
+                    Ok(()) => {
+                        state
+                            .storage
+                            .add_delete_tombstone(owner, &server_id)
+                            .await?;
+                        state
+                            .storage
+                            .delete_item_by_server_id(owner, &server_id)
+                            .await?;
+                        results.push(ClientMutationResult::Delete {
+                            server_id,
+                            status: "1",
+                        });
+                    }
+                    Err(_) => results.push(ClientMutationResult::Delete {
+                        server_id,
+                        status: "6",
+                    }),
+                }
             }
         }
     }
 
-    Ok(())
+    Ok(results)
+}
+
+pub fn render_client_mutation_responses(results: &[ClientMutationResult]) -> String {
+    if results.is_empty() {
+        return String::new();
+    }
+    let mut xml = String::from("<Responses>");
+    for result in results {
+        match result {
+            ClientMutationResult::Add {
+                client_id,
+                server_id,
+                status,
+            } => {
+                xml.push_str("<Add>");
+                if let Some(client_id) = client_id {
+                    xml.push_str(&format!("<ClientId>{}</ClientId>", xml_escape(client_id)));
+                }
+                if let Some(server_id) = server_id {
+                    xml.push_str(&format!("<ServerId>{}</ServerId>", xml_escape(server_id)));
+                }
+                xml.push_str(&format!("<Status>{}</Status></Add>", status));
+            }
+            ClientMutationResult::Change { server_id, status } => {
+                xml.push_str(&format!(
+                    "<Change><ServerId>{}</ServerId><Status>{}</Status></Change>",
+                    xml_escape(server_id),
+                    status
+                ));
+            }
+            ClientMutationResult::Delete { server_id, status } => {
+                xml.push_str(&format!(
+                    "<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>",
+                    xml_escape(server_id),
+                    status
+                ));
+            }
+        }
+    }
+    xml.push_str("</Responses>");
+    xml
 }
 
 pub async fn apply_meeting_response(
@@ -290,7 +472,7 @@ pub async fn apply_meeting_response(
     Ok(())
 }
 
-fn xml_escape(input: &str) -> String {
+pub(crate) fn xml_escape(input: &str) -> String {
     input
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -456,6 +638,9 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
             month_of_year
         ));
     }
+    if matches!(freq_val, 2 | 3 | 5 | 6) {
+        xml.push_str("<Calendar:CalendarType>0</Calendar:CalendarType>");
+    }
     if let Some(v) = until {
         xml.push_str(&format!(
             "<Calendar:Until>{}</Calendar:Until>",
@@ -486,10 +671,15 @@ fn render_attendee_xml(attendee: &Attendee) -> String {
             xml_escape(&attendee.email)
         ));
     }
-    if let Some(name) = &attendee.name {
+    if let Some(name) = attendee.name.as_deref().filter(|v| !v.is_empty()) {
         xml.push_str(&format!(
             "<Calendar:Name>{}</Calendar:Name>",
             xml_escape(name)
+        ));
+    } else if !attendee.email.is_empty() {
+        xml.push_str(&format!(
+            "<Calendar:Name>{}</Calendar:Name>",
+            xml_escape(&attendee.email)
         ));
     }
     if let Some(v) = attendee.attendee_type {
@@ -506,6 +696,43 @@ fn render_attendee_xml(attendee: &Attendee) -> String {
     }
     xml.push_str("</Calendar:Attendee>");
     xml
+}
+
+fn derived_meeting_status(item: &CalendarItem) -> u8 {
+    if let Some(v) = item.meeting_status {
+        return v;
+    }
+    let is_meeting = !item.attendees.is_empty();
+    let organizer = item
+        .organizer_email
+        .as_deref()
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !is_meeting {
+        0
+    } else if organizer {
+        1
+    } else {
+        3
+    }
+}
+
+fn derived_response_type(item: &CalendarItem) -> Option<u8> {
+    if let Some(v) = item.response_type {
+        return Some(v);
+    }
+    if derived_meeting_status(item) == 1 {
+        return Some(1);
+    }
+    item.attendees
+        .iter()
+        .find_map(|attendee| match attendee.attendee_status {
+            Some(2) => Some(2),
+            Some(3) => Some(3),
+            Some(4) => Some(4),
+            Some(5) => Some(5),
+            _ => None,
+        })
 }
 
 fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> String {
@@ -562,6 +789,32 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
     if let Some(v) = exception.reminder {
         xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
     }
+    if let Some(v) = exception.appointment_reply_time {
+        xml.push_str(&format!(
+            "<Calendar:AppointmentReplyTime>{}</Calendar:AppointmentReplyTime>",
+            v.format("%Y-%m-%dT%H:%M:%SZ")
+        ));
+    }
+    if let Some(v) = exception.meeting_status {
+        xml.push_str(&format!(
+            "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
+            v
+        ));
+    } else {
+        xml.push_str(&format!(
+            "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
+            derived_meeting_status(item)
+        ));
+    }
+    if let Some(v) = exception
+        .response_type
+        .or_else(|| derived_response_type(item))
+    {
+        xml.push_str(&format!(
+            "<Calendar:ResponseType>{}</Calendar:ResponseType>",
+            v
+        ));
+    }
     if let Some(v) = &exception.categories {
         if !v.is_empty() {
             xml.push_str("<Calendar:Categories>");
@@ -606,7 +859,7 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
     xml
 }
 
-fn render_calendar_app_data(item: &CalendarItem) -> String {
+pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     let mut xml = String::new();
     xml.push_str(&format!(
         "<Calendar:Subject>{}</Calendar:Subject>",
@@ -631,7 +884,9 @@ fn render_calendar_app_data(item: &CalendarItem) -> String {
     } else {
         "<Calendar:AllDayEvent>0</Calendar:AllDayEvent>"
     });
-    if let Some(v) = &item.timezone {
+    if !item.all_day
+        && let Some(v) = &item.timezone
+    {
         xml.push_str(&format!(
             "<Calendar:Timezone>{}</Calendar:Timezone>",
             xml_escape(v)
@@ -708,12 +963,10 @@ fn render_calendar_app_data(item: &CalendarItem) -> String {
         }
         xml.push_str("</Calendar:Exceptions>");
     }
-    if let Some(v) = item.meeting_status {
-        xml.push_str(&format!(
-            "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
-            v
-        ));
-    }
+    xml.push_str(&format!(
+        "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
+        derived_meeting_status(item)
+    ));
     if let Some(v) = item.response_requested {
         xml.push_str(&format!(
             "<Calendar:ResponseRequested>{}</Calendar:ResponseRequested>",
@@ -732,7 +985,7 @@ fn render_calendar_app_data(item: &CalendarItem) -> String {
             v.format("%Y-%m-%dT%H:%M:%SZ")
         ));
     }
-    if let Some(v) = item.response_type {
+    if let Some(v) = derived_response_type(item) {
         xml.push_str(&format!(
             "<Calendar:ResponseType>{}</Calendar:ResponseType>",
             v
@@ -763,11 +1016,13 @@ pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,
     collection_id: &str,
-    _incoming_sync_key: &str,
+    state_collection_id: &str,
+    incoming_sync_key: &str,
     content_class: &str,
     _window_size: usize,
     username: &str,
     password: &str,
+    client_mutation_responses: &str,
 ) -> Result<String> {
     let storage = &state.storage;
 
@@ -780,7 +1035,7 @@ pub async fn perform_sync(
         };
         let new_sync_key = Uuid::new_v4().to_string();
         storage
-            .set_sync_key(owner, collection_id, &new_sync_key, Some("token"))
+            .set_sync_key(owner, state_collection_id, &new_sync_key, Some("token"))
             .await?;
 
         let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
@@ -804,16 +1059,36 @@ pub async fn perform_sync(
 <SyncKey>{}</SyncKey>
 <CollectionId>{}</CollectionId>
 <Status>1</Status>
-<Commands>{}</Commands>
+{}<Commands>{}</Commands>
 </Collection></Collections>
 </Sync>"#,
             xml_escape(normalized),
             new_sync_key,
             xml_escape(collection_id),
+            client_mutation_responses,
             commands
         );
         return Ok(xml);
     }
+
+    let previous_state = storage.get_sync_key(owner, state_collection_id).await?;
+    if incoming_sync_key != "0" {
+        match previous_state.as_ref() {
+            Some((expected_sync_key, _)) if expected_sync_key == incoming_sync_key => {}
+            _ => return Ok(invalid_sync_key_response(collection_id, "Calendar")),
+        }
+    }
+
+    let since = if incoming_sync_key == "0" {
+        0
+    } else {
+        sync_since_from_token(
+            previous_state
+                .as_ref()
+                .and_then(|(_, token)| token.as_deref()),
+        )
+    };
+    let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
 
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username, password).await?;
@@ -887,9 +1162,15 @@ pub async fn perform_sync(
         buf.clear();
     }
 
-    let old_items = storage.list_changes_since(owner, 0).await?;
+    let existing_map: HashMap<String, crate::storage::EwsItemRow> = storage
+        .list_ews_items(owner, 4096, 0)
+        .await?
+        .into_iter()
+        .map(|item| (item.server_id.clone(), item))
+        .collect();
     let mut commands = String::new();
-    let mut seen_ids = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let initial_sync = incoming_sync_key == "0";
 
     for ev in events {
         if ev.href.is_empty() {
@@ -901,19 +1182,30 @@ pub async fn perform_sync(
             continue;
         };
         let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
-        seen_ids.push(server_id.clone());
+        seen_ids.insert(server_id.clone());
 
-        storage
-            .upsert_item_map(
-                owner,
-                &collection_href,
-                &resource_href,
-                &server_id,
-                &item.uid,
-                &etag,
-            )
-            .await?;
-        let is_new = !old_items.iter().any(|(id, _)| id == &server_id);
+        let existing = existing_map.get(&server_id);
+        let is_new = existing.is_none();
+        let changed = existing
+            .map(|row| row.etag.as_deref() != Some(etag.as_str()))
+            .unwrap_or(true);
+
+        if changed {
+            storage
+                .upsert_item_map(
+                    owner,
+                    &collection_href,
+                    &resource_href,
+                    &server_id,
+                    &item.uid,
+                    &etag,
+                )
+                .await?;
+        }
+
+        if !initial_sync && !changed {
+            continue;
+        }
 
         if is_new {
             commands.push_str("<Add><ServerId>");
@@ -930,16 +1222,40 @@ pub async fn perform_sync(
         }
     }
 
-    for (old_id, _) in old_items {
-        if !seen_ids.contains(&old_id) {
-            commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", old_id));
-            let _ = storage.delete_item_by_server_id(owner, &old_id).await;
+    for server_id in existing_map.keys() {
+        if !seen_ids.contains(server_id) {
+            let _ = storage.add_delete_tombstone(owner, server_id).await;
+            let _ = storage.delete_item_by_server_id(owner, server_id).await;
+        }
+    }
+
+    let deleted_ids = if initial_sync {
+        Vec::new()
+    } else {
+        storage
+            .list_deleted_since_seq(owner, since)
+            .await?
+            .into_iter()
+            .map(|(_, server_id)| server_id)
+            .collect()
+    };
+    for deleted_id in deleted_ids {
+        if !seen_ids.contains(&deleted_id) {
+            commands.push_str(&format!(
+                "<Delete><ServerId>{}</ServerId></Delete>",
+                xml_escape(&deleted_id)
+            ));
         }
     }
 
     let new_sync_key = Uuid::new_v4().to_string();
     storage
-        .set_sync_key(owner, collection_id, &new_sync_key, Some("token"))
+        .set_sync_key(
+            owner,
+            state_collection_id,
+            &new_sync_key,
+            Some(&sync_seq_to_token(latest_seq)),
+        )
         .await?;
 
     let xml = format!(
@@ -950,10 +1266,10 @@ pub async fn perform_sync(
 <SyncKey>{}</SyncKey>
 <CollectionId>{}</CollectionId>
 <Status>1</Status>
-<Commands>{}</Commands>
+{}<Commands>{}</Commands>
 </Collection></Collections>
 </Sync>"#,
-        new_sync_key, collection_id, commands
+        new_sync_key, collection_id, client_mutation_responses, commands
     );
     Ok(xml)
 }
