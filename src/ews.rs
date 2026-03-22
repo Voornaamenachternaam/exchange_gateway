@@ -730,27 +730,30 @@ async fn handle_get_folder(auth: &AuthContext, body: &str) -> Response {
     }
 
     let fid = folder_id_for_owner(owner);
+    let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let folders_xml = if distinguished == "msgfolderroot" {
+        format!(
+            r#"<t:Folder><t:FolderId Id="root" ChangeKey="root" /><t:DisplayName>Top of Information Store</t:DisplayName><t:FolderClass>IPF.Note</t:FolderClass><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>1</t:ChildFolderCount></t:Folder>"#
+        )
+    } else {
+        format!(
+            r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount></t:CalendarFolder>"#,
+            fid,
+            &fid[4..]
+        )
+    };
     let response = format!(
         r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
     <m:GetFolderResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
-      <m:Folders>
-        <t:CalendarFolder>
-          <t:FolderId Id="{}" ChangeKey="{}" />
-          <t:DisplayName>Calendar</t:DisplayName>
-          <t:FolderClass>IPF.Appointment</t:FolderClass>
-          <t:TotalCount>0</t:TotalCount>
-          <t:ChildFolderCount>0</t:ChildFolderCount>
-        </t:CalendarFolder>
-      </m:Folders>
+      <m:Folders>{}</m:Folders>
     </m:GetFolderResponseMessage>
   </m:ResponseMessages>
 </m:GetFolderResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        fid,
-        &fid[4..]
+        EWS_MSG_NS, EWS_TYPE_NS, folders_xml
     );
     soap_ok(response)
 }
@@ -762,29 +765,31 @@ async fn handle_find_folder(auth: &AuthContext, body: &str) -> Response {
     }
 
     let fid = folder_id_for_owner(owner);
+    let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let (count, folders_xml) = if distinguished == "msgfolderroot" {
+        (
+            1,
+            format!(
+                r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:ChildFolderCount>0</t:ChildFolderCount><t:TotalCount>0</t:TotalCount></t:CalendarFolder>"#,
+                fid,
+                &fid[4..]
+            ),
+        )
+    } else {
+        (0, String::new())
+    };
     let response = format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
     <m:FindFolderResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
-      <m:RootFolder TotalItemsInView="1" IncludesLastItemInRange="true">
-        <t:Folders>
-          <t:CalendarFolder>
-            <t:FolderId Id="{}" ChangeKey="{}" />
-            <t:DisplayName>Calendar</t:DisplayName>
-            <t:FolderClass>IPF.Appointment</t:FolderClass>
-            <t:ChildFolderCount>0</t:ChildFolderCount>
-            <t:TotalCount>0</t:TotalCount>
-          </t:CalendarFolder>
-        </t:Folders>
-      </m:RootFolder>
+      <m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="true"><t:Folders>{}</t:Folders></m:RootFolder>
     </m:FindFolderResponseMessage>
   </m:ResponseMessages>
 </m:FindFolderResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        fid,
-        &fid[4..]
+        EWS_MSG_NS, EWS_TYPE_NS, count, folders_xml
     );
     soap_ok(response)
 }

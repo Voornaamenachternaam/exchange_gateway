@@ -25,7 +25,7 @@ The repository has materially improved compared with the earlier partial prototy
 - a stricter `FolderSync` surface focused on the calendar folder;
 - device-scoped EAS sync-state namespacing instead of a single shared mailbox-wide sync-key timeline;
 - improved incremental `GetItemEstimate` behavior;
-- per-command EAS mutation result reporting and Binder-aligned Ping heartbeat/max-folder/change-found behavior that is richer than the previous minimal shells;
+- per-command EAS mutation result reporting, Binder-aligned Ping heartbeat/max-folder/change-found behavior, and basic `ResolveRecipients` free/busy output that are richer than the previous minimal shells;
 - richer recurrence/exception field handling than the original minimal implementation;
 - preserved `VTIMEZONE` blocks and richer EWS calendar-item response shapes than the previous revision.
 
@@ -191,7 +191,7 @@ This gap is improved, but **not fully closed**.
    The implementation now returns richer calendar item XML for key item operations, but it still supports only a subset of the full property and update surface that Outlook can emit.
 
 2. **Folder and mailbox modeling remain simplified.**
-   The gateway now validates requested folder IDs more consistently across EWS operations, but it still exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
+   The gateway now validates requested folder IDs more consistently across EWS operations and exposes a slightly less synthetic `MsgFolderRoot -> Calendar` shape, but it still exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
 
 3. **Sync fidelity is improved again but still not fully equivalent to Exchange.**
    `SyncFolderItems` now uses an opaque persisted cursor and an ordered journal window that respects `MaxChangesReturned` with bounded continuation behavior, which removes another earlier protocol mismatch. It is still a gateway-managed approximation rather than full Exchange item-state behavior.
@@ -214,8 +214,8 @@ This remains **open**.
 1. **Meeting workflow semantics are still simplified.**
    Organizer, attendee, meeting-status, response-type, and related fields are now surfaced more richly than before, but full Exchange meeting workflow behavior is still only partially represented.
 
-2. **Free/busy semantics are still absent.**
-   Outlook-native Exchange behavior often depends on availability semantics that are still not implemented here.
+2. **Free/busy semantics are no longer completely absent, but they are still partial.**
+   The gateway can now return a basic `MergedFreeBusy` string through `ResolveRecipients` availability handling, but this is still narrower than full Exchange availability semantics and does not amount to complete Outlook-grade free/busy coverage.
 
 3. **Change-key / identity semantics remain gateway-defined.**
    The gateway provides stable IDs and change material, but not a true Exchange item-identity and mutation model.

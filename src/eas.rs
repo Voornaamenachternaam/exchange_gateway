@@ -1,3 +1,5 @@
+use crate::caldav::CaldavClient;
+use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::sync;
 use crate::wbxml::Wbxml;
@@ -581,6 +583,109 @@ async fn handle_ping(
     }
 }
 
+async fn handle_resolve_recipients(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &str,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let to = extract_first_tag_text(xml, b"To").unwrap_or_else(|| username.to_string());
+    let availability_requested = xml.contains("<Availability>");
+
+    let mut availability_xml = String::new();
+    if availability_requested {
+        let Some(start) =
+            extract_first_tag_text(xml, b"StartTime").and_then(|v| parse_datetime(&v))
+        else {
+            return bad_request_response(
+                request_id,
+                "ResolveRecipients Availability requires StartTime",
+            );
+        };
+        let end = extract_first_tag_text(xml, b"EndTime")
+            .and_then(|v| parse_datetime(&v))
+            .unwrap_or_else(|| start + chrono::Duration::days(7));
+        let slot_count =
+            (((end - start).num_seconds().max(0) + (30 * 60 - 1)) / (30 * 60)) as usize;
+        let mut merged = vec!['0'; slot_count];
+
+        let caldav = CaldavClient::new(&state.cfg);
+        if let Ok(calendars) = caldav.find_user_calendars(username, password).await
+            && let Some(collection_href) = calendars.first()
+            && let Ok(events_xml) = caldav
+                .query_events(
+                    collection_href,
+                    &start.format("%Y%m%dT%H%M%SZ").to_string(),
+                    &end.format("%Y%m%dT%H%M%SZ").to_string(),
+                    username,
+                    password,
+                )
+                .await
+        {
+            let mut reader = Reader::from_str(&events_xml);
+            reader.config_mut().trim_text(true);
+            let mut buf = Vec::new();
+            let mut in_calendar_data = false;
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                        in_calendar_data = true;
+                    }
+                    Ok(Event::Text(t)) if in_calendar_data => {
+                        if let Ok(ics) = t.decode()
+                            && let Some(item) = parse_ics_event(&ics)
+                        {
+                            let status_digit = match item.busy_status.unwrap_or(2) {
+                                0 => '0',
+                                1 => '1',
+                                3 => '3',
+                                _ => '2',
+                            };
+                            for (index, slot) in merged.iter_mut().enumerate() {
+                                let slot_start =
+                                    start + chrono::Duration::minutes((index as i64) * 30);
+                                let slot_end = slot_start + chrono::Duration::minutes(30);
+                                if item.start < slot_end
+                                    && item.end > slot_start
+                                    && status_digit > *slot
+                                {
+                                    *slot = status_digit;
+                                }
+                            }
+                        }
+                    }
+                    Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                        in_calendar_data = false;
+                    }
+                    Ok(Event::Eof) => break,
+                    _ => {}
+                }
+                buf.clear();
+            }
+        } else {
+            merged.fill('4');
+        }
+
+        availability_xml = format!(
+            "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
+            merged.into_iter().collect::<String>()
+        );
+    }
+
+    let response = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>1</RecipientCount><Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient></Response></ResolveRecipients>"#,
+        xml_escape(&to),
+        xml_escape(&to),
+        xml_escape(&to),
+        availability_xml
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+}
+
 async fn handle_provision(
     state: &Arc<AppState>,
     owner: &str,
@@ -981,15 +1086,18 @@ pub async fn handle(
                 bad_request_response(&request_id, "MeetingResponse requires RequestId")
             }
         }
-        "ResolveRecipients" => success_status_response(
-            &wbxml,
-            wants_wbxml,
-            "ResolveRecipients",
-            "ResolveRecipients:",
-            "1",
-            "",
-            &request_id,
-        ),
+        "ResolveRecipients" => {
+            handle_resolve_recipients(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
         "ValidateCert" => success_status_response(
             &wbxml,
             wants_wbxml,
@@ -1176,5 +1284,13 @@ mod tests {
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].id, "1");
         assert_eq!(folders[0].class_name, "Calendar");
+    }
+    #[test]
+    fn resolve_recipients_command_detected() {
+        let xml = r#"<ResolveRecipients xmlns="ResolveRecipients:"><To>a@example.com</To><Options><Availability><StartTime>2026-03-21T00:00:00Z</StartTime><EndTime>2026-03-22T00:00:00Z</EndTime></Availability></Options></ResolveRecipients>"#;
+        assert_eq!(
+            super::extract_root_command(xml).as_deref(),
+            Some("ResolveRecipients")
+        );
     }
 }
