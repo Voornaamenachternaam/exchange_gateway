@@ -71,6 +71,26 @@ curl -fsS \
 require_contains "${TMP_DIR}/autodiscover.soap.xml" "ExternalEwsUrl"
 require_contains "${TMP_DIR}/autodiscover.soap.xml" "MobileSyncServer"
 
+log "Checking Autodiscover JSON"
+curl -fsS "${base}/autodiscover/autodiscover.json" >"${TMP_DIR}/autodiscover.json"
+require_contains "${TMP_DIR}/autodiscover.json" "\"EwsUrl\":\"${base}/EWS/Exchange.asmx\""
+require_contains "${TMP_DIR}/autodiscover.json" "\"ActiveSyncUrl\":\"${base}/Microsoft-Server-ActiveSync\""
+
+log "Checking ActiveSync FolderSync bootstrap"
+curl -fsS "${auth[@]}" \
+  -H 'Content-Type: application/xml; charset=utf-8' \
+  --data "<?xml version=\"1.0\" encoding=\"utf-8\"?><FolderSync xmlns=\"FolderHierarchy:\"><SyncKey>0</SyncKey></FolderSync>" \
+  "${base}/Microsoft-Server-ActiveSync?Cmd=FolderSync&User=${GATEWAY_USER}&DeviceId=smoke-device&DeviceType=Outlook" >"${TMP_DIR}/foldersync.xml"
+require_contains "${TMP_DIR}/foldersync.xml" "<Status>1</Status>"
+require_contains "${TMP_DIR}/foldersync.xml" "<DisplayName>Calendar</DisplayName>"
+
+log "Checking ActiveSync invalid SyncKey handling"
+curl -fsS "${auth[@]}" \
+  -H 'Content-Type: application/xml; charset=utf-8' \
+  --data "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Collections><Collection><Class>Calendar</Class><SyncKey>bogus</SyncKey><CollectionId>1</CollectionId></Collection></Collections></Sync>" \
+  "${base}/Microsoft-Server-ActiveSync?Cmd=Sync&User=${GATEWAY_USER}&DeviceId=smoke-device&DeviceType=Outlook" >"${TMP_DIR}/sync-invalid.xml"
+require_contains "${TMP_DIR}/sync-invalid.xml" "<Status>9</Status>"
+
 log "Checking EWS GetFolder"
 request_xml \
   "${base}/EWS/Exchange.asmx" \

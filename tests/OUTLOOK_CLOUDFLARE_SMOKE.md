@@ -13,7 +13,9 @@ This repository now includes a live-environment smoke script for the specific de
 The script is not a substitute for real Outlook desktop/mobile testing, but it gives the repository a repeatable probe that validates the same externally published gateway surface Outlook depends on:
 
 - ActiveSync `OPTIONS`,
+- ActiveSync `FolderSync` bootstrap and invalid `SyncKey` rejection,
 - Autodiscover XML and SOAP,
+- Autodiscover JSON,
 - EWS `GetFolder`,
 - EWS `GetUserAvailability`,
 - optional EWS `CreateItem` / `UpdateItem` / `DeleteItem` write-through probe.

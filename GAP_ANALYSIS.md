@@ -39,7 +39,7 @@ The repository has materially improved compared with the earlier partial prototy
 - exception-level `AppointmentReplyTime` / `MeetingStatus` / `ResponseType` fields are now preserved through the local calendar model and emitted back out on Sync/ICS paths;
 - a slightly less synthetic EWS folder shape by including the calendar folder’s parent linkage under `MsgFolderRoot`;
 - richer Autodiscover XML / JSON / SOAP payloads that advertise EWS and ActiveSync endpoints more explicitly for Outlook bootstrap.
-- a repo-contained live-environment smoke harness for the exact Cloudflare-published gateway surface (`ActiveSync OPTIONS`, Autodiscover, EWS folder/availability, and optional EWS create/update/delete).
+- a repo-contained live-environment smoke harness for the exact Cloudflare-published gateway surface (`ActiveSync OPTIONS`, `FolderSync`, invalid `SyncKey` handling, Autodiscover XML/SOAP/JSON, EWS folder/availability, and optional EWS create/update/delete).
 
 However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
 
