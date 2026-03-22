@@ -731,6 +731,79 @@ async fn handle_ping(
     }
 }
 
+async fn merged_freebusy_for_mailbox(
+    state: &Arc<AppState>,
+    mailbox: &str,
+    password: &str,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+    slot_minutes: i64,
+) -> String {
+    let safe_interval = slot_minutes.clamp(5, 1440);
+    let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
+        / (safe_interval * 60)) as usize;
+    let mut merged = vec!['0'; slot_count];
+
+    let caldav = CaldavClient::new(&state.cfg);
+    if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
+        && let Some(collection_href) = calendars.first()
+        && let Ok(events_xml) = caldav
+            .query_events(
+                collection_href,
+                &start.format("%Y%m%dT%H%M%SZ").to_string(),
+                &end.format("%Y%m%dT%H%M%SZ").to_string(),
+                mailbox,
+                password,
+            )
+            .await
+    {
+        let mut reader = Reader::from_str(&events_xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        let mut in_calendar_data = false;
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    in_calendar_data = true;
+                }
+                Ok(Event::Text(t)) if in_calendar_data => {
+                    if let Ok(ics) = t.decode()
+                        && let Some(item) = parse_ics_event(&ics)
+                    {
+                        let status_digit = match item.busy_status.unwrap_or(2) {
+                            0 => '0',
+                            1 => '1',
+                            3 => '3',
+                            _ => '2',
+                        };
+                        for (index, slot) in merged.iter_mut().enumerate() {
+                            let slot_start =
+                                start + chrono::Duration::minutes((index as i64) * safe_interval);
+                            let slot_end = slot_start + chrono::Duration::minutes(safe_interval);
+                            if item.start < slot_end
+                                && item.end > slot_start
+                                && status_digit > *slot
+                            {
+                                *slot = status_digit;
+                            }
+                        }
+                    }
+                }
+                Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    in_calendar_data = false;
+                }
+                Ok(Event::Eof) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+    } else {
+        merged.fill('4');
+    }
+
+    merged.into_iter().collect()
+}
+
 async fn handle_resolve_recipients(
     state: &Arc<AppState>,
     username: &str,
@@ -740,11 +813,19 @@ async fn handle_resolve_recipients(
     as_wbxml: bool,
     request_id: &str,
 ) -> Response {
-    let to = extract_first_tag_text(xml, b"To").unwrap_or_else(|| username.to_string());
+    let recipients = {
+        let parsed = extract_all_tag_text(xml, b"To")
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if parsed.is_empty() {
+            vec![username.to_string()]
+        } else {
+            parsed
+        }
+    };
     let availability_requested = xml.contains("<Availability>");
-
-    let mut availability_xml = String::new();
-    if availability_requested {
+    let availability_window = if availability_requested {
         let Some(start) =
             extract_first_tag_text(xml, b"StartTime").and_then(|v| parse_datetime(&v))
         else {
@@ -756,80 +837,41 @@ async fn handle_resolve_recipients(
         let end = extract_first_tag_text(xml, b"EndTime")
             .and_then(|v| parse_datetime(&v))
             .unwrap_or_else(|| start + chrono::Duration::days(7));
-        let slot_count =
-            (((end - start).num_seconds().max(0) + (30 * 60 - 1)) / (30 * 60)) as usize;
-        let mut merged = vec!['0'; slot_count];
+        Some((start, end))
+    } else {
+        None
+    };
 
-        let caldav = CaldavClient::new(&state.cfg);
-        if let Ok(calendars) = caldav.find_user_calendars(username, password).await
-            && let Some(collection_href) = calendars.first()
-            && let Ok(events_xml) = caldav
-                .query_events(
-                    collection_href,
-                    &start.format("%Y%m%dT%H%M%SZ").to_string(),
-                    &end.format("%Y%m%dT%H%M%SZ").to_string(),
-                    username,
-                    password,
-                )
-                .await
-        {
-            let mut reader = Reader::from_str(&events_xml);
-            reader.config_mut().trim_text(true);
-            let mut buf = Vec::new();
-            let mut in_calendar_data = false;
-            loop {
-                match reader.read_event_into(&mut buf) {
-                    Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
-                        in_calendar_data = true;
-                    }
-                    Ok(Event::Text(t)) if in_calendar_data => {
-                        if let Ok(ics) = t.decode()
-                            && let Some(item) = parse_ics_event(&ics)
-                        {
-                            let status_digit = match item.busy_status.unwrap_or(2) {
-                                0 => '0',
-                                1 => '1',
-                                3 => '3',
-                                _ => '2',
-                            };
-                            for (index, slot) in merged.iter_mut().enumerate() {
-                                let slot_start =
-                                    start + chrono::Duration::minutes((index as i64) * 30);
-                                let slot_end = slot_start + chrono::Duration::minutes(30);
-                                if item.start < slot_end
-                                    && item.end > slot_start
-                                    && status_digit > *slot
-                                {
-                                    *slot = status_digit;
-                                }
-                            }
-                        }
-                    }
-                    Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
-                        in_calendar_data = false;
-                    }
-                    Ok(Event::Eof) => break,
-                    _ => {}
-                }
-                buf.clear();
-            }
+    let mut recipient_xml = String::new();
+    for recipient in &recipients {
+        let availability_xml = if let Some((start, end)) = availability_window {
+            let merged =
+                merged_freebusy_for_mailbox(state, recipient, password, start, end, 30).await;
+            format!(
+                "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
+                merged
+            )
         } else {
-            merged.fill('4');
-        }
-
-        availability_xml = format!(
-            "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
-            merged.into_iter().collect::<String>()
-        );
+            String::new()
+        };
+        recipient_xml.push_str(&format!(
+            "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
+            xml_escape(recipient),
+            xml_escape(recipient),
+            availability_xml
+        ));
     }
 
+    let primary = recipients
+        .first()
+        .cloned()
+        .unwrap_or_else(|| username.to_string());
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
-<ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>1</RecipientCount><Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient></Response></ResolveRecipients>"#,
-        xml_escape(&to),
-        xml_escape(&to),
-        xml_escape(&to),
-        availability_xml
+<ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
+        xml_escape(&primary),
+        recipients.len(),
+        recipient_xml
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
@@ -1753,6 +1795,15 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn extracts_multiple_resolve_recipient_targets() {
+        let xml = r#"<ResolveRecipients xmlns="ResolveRecipients:"><To>one@example.com</To><To>two@example.com</To></ResolveRecipients>"#;
+        assert_eq!(
+            extract_all_tag_text(xml, b"To"),
+            vec!["one@example.com", "two@example.com"]
+        );
+    }
+
     #[test]
     fn parses_ping_folder_entries() {
         let xml = r#"<Ping xmlns="Ping:"><Folders><Folder><Id>1</Id><Class>Calendar</Class></Folder></Folders></Ping>"#;

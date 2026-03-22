@@ -26,6 +26,7 @@ The repository has materially improved compared with the earlier partial prototy
 - device-scoped EAS sync-state namespacing instead of a single shared mailbox-wide sync-key timeline;
 - improved incremental `GetItemEstimate` behavior;
 - per-command EAS mutation result reporting, Binder-aligned Ping heartbeat/max-folder/change-found behavior, and basic `ResolveRecipients` free/busy output that are richer than the previous minimal shells;
+- EAS `ResolveRecipients` now handles multiple requested recipients, returns an accurate `RecipientCount`, and computes free/busy from the requested mailbox address rather than always from the authenticated username;
 - durable device-scoped `ClientId` replay suppression for EAS `Sync/Add` retries via D1-backed command journaling rather than re-creating duplicate events;
 - Binder-aligned validation that `Sync/Add` requests carry `ClientId`, and rejection of response-only ActiveSync calendar fields such as `AppointmentReplyTime` / `ResponseType` in client `Sync` writes;
 - non-stub EAS `Settings`, `ItemOperations`, and `Search` responses that now return user/account metadata and real calendar-item payloads from CalDAV instead of empty success shells;
@@ -49,6 +50,7 @@ The repository has materially improved compared with the earlier partial prototy
 - recurrence normalization now prefers `COUNT` over `UNTIL` when both are present in EAS/EWS-derived inputs so the gateway does not emit illegal dual-boundary RRULEs;
 - ICS exception parsing now preserves exception-level `AppointmentReplyTime`, `MeetingStatus`, and `ResponseType` values instead of dropping them on round-trip;
 - EWS `CalendarEventArray` entries now carry `CalendarEventDetails` blocks with subject/location and basic meeting/recurrence/reminder/privacy flags instead of only bare start/end/busy triples;
+- EAS `ResolveRecipients` now honors multiple requested recipients, returns an accurate `RecipientCount`, and computes `MergedFreeBusy` against each requested mailbox instead of always using the authenticated username only;
 - EWS recurring calendar items now emit `ModifiedOccurrences` in addition to deleted occurrences for exception instances that carry updated start/end/subject data;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
 - Binder-aligned validation for common EWS operation attributes such as `SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related meeting-cancellation knobs;
@@ -123,6 +125,16 @@ The top-level gaps above are still only **partially** closed overall, but this r
 48. **Availability event details omitting whether the item is recurring** is now reduced by emitting `CalendarEventDetails -> IsRecurring`.
 49. **Availability event details omitting whether a reminder is set** is now reduced by emitting `CalendarEventDetails -> IsReminderSet`.
 50. **Availability event details omitting basic privacy signaling** is now reduced by emitting `CalendarEventDetails -> IsPrivate`.
+51. **EAS `ResolveRecipients` only reading the first `To` entry** is now reduced by parsing all requested recipients.
+52. **EAS `ResolveRecipients` hard-coding `RecipientCount` to `1`** is now reduced by returning the actual recipient count.
+53. **EAS `ResolveRecipients` returning only one recipient block even when several targets are requested** is now reduced by rendering one recipient payload per requested address.
+54. **EAS `ResolveRecipients` availability queries being computed against the authenticated username instead of the requested mailbox** is now reduced by looking up CalDAV data for each requested recipient address.
+55. **EAS `ResolveRecipients` availability lookup logic being duplicated inline instead of using a mailbox-scoped helper** is now reduced by introducing a shared mailbox free/busy helper within the command path.
+56. **EAS `ResolveRecipients` not preserving the first requested target as the response `To` value when multiple recipients are supplied** is now reduced by anchoring the response to the first requested recipient.
+57. **EAS availability fallback behavior not being applied per resolved recipient** is now reduced by computing/falling back recipient-by-recipient.
+58. **EAS `ResolveRecipients` multi-target responses lacking consistent display/email echoing for each recipient** is now reduced by rendering mailbox-specific `DisplayName` and `EmailAddress` fields for every recipient block.
+59. **EAS `ResolveRecipients` availability windows being applied only to a single synthetic recipient path** is now reduced by reusing the requested availability window across every requested recipient.
+60. **The repository lacking regression coverage for multi-recipient `ResolveRecipients` parsing** is now reduced by adding a focused unit test for repeated `To` elements.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
