@@ -42,6 +42,8 @@ The repository has materially improved compared with the earlier partial prototy
 - EWS `GetItem` / `FindItem` / `SyncFolderItems` now respect requested `BaseShape` values (`IdOnly`, `Default`, `AllProperties`) instead of always returning a single unqualified shape;
 - EWS availability responses now emit a basic `SuggestionsResponse` block when `SuggestionsViewOptions` is requested, instead of omitting that branch entirely;
 - EWS meeting items now expose `ResponseObjects`, `AllowNewTimeProposal`, `MeetingRequestWasSent`, `AdjacentMeetingCount`, and `ConflictingMeetingCount` metadata rather than leaving those Exchange-facing semantics absent;
+- EWS availability suggestions are now derived from free/busy windows with concrete suggestion slots and day-quality output rather than an empty placeholder branch;
+- EWS recurring calendar items now emit `ModifiedOccurrences` in addition to deleted occurrences for exception instances that carry updated start/end/subject data;
 - stricter EWS `ChangeKey` conflict detection for `UpdateItem` / `DeleteItem` plus consistent `ChangeKey` generation in create/update responses;
 - Binder-aligned validation for common EWS operation attributes such as `SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related meeting-cancellation knobs;
 - derived `MeetingStatus` / `ResponseType` emission when the upstream item data does not already provide them explicitly;
@@ -93,6 +95,8 @@ The top-level gaps above are still only **partially** closed overall, but this r
 26. **EWS item-shape requests (`IdOnly` / `Default` / `AllProperties`) not being honored** is now reduced by selecting the rendered item shape from the requested `BaseShape`.
 27. **EWS `GetUserAvailability` omitting the suggestions branch when `SuggestionsViewOptions` is requested** is now reduced by returning a success-shaped `SuggestionsResponse`.
 28. **EWS meeting-item response objects and adjacent/conflict counters being absent** is now reduced by emitting `ResponseObjects`, `AllowNewTimeProposal`, `MeetingRequestWasSent`, `AdjacentMeetingCount`, and `ConflictingMeetingCount`.
+29. **EWS suggestions responses lacking concrete suggested meeting slots and day-quality output** is now reduced by deriving suggestion slots from the merged free/busy window.
+30. **EWS recurring item responses exposing deleted occurrences but not modified exception instances** is now reduced by emitting `ModifiedOccurrences` for non-deleted exceptions.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -241,7 +245,7 @@ This gap is improved, but **not fully closed**.
 - `SyncFolderItems` now uses an opaque stored sync-state cursor and ordered journal-window pagination rather than an unbounded plaintext timestamp marker, including a bounded continuation window for `MaxChangesReturned`;
 - `GetItem`, `CreateItem`, and `UpdateItem` responses now return much richer calendar item shapes than the previous subject-only responses, including much more Exchange-like meeting, recurrence, reminder, timezone, and deleted-occurrence metadata;
 - `FindItem` now honors `CalendarView` windows and renders full calendar item XML from live CalDAV state, while `SyncFolderItems` now emits those richer payloads for create/update changes instead of minimal shells;
-- EWS item rendering now also tracks requested `BaseShape`, emits meeting response objects / counters, and returns a basic suggestions branch when availability suggestions are requested.
+- EWS item rendering now also tracks requested `BaseShape`, emits meeting response objects / counters plus modified occurrences, and availability responses now derive concrete suggestion slots when suggestions are requested.
 
 ### Specific remaining gaps
 

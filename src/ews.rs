@@ -576,6 +576,46 @@ fn ews_response_objects_xml(item: &crate::calendar::CalendarItem) -> String {
     "<t:ResponseObjects><t:AcceptItem /><t:TentativelyAcceptItem /><t:DeclineItem /></t:ResponseObjects>".to_string()
 }
 
+fn ews_modified_occurrences_xml(
+    item_id: &str,
+    change_key: &str,
+    item: &crate::calendar::CalendarItem,
+) -> String {
+    let modified = item
+        .exceptions
+        .iter()
+        .filter(|exception| !exception.deleted)
+        .map(|exception| {
+            let start = exception.start.unwrap_or(exception.exception_start);
+            let end = exception
+                .end
+                .unwrap_or_else(|| start + chrono::Duration::minutes(30));
+            let subject = exception
+                .subject
+                .as_deref()
+                .unwrap_or(&item.subject);
+            format!(
+                r#"<t:Occurrence><t:ItemId Id="{}-{}" ChangeKey="{}" /><t:Start>{}</t:Start><t:End>{}</t:End><t:OriginalStart>{}</t:OriginalStart><t:Subject>{}</t:Subject></t:Occurrence>"#,
+                xml_escape(item_id),
+                start.timestamp(),
+                xml_escape(change_key),
+                start.to_rfc3339(),
+                end.to_rfc3339(),
+                exception.exception_start.to_rfc3339(),
+                xml_escape(subject),
+            )
+        })
+        .collect::<String>();
+    if modified.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<t:ModifiedOccurrences>{}</t:ModifiedOccurrences>",
+            modified
+        )
+    }
+}
+
 fn render_ews_recurrence_xml(rrule: &str) -> String {
     let mut freq = "";
     let mut interval = "1".to_string();
@@ -843,6 +883,7 @@ fn render_ews_calendar_item_xml_with_shape(
     xml.push_str(&render_ews_categories(item));
     xml.push_str(&render_ews_attendees(item));
     xml.push_str(&ews_deleted_occurrences_xml(item));
+    xml.push_str(&ews_modified_occurrences_xml(item_id, change_key, item));
     if let Some(rrule) = &item.rrule {
         xml.push_str(&render_ews_recurrence_xml(rrule));
     }
@@ -945,6 +986,77 @@ async fn merged_freebusy_for_mailbox(
     (merged.into_iter().collect(), events_xml)
 }
 
+fn suggestions_xml_for_window(
+    merged: &str,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+    slot_minutes: i64,
+    meeting_minutes: i64,
+) -> String {
+    let safe_slot = slot_minutes.clamp(5, 1440);
+    let safe_meeting = meeting_minutes.clamp(safe_slot, 24 * 60);
+    let slots_needed = ((safe_meeting + safe_slot - 1) / safe_slot) as usize;
+    if merged.is_empty() {
+        return r#"<m:SuggestionsResponse>
+  <m:ResponseMessage ResponseClass="Success">
+    <m:ResponseCode>NoError</m:ResponseCode>
+  </m:ResponseMessage>
+  <m:SuggestionDayResultArray />
+</m:SuggestionsResponse>"#
+            .to_string();
+    }
+
+    let mut day_buckets: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let chars = merged.chars().collect::<Vec<_>>();
+    for idx in 0..chars.len() {
+        if chars[idx] != '0' {
+            continue;
+        }
+        if idx + slots_needed > chars.len()
+            || chars[idx..idx + slots_needed].iter().any(|c| *c != '0')
+        {
+            continue;
+        }
+        let slot_start = start + chrono::Duration::minutes((idx as i64) * safe_slot);
+        let slot_end = slot_start + chrono::Duration::minutes(safe_meeting);
+        if slot_end > end {
+            continue;
+        }
+        let day_key = slot_start.format("%Y-%m-%d").to_string();
+        let entry = day_buckets.entry(day_key).or_default();
+        if entry.len() >= 8 {
+            continue;
+        }
+        entry.push(format!(
+            "<t:Suggestion><t:MeetingTime>{}</t:MeetingTime><t:IsWorkTime>true</t:IsWorkTime><t:SuggestionQuality>Excellent</t:SuggestionQuality></t:Suggestion>",
+            slot_start.to_rfc3339()
+        ));
+    }
+
+    let day_results = day_buckets
+        .into_iter()
+        .map(|(day, suggestions)| {
+            let quality = if suggestions.is_empty() { "Poor" } else { "Excellent" };
+            format!(
+                "<t:SuggestionDayResult><t:Date>{}</t:Date><t:DayQuality>{}</t:DayQuality><t:SuggestionArray>{}</t:SuggestionArray></t:SuggestionDayResult>",
+                day,
+                quality,
+                suggestions.join("")
+            )
+        })
+        .collect::<String>();
+    format!(
+        r#"<m:SuggestionsResponse>
+  <m:ResponseMessage ResponseClass="Success">
+    <m:ResponseCode>NoError</m:ResponseCode>
+  </m:ResponseMessage>
+  <m:SuggestionDayResultArray>{}</m:SuggestionDayResultArray>
+</m:SuggestionsResponse>"#,
+        day_results
+    )
+}
+
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -970,19 +1082,17 @@ async fn handle_get_user_availability(
     let interval = extract_first_tag_text(body, b"MergedFreeBusyIntervalInMinutes")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(30);
+    let suggestion_minutes = extract_first_tag_text(body, b"MeetingDurationInMinutes")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(interval);
 
     let (merged, events_xml) =
         merged_freebusy_for_mailbox(state, &mailbox, &auth.password, start, end, interval).await;
     let view_type = requested_freebusy_view_type(body);
     let suggestions_xml = if body.contains("SuggestionsViewOptions") {
-        r#"<m:SuggestionsResponse>
-  <m:ResponseMessage ResponseClass="Success">
-    <m:ResponseCode>NoError</m:ResponseCode>
-  </m:ResponseMessage>
-  <m:SuggestionDayResultArray />
-</m:SuggestionsResponse>"#
+        suggestions_xml_for_window(&merged, start, end, interval, suggestion_minutes)
     } else {
-        ""
+        String::new()
     };
     let response = format!(
         r#"<m:GetUserAvailabilityResponse xmlns:m="{msg_ns}" xmlns:t="{type_ns}">
@@ -2229,9 +2339,9 @@ mod tests {
     use super::{
         EwsAction, detect_action, operation_error_response, parse_calendar_view_window,
         parse_sync_state_marker, render_ews_calendar_item_xml, requested_freebusy_view_type,
-        requested_item_shape, validate_schema,
+        requested_item_shape, suggestions_xml_for_window, validate_schema,
     };
-    use crate::calendar::{CalendarException, CalendarItem};
+    use crate::calendar::{Attendee, CalendarException, CalendarItem};
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -2385,11 +2495,25 @@ mod tests {
             reminder: Some(15),
             rrule: Some("FREQ=WEEKLY".to_string()),
             exdates: vec![Utc.with_ymd_and_hms(2026, 3, 29, 9, 0, 0).unwrap()],
-            exceptions: vec![CalendarException {
-                deleted: true,
-                exception_start: Utc.with_ymd_and_hms(2026, 4, 5, 9, 0, 0).unwrap(),
+            attendees: vec![Attendee {
+                email: "peer@example.com".to_string(),
                 ..Default::default()
             }],
+            exceptions: vec![
+                CalendarException {
+                    deleted: true,
+                    exception_start: Utc.with_ymd_and_hms(2026, 4, 5, 9, 0, 0).unwrap(),
+                    ..Default::default()
+                },
+                CalendarException {
+                    deleted: false,
+                    exception_start: Utc.with_ymd_and_hms(2026, 4, 12, 9, 0, 0).unwrap(),
+                    start: Some(Utc.with_ymd_and_hms(2026, 4, 12, 10, 0, 0).unwrap()),
+                    end: Some(Utc.with_ymd_and_hms(2026, 4, 12, 11, 0, 0).unwrap()),
+                    subject: Some("Planning moved".to_string()),
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         };
         let xml = render_ews_calendar_item_xml("item-1", "ck-1", &item);
@@ -2399,5 +2523,21 @@ mod tests {
         assert!(xml.contains("<t:DeletedOccurrences>"));
         assert!(xml.contains("<t:Duration>PT1H30M</t:Duration>"));
         assert!(xml.contains("<t:AllowNewTimeProposal>true</t:AllowNewTimeProposal>"));
+        assert!(xml.contains("<t:ModifiedOccurrences>"));
+        assert!(xml.contains("<t:ResponseObjects>"));
+    }
+
+    #[test]
+    fn renders_suggestions_from_freebusy_window() {
+        let xml = suggestions_xml_for_window(
+            "000011110000",
+            Utc.with_ymd_and_hms(2026, 3, 22, 8, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 22, 14, 0, 0).unwrap(),
+            30,
+            60,
+        );
+        assert!(xml.contains("<m:SuggestionDayResultArray>"));
+        assert!(xml.contains("<t:Suggestion>"));
+        assert!(xml.contains("<t:SuggestionQuality>Excellent</t:SuggestionQuality>"));
     }
 }
