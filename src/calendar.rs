@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::borrow::Cow;
@@ -16,6 +17,7 @@ pub struct CalendarItem {
     pub all_day: bool,
     pub dtstamp: Option<chrono::DateTime<Utc>>,
     pub timezone: Option<String>,
+    pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
     pub exdates: Vec<chrono::DateTime<Utc>>,
     pub organizer_name: Option<String>,
@@ -49,6 +51,9 @@ pub struct CalendarException {
     pub busy_status: Option<u8>,
     pub sensitivity: Option<u8>,
     pub reminder: Option<i32>,
+    pub appointment_reply_time: Option<chrono::DateTime<Utc>>,
+    pub meeting_status: Option<u8>,
+    pub response_type: Option<u8>,
     pub attendees: Option<Vec<Attendee>>,
     pub categories: Option<Vec<String>>,
 }
@@ -73,6 +78,7 @@ pub struct CalendarPatch {
     pub all_day: Option<bool>,
     pub dtstamp: Option<chrono::DateTime<Utc>>,
     pub timezone: Option<String>,
+    pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
     pub exdates: Option<Vec<chrono::DateTime<Utc>>>,
     pub organizer_name: Option<String>,
@@ -127,6 +133,7 @@ struct EasBuilder {
     all_day: Option<bool>,
     dtstamp: Option<chrono::DateTime<Utc>>,
     timezone: Option<String>,
+    timezone_blob: Option<String>,
     uid: Option<String>,
     recurrence: EasRecurrence,
     exdates: Vec<chrono::DateTime<Utc>>,
@@ -161,6 +168,7 @@ struct EasRecurrence {
     until: Option<String>,
     occurrences: Option<u32>,
     first_day_of_week: Option<u32>,
+    calendar_type: Option<u8>,
 }
 
 impl EasBuilder {
@@ -177,6 +185,7 @@ impl EasBuilder {
             all_day: self.all_day.unwrap_or(false),
             dtstamp: self.dtstamp,
             timezone: self.timezone,
+            timezone_blob: self.timezone_blob,
             rrule: self.recurrence.to_rrule(),
             exdates: self.exdates,
             organizer_name: self.organizer_name,
@@ -209,6 +218,7 @@ impl EasBuilder {
             all_day: self.all_day,
             dtstamp: self.dtstamp,
             timezone: self.timezone,
+            timezone_blob: self.timezone_blob,
             rrule: self.recurrence.to_rrule(),
             exdates: (!self.exdates.is_empty()).then_some(self.exdates),
             organizer_name: self.organizer_name,
@@ -290,13 +300,12 @@ impl EasRecurrence {
         {
             parts.push(format!("BYMONTH={month}"));
         }
-        if let Some(until) = &self.until
+        if let Some(count) = self.occurrences {
+            parts.push(format!("COUNT={count}"));
+        } else if let Some(until) = &self.until
             && let Some(dt) = parse_datetime(until)
         {
             parts.push(format!("UNTIL={}", dt.format("%Y%m%dT%H%M%SZ")));
-        }
-        if let Some(count) = self.occurrences {
-            parts.push(format!("COUNT={count}"));
         }
         if let Some(first_day) = self.first_day_of_week {
             parts.push(format!("WKST={}", weekday_code_from_eas(first_day)));
@@ -410,12 +419,84 @@ fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
     blocks
 }
 
+fn extract_vtimezone_block(ics: &str) -> Option<String> {
+    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
+    let mut lines = Vec::new();
+    let mut in_vtimezone = false;
+    for line in unfolded.lines() {
+        match line.trim() {
+            "BEGIN:VTIMEZONE" => {
+                in_vtimezone = true;
+                lines.push("BEGIN:VTIMEZONE".to_string());
+            }
+            "END:VTIMEZONE" if in_vtimezone => {
+                lines.push("END:VTIMEZONE".to_string());
+                break;
+            }
+            _ if in_vtimezone => lines.push(line.to_string()),
+            _ => {}
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\r\n"))
+}
+
 fn parse_categories_value(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(unescape_ical_text)
         .filter(|v| !v.is_empty())
         .collect()
+}
+
+fn parse_tzid_from_key(key: &str) -> Option<String> {
+    parse_ical_param(key, "TZID").map(|v| v.trim_matches('"').to_string())
+}
+
+fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::DateTime<Utc>> {
+    if let Some(tzid) = tzid {
+        if !val.ends_with('Z') && val.contains('T') {
+            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S") {
+                if let Ok(tz) = tzid.parse::<Tz>() {
+                    if let Some(dt) = tz.from_local_datetime(&local).single() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                    if let Some(dt) = tz.from_local_datetime(&local).earliest() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                }
+            }
+            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S") {
+                if let Ok(tz) = tzid.parse::<Tz>() {
+                    if let Some(dt) = tz.from_local_datetime(&local).single() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                    if let Some(dt) = tz.from_local_datetime(&local).earliest() {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                }
+            }
+        }
+    }
+    parse_datetime(val)
+}
+
+fn format_ical_datetime_with_timezone(
+    dt: &chrono::DateTime<Utc>,
+    all_day: bool,
+    timezone: Option<&str>,
+) -> (Option<String>, String) {
+    if all_day {
+        return (None, dt.format("%Y%m%d").to_string());
+    }
+    if let Some(tzid) = timezone {
+        if let Ok(tz) = tzid.parse::<Tz>() {
+            return (
+                Some(tzid.to_string()),
+                dt.with_timezone(&tz).format("%Y%m%dT%H%M%S").to_string(),
+            );
+        }
+    }
+    (None, dt.format("%Y%m%dT%H%M%SZ").to_string())
 }
 
 fn format_ical_datetime(dt: &chrono::DateTime<Utc>, all_day: bool) -> String {
@@ -494,14 +575,28 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             k if k.starts_with("UID") => fields.uid = Some(value.to_string()),
             k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
             k if k.starts_with("DTSTART") => {
-                fields.start = parse_datetime(value);
+                let tzid = parse_tzid_from_key(k);
+                fields.start = parse_datetime_with_tzid(value, tzid.as_deref());
+                if fields.timezone.is_none() {
+                    fields.timezone = tzid;
+                }
                 if !value.contains('T') {
                     fields.all_day = Some(true);
                 }
             }
-            k if k.starts_with("DTEND") => fields.end = parse_datetime(value),
+            k if k.starts_with("DTEND") => {
+                let tzid = parse_tzid_from_key(k);
+                fields.end = parse_datetime_with_tzid(value, tzid.as_deref());
+                if fields.timezone.is_none() {
+                    fields.timezone = tzid;
+                }
+            }
             k if k.starts_with("RECURRENCE-ID") => {
-                fields.recurrence_id = parse_datetime(value);
+                let tzid = parse_tzid_from_key(k);
+                fields.recurrence_id = parse_datetime_with_tzid(value, tzid.as_deref());
+                if fields.timezone.is_none() {
+                    fields.timezone = tzid;
+                }
                 if !value.contains('T') {
                     fields.all_day = Some(true);
                 }
@@ -509,7 +604,9 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
             k if k.starts_with("EXDATE") => {
                 for ex in value.split(',') {
-                    if let Some(dt) = parse_datetime(ex) {
+                    if let Some(dt) =
+                        parse_datetime_with_tzid(ex, parse_tzid_from_key(k).as_deref())
+                    {
                         fields.exdates.push(dt);
                     }
                 }
@@ -602,6 +699,7 @@ struct CalendarEventFields {
 }
 
 pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
+    let timezone_blob = extract_vtimezone_block(ics);
     let mut master: Option<CalendarItem> = None;
     let mut derived_deleted = Vec::new();
     let mut pending_exceptions = Vec::new();
@@ -643,6 +741,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             all_day: fields.all_day.unwrap_or(false),
             dtstamp: fields.dtstamp,
             timezone: fields.timezone,
+            timezone_blob: timezone_blob.clone(),
             rrule: fields.rrule,
             exdates: fields.exdates.clone(),
             organizer_name: fields.organizer_name,
@@ -708,16 +807,37 @@ pub fn render_ics(item: &CalendarItem) -> String {
         "BEGIN:VCALENDAR".to_string(),
         "VERSION:2.0".to_string(),
         "PRODID:-//exchange_gateway//EN".to_string(),
+    ];
+    if let Some(blob) = &item.timezone_blob {
+        for line in blob.lines() {
+            let trimmed = line.trim_end();
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
+    }
+    let (dtstart_tzid, dtstart_value) =
+        format_ical_datetime_with_timezone(&item.start, item.all_day, item.timezone.as_deref());
+    let (dtend_tzid, dtend_value) =
+        format_ical_datetime_with_timezone(&item.end, item.all_day, item.timezone.as_deref());
+    let dtstart_line = if let Some(tzid) = dtstart_tzid {
+        format!("DTSTART;TZID={}:{}", escape_ical_text(&tzid), dtstart_value)
+    } else {
+        format!("DTSTART:{}", dtstart_value)
+    };
+    let dtend_line = if let Some(tzid) = dtend_tzid {
+        format!("DTEND;TZID={}:{}", escape_ical_text(&tzid), dtend_value)
+    } else {
+        format!("DTEND:{}", dtend_value)
+    };
+    lines.extend([
         "BEGIN:VEVENT".to_string(),
         format!("UID:{uid}"),
         format!("DTSTAMP:{dtstamp}"),
         format!("SUMMARY:{}", escape_ical_text(&item.subject)),
-        format!(
-            "DTSTART:{}",
-            format_ical_datetime(&item.start, item.all_day)
-        ),
-        format!("DTEND:{}", format_ical_datetime(&item.end, item.all_day)),
-    ];
+        dtstart_line,
+        dtend_line,
+    ]);
     if !item.location.is_empty() {
         lines.push(format!("LOCATION:{}", escape_ical_text(&item.location)));
     }
@@ -742,12 +862,28 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let mut exdates: Vec<String> = item
             .exdates
             .iter()
-            .map(|v| format_ical_datetime(v, item.all_day))
+            .map(|v| {
+                format_ical_datetime_with_timezone(v, item.all_day, item.timezone.as_deref()).1
+            })
             .collect();
         exdates.extend(deleted_exdates);
         exdates.sort();
         exdates.dedup();
-        lines.push(format!("EXDATE:{}", exdates.join(",")));
+        if !item.all_day {
+            if let Some(tzid) = &item.timezone
+                && tzid.parse::<Tz>().is_ok()
+            {
+                lines.push(format!(
+                    "EXDATE;TZID={}:{}",
+                    escape_ical_text(tzid),
+                    exdates.join(",")
+                ));
+            } else {
+                lines.push(format!("EXDATE:{}", exdates.join(",")));
+            }
+        } else {
+            lines.push(format!("EXDATE:{}", exdates.join(",")));
+        }
     }
     if let Some(email) = &item.organizer_email {
         let mut line = String::from("ORGANIZER");
@@ -820,8 +956,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
     if let Some(v) = &item.client_uid {
         lines.push(format!("X-MS-CLIENT-UID:{}", escape_ical_text(v)));
     }
-    if let Some(v) = &item.timezone {
-        lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
+    if !item.all_day {
+        if let Some(v) = &item.timezone {
+            lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
+        }
     }
     lines.push("END:VEVENT".to_string());
 
@@ -835,18 +973,48 @@ pub fn render_ics(item: &CalendarItem) -> String {
         lines.push("BEGIN:VEVENT".to_string());
         lines.push(format!("UID:{uid}"));
         lines.push(format!("DTSTAMP:{dtstamp}"));
-        lines.push(format!(
-            "RECURRENCE-ID:{}",
-            format_ical_datetime(&exception.exception_start, effective_all_day)
-        ));
-        lines.push(format!(
-            "DTSTART:{}",
-            format_ical_datetime(&effective_start, effective_all_day)
-        ));
-        lines.push(format!(
-            "DTEND:{}",
-            format_ical_datetime(&effective_end, effective_all_day)
-        ));
+        let (recurrence_tzid, recurrence_value) = format_ical_datetime_with_timezone(
+            &exception.exception_start,
+            effective_all_day,
+            item.timezone.as_deref(),
+        );
+        let (exception_start_tzid, exception_start_value) = format_ical_datetime_with_timezone(
+            &effective_start,
+            effective_all_day,
+            item.timezone.as_deref(),
+        );
+        let (exception_end_tzid, exception_end_value) = format_ical_datetime_with_timezone(
+            &effective_end,
+            effective_all_day,
+            item.timezone.as_deref(),
+        );
+        lines.push(if let Some(tzid) = recurrence_tzid {
+            format!(
+                "RECURRENCE-ID;TZID={}:{}",
+                escape_ical_text(&tzid),
+                recurrence_value
+            )
+        } else {
+            format!("RECURRENCE-ID:{}", recurrence_value)
+        });
+        lines.push(if let Some(tzid) = exception_start_tzid {
+            format!(
+                "DTSTART;TZID={}:{}",
+                escape_ical_text(&tzid),
+                exception_start_value
+            )
+        } else {
+            format!("DTSTART:{}", exception_start_value)
+        });
+        lines.push(if let Some(tzid) = exception_end_tzid {
+            format!(
+                "DTEND;TZID={}:{}",
+                escape_ical_text(&tzid),
+                exception_end_value
+            )
+        } else {
+            format!("DTEND:{}", exception_end_value)
+        });
         lines.push(format!(
             "SUMMARY:{}",
             escape_ical_text(exception.subject.as_deref().unwrap_or(&item.subject))
@@ -886,6 +1054,18 @@ pub fn render_ics(item: &CalendarItem) -> String {
         }
         if let Some(reminder) = exception.reminder {
             lines.extend(render_valarm(reminder));
+        }
+        if let Some(v) = exception.appointment_reply_time {
+            lines.push(format!(
+                "X-MS-APPOINTMENT-REPLY-TIME:{}",
+                v.format("%Y%m%dT%H%M%SZ")
+            ));
+        }
+        if let Some(v) = exception.meeting_status {
+            lines.push(format!("X-MS-MEETING-STATUS:{v}"));
+        }
+        if let Some(v) = exception.response_type {
+            lines.push(format!("X-MS-RESPONSE-TYPE:{v}"));
         }
         lines.push("END:VEVENT".to_string());
     }
@@ -1111,10 +1291,26 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                             current.disallow_new_time_proposal = Some(value == "1")
                         }
                         Some(b"AppointmentReplyTime") => {
-                            current.appointment_reply_time = parse_datetime(&value)
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.appointment_reply_time = parse_datetime(&value);
+                            } else {
+                                current.appointment_reply_time = parse_datetime(&value)
+                            }
                         }
-                        Some(b"MeetingStatus") => current.meeting_status = value.parse().ok(),
-                        Some(b"ResponseType") => current.response_type = value.parse().ok(),
+                        Some(b"MeetingStatus") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.meeting_status = value.parse().ok();
+                            } else {
+                                current.meeting_status = value.parse().ok()
+                            }
+                        }
+                        Some(b"ResponseType") => {
+                            if let Some(exception) = current.current_exception.as_mut() {
+                                exception.response_type = value.parse().ok();
+                            } else {
+                                current.response_type = value.parse().ok()
+                            }
+                        }
                         Some(b"OnlineMeetingConfLink") => {
                             current.online_meeting_conf_link = Some(value)
                         }
@@ -1220,6 +1416,11 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                             if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
                         {
                             current.recurrence.first_day_of_week = value.parse().ok()
+                        }
+                        Some(b"CalendarType")
+                            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
+                        {
+                            current.recurrence.calendar_type = value.parse().ok()
                         }
                         _ => {
                             let _ = kind;
@@ -1475,8 +1676,8 @@ pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
     }
     if let Some(count) = extract_ews_field(xml, b"NumberOfOccurrences") {
         parts.push(format!("COUNT={count}"));
-    }
-    if let Some(until) = extract_ews_field(xml, b"EndDate").and_then(|v| parse_datetime(&v)) {
+    } else if let Some(until) = extract_ews_field(xml, b"EndDate").and_then(|v| parse_datetime(&v))
+    {
         parts.push(format!("UNTIL={}", until.format("%Y%m%dT%H%M%SZ")));
     }
     Some(parts.join(";"))
@@ -1608,6 +1809,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         all_day,
         dtstamp: Some(Utc::now()),
         timezone: extract_ews_field(xml, b"StartTimeZone"),
+        timezone_blob: extract_ews_field(xml, b"MeetingTimeZone"),
         rrule,
         exdates: Vec::new(),
         organizer_name,
@@ -1671,6 +1873,7 @@ mod tests {
                     .with_timezone(&chrono::Utc),
             ),
             timezone: Some("AAA=".to_string()),
+            timezone_blob: Some("BEGIN:VTIMEZONE\r\nTZID:AAA=\r\nEND:VTIMEZONE".to_string()),
             rrule: Some("FREQ=WEEKLY;BYDAY=MO,WE;COUNT=4".to_string()),
             exdates: vec![
                 chrono::DateTime::parse_from_rfc3339("2026-03-28T10:00:00Z")
@@ -1726,6 +1929,13 @@ mod tests {
                             .unwrap()
                             .with_timezone(&chrono::Utc),
                     ),
+                    appointment_reply_time: Some(
+                        chrono::DateTime::parse_from_rfc3339("2026-03-25T08:00:00Z")
+                            .unwrap()
+                            .with_timezone(&chrono::Utc),
+                    ),
+                    meeting_status: Some(3),
+                    response_type: Some(2),
                     ..Default::default()
                 },
             ],
@@ -1742,6 +1952,23 @@ mod tests {
                 .exceptions
                 .iter()
                 .any(|v| v.subject.as_deref() == Some("Shifted subject"))
+        );
+        assert!(parsed.exceptions.iter().any(|v| v.response_type == Some(2)));
+    }
+
+    #[test]
+    fn prefers_count_over_until_when_building_rrule() {
+        let recurrence = EasRecurrence {
+            kind: Some(1),
+            interval: Some(2),
+            day_of_week: Some("10".to_string()),
+            until: Some("2026-04-01T00:00:00Z".to_string()),
+            occurrences: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(
+            recurrence.to_rrule().as_deref(),
+            Some("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=5")
         );
     }
 
@@ -1786,5 +2013,24 @@ mod tests {
         assert_eq!(attendees.len(), 2);
         assert_eq!(attendees[0].attendee_type, Some(1));
         assert_eq!(attendees[1].attendee_type, Some(2));
+    }
+    #[test]
+    fn preserves_ianna_tzid_local_times() {
+        let ics = "BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:test
+DTSTAMP:20260101T000000Z
+DTSTART;TZID=Europe/Stockholm:20260329T090000
+DTEND;TZID=Europe/Stockholm:20260329T100000
+SUMMARY:TZ Test
+END:VEVENT
+END:VCALENDAR
+";
+        let item = parse_ics_event(ics).unwrap();
+        assert_eq!(item.timezone.as_deref(), Some("Europe/Stockholm"));
+        let rendered = render_ics(&item);
+        assert!(rendered.contains("DTSTART;TZID=Europe/Stockholm:20260329T090000"));
+        assert!(rendered.contains("DTEND;TZID=Europe/Stockholm:20260329T100000"));
     }
 }
