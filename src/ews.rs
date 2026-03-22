@@ -19,7 +19,6 @@ use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const EWS_MSG_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
 const EWS_TYPE_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
@@ -339,10 +338,16 @@ fn render_ews_attendees(item: &crate::calendar::CalendarItem) -> String {
     }
     let mut out = String::new();
     if !required.is_empty() {
-        out.push_str(&format!("<t:RequiredAttendees>{}</t:RequiredAttendees>", required));
+        out.push_str(&format!(
+            "<t:RequiredAttendees>{}</t:RequiredAttendees>",
+            required
+        ));
     }
     if !optional.is_empty() {
-        out.push_str(&format!("<t:OptionalAttendees>{}</t:OptionalAttendees>", optional));
+        out.push_str(&format!(
+            "<t:OptionalAttendees>{}</t:OptionalAttendees>",
+            optional
+        ));
     }
     out
 }
@@ -384,11 +389,15 @@ fn render_ews_recurrence_xml(rrule: &str) -> String {
         }
     }
     let pattern = match freq {
-        "DAILY" => format!("<t:DailyRecurrence><t:Interval>{}</t:Interval></t:DailyRecurrence>", interval),
+        "DAILY" => format!(
+            "<t:DailyRecurrence><t:Interval>{}</t:Interval></t:DailyRecurrence>",
+            interval
+        ),
         "WEEKLY" => format!(
             "<t:WeeklyRecurrence><t:Interval>{}</t:Interval><t:DaysOfWeek>{}</t:DaysOfWeek></t:WeeklyRecurrence>",
             interval,
-            byday.unwrap_or_default()
+            byday
+                .unwrap_or_default()
                 .replace("MO", "Monday")
                 .replace("TU", "Tuesday")
                 .replace("WE", "Wednesday")
@@ -425,9 +434,15 @@ fn render_ews_recurrence_xml(rrule: &str) -> String {
         _ => return String::new(),
     };
     let range = if let Some(count) = count {
-        format!("<t:NumberedRecurrence><t:NumberOfOccurrences>{}</t:NumberOfOccurrences></t:NumberedRecurrence>", count)
+        format!(
+            "<t:NumberedRecurrence><t:NumberOfOccurrences>{}</t:NumberOfOccurrences></t:NumberedRecurrence>",
+            count
+        )
     } else if let Some(until) = until {
-        format!("<t:EndDateRecurrence><t:EndDate>{}</t:EndDate></t:EndDateRecurrence>", until)
+        format!(
+            "<t:EndDateRecurrence><t:EndDate>{}</t:EndDate></t:EndDateRecurrence>",
+            until
+        )
     } else {
         "<t:NoEndRecurrence />".to_string()
     };
@@ -450,26 +465,50 @@ fn render_ews_calendar_item_xml(
         if item.all_day { "true" } else { "false" }
     );
     if !item.location.is_empty() {
-        xml.push_str(&format!("<t:Location>{}</t:Location>", xml_escape(&item.location)));
+        xml.push_str(&format!(
+            "<t:Location>{}</t:Location>",
+            xml_escape(&item.location)
+        ));
     }
     if !item.description.is_empty() {
-        xml.push_str(&format!(r#"<t:Body BodyType="Text">{}</t:Body>"#, xml_escape(&item.description)));
-        xml.push_str(&format!("<t:TextBody>{}</t:TextBody>", xml_escape(&item.description)));
+        xml.push_str(&format!(
+            r#"<t:Body BodyType="Text">{}</t:Body>"#,
+            xml_escape(&item.description)
+        ));
+        xml.push_str(&format!(
+            "<t:TextBody>{}</t:TextBody>",
+            xml_escape(&item.description)
+        ));
     }
     if let Some(v) = item.reminder {
-        xml.push_str(&format!("<t:ReminderMinutesBeforeStart>{}</t:ReminderMinutesBeforeStart>", v));
+        xml.push_str(&format!(
+            "<t:ReminderMinutesBeforeStart>{}</t:ReminderMinutesBeforeStart>",
+            v
+        ));
     }
     if let Some(v) = item.busy_status {
-        xml.push_str(&format!("<t:LegacyFreeBusyStatus>{}</t:LegacyFreeBusyStatus>", busy_status_to_ews(v)));
+        xml.push_str(&format!(
+            "<t:LegacyFreeBusyStatus>{}</t:LegacyFreeBusyStatus>",
+            busy_status_to_ews(v)
+        ));
     }
     if let Some(v) = item.sensitivity {
-        xml.push_str(&format!("<t:Sensitivity>{}</t:Sensitivity>", sensitivity_to_ews(v)));
+        xml.push_str(&format!(
+            "<t:Sensitivity>{}</t:Sensitivity>",
+            sensitivity_to_ews(v)
+        ));
     }
     if let Some(v) = item.response_requested {
-        xml.push_str(&format!("<t:ResponseRequested>{}</t:ResponseRequested>", if v { "true" } else { "false" }));
+        xml.push_str(&format!(
+            "<t:ResponseRequested>{}</t:ResponseRequested>",
+            if v { "true" } else { "false" }
+        ));
     }
     if let Some(v) = item.disallow_new_time_proposal {
-        xml.push_str(&format!("<t:DisallowNewTimeProposal>{}</t:DisallowNewTimeProposal>", if v { "true" } else { "false" }));
+        xml.push_str(&format!(
+            "<t:DisallowNewTimeProposal>{}</t:DisallowNewTimeProposal>",
+            if v { "true" } else { "false" }
+        ));
     }
     if let Some(v) = &item.organizer_email {
         xml.push_str(&format!(
@@ -485,19 +524,34 @@ fn render_ews_calendar_item_xml(
         xml.push_str(&format!("<t:ResponseType>{}</t:ResponseType>", v));
     }
     if let Some(v) = item.appointment_reply_time {
-        xml.push_str(&format!("<t:AppointmentReplyTime>{}</t:AppointmentReplyTime>", v.to_rfc3339()));
+        xml.push_str(&format!(
+            "<t:AppointmentReplyTime>{}</t:AppointmentReplyTime>",
+            v.to_rfc3339()
+        ));
     }
     if let Some(v) = &item.timezone {
-        xml.push_str(&format!("<t:StartTimeZone>{}</t:StartTimeZone>", xml_escape(v)));
+        xml.push_str(&format!(
+            "<t:StartTimeZone>{}</t:StartTimeZone>",
+            xml_escape(v)
+        ));
     }
     if let Some(v) = &item.timezone_blob {
-        xml.push_str(&format!("<t:MeetingTimeZone>{}</t:MeetingTimeZone>", xml_escape(v)));
+        xml.push_str(&format!(
+            "<t:MeetingTimeZone>{}</t:MeetingTimeZone>",
+            xml_escape(v)
+        ));
     }
     if let Some(v) = &item.online_meeting_conf_link {
-        xml.push_str(&format!("<t:OnlineMeetingConfLink>{}</t:OnlineMeetingConfLink>", xml_escape(v)));
+        xml.push_str(&format!(
+            "<t:OnlineMeetingConfLink>{}</t:OnlineMeetingConfLink>",
+            xml_escape(v)
+        ));
     }
     if let Some(v) = &item.online_meeting_external_link {
-        xml.push_str(&format!("<t:OnlineMeetingExternalLink>{}</t:OnlineMeetingExternalLink>", xml_escape(v)));
+        xml.push_str(&format!(
+            "<t:OnlineMeetingExternalLink>{}</t:OnlineMeetingExternalLink>",
+            xml_escape(v)
+        ));
     }
     if let Some(v) = &item.client_uid {
         xml.push_str(&format!("<t:ClientUid>{}</t:ClientUid>", xml_escape(v)));
@@ -834,13 +888,18 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         .await
     {
         Ok((ics, _)) => match parse_ics_event(&ics) {
-            Some(calendar_item) => render_ews_calendar_item_xml(&item.server_id, &ck, &calendar_item),
+            Some(calendar_item) => {
+                render_ews_calendar_item_xml(&item.server_id, &ck, &calendar_item)
+            }
             None => render_ews_calendar_item_xml(
                 &item.server_id,
                 &ck,
                 &crate::calendar::CalendarItem {
                     uid: item.uid.clone().unwrap_or_else(|| item.server_id.clone()),
-                    subject: item.uid.clone().unwrap_or_else(|| item.resource_href.clone()),
+                    subject: item
+                        .uid
+                        .clone()
+                        .unwrap_or_else(|| item.resource_href.clone()),
                     description: String::new(),
                     location: String::new(),
                     start: chrono::Utc::now(),
@@ -890,9 +949,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     </m:GetItemResponseMessage>
   </m:ResponseMessages>
 </m:GetItemResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        calendar_item_xml
+        EWS_MSG_NS, EWS_TYPE_NS, calendar_item_xml
     );
     soap_ok(response)
 }
@@ -902,19 +959,12 @@ fn parse_sync_state_marker(marker: Option<String>) -> Result<i64, ()> {
         None => Ok(0),
         Some(m) if m.is_empty() || m == "0" => Ok(0),
         Some(m) => {
-            let Some(ts) = m.strip_prefix("ts:") else {
+            let Some(seq) = m.strip_prefix("seq:") else {
                 return Err(());
             };
-            ts.parse::<i64>().map_err(|_| ())
+            seq.parse::<i64>().map_err(|_| ())
         }
     }
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 async fn handle_sync_folder_items(
@@ -951,13 +1001,13 @@ async fn handle_sync_folder_items(
             return operation_error_response(
                 &EwsAction::SyncFolderItems,
                 "ErrorInvalidSyncStateData",
-                "SyncState is invalid; expected ts:<unix_timestamp>",
+                "SyncState is invalid; expected seq:<journal_id>",
                 StatusCode::OK,
             );
         }
     };
 
-    let changed_ids = match state.storage.list_changes_since(owner, since).await {
+    let changed_ids = match state.storage.list_changes_since_seq(owner, since).await {
         Ok(v) => v,
         Err(e) => {
             return operation_error_response(
@@ -969,8 +1019,21 @@ async fn handle_sync_folder_items(
         }
     };
 
-    let changed: Vec<(String, String)> = changed_ids.into_iter().take(max_changes).collect();
-    let changed_set: HashSet<String> = changed.iter().map(|(id, _)| id.clone()).collect();
+    let changed: Vec<(i64, String, Option<String>)> =
+        changed_ids.into_iter().take(max_changes).collect();
+    let deleted = match state.storage.list_deleted_since_seq(owner, since).await {
+        Ok(v) => v,
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorInternalServerError",
+                &format!("Failed to query deleted changes: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+    let deleted: Vec<(i64, String)> = deleted.into_iter().take(max_changes).collect();
+    let changed_set: HashSet<String> = changed.iter().map(|(_, id, _)| id.clone()).collect();
     let items = match state.storage.list_ews_items(owner, max_changes, 0).await {
         Ok(v) => v,
         Err(e) => {
@@ -989,7 +1052,7 @@ async fn handle_sync_folder_items(
     }
 
     let mut changes_xml = String::new();
-    for (server_id, _) in changed {
+    for (_, server_id, _) in &changed {
         if let Some(item) = current_map.get(&server_id) {
             let change_key = changekey_for_item(item);
             let subject = item
@@ -1021,23 +1084,50 @@ async fn handle_sync_folder_items(
         }
     }
 
+    for (_, server_id) in &deleted {
+        if !changed_set.contains(&server_id) {
+            changes_xml.push_str(&format!(
+                r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                xml_escape(&server_id)
+            ));
+        }
+    }
+
     // For deterministic behavior, also surface deletes for known current snapshot gaps when sync state > 0.
     if since > 0 && changed_set.is_empty() {
         // no-op, keep response shape valid
     }
 
-    let new_sync_state = format!("ts:{}", now_unix());
+    let max_seen_seq = changed
+        .iter()
+        .map(|(seq, _, _)| *seq)
+        .chain(deleted.iter().map(|(seq, _)| *seq))
+        .max()
+        .unwrap_or(since);
+    let latest_seq = state
+        .storage
+        .get_latest_change_seq()
+        .await
+        .unwrap_or(max_seen_seq);
+    let new_sync_state = format!(
+        "seq:{}",
+        if max_seen_seq > since {
+            max_seen_seq
+        } else {
+            latest_seq
+        }
+    );
     let _ = state
         .storage
         .set_ews_sync_state(owner, &folder_id, &new_sync_state)
         .await;
 
-    let includes_last =
-        if changes_xml.is_empty() || changes_xml.matches("<t:Create>").count() < max_changes {
-            "true"
-        } else {
-            "false"
-        };
+    let total_change_count = changed.len() + deleted.len();
+    let includes_last = if total_change_count < max_changes {
+        "true"
+    } else {
+        "false"
+    };
 
     let response = format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}">
@@ -1418,11 +1508,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::INTERNAL_SERVER_ERROR,
         );
     }
-    if let Err(e) = state
-        .storage
-        .add_delete_tombstone(owner, &item_id)
-        .await
-    {
+    if let Err(e) = state.storage.add_delete_tombstone(owner, &item_id).await {
         return operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorInternalServerError",
@@ -1512,9 +1598,9 @@ mod tests {
     #[test]
     fn invalid_sync_state_marker_rejected() {
         assert!(parse_sync_state_marker(Some("offset:10".to_string())).is_err());
-        assert!(parse_sync_state_marker(Some("ts:abc".to_string())).is_err());
+        assert!(parse_sync_state_marker(Some("seq:abc".to_string())).is_err());
         assert_eq!(
-            parse_sync_state_marker(Some("ts:12".to_string())).ok(),
+            parse_sync_state_marker(Some("seq:12".to_string())).ok(),
             Some(12)
         );
     }

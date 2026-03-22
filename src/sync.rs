@@ -44,16 +44,13 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
     URL_SAFE_NO_PAD.encode(result)
 }
 
-fn now_unix() -> i64 {
-    Utc::now().timestamp()
-}
-
-fn sync_token_for_now() -> String {
-    format!("ts:{}", now_unix())
+fn sync_seq_to_token(seq: i64) -> String {
+    format!("seq:{}", seq.max(0))
 }
 
 fn sync_since_from_token(token: Option<&str>) -> i64 {
-    token.and_then(|raw| raw.strip_prefix("ts:"))
+    token
+        .and_then(|raw| raw.strip_prefix("seq:"))
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0)
 }
@@ -108,7 +105,9 @@ pub async fn apply_client_sync_mutations(
                     Ok((resource_href, etag)) => {
                         let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
                         let uid = if item.uid.is_empty() {
-                            client_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string())
+                            client_id
+                                .clone()
+                                .unwrap_or_else(|| Uuid::new_v4().to_string())
                         } else {
                             item.uid
                         };
@@ -297,7 +296,10 @@ pub async fn apply_client_sync_mutations(
                     .await
                 {
                     Ok(()) => {
-                        state.storage.add_delete_tombstone(owner, &server_id).await?;
+                        state
+                            .storage
+                            .add_delete_tombstone(owner, &server_id)
+                            .await?;
                         state
                             .storage
                             .delete_item_by_server_id(owner, &server_id)
@@ -776,7 +778,9 @@ fn render_calendar_app_data(item: &CalendarItem) -> String {
     } else {
         "<Calendar:AllDayEvent>0</Calendar:AllDayEvent>"
     });
-    if !item.all_day && let Some(v) = &item.timezone {
+    if !item.all_day
+        && let Some(v) = &item.timezone
+    {
         xml.push_str(&format!(
             "<Calendar:Timezone>{}</Calendar:Timezone>",
             xml_escape(v)
@@ -974,8 +978,13 @@ pub async fn perform_sync(
     let since = if incoming_sync_key == "0" {
         0
     } else {
-        sync_since_from_token(previous_state.as_ref().and_then(|(_, token)| token.as_deref()))
+        sync_since_from_token(
+            previous_state
+                .as_ref()
+                .and_then(|(_, token)| token.as_deref()),
+        )
     };
+    let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
 
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username, password).await?;
@@ -1119,7 +1128,12 @@ pub async fn perform_sync(
     let deleted_ids = if initial_sync {
         Vec::new()
     } else {
-        storage.list_deleted_since(owner, since).await?
+        storage
+            .list_deleted_since_seq(owner, since)
+            .await?
+            .into_iter()
+            .map(|(_, server_id)| server_id)
+            .collect()
     };
     for deleted_id in deleted_ids {
         if !seen_ids.contains(&deleted_id) {
@@ -1136,7 +1150,7 @@ pub async fn perform_sync(
             owner,
             state_collection_id,
             &new_sync_key,
-            Some(&sync_token_for_now()),
+            Some(&sync_seq_to_token(latest_seq)),
         )
         .await?;
 

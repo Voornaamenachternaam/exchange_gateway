@@ -875,7 +875,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
     }
     if !item.all_day {
         if let Some(v) = &item.timezone {
-        lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
+            lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
         }
     }
     lines.push("END:VEVENT".to_string());

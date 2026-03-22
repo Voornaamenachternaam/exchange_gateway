@@ -27,6 +27,9 @@ export default {
     if (path === '/api/add_delete_tombstone') return handleAddDeleteTombstone(request, env);
     if (path === '/api/list_changes_since') return handleListChangesSince(url, request, env);
     if (path === '/api/list_deleted_since') return handleListDeletedSince(url, request, env);
+    if (path === '/api/get_latest_change_seq') return handleGetLatestChangeSeq(request, env);
+    if (path === '/api/list_changes_since_seq') return handleListChangesSinceSeq(url, request, env);
+    if (path === '/api/list_deleted_since_seq') return handleListDeletedSinceSeq(url, request, env);
     if (path === '/api/set_provision_policy') return handleSetProvisionPolicy(request, env);
     if (path === '/api/get_provision_policy') return handleGetProvisionPolicy(url, request, env);
     if (path === '/api/list_ews_items') return handleListEwsItems(url, request, env);
@@ -264,6 +267,16 @@ async function handleGetSyncKey(url, request, env) {
   return Response.json(row);
 }
 
+async function recordChangeJournal(env, owner, serverId, op) {
+  await env.EXCHANGE_DB
+    .prepare(`
+      INSERT INTO change_journal (owner, server_id, op, created_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    `)
+    .bind(owner, serverId, op)
+    .run();
+}
+
 async function handleUpsertItemMap(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleUpsertItemMap');
@@ -292,6 +305,8 @@ async function handleUpsertItemMap(request, env) {
     .prepare('DELETE FROM deleted_item_tombstone WHERE owner = ? AND server_id = ?')
     .bind(owner, server_id)
     .run();
+
+  await recordChangeJournal(env, owner, server_id, 'upsert');
 
   return Response.json({ success: true });
 }
@@ -329,6 +344,8 @@ async function handleAddDeleteTombstone(request, env) {
     `)
     .bind(owner, serverId)
     .run();
+
+  await recordChangeJournal(env, owner, serverId, 'delete');
 
   return Response.json({ success: true });
 }
@@ -707,4 +724,59 @@ async function handleGetEwsItemById(url, request, env) {
 
   const row = (result.results || [])[0] || null;
   return Response.json(row);
+}
+
+
+async function handleGetLatestChangeSeq(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT COALESCE(MAX(id), 0) AS seq FROM change_journal')
+    .all();
+  const row = (result.results || [])[0] || { seq: 0 };
+  return Response.json(row);
+}
+
+async function handleListChangesSinceSeq(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = Number(url.searchParams.get('since') || '0');
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const safeSince = Number.isFinite(since) ? since : 0;
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT cj.id AS seq, cj.server_id, im.resource_href
+      FROM change_journal cj
+      LEFT JOIN item_map im ON im.owner = cj.owner AND im.server_id = cj.server_id
+      WHERE cj.owner = ?
+        AND cj.id > ?
+        AND cj.op != 'delete'
+      ORDER BY cj.id ASC
+    `)
+    .bind(owner, safeSince)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+async function handleListDeletedSinceSeq(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = Number(url.searchParams.get('since') || '0');
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const safeSince = Number.isFinite(since) ? since : 0;
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT id AS seq, server_id
+      FROM change_journal
+      WHERE owner = ?
+        AND id > ?
+        AND op = 'delete'
+      ORDER BY id ASC
+    `)
+    .bind(owner, safeSince)
+    .all();
+
+  return Response.json(result.results || []);
 }

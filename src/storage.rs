@@ -46,8 +46,9 @@ struct ProvisionRow {
 
 #[derive(Deserialize)]
 struct ChangeRow {
+    seq: Option<i64>,
     server_id: String,
-    resource_href: String,
+    resource_href: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -58,7 +59,13 @@ struct SyncKeyRow {
 
 #[derive(Deserialize)]
 struct TombstoneRow {
+    seq: Option<i64>,
     server_id: String,
+}
+
+#[derive(Deserialize)]
+struct LatestSeqRow {
+    seq: i64,
 }
 
 #[derive(Deserialize)]
@@ -214,7 +221,7 @@ impl Storage {
         let rows: Vec<ChangeRow> = self.get_json(&path).await?;
         Ok(rows
             .into_iter()
-            .map(|r| (r.server_id, r.resource_href))
+            .map(|r| (r.server_id, r.resource_href.unwrap_or_default()))
             .collect())
     }
 
@@ -226,6 +233,45 @@ impl Storage {
         );
         let rows: Vec<TombstoneRow> = self.get_json(&path).await?;
         Ok(rows.into_iter().map(|r| r.server_id).collect())
+    }
+
+    pub async fn get_latest_change_seq(&self) -> Result<i64> {
+        let row: LatestSeqRow = self.get_json("get_latest_change_seq").await?;
+        Ok(row.seq)
+    }
+
+    pub async fn list_changes_since_seq(
+        &self,
+        owner: &str,
+        since_seq: i64,
+    ) -> Result<Vec<(i64, String, Option<String>)>> {
+        let path = format!(
+            "list_changes_since_seq?owner={}&since={}",
+            urlencoding::encode(owner),
+            since_seq
+        );
+        let rows: Vec<ChangeRow> = self.get_json(&path).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.seq.unwrap_or(0), r.server_id, r.resource_href))
+            .collect())
+    }
+
+    pub async fn list_deleted_since_seq(
+        &self,
+        owner: &str,
+        since_seq: i64,
+    ) -> Result<Vec<(i64, String)>> {
+        let path = format!(
+            "list_deleted_since_seq?owner={}&since={}",
+            urlencoding::encode(owner),
+            since_seq
+        );
+        let rows: Vec<TombstoneRow> = self.get_json(&path).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.seq.unwrap_or(0), r.server_id))
+            .collect())
     }
 
     pub async fn set_provision_policy(

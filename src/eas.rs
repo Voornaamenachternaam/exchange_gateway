@@ -417,11 +417,19 @@ async fn handle_ping(
             .ok()
             .flatten()
             .and_then(|(_, token)| token)
-            .and_then(|token| token.strip_prefix("ts:").map(|v| v.to_string()))
+            .and_then(|token| token.strip_prefix("seq:").map(|v| v.to_string()))
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(0);
-        let changed = state.storage.list_changes_since(owner, since).await.unwrap_or_default();
-        let deleted = state.storage.list_deleted_since(owner, since).await.unwrap_or_default();
+        let changed = state
+            .storage
+            .list_changes_since_seq(owner, since)
+            .await
+            .unwrap_or_default();
+        let deleted = state
+            .storage
+            .list_deleted_since_seq(owner, since)
+            .await
+            .unwrap_or_default();
         if !changed.is_empty() || !deleted.is_empty() {
             changed_folders.push("1");
         }
@@ -540,13 +548,14 @@ async fn handle_folder_sync(
     }
 
     let new_sync_key = Uuid::new_v4().simple().to_string();
+    let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
     let _ = state
         .storage
         .set_sync_key(
             owner,
             &collection_id,
             &new_sync_key,
-            Some(&format!("ts:{}", chrono::Utc::now().timestamp())),
+            Some(&format!("seq:{}", latest_seq)),
         )
         .await;
 
@@ -604,12 +613,20 @@ async fn handle_get_item_estimate(
         stored
             .as_ref()
             .and_then(|(_, token)| token.as_deref())
-            .and_then(|token| token.strip_prefix("ts:"))
+            .and_then(|token| token.strip_prefix("seq:"))
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(0)
     };
-    let changed = state.storage.list_changes_since(owner, since).await.unwrap_or_default();
-    let deleted = state.storage.list_deleted_since(owner, since).await.unwrap_or_default();
+    let changed = state
+        .storage
+        .list_changes_since_seq(owner, since)
+        .await
+        .unwrap_or_default();
+    let deleted = state
+        .storage
+        .list_deleted_since_seq(owner, since)
+        .await
+        .unwrap_or_default();
     let estimate = changed.len() + deleted.len();
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -683,8 +700,10 @@ pub async fn handle(
         }
         "Sync" => {
             let collection_id = req.collection_id.as_deref().unwrap_or("1");
-            let state_collection_id =
-                scoped_collection_id(collection_id, req.device_id.as_deref().unwrap_or("unknown-device"));
+            let state_collection_id = scoped_collection_id(
+                collection_id,
+                req.device_id.as_deref().unwrap_or("unknown-device"),
+            );
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
             let mut mutation_responses = String::new();
@@ -722,11 +741,11 @@ pub async fn handle(
 
             match sync::perform_sync(
                 state,
-                    &username,
-                    collection_id,
-                    &state_collection_id,
-                    incoming_key,
-                    class,
+                &username,
+                collection_id,
+                &state_collection_id,
+                incoming_key,
+                class,
                 100,
                 &username,
                 &password,
@@ -742,7 +761,18 @@ pub async fn handle(
                 }
             }
         }
-        "Ping" => handle_ping(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
+        "Ping" => {
+            handle_ping(
+                &state,
+                &username,
+                &req,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
         "Settings" => success_status_response(
             &wbxml,
             wants_wbxml,
