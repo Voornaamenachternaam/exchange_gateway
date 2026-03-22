@@ -954,16 +954,31 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     soap_ok(response)
 }
 
-fn parse_sync_state_marker(marker: Option<String>) -> Result<i64, ()> {
+fn encode_sync_state_cursor(last_seen_seq: i64, upper_bound_seq: i64) -> String {
+    let payload = format!("seq:{}:{}", last_seen_seq.max(0), upper_bound_seq.max(0));
+    STANDARD.encode(payload.as_bytes())
+}
+
+fn decode_sync_state_cursor(marker: &str) -> Result<(i64, i64), ()> {
+    let raw = STANDARD.decode(marker).map_err(|_| ())?;
+    let decoded = String::from_utf8(raw).map_err(|_| ())?;
+    let Some(rest) = decoded.strip_prefix("seq:") else {
+        return Err(());
+    };
+    let mut parts = rest.split(':');
+    let last_seen = parts.next().ok_or(())?.parse::<i64>().map_err(|_| ())?;
+    let upper_bound = parts.next().ok_or(())?.parse::<i64>().map_err(|_| ())?;
+    if parts.next().is_some() {
+        return Err(());
+    }
+    Ok((last_seen.max(0), upper_bound.max(last_seen)))
+}
+
+fn parse_sync_state_marker(marker: Option<String>) -> Result<(i64, i64), ()> {
     match marker {
-        None => Ok(0),
-        Some(m) if m.is_empty() || m == "0" => Ok(0),
-        Some(m) => {
-            let Some(seq) = m.strip_prefix("seq:") else {
-                return Err(());
-            };
-            seq.parse::<i64>().map_err(|_| ())
-        }
+        None => Ok((0, 0)),
+        Some(m) if m.is_empty() || m == "0" => Ok((0, 0)),
+        Some(m) => decode_sync_state_cursor(&m),
     }
 }
 
@@ -995,46 +1010,42 @@ async fn handle_sync_folder_items(
         requested_state
     };
 
-    let since = match parse_sync_state_marker(effective_state) {
+    let (since, requested_upper_bound) = match parse_sync_state_marker(effective_state) {
         Ok(v) => v,
         Err(_) => {
             return operation_error_response(
                 &EwsAction::SyncFolderItems,
                 "ErrorInvalidSyncStateData",
-                "SyncState is invalid; expected seq:<journal_id>",
+                "SyncState is invalid; expected an opaque base64-encoded gateway sync blob",
                 StatusCode::OK,
             );
         }
     };
 
-    let changed_ids = match state.storage.list_changes_since_seq(owner, since).await {
+    let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
+    let upper_bound = if requested_upper_bound > since {
+        requested_upper_bound.min(latest_seq)
+    } else {
+        latest_seq
+    };
+
+    let journal_rows = match state
+        .storage
+        .list_journal_since_seq(owner, since, upper_bound, max_changes)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             return operation_error_response(
                 &EwsAction::SyncFolderItems,
                 "ErrorInternalServerError",
-                &format!("Failed to query changes: {}", e),
+                &format!("Failed to query change journal: {}", e),
                 StatusCode::INTERNAL_SERVER_ERROR,
             );
         }
     };
 
-    let changed: Vec<(i64, String, Option<String>)> =
-        changed_ids.into_iter().take(max_changes).collect();
-    let deleted = match state.storage.list_deleted_since_seq(owner, since).await {
-        Ok(v) => v,
-        Err(e) => {
-            return operation_error_response(
-                &EwsAction::SyncFolderItems,
-                "ErrorInternalServerError",
-                &format!("Failed to query deleted changes: {}", e),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-    let deleted: Vec<(i64, String)> = deleted.into_iter().take(max_changes).collect();
-    let changed_set: HashSet<String> = changed.iter().map(|(_, id, _)| id.clone()).collect();
-    let items = match state.storage.list_ews_items(owner, max_changes, 0).await {
+    let items = match state.storage.list_ews_items(owner, 4096, 0).await {
         Ok(v) => v,
         Err(e) => {
             return operation_error_response(
@@ -1051,9 +1062,24 @@ async fn handle_sync_folder_items(
         current_map.insert(item.server_id.clone(), item);
     }
 
+    let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
-    for (_, server_id, _) in &changed {
-        if let Some(item) = current_map.get(&server_id) {
+    let mut last_returned_seq = since;
+    for row in &journal_rows {
+        last_returned_seq = row.seq;
+        if !emitted_ids.insert(row.server_id.clone()) {
+            continue;
+        }
+
+        if row.op == "delete" {
+            changes_xml.push_str(&format!(
+                r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                xml_escape(&row.server_id)
+            ));
+            continue;
+        }
+
+        if let Some(item) = current_map.get(&row.server_id) {
             let change_key = changekey_for_item(item);
             let subject = item
                 .uid
@@ -1075,59 +1101,31 @@ async fn handle_sync_folder_items(
                 xml_escape(&subject),
                 xml_escape(item.uid.as_deref().unwrap_or(&item.server_id))
             ));
-        } else {
-            // changed ID is no longer present in current map: emit a delete tombstone
-            changes_xml.push_str(&format!(
-                r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
-                xml_escape(&server_id)
-            ));
         }
     }
 
-    for (_, server_id) in &deleted {
-        if !changed_set.contains(&server_id) {
-            changes_xml.push_str(&format!(
-                r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
-                xml_escape(&server_id)
-            ));
-        }
-    }
-
-    // For deterministic behavior, also surface deletes for known current snapshot gaps when sync state > 0.
-    if since > 0 && changed_set.is_empty() {
-        // no-op, keep response shape valid
-    }
-
-    let max_seen_seq = changed
-        .iter()
-        .map(|(seq, _, _)| *seq)
-        .chain(deleted.iter().map(|(seq, _)| *seq))
-        .max()
-        .unwrap_or(since);
-    let latest_seq = state
-        .storage
-        .get_latest_change_seq()
-        .await
-        .unwrap_or(max_seen_seq);
-    let new_sync_state = format!(
-        "seq:{}",
-        if max_seen_seq > since {
-            max_seen_seq
-        } else {
-            latest_seq
-        }
-    );
-    let _ = state
-        .storage
-        .set_ews_sync_state(owner, &folder_id, &new_sync_state)
-        .await;
-
-    let total_change_count = changed.len() + deleted.len();
-    let includes_last = if total_change_count < max_changes {
+    let includes_last = if journal_rows.len() < max_changes && last_returned_seq >= upper_bound {
+        "true"
+    } else if journal_rows.is_empty() {
         "true"
     } else {
         "false"
     };
+    let next_seen_seq = if journal_rows.is_empty() {
+        since.max(upper_bound)
+    } else {
+        last_returned_seq
+    };
+    let next_upper_bound = if includes_last == "true" {
+        next_seen_seq
+    } else {
+        upper_bound
+    };
+    let new_sync_state = encode_sync_state_cursor(next_seen_seq, next_upper_bound);
+    let _ = state
+        .storage
+        .set_ews_sync_state(owner, &folder_id, &new_sync_state)
+        .await;
 
     let response = format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}">
@@ -1598,11 +1596,9 @@ mod tests {
     #[test]
     fn invalid_sync_state_marker_rejected() {
         assert!(parse_sync_state_marker(Some("offset:10".to_string())).is_err());
-        assert!(parse_sync_state_marker(Some("seq:abc".to_string())).is_err());
-        assert_eq!(
-            parse_sync_state_marker(Some("seq:12".to_string())).ok(),
-            Some(12)
-        );
+        assert!(parse_sync_state_marker(Some("not-base64".to_string())).is_err());
+        let encoded = encode_sync_state_cursor(12, 34);
+        assert_eq!(parse_sync_state_marker(Some(encoded)).ok(), Some((12, 34)));
     }
 
     #[test]

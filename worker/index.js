@@ -30,6 +30,7 @@ export default {
     if (path === '/api/get_latest_change_seq') return handleGetLatestChangeSeq(request, env);
     if (path === '/api/list_changes_since_seq') return handleListChangesSinceSeq(url, request, env);
     if (path === '/api/list_deleted_since_seq') return handleListDeletedSinceSeq(url, request, env);
+    if (path === '/api/list_journal_since_seq') return handleListJournalSinceSeq(url, request, env);
     if (path === '/api/set_provision_policy') return handleSetProvisionPolicy(request, env);
     if (path === '/api/get_provision_policy') return handleGetProvisionPolicy(url, request, env);
     if (path === '/api/list_ews_items') return handleListEwsItems(url, request, env);
@@ -776,6 +777,35 @@ async function handleListDeletedSinceSeq(url, request, env) {
       ORDER BY id ASC
     `)
     .bind(owner, safeSince)
+    .all();
+
+  return Response.json(result.results || []);
+}
+
+
+async function handleListJournalSinceSeq(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const since = Number(url.searchParams.get('since') || '0');
+  const until = Number(url.searchParams.get('until') || '0');
+  const limit = Number(url.searchParams.get('limit') || '100');
+  if (!owner) return new Response('Missing owner', { status: 400 });
+
+  const safeSince = Number.isFinite(since) ? since : 0;
+  const safeUntil = Number.isFinite(until) && until > 0 ? until : Number.MAX_SAFE_INTEGER;
+  const safeLimit = Math.max(1, Math.min(512, Number.isFinite(limit) ? limit : 100));
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT cj.id AS seq, cj.server_id, cj.op, im.resource_href
+      FROM change_journal cj
+      LEFT JOIN item_map im ON im.owner = cj.owner AND im.server_id = cj.server_id
+      WHERE cj.owner = ?
+        AND cj.id > ?
+        AND cj.id <= ?
+      ORDER BY cj.id ASC
+      LIMIT ?
+    `)
+    .bind(owner, safeSince, safeUntil, safeLimit)
     .all();
 
   return Response.json(result.results || []);

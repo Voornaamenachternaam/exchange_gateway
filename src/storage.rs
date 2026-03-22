@@ -69,6 +69,14 @@ struct LatestSeqRow {
 }
 
 #[derive(Deserialize)]
+pub struct JournalRow {
+    pub seq: i64,
+    pub server_id: String,
+    pub op: String,
+    pub resource_href: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct EwsItemRow {
     pub server_id: String,
     pub resource_href: String,
@@ -255,6 +263,23 @@ impl Storage {
             .into_iter()
             .map(|r| (r.seq.unwrap_or(0), r.server_id, r.resource_href))
             .collect())
+    }
+
+    pub async fn list_journal_since_seq(
+        &self,
+        owner: &str,
+        since_seq: i64,
+        until_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<JournalRow>> {
+        let path = format!(
+            "list_journal_since_seq?owner={}&since={}&until={}&limit={}",
+            urlencoding::encode(owner),
+            since_seq,
+            until_seq,
+            limit
+        );
+        self.get_json(&path).await
     }
 
     pub async fn list_deleted_since_seq(

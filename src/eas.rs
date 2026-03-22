@@ -406,49 +406,90 @@ async fn handle_ping(
     as_wbxml: bool,
     request_id: &str,
 ) -> Response {
-    let mut changed_folders = Vec::new();
-    let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
-    if xml.contains("<Folder>1</Folder>") || xml.contains("<FolderId>1</FolderId>") {
-        let collection_id = scoped_collection_id("1", device_id);
-        let since = state
-            .storage
-            .get_sync_key(owner, &collection_id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|(_, token)| token)
-            .and_then(|token| token.strip_prefix("seq:").map(|v| v.to_string()))
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0);
-        let changed = state
-            .storage
-            .list_changes_since_seq(owner, since)
-            .await
-            .unwrap_or_default();
-        let deleted = state
-            .storage
-            .list_deleted_since_seq(owner, since)
-            .await
-            .unwrap_or_default();
-        if !changed.is_empty() || !deleted.is_empty() {
-            changed_folders.push("1");
-        }
+    const MIN_HEARTBEAT_SECS: u64 = 60;
+    const MAX_HEARTBEAT_SECS: u64 = 3540;
+    const MAX_PING_FOLDERS: usize = 200;
+
+    let heartbeat =
+        extract_first_tag_text(xml, b"HeartbeatInterval").and_then(|v| v.parse::<u64>().ok());
+    let folder_count =
+        xml.match_indices("<Folder>").count() + xml.match_indices("<FolderId>").count();
+    if heartbeat.is_none() || folder_count == 0 {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>3</Status></Ping>"#;
+        return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
 
-    let xml = if changed_folders.is_empty() {
-        r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#
-            .to_string()
-    } else {
-        format!(
-            r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
-            changed_folders
-                .iter()
-                .map(|id| format!("<Folder>{}</Folder>", id))
-                .collect::<Vec<_>>()
-                .join("")
-        )
-    };
-    xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
+    let heartbeat = heartbeat.unwrap_or(MIN_HEARTBEAT_SECS);
+    if !(MIN_HEARTBEAT_SECS..=MAX_HEARTBEAT_SECS).contains(&heartbeat) {
+        let corrected = heartbeat.clamp(MIN_HEARTBEAT_SECS, MAX_HEARTBEAT_SECS);
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>5</Status><HeartbeatInterval>{}</HeartbeatInterval></Ping>"#,
+            corrected
+        );
+        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+    }
+
+    if folder_count > MAX_PING_FOLDERS {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>6</Status><MaxFolders>{}</MaxFolders></Ping>"#,
+            MAX_PING_FOLDERS
+        );
+        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+    }
+
+    let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
+    let deadline = Instant::now() + Duration::from_secs(heartbeat);
+
+    loop {
+        let mut changed_folders = Vec::new();
+        if xml.contains("<Folder>1</Folder>") || xml.contains("<FolderId>1</FolderId>") {
+            let collection_id = scoped_collection_id("1", device_id);
+            let since = state
+                .storage
+                .get_sync_key(owner, &collection_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|(_, token)| token)
+                .and_then(|token| token.strip_prefix("seq:").map(|v| v.to_string()))
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let changed = state
+                .storage
+                .list_changes_since_seq(owner, since)
+                .await
+                .unwrap_or_default();
+            let deleted = state
+                .storage
+                .list_deleted_since_seq(owner, since)
+                .await
+                .unwrap_or_default();
+            if !changed.is_empty() || !deleted.is_empty() {
+                changed_folders.push("1");
+            }
+        }
+
+        if !changed_folders.is_empty() {
+            let xml = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
+                changed_folders
+                    .iter()
+                    .map(|id| format!("<Folder>{}</Folder>", id))
+                    .collect::<Vec<_>>()
+                    .join("")
+            );
+            return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+        }
+
+        if Instant::now() >= deadline {
+            let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
+            return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let sleep_for = remaining.min(Duration::from_secs(1));
+        tokio::time::sleep(sleep_for).await;
+    }
 }
 
 async fn handle_provision(
