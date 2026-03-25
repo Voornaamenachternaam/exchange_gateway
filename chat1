@@ -1,0 +1,19 @@
+/drop
+/add       .env
+/add       Binder1_utf8.txt
+/add       Cargo.toml
+/add       Dockerfile
+/add       GAP_ANALYSIS.md
+/add       config.toml
+/add       d1_schema.sql
+/add       src/caldav.rs
+/add       src/calendar.rs
+/add       src/config.rs
+/add       src/eas.rs
+/add       src/ews.rs
+/add       src/main.rs
+/add       src/models.rs
+/add       src/storage.rs
+/add       src/sync.rs
+/add       src/wbxml.rs
+/add       worker/index.js
