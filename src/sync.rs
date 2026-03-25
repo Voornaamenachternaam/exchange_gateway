@@ -86,14 +86,12 @@ pub async fn apply_client_sync_mutations(
     if mutations.is_empty() {
         return Ok(Vec::new());
     }
-
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars
         .first()
         .ok_or_else(|| anyhow!("no calendars found"))?
         .clone();
-
     let mut results = Vec::new();
     for mutation in mutations {
         match mutation {
@@ -111,7 +109,6 @@ pub async fn apply_client_sync_mutations(
                     });
                     continue;
                 }
-
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(&collection_href, None, &ics, username, password, None)
@@ -171,24 +168,18 @@ pub async fn apply_client_sync_mutations(
                 }
             }
             EasSyncMutation::Change { server_id, patch } => {
-                let Some(existing) = state
-                    .storage
-                    .get_ews_item_by_server_id(owner, &server_id)
-                    .await?
-                else {
+                let Some(existing) = state.storage.get_ews_item_by_server_id(owner, &server_id).await? else {
                     results.push(ClientMutationResult::Change {
                         server_id,
                         status: "6",
                     });
                     continue;
                 };
-
                 let (existing_ics, existing_etag) = caldav
                     .get_event(&existing.resource_href, username, password)
                     .await?;
                 let mut item = parse_ics_event(&existing_ics)
                     .ok_or_else(|| anyhow!("failed parsing existing calendar item"))?;
-
                 if let Some(v) = patch.uid {
                     item.uid = v;
                 }
@@ -270,10 +261,70 @@ pub async fn apply_client_sync_mutations(
                 if let Some(v) = patch.client_uid {
                     item.client_uid = Some(v);
                 }
-                if let Some(v) = patch.exceptions {
-                    item.exceptions = v;
+                // Harden exception handling: ensure exceptions are correctly merged
+                if let Some(new_exceptions) = patch.exceptions {
+                    // Merge new exceptions with existing ones, overwriting by exception_start
+                    for new_ex in new_exceptions {
+                        if let Some(existing_ex) = item
+                            .exceptions
+                            .iter_mut()
+                            .find(|e| e.exception_start == new_ex.exception_start)
+                        {
+                            // Update existing exception
+                            if new_ex.deleted {
+                                *existing_ex = new_ex.clone();
+                            } else {
+                                // Merge fields
+                                if !new_ex.subject.is_none() {
+                                    existing_ex.subject = new_ex.subject;
+                                }
+                                if !new_ex.description.is_none() {
+                                    existing_ex.description = new_ex.description;
+                                }
+                                if !new_ex.location.is_none() {
+                                    existing_ex.location = new_ex.location;
+                                }
+                                if !new_ex.start.is_none() {
+                                    existing_ex.start = new_ex.start;
+                                }
+                                if !new_ex.end.is_none() {
+                                    existing_ex.end = new_ex.end;
+                                }
+                                if !new_ex.all_day.is_none() {
+                                    existing_ex.all_day = new_ex.all_day;
+                                }
+                                if !new_ex.busy_status.is_none() {
+                                    existing_ex.busy_status = new_ex.busy_status;
+                                }
+                                if !new_ex.sensitivity.is_none() {
+                                    existing_ex.sensitivity = new_ex.sensitivity;
+                                }
+                                if !new_ex.reminder.is_none() {
+                                    existing_ex.reminder = new_ex.reminder;
+                                }
+                                if !new_ex.appointment_reply_time.is_none() {
+                                    existing_ex.appointment_reply_time =
+                                        new_ex.appointment_reply_time;
+                                }
+                                if !new_ex.meeting_status.is_none() {
+                                    existing_ex.meeting_status = new_ex.meeting_status;
+                                }
+                                if !new_ex.response_type.is_none() {
+                                    existing_ex.response_type = new_ex.response_type;
+                                }
+                                if !new_ex.attendees.is_none() {
+                                    existing_ex.attendees = new_ex.attendees;
+                                }
+                                if !new_ex.categories.is_none() {
+                                    existing_ex.categories = new_ex.categories;
+                                }
+                            }
+                        } else {
+                            item.exceptions.push(new_ex);
+                        }
+                    }
+                    item.exceptions.sort_by_key(|v| v.exception_start);
                 }
-
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(
@@ -310,11 +361,7 @@ pub async fn apply_client_sync_mutations(
                 }
             }
             EasSyncMutation::Delete { server_id } => {
-                let Some(existing) = state
-                    .storage
-                    .get_ews_item_by_server_id(owner, &server_id)
-                    .await?
-                else {
+                let Some(existing) = state.storage.get_ews_item_by_server_id(owner, &server_id).await? else {
                     results.push(ClientMutationResult::Delete {
                         server_id,
                         status: "6",
@@ -331,14 +378,8 @@ pub async fn apply_client_sync_mutations(
                     .await
                 {
                     Ok(()) => {
-                        state
-                            .storage
-                            .add_delete_tombstone(owner, &server_id)
-                            .await?;
-                        state
-                            .storage
-                            .delete_item_by_server_id(owner, &server_id)
-                            .await?;
+                        state.storage.add_delete_tombstone(owner, &server_id).await?;
+                        state.storage.delete_item_by_server_id(owner, &server_id).await?;
                         results.push(ClientMutationResult::Delete {
                             server_id,
                             status: "1",
@@ -352,7 +393,6 @@ pub async fn apply_client_sync_mutations(
             }
         }
     }
-
     Ok(results)
 }
 
@@ -405,28 +445,21 @@ pub async fn apply_meeting_response(
     request_id: &str,
     user_response: u8,
 ) -> Result<()> {
-    let Some(existing) = state
-        .storage
-        .get_ews_item_by_server_id(owner, request_id)
-        .await?
-    else {
+    let Some(existing) = state.storage.get_ews_item_by_server_id(owner, request_id).await? else {
         return Err(anyhow!("unknown meeting request id: {request_id}"));
     };
-
     let caldav = CaldavClient::new(&state.cfg);
     let (existing_ics, existing_etag) = caldav
         .get_event(&existing.resource_href, username, password)
         .await?;
-    let mut item =
-        parse_ics_event(&existing_ics).ok_or_else(|| anyhow!("failed parsing existing event"))?;
-
+    let mut item = parse_ics_event(&existing_ics)
+        .ok_or_else(|| anyhow!("failed parsing existing event"))?;
     let (status, partstat) = match user_response {
         1 => (3, "ACCEPTED"),
         2 => (2, "TENTATIVE"),
         3 => (4, "DECLINED"),
         _ => (5, "NEEDS-ACTION"),
     };
-
     if let Some(attendee) = item
         .attendees
         .iter_mut()
@@ -445,7 +478,6 @@ pub async fn apply_meeting_response(
     }
     item.response_type = Some(status);
     item.appointment_reply_time = Some(Utc::now());
-
     let ics = render_ics(&item);
     let (resource_href, etag) = caldav
         .put_event(
@@ -457,7 +489,6 @@ pub async fn apply_meeting_response(
             existing_etag.as_deref().or(existing.etag.as_deref()),
         )
         .await?;
-
     state
         .storage
         .upsert_item_map(
@@ -532,7 +563,6 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
     let mut until: Option<String> = None;
     let mut occurrences: Option<u32> = None;
     let mut first_day_of_week: Option<u32> = None;
-
     for part in parts {
         if let Some(idx) = part.find('=') {
             let k = &part[..idx];
@@ -594,7 +624,6 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
             }
         }
     }
-
     let mut freq_val = freq?;
     if week_of_month != 0 {
         freq_val = match freq_val {
@@ -603,7 +632,6 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
             other => other,
         };
     }
-
     let mut xml = String::from("<Calendar:Recurrence>");
     xml.push_str(&format!("<Calendar:Type>{freq_val}</Calendar:Type>"));
     xml.push_str(&format!(
@@ -672,10 +700,7 @@ fn render_attendee_xml(attendee: &Attendee) -> String {
         ));
     }
     if let Some(name) = attendee.name.as_deref().filter(|v| !v.is_empty()) {
-        xml.push_str(&format!(
-            "<Calendar:Name>{}</Calendar:Name>",
-            xml_escape(name)
-        ));
+        xml.push_str(&format!("<Calendar:Name>{}</Calendar:Name>", xml_escape(name)));
     } else if !attendee.email.is_empty() {
         xml.push_str(&format!(
             "<Calendar:Name>{}</Calendar:Name>",
@@ -724,15 +749,13 @@ fn derived_response_type(item: &CalendarItem) -> Option<u8> {
     if derived_meeting_status(item) == 1 {
         return Some(1);
     }
-    item.attendees
-        .iter()
-        .find_map(|attendee| match attendee.attendee_status {
-            Some(2) => Some(2),
-            Some(3) => Some(3),
-            Some(4) => Some(4),
-            Some(5) => Some(5),
-            _ => None,
-        })
+    item.attendees.iter().find_map(|attendee| match attendee.attendee_status {
+        Some(2) => Some(2),
+        Some(3) => Some(3),
+        Some(4) => Some(4),
+        Some(5) => Some(5),
+        _ => None,
+    })
 }
 
 fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> String {
@@ -778,7 +801,10 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         ));
     }
     if let Some(v) = exception.busy_status {
-        xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v));
+        xml.push_str(&format!(
+            "<Calendar:BusyStatus>{}</Calendar:BusyStatus>",
+            v
+        ));
     }
     if let Some(v) = exception.sensitivity {
         xml.push_str(&format!(
@@ -787,7 +813,10 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         ));
     }
     if let Some(v) = exception.reminder {
-        xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
+        xml.push_str(&format!(
+            "<Calendar:Reminder>{}</Calendar:Reminder>",
+            v
+        ));
     }
     if let Some(v) = exception.appointment_reply_time {
         xml.push_str(&format!(
@@ -806,10 +835,7 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
             derived_meeting_status(item)
         ));
     }
-    if let Some(v) = exception
-        .response_type
-        .or_else(|| derived_response_type(item))
-    {
+    if let Some(v) = exception.response_type.or_else(|| derived_response_type(item)) {
         xml.push_str(&format!(
             "<Calendar:ResponseType>{}</Calendar:ResponseType>",
             v
@@ -851,7 +877,9 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
             "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
             v.len()
         ));
-        xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>");
+        xml.push_str(
+            "<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>",
+        );
         xml.push_str(&xml_escape(v));
         xml.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
     }
@@ -893,7 +921,10 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         ));
     }
     if let Some(v) = item.busy_status {
-        xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v));
+        xml.push_str(&format!(
+            "<Calendar:BusyStatus>{}</Calendar:BusyStatus>",
+            v
+        ));
     }
     if let Some(v) = item.sensitivity {
         xml.push_str(&format!(
@@ -902,7 +933,10 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         ));
     }
     if let Some(v) = item.reminder {
-        xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
+        xml.push_str(&format!(
+            "<Calendar:Reminder>{}</Calendar:Reminder>",
+            v
+        ));
     }
     if !item.location.is_empty() {
         xml.push_str(&format!(
@@ -944,7 +978,9 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
         item.description.len()
     ));
-    xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>");
+    xml.push_str(
+        "<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>",
+    );
     xml.push_str(&xml_escape(&item.description));
     xml.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
     xml.push_str(&format!(
@@ -1025,7 +1061,6 @@ pub async fn perform_sync(
     client_mutation_responses: &str,
 ) -> Result<String> {
     let storage = &state.storage;
-
     if !content_class.eq_ignore_ascii_case("Calendar") {
         let class_name = content_class.trim();
         let normalized = if class_name.is_empty() {
@@ -1037,7 +1072,6 @@ pub async fn perform_sync(
         storage
             .set_sync_key(owner, state_collection_id, &new_sync_key, Some("token"))
             .await?;
-
         let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
         let server_id = generate_server_id(&state.cfg.hmac_secret, &pseudo_resource);
         let app_data = class_placeholder_app_data(normalized, owner);
@@ -1050,17 +1084,16 @@ pub async fn perform_sync(
                 app_data
             )
         };
-
         let xml = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
-<Collections><Collection>
-<Class>{}</Class>
-<SyncKey>{}</SyncKey>
-<CollectionId>{}</CollectionId>
-<Status>1</Status>
-{}<Commands>{}</Commands>
-</Collection></Collections>
+  <Collections><Collection>
+    <Class>{}</Class>
+    <SyncKey>{}</SyncKey>
+    <CollectionId>{}</CollectionId>
+    <Status>1</Status>
+    {}<Commands>{}</Commands>
+  </Collection></Collections>
 </Sync>"#,
             xml_escape(normalized),
             new_sync_key,
@@ -1070,7 +1103,6 @@ pub async fn perform_sync(
         );
         return Ok(xml);
     }
-
     let previous_state = storage.get_sync_key(owner, state_collection_id).await?;
     if incoming_sync_key != "0" {
         match previous_state.as_ref() {
@@ -1078,25 +1110,20 @@ pub async fn perform_sync(
             _ => return Ok(invalid_sync_key_response(collection_id, "Calendar")),
         }
     }
-
     let since = if incoming_sync_key == "0" {
         0
     } else {
         sync_since_from_token(
-            previous_state
-                .as_ref()
-                .and_then(|(_, token)| token.as_deref()),
+            previous_state.as_ref().and_then(|(_, token)| token.as_deref()),
         )
     };
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
-
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars
         .first()
         .ok_or_else(|| anyhow!("no calendars found"))?
         .clone();
-
     let start = (Utc::now() - chrono::Duration::weeks(52))
         .format("%Y%m%dT%H%M%SZ")
         .to_string();
@@ -1106,12 +1133,10 @@ pub async fn perform_sync(
     let events_xml = caldav
         .query_events(&collection_href, &start, &end, username, password)
         .await?;
-
     use quick_xml::Reader;
     use quick_xml::events::Event;
     let mut reader = Reader::from_str(&events_xml);
     reader.config_mut().trim_text(true);
-
     #[derive(Clone)]
     struct EventItem {
         href: String,
@@ -1125,7 +1150,6 @@ pub async fn perform_sync(
         ics: String::new(),
     };
     let mut buf = Vec::new();
-
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
@@ -1161,7 +1185,6 @@ pub async fn perform_sync(
         }
         buf.clear();
     }
-
     let existing_map: HashMap<String, crate::storage::EwsItemRow> = storage
         .list_ews_items(owner, 4096, 0)
         .await?
@@ -1171,7 +1194,6 @@ pub async fn perform_sync(
     let mut commands = String::new();
     let mut seen_ids = HashSet::new();
     let initial_sync = incoming_sync_key == "0";
-
     for ev in events {
         if ev.href.is_empty() {
             continue;
@@ -1183,13 +1205,11 @@ pub async fn perform_sync(
         };
         let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
         seen_ids.insert(server_id.clone());
-
         let existing = existing_map.get(&server_id);
         let is_new = existing.is_none();
         let changed = existing
             .map(|row| row.etag.as_deref() != Some(etag.as_str()))
             .unwrap_or(true);
-
         if changed {
             storage
                 .upsert_item_map(
@@ -1202,11 +1222,9 @@ pub async fn perform_sync(
                 )
                 .await?;
         }
-
         if !initial_sync && !changed {
             continue;
         }
-
         if is_new {
             commands.push_str("<Add><ServerId>");
         } else {
@@ -1221,14 +1239,12 @@ pub async fn perform_sync(
             commands.push_str("</ApplicationData></Change>");
         }
     }
-
     for server_id in existing_map.keys() {
         if !seen_ids.contains(server_id) {
             let _ = storage.add_delete_tombstone(owner, server_id).await;
             let _ = storage.delete_item_by_server_id(owner, server_id).await;
         }
     }
-
     let deleted_ids = if initial_sync {
         Vec::new()
     } else {
@@ -1247,7 +1263,6 @@ pub async fn perform_sync(
             ));
         }
     }
-
     let new_sync_key = Uuid::new_v4().to_string();
     storage
         .set_sync_key(
@@ -1257,17 +1272,16 @@ pub async fn perform_sync(
             Some(&sync_seq_to_token(latest_seq)),
         )
         .await?;
-
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
-<Collections><Collection>
-<Class>Calendar</Class>
-<SyncKey>{}</SyncKey>
-<CollectionId>{}</CollectionId>
-<Status>1</Status>
-{}<Commands>{}</Commands>
-</Collection></Collections>
+  <Collections><Collection>
+    <Class>Calendar</Class>
+    <SyncKey>{}</SyncKey>
+    <CollectionId>{}</CollectionId>
+    <Status>1</Status>
+    {}<Commands>{}</Commands>
+  </Collection></Collections>
 </Sync>"#,
         new_sync_key, collection_id, client_mutation_responses, commands
     );

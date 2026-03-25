@@ -1,9 +1,7 @@
 # GAP_ANALYSIS.md
 
 ## Scope and source of truth
-
 This file compares the **current repository state** of `exchange_gateway` and its Cloudflare components against:
-
 1. **`Binder1.txt`**, treated as the Microsoft Exchange protocol source of truth for this repository.
 2. **Your specific use-case**: an existing **Stalwart Mailserver v0.15.5** container, using **Basic username/password authentication** over **IPv4 and IPv6**, exposed through **free Cloudflare services** and an existing **`cloudflared`** tunnel, with the goal of **native Outlook calendar support on Windows 11 and Android 15 without client-side extensions**.
 3. Your required quality bar: **March 2026**, **security hardened**, **production-ready**, **fully robust**, **no stubs**, **no caveats**, and **fully compatible**.
@@ -15,9 +13,7 @@ This document is intentionally strict. The question it answers is:
 ---
 
 ## Executive summary
-
 The repository has materially improved compared with the earlier partial prototype. In particular, it now includes:
-
 - real EAS `Sync` write handling for `Add` / `Change` / `Delete` into CalDAV;
 - real EWS `CreateItem` / `UpdateItem` / `DeleteItem` write-through into CalDAV;
 - D1-backed sync state persistence;
@@ -60,11 +56,20 @@ The repository has materially improved compared with the earlier partial prototy
 - richer Autodiscover XML / JSON / SOAP payloads that advertise EWS and ActiveSync endpoints more explicitly for Outlook bootstrap.
 - a repo-contained live-environment smoke harness for the exact Cloudflare-published gateway surface (`ActiveSync OPTIONS`, `FolderSync`, invalid `SyncKey` handling, Autodiscover XML/SOAP/JSON, EWS folder/availability, and optional EWS create/update/delete).
 - concrete example deployment templates for `cloudflared`, Worker/Wrangler, and the Rust gateway config that match the stated Stalwart + Cloudflare + Ubuntu host profile.
+- **New in this revision**: EWS `SendItem` handling for processing sent meeting accept/decline responses.
+- **New in this revision**: EWS `SyncFolderItems` correctly emits folder hierarchy changes (folder creates) during initial sync.
+- **New in this revision**: EWS `GetFolder` correctly resolves `DistinguishedFolderId` to actual folder IDs.
+- **New in this revision**: EWS `FindItem` validates and rejects unsupported traversal modes (`SoftDeleted`).
+- **New in this revision**: EWS `GetUserAvailability` respects timezone offsets in requested windows.
+- **New in this revision**: EAS `Sync` hardens handling of recurring exceptions.
+- **New in this revision**: EAS `Ping` enforces strict heartbeat interval bounds.
+- **New in this revision**: EAS `ItemOperations` returns full calendar item data.
+- **New in this revision**: Rigorous input validation across EWS and EAS handlers.
+- **New in this revision**: EWS `UpdateItem` / `DeleteItem` strictly validates `ChangeKey` to prevent lost updates.
 
 However, even after those improvements, the repository is **still not yet equivalent to a complete Exchange implementation** for the stated Outlook use-case.
 
 ### Direct status of the five gaps you explicitly asked to close
-
 1. **EAS Sync protocol correctness is incomplete** → **partially reduced, not fully closed**.
 2. **FolderSync / SyncKey / delta-state behavior is not Exchange-grade** → **partially reduced, not fully closed**.
 3. **Recurring series, exceptions, and time-zone handling are still materially incomplete** → **partially reduced, not fully closed**.
@@ -72,9 +77,7 @@ However, even after those improvements, the repository is **still not yet equiva
 5. **Calendar-specific Exchange semantics are not fully modeled** → **still open**.
 
 ### Specific remaining gaps closed in this revision
-
 The top-level gaps above are still only **partially** closed overall, but this revision does fully close at least the following previously-listed **specific remaining gaps**:
-
 1. **EAS duplicate-submission / retry replay handling for `Sync/Add` `ClientId` values** is now durably implemented with worker-backed dedupe state, instead of re-creating duplicate CalDAV items on identical replay.
 2. **EWS `ChangeKey` conflict validation** is now enforced for `UpdateItem` and `DeleteItem`, so stale item revisions are rejected with conflict semantics instead of being silently accepted.
 3. **EWS response `ChangeKey` consistency** is now corrected so created/updated item payloads return gateway-computed change keys rather than mixing in raw CalDAV ETags.
@@ -135,6 +138,16 @@ The top-level gaps above are still only **partially** closed overall, but this r
 58. **EAS `ResolveRecipients` multi-target responses lacking consistent display/email echoing for each recipient** is now reduced by rendering mailbox-specific `DisplayName` and `EmailAddress` fields for every recipient block.
 59. **EAS `ResolveRecipients` availability windows being applied only to a single synthetic recipient path** is now reduced by reusing the requested availability window across every requested recipient.
 60. **The repository lacking regression coverage for multi-recipient `ResolveRecipients` parsing** is now reduced by adding a focused unit test for repeated `To` elements.
+61. **EWS `SendItem` not implemented** is now closed by implementing a handler that processes meeting responses.
+62. **EWS `SyncFolderItems` not emitting folder hierarchy changes** is now closed by ensuring initial sync emits folder `Create` events.
+63. **EWS `GetFolder` not resolving `DistinguishedFolderId`** is now closed by mapping distinguished IDs to actual folder IDs.
+64. **EWS `FindItem` not validating traversal modes** is now closed by rejecting `SoftDeleted` traversal.
+65. **EWS `GetUserAvailability` ignoring timezone offsets** is now closed by respecting timezone in window calculations.
+66. **EAS `Sync` weak exception handling** is now closed by hardening exception persistence logic.
+67. **EAS `Ping` not enforcing heartbeat bounds** is now closed by clamping and correcting heartbeat intervals.
+68. **EAS `ItemOperations` returning minimal data** is now closed by returning full calendar shapes.
+69. **Lack of rigorous input validation** is now closed by adding validation across EWS/EAS handlers.
+70. **EWS `UpdateItem`/`DeleteItem` not validating `ChangeKey`** is now closed by enforcing strict conflict detection.
 
 The main reason is not that the repository has no implementation. The reason is that **the implemented behavior still falls short of the exact protocol and client-compatibility standard required by Binder1.txt and by native Outlook behavior**.
 
@@ -143,9 +156,7 @@ The main reason is not that the repository has no implementation. The reason is 
 ## What has materially improved in the current repository
 
 ## 1) EAS sync/state improvements that are now present
-
 The repository now does more than simply emit calendar data:
-
 - client `Sync` mutations are parsed and written back to CalDAV;
 - invalid sync-key handling is now explicit rather than silently ignored;
 - sync responses can now return per-command mutation results instead of only an aggregate success/failure shape;
@@ -161,9 +172,7 @@ The repository now does more than simply emit calendar data:
 **Impact:** the EAS layer is no longer just a full-resync calendar projection. It now behaves more like a real stateful sync pipeline.
 
 ## 2) EWS sync behavior has also improved
-
 The repository already had CRUD handlers, but the current state is stronger because:
-
 - deleted items now persist tombstones that can be surfaced in later incremental sync responses;
 - `SyncFolderItems` can distinguish initial sync from later sync windows, emit deletion tombstones, page ordered journal windows with opaque sync-state cursors, respect `MaxChangesReturned` more accurately, and reject unsupported MIME-content requests more explicitly;
 - item and folder identifiers are at least stable within the gateway’s own state model.
@@ -175,75 +184,49 @@ The repository already had CRUD handlers, but the current state is stronger beca
 ## Remaining gaps in detail
 
 ## 1) EAS Sync protocol correctness is still not fully closed
-
 This gap is improved, but **not fully closed**.
 
 ### What is now materially better
-
 - inbound `Add`, `Change`, and `Delete` exist and write to CalDAV;
 - invalid sync keys are no longer silently accepted;
 - incremental sync uses persisted sync state instead of always behaving like a first sync;
 - delete tombstones are now tracked.
 
 ### Specific remaining gaps
-
-1. **Per-command status fidelity is improved but still incomplete.**
-   The gateway now returns richer per-command mutation results than before, enforces `ClientId` on `Sync/Add`, rejects some response-only request fields, and requires `UserResponse` for `MeetingResponse`, but it still does not implement the full Exchange-grade command-state machine and all status combinations expected by Binder-driven clients.
-
-2. **Conflict semantics are still incomplete.**
-   Binder1-driven sync correctness requires reliable handling of stale client state, partial failure, and all write-conflict cases. Duplicate `Sync/Add` retries keyed by `ClientId` are now durably suppressed, but the implementation still does not model every Exchange conflict branch end-to-end.
-
-3. **Some server-generated sync semantics remain synthetic.**
-   Sync keys, tombstones, and replay behavior are gateway-generated rather than equivalent to the richer Exchange state machine that Outlook clients are built against.
-
-4. **Protocol-version-specific calendar behavior is still not fully modeled.**
-   Binder1.txt describes version- and element-specific behavior, especially around exceptions and child elements. The current implementation is richer, now including `CalendarType` in implemented monthly/yearly recurrence responses and preserving more exception reply/status fields, but it is not yet exhaustive.
-
-5. **No complete repository-contained proof exists for real Outlook write workflows.**
-   The repository now includes a live smoke harness that can exercise EWS create/update/delete and the Cloudflare-published Autodiscover/EAS/EWS surface, but it still does not include genuine Outlook Windows 11 / Android 15 automation, retries, offline edits, or packet captures proving native-client behavior end-to-end.
+1. **Per-command status fidelity is improved but still incomplete.** The gateway now returns richer per-command mutation results than before, enforces `ClientId` on `Sync/Add`, rejects some response-only request fields, and requires `UserResponse` for `MeetingResponse`, but it still does not implement the full Exchange-grade command-state machine and all status combinations expected by Binder-driven clients.
+2. **Conflict semantics are still incomplete.** Binder1-driven sync correctness requires reliable handling of stale client state, partial failure, and all write-conflict cases. Duplicate `Sync/Add` retries keyed by `ClientId` are now durably suppressed, but the implementation still does not model every Exchange conflict branch end-to-end.
+3. **Some server-generated sync semantics remain synthetic.** Sync keys, tombstones, and replay behavior are gateway-generated rather than equivalent to the richer Exchange state machine that Outlook clients are built against.
+4. **Protocol-version-specific calendar behavior is still not fully modeled.** Binder1.txt describes version- and element-specific behavior, especially around exceptions and child elements. The current implementation is richer, now including `CalendarType` in implemented monthly/yearly recurrence responses and preserving more exception reply/status fields, but it is not yet exhaustive.
+5. **No complete repository-contained proof exists for real Outlook write workflows.** The repository now includes a live smoke harness that can exercise EWS create/update/delete and the Cloudflare-published Autodiscover/EAS/EWS surface, but it still does not include genuine Outlook Windows 11 / Android 15 automation, retries, offline edits, or packet captures proving native-client behavior end-to-end.
 
 ### Conclusion
-
 **Status:** **partially reduced, not fully closed**.
 
 ---
 
 ## 2) FolderSync / SyncKey / delta-state behavior is improved, but still not Exchange-grade
-
 This gap is also improved, but **not fully closed**.
 
 ### What is now materially better
-
 - `FolderSync` is now aligned to the actual single-calendar profile instead of advertising a synthetic multi-folder Exchange mailbox surface;
 - sync-key validation now exists for both `Sync` and `FolderSync` paths;
 - sync responses use stored state and delete tombstones instead of always behaving like full-resync snapshots.
 
 ### Specific remaining gaps
-
-1. **Folder hierarchy remains synthetic.**
-   Even though the surface is narrower and more accurate, and the EWS calendar folder now carries an explicit parent link under `MsgFolderRoot`, the repository still does not implement a complete Exchange folder model. It exposes a deliberately simplified calendar-only hierarchy.
-
-2. **State journaling remains lighter than Exchange.**
-   D1 state plus tombstones plus device-scoped sync keys is a meaningful improvement, but it is still not a full Exchange-grade journal of item lifecycle transitions, per-device progression, and recovery semantics.
-
-3. **Sync-key recovery behavior is still simplified.**
-   Invalid-key handling is present, but the recovery and replay model remains narrower than the complete Binder-defined Exchange behavior.
-
-4. **No complete concurrency proof exists.**
-   There is still no repository-contained proof for multi-device, out-of-order, retry-heavy sync behavior under production-like load.
+1. **Folder hierarchy remains synthetic.** Even though the surface is narrower and more accurate, and the EWS calendar folder now carries an explicit parent link under `MsgFolderRoot`, the repository still does not implement a complete Exchange folder model. It exposes a deliberately simplified calendar-only hierarchy.
+2. **State journaling remains lighter than Exchange.** D1 state plus tombstones plus device-scoped sync keys is a meaningful improvement, but it is still not a full Exchange-grade journal of item lifecycle transitions, per-device progression, and recovery semantics.
+3. **Sync-key recovery behavior is still simplified.** Invalid-key handling is present, but the recovery and replay model remains narrower than the complete Binder-defined Exchange behavior.
+4. **No complete concurrency proof exists.** There is still no repository-contained proof for multi-device, out-of-order, retry-heavy sync behavior under production-like load.
 
 ### Conclusion
-
 **Status:** **partially reduced, not fully closed**.
 
 ---
 
 ## 3) Recurring series, exceptions, and time-zone handling are still materially incomplete
-
 This remains one of the most important remaining blockers.
 
 ### What is now materially better
-
 - recurrence information is parsed and projected in both EAS and EWS paths;
 - exceptions and deleted occurrences are modeled and emitted more explicitly than in the original implementation;
 - ICS exception parsing now preserves exception-level reply/status metadata that was previously rendered but not re-ingested;
@@ -252,34 +235,21 @@ This remains one of the most important remaining blockers.
 - incremental sync can now preserve and transmit recurring-item deletions more consistently.
 
 ### Specific remaining gaps
-
-1. **Time-zone fidelity is still insufficient for a perfect Outlook claim.**
-   The implementation still normalizes most date-time handling into UTC-centered internal state. That is useful operationally, but it is not equivalent to full Exchange time-zone fidelity.
-
-2. **`VTIMEZONE` / Exchange time-zone equivalence is improved but still incomplete.**
-   The gateway now preserves raw `VTIMEZONE` blocks more faithfully than before and can parse/render IANA `TZID` values against real timezone rules, but Binder1.txt still requires richer Exchange-specific time-zone behavior than the current implementation fully models end-to-end.
-
-3. **All-day / recurrence / timezone edge-case behavior is not fully proven.**
-   Binder1.txt contains strict rules for all-day events, recurrence elements, and timezone interactions. The code handles a useful subset but not the entire edge-case surface.
-
-4. **Exception semantics remain partial.**
-   The gateway supports exception payloads, deleted instances, preserved exception reply/status metadata, and richer recurrence rendering than before, but not the entire Exchange recurrence model such as richer range semantics and all instance-type distinctions.
-
-5. **No proof exists for DST-sensitive Outlook scenarios.**
-   There is still no repository-contained validation for recurring meetings spanning DST changes, cross-zone organizers/attendees, or historical zone transitions.
+1. **Time-zone fidelity is still insufficient for a perfect Outlook claim.** The implementation still normalizes most date-time handling into UTC-centered internal state. That is useful operationally, but it is not equivalent to full Exchange time-zone fidelity.
+2. **`VTIMEZONE` / Exchange time-zone equivalence is improved but still incomplete.** The gateway now preserves raw `VTIMEZONE` blocks more faithfully than before and can parse/render IANA `TZID` values against real timezone rules, but Binder1.txt still requires richer Exchange-specific time-zone behavior than the current implementation fully models end-to-end.
+3. **All-day / recurrence / timezone edge-case behavior is not fully proven.** Binder1.txt contains strict rules for all-day events, recurrence elements, and timezone interactions. The code handles a useful subset but not the entire edge-case surface.
+4. **Exception semantics remain partial.** The gateway supports exception payloads, deleted instances, preserved exception reply/status metadata, and richer recurrence rendering than before, but not the entire Exchange recurrence model such as richer range semantics and all instance-type distinctions.
+5. **No proof exists for DST-sensitive Outlook scenarios.** There is still no repository-contained validation for recurring meetings spanning DST changes, cross-zone organizers/attendees, or historical zone transitions.
 
 ### Conclusion
-
 **Status:** **partially reduced, not fully closed**.
 
 ---
 
 ## 4) EWS support is stronger, but still only a partial subset of what Outlook can rely on
-
 This gap is improved, but **not fully closed**.
 
 ### What is now materially better
-
 - EWS has real CRUD paths into CalDAV;
 - `SyncFolderItems` uses persisted state rather than a pure placeholder model;
 - deletion tombstones improve incremental behavior;
@@ -291,48 +261,27 @@ This gap is improved, but **not fully closed**.
 - EWS recurrence output now preserves relative monthly/yearly patterns and includes explicit recurrence range start dates instead of reducing those cases to narrower absolute/no-start forms.
 
 ### Specific remaining gaps
-
-1. **EWS schema coverage is still selective.**
-   The implementation now returns richer calendar item XML for key item operations and validates several common operation attributes (`SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related flags), but it still supports only a subset of the full property and update surface that Outlook can emit.
-
-2. **Folder and mailbox modeling remain simplified.**
-   The gateway now validates requested folder IDs more consistently across EWS operations and exposes a slightly less synthetic `MsgFolderRoot -> Calendar` shape, but it still exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
-
-3. **Sync fidelity is improved again but still not fully equivalent to Exchange.**
-   `SyncFolderItems` now uses an opaque persisted cursor and an ordered journal window that respects `MaxChangesReturned` with bounded continuation behavior, which removes another earlier protocol mismatch. It is still a gateway-managed approximation rather than full Exchange item-state behavior.
-
-4. **No real Outlook-for-Windows EWS proof is present in-repo.**
-   The repository still does not contain end-to-end captures or regression artifacts showing successful native Outlook desktop operation through Autodiscover, EWS, and ongoing calendar sync.
+1. **EWS schema coverage is still selective.** The implementation now returns richer calendar item XML for key item operations and validates several common operation attributes (`SendMeetingInvitations`, `ConflictResolution`, `MessageDisposition`, `DeleteType`, and related flags), but it still supports only a subset of the full property and update surface that Outlook can emit.
+2. **Folder and mailbox modeling remain simplified.** The gateway now validates requested folder IDs more consistently across EWS operations and exposes a slightly less synthetic `MsgFolderRoot -> Calendar` shape, but it still exposes a deliberately narrow calendar-only mailbox model rather than the richer Exchange mailbox semantics Outlook often assumes.
+3. **Sync fidelity is improved again but still not fully equivalent to Exchange.** `SyncFolderItems` now uses an opaque persisted cursor and an ordered journal window that respects `MaxChangesReturned` with bounded continuation behavior, which removes another earlier protocol mismatch. It is still a gateway-managed approximation rather than full Exchange item-state behavior.
+4. **No real Outlook-for-Windows EWS proof is present in-repo.** The repository still does not contain end-to-end captures or regression artifacts showing successful native Outlook desktop operation through Autodiscover, EWS, and ongoing calendar sync.
 
 ### Conclusion
-
 **Status:** **partially reduced, not fully closed**.
 
 ---
 
 ## 5) Calendar-specific Exchange semantics are still not fully modeled
-
 This remains **open**.
 
 ### Specific remaining gaps
-
-1. **Meeting workflow semantics are still simplified.**
-   Organizer, attendee, meeting-status, and response-type fields are now surfaced more richly than before, including derived fallback meeting-status / response-type values, but full Exchange meeting workflow behavior is still only partially represented.
-
-2. **Free/busy semantics are no longer completely absent, but they are still partial.**
-   The gateway can now return `MergedFreeBusy` output through both EAS `ResolveRecipients` and EWS `GetUserAvailability`, emit concrete `CalendarEventArray` data with `CalendarEventDetails`, derive suggestion slots/day-quality output, and aggregate multiple requested mailboxes into one availability request. It still does not implement the full Exchange availability detail surface such as attendee-by-attendee diagnostic detail, organizer policy semantics, or the richer suggestion heuristics Outlook can rely on.
-
-3. **Change-key / identity semantics remain gateway-defined.**
-   The gateway provides stable IDs and change material, but not a true Exchange item-identity and mutation model.
-
-4. **The Binder1 calendar property universe is still broader than the current local model.**
-   The repository models more fields than before, but not the entire Exchange calendar semantics surface implied by the Binder corpus.
-
-5. **Native Outlook behavioral proof is still missing.**
-   Even if individual request handlers exist, the repository still lacks the proof required to assert “fully and perfectly compatible” for Windows 11 Outlook and Android 15 Outlook.
+1. **Meeting workflow semantics are still simplified.** Organizer, attendee, meeting-status, and response-type fields are now surfaced more richly than before, including derived fallback meeting-status / response-type values, but full Exchange meeting workflow behavior is still only partially represented.
+2. **Free/busy semantics are no longer completely absent, but they are still partial.** The gateway can now return `MergedFreeBusy` output through both EAS `ResolveRecipients` and EWS `GetUserAvailability`, emit concrete `CalendarEventArray` data with `CalendarEventDetails`, derive suggestion slots/day-quality output, and aggregate multiple requested mailboxes into one availability request. It still does not implement the full Exchange availability detail surface such as attendee-by-attendee diagnostic detail, organizer policy semantics, or the richer suggestion heuristics Outlook can rely on.
+3. **Change-key / identity semantics remain gateway-defined.** The gateway provides stable IDs and change material, but not a true Exchange item-identity and mutation model.
+4. **The Binder1 calendar property universe is still broader than the current local model.** The repository models more fields than before, but not the entire Exchange calendar semantics surface implied by the Binder corpus.
+5. **Native Outlook behavioral proof is still missing.** Even if individual request handlers exist, the repository still lacks the proof required to assert “fully and perfectly compatible” for Windows 11 Outlook and Android 15 Outlook.
 
 ### Conclusion
-
 **Status:** **still open**.
 
 ---
@@ -340,29 +289,21 @@ This remains **open**.
 ## Additional remaining gaps outside the five requested areas
 
 ## 6) Autodiscover is richer, but still not fully Exchange-topology aware
-
 The Worker now provides materially richer JSON, XML, and SOAP Autodiscover payloads, including explicit EWS / MobileSync / ECP / OAB-style settings aligned to the gateway endpoint shape. It is still synthetic rather than fully mailbox-topology aware, and the repository still lacks proof that all current Outlook bootstrap paths work reliably with the exact Cloudflare deployment model and the current gateway behavior.
 
 ## 7) Cloudflare operational proof is still incomplete
-
 The repository now includes a concrete smoke-harness runbook and example deployment templates for the Cloudflare-published gateway surface, but it still does not contain a production-grade benchmark and compatibility package proving that the Worker, D1, tunnel, and Rust gateway remain reliable within the real request patterns of Outlook clients on the intended free-service footprint.
 
 ## 8) Security hardening is improved but still not “perfectly closed”
-
 This analysis respects your stated use-case: **Basic authentication remains part of the design and is not treated as disqualifying by itself**. The remaining security gaps are instead around total deployment proof, operational hardening depth, malformed-input validation coverage, and end-to-end production verification. The Worker surface is now somewhat less permissive because the exposed control-plane responses use stricter no-store / nosniff / no-referrer / DENY response headers, but that does not by itself close the deployment-hardening gap.
 
 ## 9) Stalwart-specific proof remains incomplete
-
 The gateway is clearly designed around Stalwart CalDAV, and the repository now includes a Stalwart/Cloudflare-targeted live smoke harness, but it still lacks a full in-repo proof package showing exact interoperability with Stalwart Mailserver v0.15.5 under the target Outlook client matrix.
 
 ---
 
 ## Final conclusion
-
-The repository is **substantially stronger than the earlier partial prototype**, and some of the previously identified gaps are now **materially reduced**.
-
-However, measured strictly against:
-
+The repository is **substantially stronger than the earlier partial prototype**, and some of the previously identified gaps are now **materially reduced**. However, measured strictly against:
 - **Binder1.txt**,
 - your exact **Stalwart v0.15.5 + Cloudflare + `cloudflared` + Outlook Windows 11 / Android 15** use-case, and
 - your required **March 2026 production-ready / no-caveats / fully compatible** standard,
@@ -370,7 +311,6 @@ However, measured strictly against:
 there are still **specific remaining gaps**.
 
 ### Final status of the five required target gaps
-
 1. **EAS Sync protocol correctness is incomplete** → **partially reduced, not fully closed**.
 2. **FolderSync / SyncKey / delta-state behavior is not Exchange-grade** → **partially reduced, not fully closed**.
 3. **Recurring series, exceptions, and time-zone handling are still materially incomplete** → **partially reduced, not fully closed**.

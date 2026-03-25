@@ -58,6 +58,9 @@ struct SearchRequest {
 const MAX_REQUESTS_PER_WINDOW: usize = 60;
 const WINDOW: Duration = Duration::from_secs(60);
 const RETRY_AFTER_SECONDS: u64 = 30;
+const MIN_HEARTBEAT_SECS: u64 = 60;
+const MAX_HEARTBEAT_SECS: u64 = 3540;
+const MAX_PING_FOLDERS: usize = 200;
 
 #[derive(Clone, Debug)]
 struct EasRequest {
@@ -221,7 +224,6 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     let mut current_id: Option<String> = None;
     let mut current_class: Option<String> = None;
     let mut folders = Vec::new();
-
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Folder" => {
@@ -250,7 +252,6 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
         }
         buf.clear();
     }
-
     folders
 }
 
@@ -261,7 +262,6 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
     let mut fetches = Vec::new();
     let mut current: Option<ItemOperationsFetch> = None;
     let mut current_tag: Option<Vec<u8>> = None;
-
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Fetch" => {
@@ -295,12 +295,12 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
         }
         buf.clear();
     }
-
     fetches
 }
 
 fn parse_search_request(xml: &str) -> SearchRequest {
-    let range = extract_first_tag_text(xml, b"Range").unwrap_or_else(|| "0-9".to_string());
+    let range =
+        extract_first_tag_text(xml, b"Range").unwrap_or_else(|| "0-9".to_string());
     let (range_start, range_end) = range
         .split_once('-')
         .and_then(|(start, end)| Some((start.trim().parse().ok()?, end.trim().parse().ok()?)))
@@ -364,7 +364,6 @@ fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String
 
 fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let cmd = command.to_ascii_lowercase();
-
     if xml.is_empty() {
         return if matches!(cmd.as_str(), "sendmail" | "smartreply" | "smartforward") {
             Ok(())
@@ -372,21 +371,19 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
             Err("Empty request body")
         };
     }
-
     if let Some(grammar) = command_grammar(cmd.as_str()) {
         if !xml.contains(grammar.namespace) {
             return Err("Request missing expected command namespace");
         }
-
         for tag in grammar.required_tags {
             if !xml.contains(&format!("<{}", tag)) {
                 return Err("Request missing required command element");
             }
         }
     }
-
     if cmd == "sync" {
-        let class = extract_first_tag_text(xml, b"Class").unwrap_or_else(|| "Calendar".to_string());
+        let class =
+            extract_first_tag_text(xml, b"Class").unwrap_or_else(|| "Calendar".to_string());
         let supported = [
             "Calendar",
             "Contacts",
@@ -410,11 +407,9 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
             return Err("ResponseType is response-only in Sync requests");
         }
     }
-
     if cmd == "meetingresponse" && !xml.contains("<UserResponse>") {
         return Err("MeetingResponse requires UserResponse");
     }
-
     Ok(())
 }
 
@@ -491,7 +486,12 @@ fn bad_request_response(request_id: &str, msg: &str) -> Response {
     r
 }
 
-fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str, request_id: &str) -> Response {
+fn xml_or_wbxml_response(
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    xml: &str,
+    request_id: &str,
+) -> Response {
     let mut r = if as_wbxml {
         match wbxml.encode(xml) {
             Ok(b) => (
@@ -508,7 +508,7 @@ fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str, request_id: &
                 [(header::CONTENT_TYPE.as_str(), "text/plain; charset=utf-8")],
                 format!("WBXML Encode Err: {}", e),
             )
-                .into_response(),
+            .into_response(),
         }
     } else {
         (
@@ -610,17 +610,12 @@ async fn handle_ping(
     as_wbxml: bool,
     request_id: &str,
 ) -> Response {
-    const MIN_HEARTBEAT_SECS: u64 = 60;
-    const MAX_HEARTBEAT_SECS: u64 = 3540;
-    const MAX_PING_FOLDERS: usize = 200;
-
     let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
     let cache_key = format!("{}:{}", owner, device_id);
     let cached = PING_CACHE
         .lock()
         .ok()
         .and_then(|cache| cache.get(&cache_key).cloned());
-
     let heartbeat = extract_first_tag_text(xml, b"HeartbeatInterval")
         .and_then(|v| v.parse::<u64>().ok())
         .or_else(|| cached.as_ref().map(|entry| entry.heartbeat));
@@ -632,13 +627,13 @@ async fn handle_ping(
             parsed
         }
     };
-
     if heartbeat.is_none() || folders.is_empty() {
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>3</Status></Ping>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
-
     let heartbeat = heartbeat.unwrap_or(MIN_HEARTBEAT_SECS);
+
+    // Enforce strict heartbeat bounds per MS-ASPING
     if !(MIN_HEARTBEAT_SECS..=MAX_HEARTBEAT_SECS).contains(&heartbeat) {
         let corrected = heartbeat.clamp(MIN_HEARTBEAT_SECS, MAX_HEARTBEAT_SECS);
         let xml = format!(
@@ -655,7 +650,6 @@ async fn handle_ping(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
     }
-
     if folders
         .iter()
         .any(|folder| !folder.id.eq("1") || !folder.class_name.eq_ignore_ascii_case("Calendar"))
@@ -663,7 +657,6 @@ async fn handle_ping(
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>7</Status></Ping>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
-
     if let Ok(mut cache) = PING_CACHE.lock() {
         cache.insert(
             cache_key,
@@ -673,9 +666,7 @@ async fn handle_ping(
             },
         );
     }
-
     let deadline = Instant::now() + Duration::from_secs(heartbeat);
-
     loop {
         let mut changed_folders = Vec::new();
         for folder in &folders {
@@ -707,7 +698,6 @@ async fn handle_ping(
                 changed_folders.push(folder.id.as_str());
             }
         }
-
         if !changed_folders.is_empty() {
             let xml = format!(
                 r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
@@ -719,12 +709,10 @@ async fn handle_ping(
             );
             return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
         }
-
         if Instant::now() >= deadline {
             let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
             return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
         }
-
         let remaining = deadline.saturating_duration_since(Instant::now());
         let sleep_for = remaining.min(Duration::from_secs(1));
         tokio::time::sleep(sleep_for).await;
@@ -743,7 +731,6 @@ async fn merged_freebusy_for_mailbox(
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
         / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
-
     let caldav = CaldavClient::new(&state.cfg);
     if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
         && let Some(collection_href) = calendars.first()
@@ -779,7 +766,8 @@ async fn merged_freebusy_for_mailbox(
                         for (index, slot) in merged.iter_mut().enumerate() {
                             let slot_start =
                                 start + chrono::Duration::minutes((index as i64) * safe_interval);
-                            let slot_end = slot_start + chrono::Duration::minutes(safe_interval);
+                            let slot_end =
+                                slot_start + chrono::Duration::minutes(safe_interval);
                             if item.start < slot_end
                                 && item.end > slot_start
                                 && status_digit > *slot
@@ -800,7 +788,6 @@ async fn merged_freebusy_for_mailbox(
     } else {
         merged.fill('4');
     }
-
     merged.into_iter().collect()
 }
 
@@ -856,12 +843,11 @@ async fn handle_resolve_recipients(
         };
         recipient_xml.push_str(&format!(
             "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
-            xml_escape(recipient),
-            xml_escape(recipient),
+            sync::xml_escape(recipient),
+            sync::xml_escape(recipient),
             availability_xml
         ));
     }
-
     let primary = recipients
         .first()
         .cloned()
@@ -869,7 +855,7 @@ async fn handle_resolve_recipients(
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
-        xml_escape(&primary),
+        sync::xml_escape(&primary),
         recipients.len(),
         recipient_xml
     );
@@ -898,7 +884,6 @@ async fn load_calendar_events(
             password,
         )
         .await?;
-
     let mut reader = Reader::from_str(&events_xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -921,9 +906,7 @@ async fn load_calendar_events(
                 _ => {}
             },
             Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
-                if !href.is_empty()
-                    && let Some(item) = parse_ics_event(&ics)
-                {
+                if !href.is_empty() && let Some(item) = parse_ics_event(&ics) {
                     let server_id = sync::generate_server_id(&state.cfg.hmac_secret, &href);
                     out.push((server_id, href.clone(), item));
                 }
@@ -992,7 +975,6 @@ async fn handle_item_operations(
     if fetches.is_empty() {
         return bad_request_response(request_id, "ItemOperations requires at least one Fetch");
     }
-
     let caldav = CaldavClient::new(&state.cfg);
     let mut responses = String::new();
     for fetch in fetches {
@@ -1009,7 +991,6 @@ async fn handle_item_operations(
             ));
             continue;
         };
-
         let lookup = match state
             .storage
             .get_ews_item_by_server_id(username, &server_id)
@@ -1026,7 +1007,6 @@ async fn handle_item_operations(
                 continue;
             }
         };
-
         let Ok((ics, _etag)) = caldav
             .get_event(&lookup.resource_href, username, password)
             .await
@@ -1048,6 +1028,7 @@ async fn handle_item_operations(
             ));
             continue;
         };
+        // Return full calendar item data, not just metadata
         responses.push_str(&format!(
             "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
             sync::xml_escape(&store),
@@ -1056,7 +1037,6 @@ async fn handle_item_operations(
             sync::render_calendar_app_data(&item)
         ));
     }
-
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status><Response>{}</Response></ItemOperations>"#,
         responses
@@ -1078,7 +1058,6 @@ async fn handle_search(
         let response = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>11</Status></Store></Response></Search>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, response, request_id);
     }
-
     let start = req
         .starts
         .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52));
@@ -1089,13 +1068,11 @@ async fn handle_search(
         let response = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>6</Status></Store></Response></Search>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, response, request_id);
     };
-
     let mut matches = events
         .into_iter()
         .filter(|(_, _, item)| matches_search(item, req.query_text.as_deref()))
         .collect::<Vec<_>>();
     matches.sort_by_key(|(_, _, item)| item.start);
-
     let total = matches.len();
     let start_idx = req.range_start.min(total);
     let end_idx = req.range_end.min(total.saturating_sub(1));
@@ -1104,7 +1081,6 @@ async fn handle_search(
     } else {
         &matches[start_idx..=end_idx]
     };
-
     let results_xml = window
         .iter()
         .map(|(server_id, _, item)| {
@@ -1157,7 +1133,6 @@ async fn handle_provision(
         .clone()
         .unwrap_or_else(|| "unknown-device".to_string());
     let incoming_key = req.policy_key.clone().unwrap_or_else(|| "0".to_string());
-
     if incoming_key == "0" {
         let server_policy_key = Uuid::new_v4().simple().to_string();
         if let Err(e) = state
@@ -1178,13 +1153,11 @@ async fn handle_provision(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id);
     }
-
     let valid = match state.storage.get_provision_policy(owner, &device_id).await {
         Ok(Some((stored, _))) => stored == incoming_key,
         Ok(None) => false,
         Err(_) => false,
     };
-
     if valid {
         let _ = state
             .storage
@@ -1197,7 +1170,6 @@ async fn handle_provision(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id);
     }
-
     success_status_response(
         wbxml,
         as_wbxml,
@@ -1228,7 +1200,6 @@ async fn handle_folder_sync(
         .await
         .ok()
         .flatten();
-
     if incoming != "0" {
         match stored.as_ref() {
             Some((expected, _)) if expected == incoming => {}
@@ -1239,7 +1210,6 @@ async fn handle_folder_sync(
             }
         }
     }
-
     let new_sync_key = Uuid::new_v4().simple().to_string();
     let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
     let _ = state
@@ -1251,7 +1221,6 @@ async fn handle_folder_sync(
             Some(&format!("seq:{}", latest_seq)),
         )
         .await;
-
     let changes = if incoming == "0" {
         r#"<Changes><Count>1</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes>"#
     } else {
@@ -1285,7 +1254,6 @@ async fn handle_get_item_estimate(
         .await
         .ok()
         .flatten();
-
     if incoming != "0" {
         match stored.as_ref() {
             Some((expected, _)) if expected == incoming => {}
@@ -1299,7 +1267,6 @@ async fn handle_get_item_estimate(
             }
         }
     }
-
     let since = if incoming == "0" {
         0
     } else {
@@ -1337,19 +1304,15 @@ pub async fn handle(
     body: Bytes,
 ) -> Response {
     let request_id = make_request_id();
-
     if !forwarded_https_enforced(&headers) {
         return bad_request_response(&request_id, "x-forwarded-proto must be https");
     }
-
     if method == Method::OPTIONS {
         return options_response(&request_id);
     }
-
     let Some((username, password)) = parse_basic_auth(&headers) else {
         return unauth_response(&request_id);
     };
-
     let wbxml = Wbxml::new();
     let payload = body.to_vec();
     let wants_wbxml = headers
@@ -1357,7 +1320,6 @@ pub async fn handle(
         .and_then(|v| v.to_str().ok())
         .map(|ct| ct.to_ascii_lowercase().contains("wbxml"))
         .unwrap_or(payload.first().is_some_and(|b| *b != b'<'));
-
     let xml = if payload.is_empty() {
         String::new()
     } else {
@@ -1366,16 +1328,13 @@ pub async fn handle(
             Err(e) => return bad_request_response(&request_id, &format!("Invalid body: {}", e)),
         }
     };
-
     let req = parse_request(&query, &xml);
     if req.command.is_empty() {
         return bad_request_response(&request_id, "Cannot determine EAS command");
     }
-
     if let Err(e) = validate_payload(&req.command, &xml) {
         return bad_request_response(&request_id, e);
     }
-
     let device_id = req
         .device_id
         .clone()
@@ -1383,7 +1342,6 @@ pub async fn handle(
     if maybe_throttle(&username, &device_id) {
         return throttled_response(&request_id);
     }
-
     match req.command.as_str() {
         "FolderSync" => {
             handle_folder_sync(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
@@ -1400,7 +1358,6 @@ pub async fn handle(
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
             let mut mutation_responses = String::new();
-
             if xml.contains("<Add")
                 || xml.contains("<Change")
                 || xml.contains("<Delete")
@@ -1428,11 +1385,15 @@ pub async fn handle(
                             e
                         );
                         let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                        return xml_or_wbxml_response(
+                            &wbxml,
+                            wants_wbxml,
+                            err_xml,
+                            &request_id,
+                        );
                     }
                 }
             }
-
             match sync::perform_sync(
                 state,
                 &username,
@@ -1447,7 +1408,9 @@ pub async fn handle(
             )
             .await
             {
-                Ok(resp_xml) => xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id),
+                Ok(resp_xml) => {
+                    xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id)
+                }
                 Err(e) => {
                     tracing::error!("request_id={} Sync Error: {}", request_id, e);
                     let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
@@ -1756,7 +1719,6 @@ mod tests {
                 r#"<Ping xmlns="Ping:"><HeartbeatInterval>60</HeartbeatInterval><Folders/></Ping>"#,
             ),
         ];
-
         for (cmd, xml) in cases {
             assert!(
                 validate_payload(cmd, xml).is_ok(),
@@ -1786,7 +1748,6 @@ mod tests {
                 r#"<MoveItems xmlns="ItemOperations:"><Move/></MoveItems>"#,
             ),
         ];
-
         for (cmd, xml) in cases {
             assert!(
                 validate_payload(cmd, xml).is_err(),
@@ -1795,6 +1756,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn extracts_multiple_resolve_recipient_targets() {
         let xml = r#"<ResolveRecipients xmlns="ResolveRecipients:"><To>one@example.com</To><To>two@example.com</To></ResolveRecipients>"#;
@@ -1812,6 +1774,7 @@ mod tests {
         assert_eq!(folders[0].id, "1");
         assert_eq!(folders[0].class_name, "Calendar");
     }
+
     #[test]
     fn resolve_recipients_command_detected() {
         let xml = r#"<ResolveRecipients xmlns="ResolveRecipients:"><To>a@example.com</To><Options><Availability><StartTime>2026-03-21T00:00:00Z</StartTime><EndTime>2026-03-22T00:00:00Z</EndTime></Availability></Options></ResolveRecipients>"#;
