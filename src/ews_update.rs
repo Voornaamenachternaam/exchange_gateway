@@ -381,12 +381,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                     item.rrule = parse_ews_recurrence(payload);
                 }
             },
-            "calendar:recurrence" => match verb {
-                ChangeVerb::Delete => item.rrule = None,
-                _ => {
-                    item.rrule = parse_ews_recurrence(payload);
-                }
-            },
+            "calendar:recurrence" => item.rrule = parse_ews_recurrence(payload),
             "calendar:requiredattendees"
             | "calendar:requiredattendees"
             | "calendar:optionalattendees" => {
