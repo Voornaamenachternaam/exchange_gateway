@@ -548,18 +548,18 @@ impl SettingsHandler {
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
-        let mut is_get = false;
-        let mut is_set = false;
+        let mut in_user_information = false;
+        let mut in_oof = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     match e.name().local_name().as_ref() {
-                        b"Get" => is_get = true,
-                        b"Set" => is_set = true,
-                        b"UserInformation" if is_get => return Ok(SettingsRequest::GetUserInformation),
-                        b"Oof" if is_get => return Ok(SettingsRequest::GetOofSettings),
-                        b"Oof" if is_set => {
+                        b"UserInformation" => in_user_information = true,
+                        b"Oof" => in_oof = true,
+                        b"Get" if in_user_information => return Ok(SettingsRequest::GetUserInformation),
+                        b"Get" if in_oof => return Ok(SettingsRequest::GetOofSettings),
+                        b"Set" if in_oof => {
                             return Ok(SettingsRequest::SetOofSettings(OofSettings {
                                 state: OofState::Disabled,
                                 external_audience: ExternalAudience::None,
@@ -573,10 +573,17 @@ impl SettingsHandler {
                         _ => {}
                     }
                 }
+                Ok(Event::End(e)) => match e.name().local_name().as_ref() {
+                    b"UserInformation" => in_user_information = false,
+                    b"Oof" => in_oof = false,
+                    _ => {}
+                },
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(format!("XML parse error: {}", e)),
                 _ => (),
             }
+            buf.clear();
+        }
             buf.clear();
         }
         Err("Unknown Settings request type".to_string())
