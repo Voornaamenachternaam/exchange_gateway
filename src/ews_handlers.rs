@@ -454,7 +454,8 @@ fn extract_attachment_from_ical(
     for line in ical.lines() {
         if line.starts_with("ATTACH") {
             // Check if this is the attachment we're looking for
-            if line.contains(&format!("FILENAME={}", attach_name))
+            // Check if this is the attachment we're looking for
+            if line.contains(&format!(
                 || line.contains(&format!("FMTTYPE="))
             {
                 in_attach = true;
