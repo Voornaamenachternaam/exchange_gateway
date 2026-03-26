@@ -210,7 +210,7 @@ impl CalDavClientExt {
                     }
                 }
                 Ok(quick_xml::events::Event::End(e)) => match e.name().local_name().as_ref() {
-                    b"collection" => in_collection = false,
+                    b"collection" => {}
                     b"response" => {
                         if in_collection {
                             if let Some(href) = current_href.take() {
@@ -220,6 +220,7 @@ impl CalDavClientExt {
                             }
                         }
                         current_href = None;
+                        in_collection = false;
                     }
                     _ => {}
                 },
