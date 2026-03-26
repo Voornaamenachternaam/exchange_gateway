@@ -172,8 +172,6 @@ pub fn render_folder_xml(
 ) -> String {
     let fid = folder_id_for(owner, folder);
     let parent = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
-    let fid = folder_id_for(owner, folder);
-    let parent = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
     let prefix_len = fid.find('-').map(|i| i + 1).unwrap_or(4);
     let change_key = &fid[prefix_len..]; // strip "CAL-" / "FLD-" / "ROOT-" prefix
     let element = folder.element_name();
