@@ -1666,7 +1666,7 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
     </m:FindFolderResponseMessage>
   </m:ResponseMessages>
 </m:FindFolderResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, total_count_for_cal, children_xml
+        EWS_MSG_NS, EWS_TYPE_NS, total_count_for_cal, cal_xml_content
     );
     soap_ok(response)
 }
