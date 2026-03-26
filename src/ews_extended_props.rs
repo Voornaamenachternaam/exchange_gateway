@@ -317,116 +317,52 @@ impl ExtendedProperty {
 
     /// Generate EWS XML for extended field URI
     pub fn to_field_uri_xml(&self) -> String {
+        use quick_xml::Writer;
+        let mut writer = Writer::new(Vec::new());
+        let mut elem = writer.create_element("t:ExtendedFieldURI");
+
         match &self.property_id {
             ExtendedPropertyId::PropertyTag { tag } => {
-                format!("<t:ExtendedFieldURI PropertyTag=\"{}\" PropertyType=\"{}\"/>",
-                    tag, self.value_type_string())
+                elem.with_attributes([("PropertyTag", tag.to_string().as_str()), ("PropertyType", &self.value_type_string())])
+                    .write_empty().unwrap();
             }
             ExtendedPropertyId::DistinguishedPropertySet { set_id, id, property_type } => {
-                format!("<t:ExtendedFieldURI DistinguishedPropertySetId=\"{}\" PropertyId=\"{}\" PropertyType=\"{}\"/>",
-                    set_id.as_guid(), id, property_type.as_u16())
+                elem.with_attributes([("DistinguishedPropertySetId", set_id.as_guid()), ("PropertyId", &id.to_string()), ("PropertyType", &property_type.as_u16().to_string())])
+                    .write_empty().unwrap();
             }
             ExtendedPropertyId::PropertySetGuid { guid, id, property_type } => {
-                format!("<t:ExtendedFieldURI PropertySetId=\"{}\" PropertyId=\"{}\" PropertyType=\"{}\"/>",
-                    guid, id, property_type.as_u16())
+                elem.with_attributes([("PropertySetId", guid), ("PropertyId", &id.to_string()), ("PropertyType", &property_type.as_u16().to_string())])
+                    .write_empty().unwrap();
             }
             ExtendedPropertyId::PropertySetGuidName { guid, name, property_type } => {
-                format!("<t:ExtendedFieldURI PropertySetId=\"{}\" PropertyName=\"{}\" PropertyType=\"{}\"/>",
-                    guid, xml_escape(name), property_type.as_u16())
+                elem.with_attributes([("PropertySetId", guid), ("PropertyName", name), ("PropertyType", &property_type.as_u16().to_string())])
+                    .write_empty().unwrap();
             }
         }
+        String::from_utf8(writer.into_inner()).unwrap()
     }
 
-    /// Generate EWS XML for the value
     pub fn to_value_xml(&self) -> String {
+        use quick_xml::Writer;
+        let mut writer = Writer::new(Vec::new());
+        let mut elem = writer.create_element("t:Value");
+
         match &self.value {
             ExtendedPropertyValue::Binary(data) => {
-                format!("<t:Value>{}</t:Value>", base64_encode(data))
-            }
-            ExtendedPropertyValue::BinaryArray(arr) => {
-                let values: Vec<String> = arr.iter()
-                    .map(|v| format!("<t:Value>{}</t:Value>", base64_encode(v)))
-                    .collect();
-                format!("<t:Values>{}</t:Values>", values.join(""))
+                elem.write_text_content(quick_xml::events::BytesText::new(&base64_encode(data))).unwrap();
             }
             ExtendedPropertyValue::Boolean(b) => {
-                format!("<t:Value>{}</t:Value>", if *b { "true" } else { "false" })
-            }
-            ExtendedPropertyValue::Clsid(s) => {
-                format!("<t:Value>{}</t:Value>", xml_escape(s))
-            }
-            ExtendedPropertyValue::Currency(c) => {
-                format!("<t:Value>{}</t:Value>", c)
-            }
-            ExtendedPropertyValue::Double(d) => {
-                format!("<t:Value>{}</t:Value>", d)
-            }
-            ExtendedPropertyValue::Float(f) => {
-                format!("<t:Value>{}</t:Value>", f)
-            }
-            ExtendedPropertyValue::Integer(i) => {
-                format!("<t:Value>{}</t:Value>", i)
-            }
-            ExtendedPropertyValue::Long(l) => {
-                format!("<t:Value>{}</t:Value>", l)
-            }
-            ExtendedPropertyValue::Short(s) => {
-                format!("<t:Value>{}</t:Value>", s)
+                elem.write_text_content(quick_xml::events::BytesText::new(if *b { "true" } else { "false" })).unwrap();
             }
             ExtendedPropertyValue::String(s) => {
-                format!("<t:Value>{}</t:Value>", xml_escape(s))
+                elem.write_text_content(quick_xml::events::BytesText::new(s)).unwrap();
             }
-            ExtendedPropertyValue::StringArray(arr) => {
-                let values: Vec<String> = arr.iter()
-                    .map(|v| format!("<t:Value>{}</t:Value>", xml_escape(v)))
-                    .collect();
-                format!("<t:Values>{}</t:Values>", values.join(""))
-            }
-            ExtendedPropertyValue::SystemTime(t) => {
-                format!("<t:Value>{}</t:Value>", xml_escape(t))
-            }
-            ExtendedPropertyValue::SystemTimeArray(arr) => {
-                let values: Vec<String> = arr.iter()
-                    .map(|v| format!("<t:Value>{}</t:Value>", xml_escape(v)))
-                    .collect();
-                format!("<t:Values>{}</t:Values>", values.join(""))
-            }
-            ExtendedPropertyValue::Error(e) => {
-                format!("<t:Value>{}</t:Value>", e)
+            _ => {
+                elem.write_text_content(quick_xml::events::BytesText::new(&format!("{:?}", self.value))).unwrap();
             }
         }
+        String::from_utf8(writer.into_inner()).unwrap()
     }
-
-    /// Generate complete EWS XML for extended property
-    pub fn to_ews_xml(&self) -> String {
-        format!(
-            "<t:ExtendedProperty>{}<t:Value>{}</t:Value></t:ExtendedProperty>",
-            self.to_field_uri_xml(),
-            self.to_value_xml()
-        )
-    }
-
-    /// Get value type string for property tag
-    fn value_type_string(&self) -> String {
-        match &self.value {
-            ExtendedPropertyValue::Binary(_) => "Binary".to_string(),
-            ExtendedPropertyValue::BinaryArray(_) => "BinaryArray".to_string(),
-            ExtendedPropertyValue::Boolean(_) => "Boolean".to_string(),
-            ExtendedPropertyValue::Clsid(_) => "Clsid".to_string(),
-            ExtendedPropertyValue::Currency(_) => "Currency".to_string(),
-            ExtendedPropertyValue::Double(_) => "Double".to_string(),
-            ExtendedPropertyValue::Float(_) => "Float".to_string(),
-            ExtendedPropertyValue::Integer(_) => "Integer".to_string(),
-            ExtendedPropertyValue::Long(_) => "Long".to_string(),
-            ExtendedPropertyValue::Short(_) => "Short".to_string(),
-            ExtendedPropertyValue::String(_) => "String".to_string(),
-            ExtendedPropertyValue::StringArray(_) => "StringArray".to_string(),
-            ExtendedPropertyValue::SystemTime(_) => "SystemTime".to_string(),
-            ExtendedPropertyValue::SystemTimeArray(_) => "SystemTimeArray".to_string(),
-            ExtendedPropertyValue::Error(_) => "Error".to_string(),
-        }
-    }
-}
 
 /// Extended property collection
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
