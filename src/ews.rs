@@ -2822,10 +2822,5 @@ mod tests {
     }
 }
 
-//examples/cloudflared-exchange-origin.yml 
-ingress:
-  - hostname: exchange-origin.example.com
-    service: http://exchange_gateway:8134
-  - service: http_status:404
-
-// examples/exchange-gateway.config.toml
+2825:    }
+2826:}
