@@ -351,14 +351,10 @@ fn serde_json_string(s: &str) -> String {
 // Axum handler integration types (used from main.rs routing if desired)
 // ---------------------------------------------------------------------------
 
-/// Query parameters for Autodiscover v2 JSON.
-#[derive(serde::Deserialize)]
-pub struct AutodiscoverJsonParams {
-    #[serde(rename = "Email")]
+    #[serde(rename = "Email", alias = "email")]
     pub email: Option<String>,
-    #[serde(rename = "Protocol")]
+    #[serde(rename = "Protocol", alias = "protocol")]
     pub protocol: Option<String>,
-}
 
 #[cfg(test)]
 mod tests {
