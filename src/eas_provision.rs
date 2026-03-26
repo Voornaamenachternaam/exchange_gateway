@@ -255,8 +255,6 @@ impl ComplianceStatus {
 /// Policy engine for managing device policies
 pub struct PolicyEngine {
     default_policy: PolicyData,
-pub struct PolicyEngine {
-    default_policy: PolicyData,
     device_states: HashMap<(String, String), DevicePolicyState>,
 }
 
@@ -264,6 +262,8 @@ impl PolicyEngine {
     pub fn process_provision_request(&mut self, request: &ProvisionRequest, user_id: &str) -> ProvisionResponse {
         let key = (user_id.to_string(), request.device_id.clone());
         // ... updated logic to use `key` for lookups and insertions ...
+        todo!()
+    }
 }
 
 impl PolicyEngine {
