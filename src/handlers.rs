@@ -416,6 +416,38 @@ fn parse_client_changes(body: &str, capabilities: &ProtocolCapabilities) -> Vec<
                 }
             }
             Ok(quick_xml::events::Event::Text(t)) => {
+                if let (Some(ref elem), Some(ref mut event)) = (&current_element, &mut current_event) {
+                    if let Ok(text) = t.decode() {
+                        let text = text.into_owned();
+                        match elem.as_str() {
+                            "ServerId" if in_delete => {
+                                changes.push(ClientChange::Delete(text));
+                            }
+                            "ServerId" => event.server_id = text,
+                            "Subject" => event.subject = Some(text),
+                            "DtStamp" => event.dt_stamp = Some(text),
+                            "StartTime" => event.start_time = Some(text),
+                            "EndTime" => event.end_time = Some(text),
+                            "UID" => event.uid = Some(text),
+                            "OrganizerName" => event.organizer_name = Some(text),
+                            "OrganizerEmail" => event.organizer_email = Some(text),
+                            "Location" => event.location = Some(text),
+                            "Body" => event.body = Some(text),
+                            "Sensitivity" => event.sensitivity = text.parse().ok(),
+                            "BusyStatus" => event.busy_status = text.parse().ok(),
+                            "AllDayEvent" => event.all_day_event = text == "1",
+                            "Reminder" => event.reminder = text.parse().ok(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+                        in_delete = true;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::Text(t)) => {
                 if let (Some(ref elem), Some(ref mut event)) =
                     (&current_element, &mut current_event)
                 {
