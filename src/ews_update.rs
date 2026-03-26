@@ -63,7 +63,7 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let local = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
                 match &state {
                     State::Root => {
