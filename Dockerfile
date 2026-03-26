@@ -29,5 +29,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf -o /dev/null -w '%{http_code}' \
         -H 'Content-Type: text/xml' \
         --data '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body/></s:Envelope>' \
-        http://localhost:8134/EWS/Exchange.asmx | grep -qv "^000$" || exit 1
+        http://localhost:8134/EWS/Exchange.asmx | grep -qE "^(200|401|500)$" || exit 1
 CMD ["/usr/local/bin/exchange_gateway"]
