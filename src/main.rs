@@ -127,7 +127,19 @@ impl Default for AppConfig {
 /// Sync state storage
 #[derive(Clone)]
 pub struct SyncStateStore {
-    states: Arc<RwLock<HashMap<String, SyncState>>>,
+pub struct SyncStateStore {
+    pub db: Arc<crate::storage::Storage>,
+}
+
+impl SyncStateStore {
+    pub async fn get(&self, owner: &str, collection_id: &str) -> anyhow::Result<Option<SyncState>> {
+        self.db.get_sync_state(owner, collection_id).await
+    }
+
+    pub async fn set(&self, owner: &str, collection_id: &str, state: SyncState) -> anyhow::Result<()> {
+        self.db.set_sync_state(owner, collection_id, state).await
+    }
+}
 }
 
 impl SyncStateStore {
