@@ -549,114 +549,88 @@ impl PolicyEngine {
 
     /// Get policy as XML for EAS response
     pub fn policy_to_xml(&self, policy: &PolicyData) -> String {
-        let mut xml = String::new();
-        xml.push_str("<Provision>");
-        xml.push_str("<Policies>");
-        xml.push_str("<Policy>");
-        xml.push_str(&format!("<PolicyType>{}</PolicyType>", policy.policy_type.as_str()));
-        xml.push_str(&format!("<PolicyKey>{}</PolicyKey>", policy.policy_id));
-        xml.push_str("<Status>1</Status>");
-        xml.push_str("<Data>");
-        
-        // EASProvisionDoc
-        xml.push_str("<EASProvisionDoc>");
-        
-        // Device password requirements
-        if let Some(max_attempts) = policy.settings.max_device_password_failed_attempts {
-            xml.push_str(&format!("<DevicePasswordEnabled>1</DevicePasswordEnabled>"));
-            xml.push_str(&format!("<MaxDevicePasswordFailedAttempts>{}</MaxDevicePasswordFailedAttempts>", max_attempts));
-        }
-        
-        if let Some(max_inactivity) = policy.settings.max_inactivity_time_device_lock {
-            xml.push_str(&format!("<MaxInactivityTimeDeviceLock>{}</MaxInactivityTimeDeviceLock>", max_inactivity));
-        }
-        
-        if let Some(min_length) = policy.settings.min_device_password_length {
-            xml.push_str(&format!("<MinDevicePasswordLength>{}</MinDevicePasswordLength>", min_length));
-        }
-        
-        if let Some(complexity) = policy.settings.password_complexity {
-            xml.push_str(&format!("<PasswordComplexity>{}</PasswordComplexity>", complexity));
-        }
-        
-        if policy.settings.require_alphanumeric_password {
-            xml.push_str("<RequireAlphanumericDevicePassword>1</RequireAlphanumericDevicePassword>");
-        }
-        
-        if policy.settings.require_device_encryption {
-            xml.push_str("<RequireDeviceEncryption>1</RequireDeviceEncryption>");
-        }
-        
-        if policy.settings.require_storage_card_encryption {
-            xml.push_str("<RequireStorageCardEncryption>1</RequireStorageCardEncryption>");
-        }
-        
-        // Application restrictions
-        if !policy.requirements.allow_camera {
-            xml.push_str("<AllowCamera>0</AllowCamera>");
-        }
-        
-        if !policy.requirements.allow_wifi {
-            xml.push_str("<AllowWifi>0</AllowWifi>");
-        }
-        
-        if !policy.requirements.allow_text_messaging {
-            xml.push_str("<AllowTextMessaging>0</AllowTextMessaging>");
-        }
-        
-        if !policy.requirements.allow_pop_imap_email {
-            xml.push_str("<AllowPOPIMAPEmail>0</AllowPOPIMAPEmail>");
-        }
-        
-        if !policy.requirements.allow_browser {
-            xml.push_str("<AllowBrowser>0</AllowBrowser>");
-        }
-        
-        if !policy.requirements.allow_consumer_email {
-            xml.push_str("<AllowConsumerEmail>0</AllowConsumerEmail>");
-        }
-        
-        if !policy.requirements.allow_internet_sharing {
-            xml.push_str("<AllowInternetSharing>0</AllowInternetSharing>");
-        }
-        
-        // Bluetooth policy
-        if let Some(bt_policy) = policy.requirements.allow_bluetooth {
-            xml.push_str(&format!("<AllowBluetooth>{}</AllowBluetooth>", bt_policy));
-        }
-        
-        // Attachment settings
-        if let Some(max_size) = policy.settings.max_attachment_size {
-            xml.push_str(&format!("<MaxAttachmentSize>{}</MaxAttachmentSize>", max_size));
-        }
-        
-        // S/MIME settings
-        if policy.requirements.require_signed_smime_messages {
-            xml.push_str("<RequireSignedSMIMEMessages>1</RequireSignedSMIMEMessages>");
-        }
-        
-        if policy.requirements.require_encrypted_smime_messages {
-            xml.push_str("<RequireEncryptedSMIMEMessages>1</RequireEncryptedSMIMEMessages>");
-        }
-        
-        xml.push_str("</EASProvisionDoc>");
-        xml.push_str("</Data>");
-        xml.push_str("</Policy>");
-        xml.push_str("</Policies>");
-        xml.push_str("</Provision>");
-        
-        xml
-    }
+        use quick_xml::events::{BytesStart, BytesText, Event};
+        use quick_xml::Writer;
+        use std::io::Cursor;
 
-    /// Get remote wipe XML
-    pub fn remote_wipe_to_xml(&self, status: RemoteWipeStatus) -> String {
-        let mut xml = String::new();
-        xml.push_str("<Provision>");
-        xml.push_str("<RemoteWipe>");
-        xml.push_str(&format!("<Status>{}</Status>", status.as_u8()));
-        xml.push_str("</RemoteWipe>");
-        xml.push_str("</Provision>");
-        xml
+        let mut buffer = Cursor::new(Vec::new());
+        let mut writer = Writer::new_with_indent(&mut buffer, b' ', 4);
+
+        let _ = writer.create_element("Provision").write_inner_content(|writer| {
+            writer.create_element("Policies").write_inner_content(|writer| {
+                writer.create_element("Policy").write_inner_content(|writer| {
+                    writer.create_element("PolicyType").write_text_content(BytesText::new(policy.policy_type.as_str())).unwrap();
+                    writer.create_element("PolicyKey").write_text_content(BytesText::new(&policy.policy_id)).unwrap();
+                    writer.create_element("Status").write_text_content(BytesText::new("1")).unwrap();
+                    writer.create_element("Data").write_inner_content(|writer| {
+                        writer.create_element("EASProvisionDoc").write_inner_content(|writer| {
+                            if let Some(max_attempts) = policy.settings.max_device_password_failed_attempts {
+                                writer.create_element("DevicePasswordEnabled").write_text_content(BytesText::new("1")).unwrap();
+                                writer.create_element("MaxDevicePasswordFailedAttempts").write_text_content(BytesText::new(&max_attempts.to_string())).unwrap();
+                            }
+                            if let Some(max_inactivity) = policy.settings.max_inactivity_time_device_lock {
+                                writer.create_element("MaxInactivityTimeDeviceLock").write_text_content(BytesText::new(&max_inactivity.to_string())).unwrap();
+                            }
+                            if let Some(min_length) = policy.settings.min_device_password_length {
+                                writer.create_element("MinDevicePasswordLength").write_text_content(BytesText::new(&min_length.to_string())).unwrap();
+                            }
+                            if let Some(complexity) = policy.settings.password_complexity {
+                                writer.create_element("PasswordComplexity").write_text_content(BytesText::new(&complexity.to_string())).unwrap();
+                            }
+                            if policy.settings.require_alphanumeric_password {
+                                writer.create_element("RequireAlphanumericDevicePassword").write_text_content(BytesText::new("1")).unwrap();
+                            }
+                            if policy.settings.require_device_encryption {
+                                writer.create_element("RequireDeviceEncryption").write_text_content(BytesText::new("1")).unwrap();
+                            }
+                            if policy.settings.require_storage_card_encryption {
+                                writer.create_element("RequireStorageCardEncryption").write_text_content(BytesText::new("1")).unwrap();
+                            }
+                            if !policy.requirements.allow_camera {
+                                writer.create_element("AllowCamera").write_text_content(BytesText::new("0")).unwrap();
+                            }
+                            if !policy.requirements.allow_wifi {
+                                writer.create_element("AllowWifi").write_text_content(BytesText::new("0")).unwrap();
+                            }
+                            if !policy.requirements.allow_text_messaging {
+                                writer.create_element("AllowTextMessaging").write_text_content(BytesText::new("0")).unwrap();
+                            }
+                            if !policy.requirements.allow_pop_imap_email {
+                                writer.create_element("AllowPOPIMAPEmail").write_text_content(BytesText::new("0")).unwrap();
+                            }
+                            if !policy.requirements.allow_browser {
+                                writer.create_element("AllowBrowser").write_text_content(BytesText::new("0")).unwrap();
+                            }
+                            if !policy.requirements.allow_consumer_email {
+                                writer.create_element("AllowConsumerEmail").write_text_content(BytesText::new("0")).unwrap();
+                            }
+                            if !policy.requirements.allow_internet_sharing {
+                                writer.create_element("AllowInternetSharing").write_text_content(BytesText::new("0")).unwrap();
+                            }
+                            if let Some(bt_policy) = policy.requirements.allow_bluetooth {
+                                writer.create_element("AllowBluetooth").write_text_content(BytesText::new(&bt_policy.to_string())).unwrap();
+                            }
+                            if let Some(max_size) = policy.settings.max_attachment_size {
+                                writer.create_element("MaxAttachmentSize").write_text_content(BytesText::new(&max_size.to_string())).unwrap();
+                            }
+                            if policy.requirements.require_signed_smime_messages {
+                                writer.create_element("RequireSignedSMIMEMessages").write_text_content(BytesText::new("1")).unwrap();
+                            }
+                            if policy.requirements.require_encrypted_smime_messages {
+                                writer.create_element("RequireEncryptedSMIMEMessages").write_text_content(BytesText::new("1")).unwrap();
+                            }
+                            Ok(())
+                        }).unwrap();
+                        Ok(())
+                    }).unwrap();
+                    Ok(())
+                }).unwrap();
+                Ok(())
+            }).unwrap();
+            Ok(())
+        }).unwrap();
+
+        String::from_utf8(buffer.into_inner()).unwrap()
     }
 }
 
