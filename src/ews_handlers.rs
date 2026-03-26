@@ -303,7 +303,52 @@ async fn handle_ews_get_attachment(
     response.push_str(r#"<m:ResponseMessages>"#);
 
     for attachment_id in &request.attachment_ids {
-        response.push_str(r#"<m:GetAttachmentResponseMessage ResponseClass="Success">"#);
+        // Fetch attachment from storage
+        match fetch_ews_attachment(attachment_id, state).await {
+            Ok((name, content, content_type, size)) => {
+                // Determine attachment type based on content
+                if content_type.starts_with("text/") || content_type == "application/json" {
+                    // Item attachment (inline content)
+                    response.push_str(&format!(
+                        r#"<t:ItemAttachment><t:AttachmentId Id="{}"/><t:Name>{}</t:Name><t:ContentType>{}</t:ContentType><t:Size>{}</t:Size></t:ItemAttachment>"#,
+                        sanitize_xml_content(attachment_id),
+                        sanitize_xml_content(&name),
+                        sanitize_xml_content(&content_type),
+                        size
+                    ));
+                } else {
+                    // File attachment
+                    use base64::{Engine as _, engine::general_purpose::STANDARD};
+                    let encoded = STANDARD.encode(&content);
+
+                    response.push_str(&format!(
+                        r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Name>{}</t:Name><t:ContentType>{}</t:ContentType><t:ContentId>{}</t:ContentId><t:Size>{}</t:Size><t:Content>{}</t:Content></t:FileAttachment>"#,
+                        sanitize_xml_content(attachment_id),
+                        sanitize_xml_content(&name),
+                        sanitize_xml_content(&content_type),
+                        sanitize_xml_content(&format!("{}@exchange.gateway", attachment_id)),
+                        size,
+                        encoded
+                    ));
+                }
+                response.push_str(r#"</m:Attachments>"#);
+                response.push_str(r#"</m:GetAttachmentResponseMessage>"#);
+            }
+            Err(e) => {
+                warn!("Failed to fetch attachment {}: {}", attachment_id, e);
+                response.push_str(r#"</m:Attachments>"#);
+                response.push_str(r#"<m:GetAttachmentResponseMessage ResponseClass="Error">"#);
+                response.push_str(r#"<m:ResponseCode>ErrorInvalidAttachmentId</m:ResponseCode>"#);
+                response.push_str(&format!(
+                    r#"<m:MessageText>{}</m:MessageText>"#,
+                    sanitize_xml_content(&e)
+                ));
+                response.push_str(r#"</m:GetAttachmentResponseMessage>"#);
+            }
+        }
+    }
+
+    response.push_str(r#"</m:ResponseMessages>"#);
         response.push_str(r#"<m:ResponseCode>NoError</m:ResponseCode>"#);
         response.push_str(r#"<m:Attachments>"#);
 
