@@ -29,6 +29,8 @@ pub struct EwsFieldChange {
     pub verb: ChangeVerb,
     pub field_uri: String,
     pub payload_xml: String,
+fn serde_json_string(s: &str) -> String {
+    serde_json::to_string(s).expect("Failed to serialize string to JSON")
 }
 
 /// Which of the three EWS update verbs was used.
