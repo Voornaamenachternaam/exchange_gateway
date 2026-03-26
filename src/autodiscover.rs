@@ -334,7 +334,9 @@ pub fn handle_autodiscover_json(host: &str, protocol: Option<&str>, email: Optio
 
 /// Minimal JSON string encoder — only handles the common email address case.
 fn serde_json_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\\\""))
+fn serde_json_string(s: &str) -> String {
+    serde_json::to_string(s).expect("Failed to serialize string to JSON")
+}
 }
 
 // ---------------------------------------------------------------------------
