@@ -255,25 +255,9 @@ pub fn validate_folder_request(
     .iter()
     .map(|&f| folder_id_for(owner, f))
     .collect();
+
     // Check explicit folder IDs — must belong to this owner.
     for id in [explicit_id, explicit_sync_id].into_iter().flatten() {
-        let all_owner_ids: Vec<String> = [
-            DistinguishedFolder::Calendar,
-            DistinguishedFolder::MsgFolderRoot,
-            DistinguishedFolder::Inbox,
-            DistinguishedFolder::SentItems,
-            DistinguishedFolder::DeletedItems,
-            DistinguishedFolder::Drafts,
-            DistinguishedFolder::Outbox,
-            DistinguishedFolder::JunkEmail,
-            DistinguishedFolder::Contacts,
-            DistinguishedFolder::Tasks,
-            DistinguishedFolder::Notes,
-            DistinguishedFolder::Journal,
-        ]
-        .iter()
-        .map(|&f| folder_id_for(owner, f))
-        .collect();
 
         if id != "root" && !all_owner_ids.iter().any(|oid| oid == id) {
             return Some("ErrorFolderNotFound");
