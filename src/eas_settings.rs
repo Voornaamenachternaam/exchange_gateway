@@ -584,8 +584,9 @@ impl SettingsHandler {
             }
             buf.clear();
         }
-            buf.clear();
-        }
+        buf.clear();
+    }
+
         Err("Unknown Settings request type".to_string())
     }
 }
