@@ -134,9 +134,6 @@ impl CalDavClientExt {
             .text()
             .await
             .map_err(|e| format!("Failed to read response: {}", e))?;
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
 
         // Parse response to extract hrefs
         let mut items = Vec::new();
