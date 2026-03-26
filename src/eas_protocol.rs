@@ -736,120 +736,137 @@ impl GetItemEstimateRequest {
 }
 
 /// Command validation per Binder1/MS-ASCMD
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
+
 pub fn validate_command_grammar(command: &str, xml: &str) -> Result<(), String> {
     let cmd_lower = command.to_ascii_lowercase();
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut namespaces = std::collections::HashSet::new();
+    let mut elements = std::collections::HashSet::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.name().local_name().as_ref());
+                elements.insert(name.to_string());
+                for attr in e.attributes().flatten() {
+                    if attr.key.local_name().as_ref() == b"xmlns" || attr.key.local_name().as_ref() == b"xmlns:AirSync" {
+                        if let Ok(val) = String::from_utf8(attr.value.to_vec()) {
+                            namespaces.insert(val);
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(format!("XML parse error: {}", e)),
+            _ => (),
+        }
+        buf.clear();
+    }
 
     match cmd_lower.as_str() {
         "sync" => {
-            if !xml.contains("xmlns=\"AirSync:\"") && !xml.contains("xmlns:AirSync=\"") {
+            if !namespaces.contains("AirSync:") {
                 return Err("Sync requires AirSync namespace".to_string());
             }
-            if !xml.contains("<SyncKey") {
-                return Err("Sync requires SyncKey element".to_string());
-            }
-            if !xml.contains("<CollectionId") {
-                return Err("Sync requires CollectionId element".to_string());
+            if !elements.contains("SyncKey") || !elements.contains("CollectionId") {
+                return Err("Sync requires SyncKey and CollectionId elements".to_string());
             }
         }
         "foldersync" => {
-            if !xml.contains("xmlns=\"FolderHierarchy:\"") {
+            if !namespaces.contains("FolderHierarchy:") {
                 return Err("FolderSync requires FolderHierarchy namespace".to_string());
             }
-            if !xml.contains("<SyncKey") {
+            if !elements.contains("SyncKey") {
                 return Err("FolderSync requires SyncKey element".to_string());
             }
         }
         "getitemestimate" => {
-            if !xml.contains("xmlns=\"GetItemEstimate:\"") {
+            if !namespaces.contains("GetItemEstimate:") {
                 return Err("GetItemEstimate requires GetItemEstimate namespace".to_string());
             }
-            if !xml.contains("<CollectionId") {
+            if !elements.contains("CollectionId") {
                 return Err("GetItemEstimate requires CollectionId element".to_string());
             }
         }
         "ping" => {
-            if !xml.contains("xmlns=\"Ping:\"") {
+            if !namespaces.contains("Ping:") {
                 return Err("Ping requires Ping namespace".to_string());
             }
-            if !xml.contains("<HeartbeatInterval") {
-                return Err("Ping requires HeartbeatInterval element".to_string());
-            }
-            if !xml.contains("<Folders") {
-                return Err("Ping requires Folders element".to_string());
+            if !elements.contains("HeartbeatInterval") || !elements.contains("Folders") {
+                return Err("Ping requires HeartbeatInterval and Folders elements".to_string());
             }
         }
         "provision" => {
-            if !xml.contains("xmlns=\"Provision:\"") {
+            if !namespaces.contains("Provision:") {
                 return Err("Provision requires Provision namespace".to_string());
             }
         }
         "search" => {
-            if !xml.contains("xmlns=\"Search:\"") {
+            if !namespaces.contains("Search:") {
                 return Err("Search requires Search namespace".to_string());
             }
-            if !xml.contains("<Store") {
+            if !elements.contains("Store") {
                 return Err("Search requires Store element".to_string());
             }
         }
         "settings" => {
-            if !xml.contains("xmlns=\"Settings:\"") {
+            if !namespaces.contains("Settings:") {
                 return Err("Settings requires Settings namespace".to_string());
             }
         }
         "itemoperations" => {
-            if !xml.contains("xmlns=\"ItemOperations:\"") {
+            if !namespaces.contains("ItemOperations:") {
                 return Err("ItemOperations requires ItemOperations namespace".to_string());
             }
         }
         "moveitems" => {
-            if !xml.contains("xmlns=\"Move:\"") {
+            if !namespaces.contains("Move:") {
                 return Err("MoveItems requires Move namespace".to_string());
             }
-            if !xml.contains("<Move") {
+            if !elements.contains("Move") {
                 return Err("MoveItems requires Move element".to_string());
             }
         }
         "meetingresponse" => {
-            if !xml.contains("xmlns=\"MeetingResponse:\"") {
+            if !namespaces.contains("MeetingResponse:") {
                 return Err("MeetingResponse requires MeetingResponse namespace".to_string());
             }
-            if !xml.contains("<RequestId") {
-                return Err("MeetingResponse requires RequestId element".to_string());
-            }
-            if !xml.contains("<UserResponse") {
-                return Err("MeetingResponse requires UserResponse element".to_string());
+            if !elements.contains("RequestId") || !elements.contains("UserResponse") {
+                return Err("MeetingResponse requires RequestId and UserResponse elements".to_string());
             }
         }
         "resolverecipients" => {
-            if !xml.contains("xmlns=\"ResolveRecipients:\"") {
+            if !namespaces.contains("ResolveRecipients:") {
                 return Err("ResolveRecipients requires ResolveRecipients namespace".to_string());
             }
-            if !xml.contains("<To") {
+            if !elements.contains("To") {
                 return Err("ResolveRecipients requires To element".to_string());
             }
         }
         "validatecert" => {
-            if !xml.contains("xmlns=\"ValidateCert:\"") {
+            if !namespaces.contains("ValidateCert:") {
                 return Err("ValidateCert requires ValidateCert namespace".to_string());
             }
-            if !xml.contains("<Certificates") {
+            if !elements.contains("Certificates") {
                 return Err("ValidateCert requires Certificates element".to_string());
             }
         }
         "sendmail" => {
-            if !xml.contains("xmlns=\"ComposeMail:\"") {
+            if !namespaces.contains("ComposeMail:") {
                 return Err("SendMail requires ComposeMail namespace".to_string());
             }
-            // SendMail can have empty body for MIME-only content
         }
         "smartreply" | "smartforward" => {
-            if !xml.contains("xmlns=\"ComposeMail:\"") {
+            if !namespaces.contains("ComposeMail:") {
                 return Err("SmartReply/SmartForward requires ComposeMail namespace".to_string());
             }
         }
         "getattachment" => {
-            // GetAttachment is part of ItemOperations namespace
-            if !xml.contains("<FileReference") {
+            if !elements.contains("FileReference") {
                 return Err("GetAttachment requires FileReference element".to_string());
             }
         }
