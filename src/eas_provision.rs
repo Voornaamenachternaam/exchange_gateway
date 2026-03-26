@@ -676,10 +676,41 @@ impl ProvisionHandler {
             xml.push_str(&format!("<PolicyKey>{}</PolicyKey>", policy_key));
             xml.push_str("<Status>1</Status>");
             
+    /// Handle provision request and return XML response
+    pub fn handle_provision(&mut self, request: &ProvisionRequest, user_id: &str) -> String {
+        let response = self.policy_engine.process_provision_request(request, user_id);
+        
+        let mut xml = String::new();
+        xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
+        xml.push_str("<Provision xmlns=\"AirSync:\">");
+        xml.push_str(&format!("<Status>{}</Status>", response.status.as_u8()));
+        
+        if let Some(ref policy_key) = response.policy_key {
+            xml.push_str("<Policies>");
+            xml.push_str("<Policy>");
+            xml.push_str("<PolicyType>EASPROV</PolicyType>");
+            xml.push_str(&format!("<PolicyKey>{}</PolicyKey>", policy_key));
+            xml.push_str("<Status>1</Status>");
+            
             if let Some(ref policy) = response.policy_data {
                 xml.push_str("<Data>");
                 xml.push_str(&self.policy_engine.policy_to_xml(policy));
                 xml.push_str("</Data>");
+            }
+            
+            xml.push_str("</Policy>");
+            xml.push_str("</Policies>");
+        }
+        
+        if let Some(ref wipe_status) = response.remote_wipe {
+            if *wipe_status != RemoteWipeStatus::None {
+                xml.push_str(&self.policy_engine.remote_wipe_to_xml(*wipe_status));
+            }
+        }
+        
+        xml.push_str("</Provision>");
+        xml
+    }
             }
             
             xml.push_str("</Policy>");
