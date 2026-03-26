@@ -115,17 +115,6 @@ CREATE INDEX idx_change_journal_op     ON change_journal(owner, op, id);
 CREATE INDEX idx_client_sync_lookup    ON client_sync_command(owner, collection_id, client_id);
 CREATE INDEX idx_ews_sync_lookup       ON ews_sync_state(user_email, folder_id);
 CREATE INDEX idx_provision_lookup      ON provision_state(owner, device_id);
-CREATE INDEX idx_sync_lookup           ON sync_state(owner, collection_id);
-CREATE INDEX idx_item_map_owner_time   ON item_map(owner, updated_at);
-CREATE INDEX idx_item_map_resource     ON item_map(owner, resource_href);
-CREATE INDEX idx_item_map_uid          ON item_map(owner, uid);
-CREATE INDEX idx_deleted_owner_time    ON deleted_item_tombstone(owner, deleted_at);
-CREATE INDEX idx_change_journal_owner  ON change_journal(owner, id);
-CREATE INDEX idx_change_journal_op     ON change_journal(owner, op, id);
-CREATE INDEX idx_client_sync_lookup    ON client_sync_command(owner, collection_id, client_id);
-CREATE INDEX idx_ews_sync_lookup       ON ews_sync_state(user_email, folder_id);
-CREATE INDEX idx_provision_lookup      ON provision_state(owner, device_id);
-CREATE INDEX idx_idempotency_created   ON api_idempotency(created_at);
 CREATE INDEX idx_idempotency_created   ON api_idempotency(created_at);
 
 INSERT INTO schema_version (version, description)
