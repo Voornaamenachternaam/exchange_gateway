@@ -724,12 +724,8 @@ async fn store_ews_attachment(
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let encoded = STANDARD.encode(&attachment.content);
 
-    let sanitized_name = attachment.name.replace(['
-', '
-'], "");
-    let sanitized_type = attachment.content_type.replace(['
-', '
-'], "");
+    let sanitized_name = attachment.name.replace(|c| c == '\r' || c == '\n', "");
+    let sanitized_type = attachment.content_type.replace(|c| c == '\r' || c == '\n', "");
 
     let attach_line = format!(
         "ATTACH;FMTTYPE={};FILENAME={}:{}
