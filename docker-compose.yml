@@ -1,16 +1,15 @@
+services:
   exchange_gateway:
-    build: ./exchange_gateway
+    build: .
     container_name: exchange_gateway
     restart: unless-stopped
     environment:
-      - TZ=${GATEWAY_TZ}
-      - RUST_LOG=info
-      - JMAP_URL=${JMAP_URL}
-      - CF_D1_API_URL=${CF_D1_API_URL}
-      - GATEWAY_SECRET=${GATEWAY_SECRET}
-      - SMTP_URL=${SMTP_URL}
+      - TZ=${GATEWAY_TZ:-UTC}
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      - ./config.toml:/etc/exchange-gateway/config.toml:ro
     ports:
-      - 8134:8134
+      - "8134:8134"
     networks:
       my-bridge-network:
         ipv4_address: 172.28.0.11

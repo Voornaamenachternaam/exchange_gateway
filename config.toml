@@ -1,5 +1,29 @@
-bind = "0.0.0.0:8133"
+# config.toml
+# Exchange Gateway runtime configuration.
+# Place this file at /etc/exchange-gateway/config.toml inside the container.
+
+# TCP address and port for the gateway to listen on.
+# Keep this as 0.0.0.0:8134 for Docker bridge-network deployments.
+bind = "0.0.0.0:8134"
+
+# Internal CalDAV base URL of the Stalwart Mailserver container.
+# Use the Docker-internal IP or service name, not the public hostname.
+# Stalwart v0.15.5 default CalDAV path: /dav/
 caldav_base = "http://172.28.0.10:8080/dav/"
+
+# Cloudflare Worker API endpoint for D1-backed sync state persistence.
+# This is the HTTPS URL of your deployed Worker, suffixed with /api.
 worker_url = "https://exchange.mail.example.com/api"
+
+# Shared secret authenticating gateway → Worker API requests.
+# Must match GATEWAY_SECRET in your Worker environment.
 worker_secret = "YOUR_GATEWAY_SECRET"
+
+# HMAC secret for deriving stable EAS/EWS server-IDs from CalDAV resource HREFs.
+# Generate with: openssl rand -hex 32
 hmac_secret = "cb790e98fdc2d78ab9ca7b856a51114b136db2c20121461b91d7d22b2ec1323a"
+
+# Public hostname of this gateway as seen by Outlook clients.
+# Used in Autodiscover response URL construction (EwsUrl, ASUrl, MobileSyncUrl).
+# Must match the hostname configured in your Cloudflare Tunnel / Worker route.
+gateway_host = "exchange.mail.example.com"
