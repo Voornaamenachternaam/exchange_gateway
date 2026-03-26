@@ -318,44 +318,7 @@ impl FreeBusyGenerator {
         let end_date = end.date_naive();
         
         while current_date <= end_date {
-        while current_date <= end_date {
             let day_suggestions = self.generate_suggestions_for_day(
-                events,
-                current_date,
-                meeting_duration,
-                working_hours,
-            );
-            
-            let filtered_suggestions: Vec<Suggestion> = day_suggestions
-                .into_iter()
-                .filter(|s| s.start_time >= start && s.end_time <= end)
-                .collect();
-
-            if !filtered_suggestions.is_empty() {
-                let is_working_day = working_hours.work_days
-                    .get(current_date.weekday().num_days_from_sunday() as usize)
-                    .copied()
-                    .unwrap_or(true);
-                
-                let quality = if filtered_suggestions.iter().all(|s| s.quality == SuggestionQuality::Excellent) {
-                    SuggestionQuality::Excellent
-                } else if filtered_suggestions.iter().any(|s| s.quality == SuggestionQuality::Excellent) {
-                    SuggestionQuality::Good
-                } else {
-                    SuggestionQuality::Fair
-                };
-
-                days.push(SuggestionDay {
-                    date: current_date,
-                    quality,
-                    suggestion_count: filtered_suggestions.len() as u32,
-                    suggestions: filtered_suggestions,
-                    is_working_day,
-                });
-            }
-            
-            current_date = current_date.succ_opt().unwrap_or(current_date);
-        }
                 events,
                 current_date,
                 meeting_duration,
@@ -387,7 +350,6 @@ impl FreeBusyGenerator {
             
             current_date = current_date.succ_opt().unwrap_or(current_date);
         }
-        
         days
     }
     
