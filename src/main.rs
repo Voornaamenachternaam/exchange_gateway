@@ -161,10 +161,26 @@ async fn main() -> anyhow::Result<()> {
         // ── Autodiscover v2 JSON ─────────────────────────────────────────
         // Modern Outlook uses ?Email=…&Protocol=… query params.
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
-        .route(
-            "/autodiscover/autodiscover.json/v1.0/:protocol",
-            get(autodiscover_json),
-        )
+async fn autodiscover_json_v1(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(protocol): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<autodiscover::AutodiscoverJsonParams>,
+) -> Response {
+    let host = &state.cfg.gateway_host;
+    let proto = if !protocol.is_empty() { Some(protocol.as_str()) } else { params.protocol.as_deref() };
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_json(
+        host,
+        proto,
+        params.email.as_deref(),
+    );
+    build_response(status, &hdrs, body_out)
+}
+
+// ... inside main() router definition:
+.route(
+    "/autodiscover/autodiscover.json/v1.0/:protocol",
+    get(autodiscover_json_v1),
+)
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         // ── Security middleware ───────────────────────────────────────────
         .layer(middleware::from_fn(body_size_limit))
