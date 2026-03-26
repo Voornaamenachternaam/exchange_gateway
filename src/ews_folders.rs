@@ -185,7 +185,9 @@ pub fn render_folder_xml(
         format!(
             r#"<t:ParentFolderId Id="{parent}" ChangeKey="{ck}" />"#,
             parent = parent,
-            ck = &parent[4..]
+            r#"<t:ParentFolderId Id="{parent}" ChangeKey="{ck}" />"#,
+            parent = parent,
+            ck = &parent[prefix_len..]
         )
     };
     format!(
