@@ -1,4 +1,4 @@
-// src/eas_status.rs
+pub mod eas_status;
 // EAS Status Codes and Error Handling per MS-ASCMD
 //
 // Closes gaps:
