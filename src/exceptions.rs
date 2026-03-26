@@ -527,36 +527,30 @@ pub fn expand_recurring_with_exceptions(
 }
 
 /// Generate recurrence instances
+use rrule::{RRuleSet, UnvalidatedRRuleSet};
+
 fn generate_recurrence_instances(
     recurrence: &EasRecurrence,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
 ) -> Vec<DateTime<Utc>> {
-    let mut instances = Vec::new();
-    
-    // Parse recurrence type
-    let interval = recurrence.interval.unwrap_or(1) as i64;
-    let max_occurrences = recurrence.occurrences.unwrap_or(1000) as usize;
-    
-    // Get start date from recurrence or use range start
-    let start = range_start;
-    let mut current = start;
-    let mut count = 0;
-    
-    while current <= range_end && count < max_occurrences {
-        instances.push(current);
-        count += 1;
-        
-        // Calculate next occurrence based on recurrence type
-        current = match recurrence.recurrence_type {
-            0 => current + Duration::days(interval), // Daily
-            1 => current + Duration::weeks(interval), // Weekly
-            2 | 3 => add_months(current, interval as usize), // Monthly
-            5 | 6 => add_years(current, interval as usize), // Yearly
-            _ => current + Duration::days(interval),
-        };
-    }
-    
+    let rrule_str = format!("FREQ={};INTERVAL={}", 
+        match recurrence.recurrence_type {
+            0 => "DAILY",
+            1 => "WEEKLY",
+            2 | 3 => "MONTHLY",
+            5 | 6 => "YEARLY",
+            _ => "DAILY",
+        },
+        recurrence.interval.unwrap_or(1)
+    );
+
+    let rrule_set: RRuleSet = format!("DTSTART:{}\n{}", 
+        range_start.format("%Y%m%dT%H%M%SZ"), 
+        rrule_str
+    ).parse().unwrap_or_else(|_| RRuleSet::default());
+
+    let (instances, _) = rrule_set.after(range_start).before(range_end).all(recurrence.occurrences.unwrap_or(1000) as usize);
     instances
 }
 
