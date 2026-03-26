@@ -642,7 +642,12 @@ fn parse_ical_datetime(s: &str) -> Result<DateTime<Utc>, String> {
     if s.ends_with('Z') {
         // UTC format: 20260322T100000Z
         if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%SZ") {
+    } else {
+        // Local format: 20260322T100000
+        if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S") {
             return Ok(DateTime::from_naive_utc_and_offset(naive, Utc));
+        }
+    }
         }
     } else {
         // Local format: 20260322T100000
