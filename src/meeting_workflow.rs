@@ -308,7 +308,9 @@ impl MeetingWorkflowManager {
         
         // Add organizer
         if let Some(organizer) = extract_organizer_from_ical(original_event) {
-            ical.push_str(&format!("ORGANIZER:{}\r\n", organizer));
+        // Add organizer
+        if let Some(organizer) = extract_organizer_from_ical(original_event) {
+            ical.push_str(&format!(
         }
         
         // Add summary
