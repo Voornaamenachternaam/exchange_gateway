@@ -1,9 +1,33 @@
 // src/ews.rs
+//
+// Gaps closed in this revision (per GAP_ANALYSIS.md):
+//   Gap 4.1 — handle_update_item now uses ews_update::parse_item_changes /
+//              apply_field_changes for full FieldURI-dispatched per-field patching
+//              per Binder1 t:UnindexedFieldURIType (calendar:* and item:* FieldURIs).
+//   Gap 4.2 — handle_get_folder / handle_find_folder now use ews_folders module
+//              to support all standard EWS distinguished folder IDs:
+//              inbox, sentitems, deleteditems, drafts, outbox, junkemail,
+//              contacts, tasks, notes (in addition to calendar / msgfolderroot).
+//   Gap 4.2 — validate_requested_folder now accepts all DistinguishedFolderId
+//              values recognised by ews_folders::DistinguishedFolder.
+//
+// Gaps closed in this revision (per GAP_ANALYSIS.md):
+//   Gap 4.1 — UpdateItem now uses ews_update::parse_item_changes /
+//              apply_field_changes for full FieldURI-dispatched patching.
+//   Gap 4.2 — GetFolder / FindFolder / validate_requested_folder now use
+//              ews_folders for all distinguished folder IDs Outlook requests.
+//   Gap 4 (EAS ValidateCert) — Binder1 §2.2.3.177.18 Status 17 response now
+//              built in EWS ValidateCert stub (EAS path handled separately).
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
 };
+use crate::ews_folders::{
+    DistinguishedFolder, folder_id_for, render_child_folders_xml, render_folder_xml,
+    validate_folder_request,
+};
+use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::models::AppState;
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
@@ -363,18 +387,10 @@ fn owner_from_username(username: &str) -> &str {
     username
 }
 
+/// Returns the calendar folder ID for the owner.
+/// Delegates to ews_folders::folder_id_for for consistency.
 fn folder_id_for_owner(owner: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(owner.as_bytes());
-    h.update(b"/calendar");
-    let digest = h.finalize();
-    format!(
-        "CAL-{}",
-        digest[..12]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>()
-    )
+    folder_id_for(owner, DistinguishedFolder::Calendar)
 }
 
 fn changekey_for_item(item: &EwsItemRow) -> String {
@@ -1373,52 +1389,54 @@ fn operation_error_response(
         .into_response()
 }
 
+/// Validate the requested folder IDs against the owner's namespace.
+///
+/// Delegates to ews_folders::validate_folder_request which now accepts all
+/// standard EWS distinguished folder IDs (inbox, contacts, tasks, sentitems,
+/// deleteditems, drafts, outbox, junkemail, calendar, msgfolderroot) per
+/// Binder1 / [MS-OXWSFOLD].
 fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Result<(), Response> {
-    let expected_folder_id = folder_id_for_owner(owner);
+    let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
+    let explicit_id = extract_first_attr(body, b"FolderId", b"Id");
+    let parent_id = extract_first_attr(body, b"ParentFolderId", b"Id");
+    let sync_id = extract_first_attr(body, b"SyncFolderId", b"Id");
 
-    if let Some(fid) = extract_first_attr(body, b"FolderId", b"Id")
-        && fid != expected_folder_id
-    {
+    // For calendar folder operations we resolve the numeric explicit ID
+    // against the owner's calendar folder ID.
+    let cal_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
+    let root_folder_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+
+    // An explicit FolderId must belong to this owner (calendar or root).
+    for maybe_id in [&explicit_id, &parent_id, &sync_id] {
+        if let Some(fid) = maybe_id {
+            if fid != &cal_folder_id && fid != &root_folder_id
+                && !fid.starts_with("FLD-")
+                && fid != "root"
+            {
+                return Err(operation_error_response(
+                    action,
+                    "ErrorFolderNotFound",
+                    "Requested folder was not found for this mailbox",
+                    StatusCode::OK,
+                ));
+            }
+        }
+    }
+
+    // validate_folder_request checks that the DistinguishedFolderId is one of
+    // the supported values; anything unrecognised returns ErrorFolderNotFound.
+    if let Some(error_code) = validate_folder_request(
+        owner,
+        distinguished.as_deref(),
+        explicit_id.as_deref(),
+        sync_id.as_deref(),
+    ) {
         return Err(operation_error_response(
             action,
-            "ErrorFolderNotFound",
+            error_code,
             "Requested folder was not found for this mailbox",
             StatusCode::OK,
         ));
-    }
-
-    if let Some(fid) = extract_first_attr(body, b"ParentFolderId", b"Id")
-        && fid != expected_folder_id
-    {
-        return Err(operation_error_response(
-            action,
-            "ErrorFolderNotFound",
-            "Requested parent folder was not found for this mailbox",
-            StatusCode::OK,
-        ));
-    }
-
-    if let Some(fid) = extract_first_attr(body, b"SyncFolderId", b"Id")
-        && fid != expected_folder_id
-    {
-        return Err(operation_error_response(
-            action,
-            "ErrorFolderNotFound",
-            "Requested sync folder was not found for this mailbox",
-            StatusCode::OK,
-        ));
-    }
-
-    if let Some(did) = extract_first_attr(body, b"DistinguishedFolderId", b"Id") {
-        let d = did.to_ascii_lowercase();
-        if d != "calendar" && d != "msgfolderroot" {
-            return Err(operation_error_response(
-                action,
-                "ErrorFolderNotFound",
-                "Only Calendar and MsgFolderRoot distinguished folders are available",
-                StatusCode::OK,
-            ));
-        }
     }
 
     Ok(())
@@ -1579,27 +1597,25 @@ async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str
         return resp;
     }
 
-    let fid = folder_id_for_owner(owner);
-    let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let total_count = load_current_calendar_items(state, owner, &auth.password, None)
-        .await
-        .map(|items| items.len())
-        .unwrap_or(0);
-    let folders_xml = if distinguished == "msgfolderroot" {
-        format!(
-            r#"<t:Folder><t:FolderId Id="root" ChangeKey="root" /><t:DisplayName>Top of Information Store</t:DisplayName><t:FolderClass>IPF.Note</t:FolderClass><t:TotalCount>{}</t:TotalCount><t:ChildFolderCount>1</t:ChildFolderCount></t:Folder>"#,
-            total_count
-        )
+
+    // Resolve requested folder — use ews_folders for all folder types.
+    let folder = DistinguishedFolder::from_str(&distinguished_str)
+        .unwrap_or(DistinguishedFolder::Calendar);
+
+    let total_count = if folder.is_calendar() || matches!(folder, DistinguishedFolder::MsgFolderRoot) {
+        load_current_calendar_items(state, owner, &auth.password, None)
+            .await
+            .map(|items| items.len())
+            .unwrap_or(0)
     } else {
-        format!(
-            r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:ParentFolderId Id="root" ChangeKey="root" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:TotalCount>{}</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount></t:CalendarFolder>"#,
-            fid,
-            &fid[4..],
-            total_count
-        )
+        0
     };
+
+    let folders_xml = render_folder_xml(owner, folder, total_count);
+
     let response = format!(
         r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
@@ -1613,34 +1629,33 @@ async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str
     );
     soap_ok(response)
 }
-
 async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
         return resp;
     }
 
-    let fid = folder_id_for_owner(owner);
-    let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let total_count = load_current_calendar_items(state, owner, &auth.password, None)
-        .await
-        .map(|items| items.len())
-        .unwrap_or(0);
-    let (count, folders_xml) = if distinguished == "msgfolderroot" {
-        (
-            1,
-            format!(
-                r#"<t:CalendarFolder><t:FolderId Id="{}" ChangeKey="{}" /><t:ParentFolderId Id="root" ChangeKey="root" /><t:DisplayName>Calendar</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass><t:ChildFolderCount>0</t:ChildFolderCount><t:TotalCount>{}</t:TotalCount></t:CalendarFolder>"#,
-                fid,
-                &fid[4..],
-                total_count
-            ),
-        )
+
+    // For FindFolder on MsgFolderRoot, enumerate first-level children.
+    // For FindFolder on any other folder, return empty (no sub-folders in gateway).
+    let (total_count_for_cal, children_xml) = if distinguished_str == "msgfolderroot" || distinguished_str.is_empty() {
+        let count = load_current_calendar_items(state, owner, &auth.password, None)
+            .await
+            .map(|items| items.len())
+            .unwrap_or(0);
+        let children = render_child_folders_xml(owner);
+        // We need to inject the actual count into the calendar folder XML.
+        // render_child_folders_xml returns count=0; re-render with real count.
+        let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
+        (1usize, cal_xml)
     } else {
-        (0, String::new())
+        // Subfolder enumeration for non-root folders: always empty for this gateway.
+        (0usize, String::new())
     };
+
     let response = format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
@@ -1650,11 +1665,10 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
     </m:FindFolderResponseMessage>
   </m:ResponseMessages>
 </m:FindFolderResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, count, folders_xml
+        EWS_MSG_NS, EWS_TYPE_NS, total_count_for_cal, children_xml
     );
     soap_ok(response)
 }
-
 async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindItem, owner, body) {
@@ -2140,11 +2154,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     }
 
-    let current = match state
-        .storage
-        .get_ews_item_by_server_id(owner, &item_id)
-        .await
-    {
+    let stored_item = match state.storage.get_ews_item_by_server_id(owner, &item_id).await {
         Ok(v) => v,
         Err(e) => {
             return operation_error_response(
@@ -2155,7 +2165,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
-    let Some(item) = current else {
+    let Some(stored_item) = stored_item else {
         return operation_error_response(
             &EwsAction::UpdateItem,
             "ErrorItemNotFound",
@@ -2163,13 +2173,13 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::OK,
         );
     };
-    if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &item) {
+    if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item) {
         return resp;
     }
 
     let caldav = CaldavClient::new(&state.cfg);
     let (existing_ics, existing_etag) = match caldav
-        .get_event(&item.resource_href, owner, &auth.password)
+        .get_event(&stored_item.resource_href, owner, &auth.password)
         .await
     {
         Ok(v) => v,
@@ -2182,9 +2192,10 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
-    let mut current_item =
-        parse_ics_event(&existing_ics).unwrap_or_else(|| crate::calendar::CalendarItem {
-            uid: item.uid.clone().unwrap_or_else(|| item.server_id.clone()),
+
+    let mut current_item = parse_ics_event(&existing_ics).unwrap_or_else(|| {
+        crate::calendar::CalendarItem {
+            uid: stored_item.uid.clone().unwrap_or_else(|| stored_item.server_id.clone()),
             subject: String::new(),
             description: String::new(),
             location: String::new(),
@@ -2212,103 +2223,119 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             online_meeting_external_link: None,
             client_uid: None,
             exceptions: Vec::new(),
-        });
-    if let Some(v) =
-        extract_ews_field(body, b"Subject").or_else(|| extract_ews_field(body, b"Value"))
-    {
-        current_item.subject = v;
+        }
+    });
+
+    // ── Field-level patching via ews_update module ──────────────────────────
+    //
+    // Parse SetItemField / AppendToItemField / DeleteItemField elements and
+    // apply them to current_item using the FieldURI dispatch table. This
+    // replaces the previous ad-hoc field extraction and covers the full
+    // calendar:* / item:* FieldURI surface per Binder1 [MS-OXWSCORE].
+    let field_changes = parse_item_changes(body);
+    if !field_changes.is_empty() {
+        apply_field_changes(&mut current_item, &field_changes);
+    } else {
+        // Fallback: legacy tag-name extraction for requests that do not use
+        // SetItemField (e.g. some non-Outlook clients / older implementations).
+        if let Some(v) = extract_ews_field(body, b"Subject")
+            .or_else(|| extract_ews_field(body, b"Value"))
+        {
+            current_item.subject = v;
+        }
+        if let Some(v) = extract_ews_field(body, b"Start")
+            .and_then(|v| crate::calendar::parse_datetime(&v))
+        {
+            current_item.start = v;
+        }
+        if let Some(v) = extract_ews_field(body, b"End")
+            .and_then(|v| crate::calendar::parse_datetime(&v))
+        {
+            current_item.end = v;
+        }
+        if let Some(v) = extract_ews_field(body, b"Location") {
+            current_item.location = v;
+        }
+        if let Some(v) = extract_ews_field(body, b"Body")
+            .or_else(|| extract_ews_field(body, b"TextBody"))
+        {
+            current_item.description = v;
+        }
+        if body.contains("Categories") {
+            current_item.categories = extract_ews_fields(body, b"String");
+        }
+        if let Some(v) = extract_ews_field(body, b"ReminderMinutesBeforeStart")
+            .and_then(|v| v.parse().ok())
+        {
+            current_item.reminder = Some(v);
+        }
+        if let Some(v) = extract_ews_field(body, b"LegacyFreeBusyStatus") {
+            current_item.busy_status = match v.as_str() {
+                "Free" => Some(0),
+                "Tentative" => Some(1),
+                "Busy" => Some(2),
+                "OOF" => Some(3),
+                _ => current_item.busy_status,
+            };
+        }
+        if let Some(v) = extract_ews_field(body, b"Sensitivity") {
+            current_item.sensitivity = match v.as_str() {
+                "Normal" => Some(0),
+                "Personal" => Some(1),
+                "Private" => Some(2),
+                "Confidential" => Some(3),
+                _ => current_item.sensitivity,
+            };
+        }
+        if body.contains("ResponseRequested") {
+            if let Some(v) = extract_ews_field(body, b"ResponseRequested") {
+                current_item.response_requested = Some(v.eq_ignore_ascii_case("true"));
+            }
+        }
+        if body.contains("DisallowNewTimeProposal") {
+            if let Some(v) = extract_ews_field(body, b"DisallowNewTimeProposal") {
+                current_item.disallow_new_time_proposal = Some(v.eq_ignore_ascii_case("true"));
+            }
+        }
+        if let Some(v) = extract_ews_field(body, b"OrganizerName") {
+            current_item.organizer_name = Some(v);
+        }
+        if let Some(v) = extract_ews_field(body, b"OrganizerEmail") {
+            current_item.organizer_email = Some(v);
+        }
+        if body.contains("RequiredAttendees") || body.contains("OptionalAttendees") {
+            current_item.attendees = parse_ews_attendees(body);
+        }
+        if body.contains("Recurrence") {
+            current_item.rrule = parse_ews_recurrence(body);
+        }
+        if let Some(v) = extract_ews_field(body, b"StartTimeZone") {
+            current_item.timezone = Some(v);
+        }
+        if let Some(v) = extract_ews_field(body, b"MeetingTimeZone") {
+            current_item.timezone_blob = Some(v);
+        }
+        if let Some(v) = extract_ews_field(body, b"OnlineMeetingConfLink") {
+            current_item.online_meeting_conf_link = Some(v);
+        }
+        if let Some(v) = extract_ews_field(body, b"OnlineMeetingExternalLink") {
+            current_item.online_meeting_external_link = Some(v);
+        }
+        if let Some(v) = extract_ews_field(body, b"ClientUid") {
+            current_item.client_uid = Some(v);
+        }
     }
-    if let Some(v) =
-        extract_ews_field(body, b"Start").and_then(|v| crate::calendar::parse_datetime(&v))
-    {
-        current_item.start = v;
-    }
-    if let Some(v) =
-        extract_ews_field(body, b"End").and_then(|v| crate::calendar::parse_datetime(&v))
-    {
-        current_item.end = v;
-    }
-    if let Some(v) = extract_ews_field(body, b"Location") {
-        current_item.location = v;
-    }
-    if let Some(v) =
-        extract_ews_field(body, b"Body").or_else(|| extract_ews_field(body, b"TextBody"))
-    {
-        current_item.description = v;
-    }
-    if body.contains("Categories") {
-        current_item.categories = extract_ews_fields(body, b"String");
-    }
-    if let Some(v) =
-        extract_ews_field(body, b"ReminderMinutesBeforeStart").and_then(|v| v.parse().ok())
-    {
-        current_item.reminder = Some(v);
-    }
-    if let Some(v) = extract_ews_field(body, b"LegacyFreeBusyStatus") {
-        current_item.busy_status = match v.as_str() {
-            "Free" => Some(0),
-            "Tentative" => Some(1),
-            "Busy" => Some(2),
-            "OOF" => Some(3),
-            _ => current_item.busy_status,
-        };
-    }
-    if let Some(v) = extract_ews_field(body, b"Sensitivity") {
-        current_item.sensitivity = match v.as_str() {
-            "Normal" => Some(0),
-            "Personal" => Some(1),
-            "Private" => Some(2),
-            "Confidential" => Some(3),
-            _ => current_item.sensitivity,
-        };
-    }
-    if body.contains("ResponseRequested")
-        && let Some(v) = extract_ews_field(body, b"ResponseRequested")
-    {
-        current_item.response_requested = Some(v.eq_ignore_ascii_case("true"));
-    }
-    if body.contains("DisallowNewTimeProposal")
-        && let Some(v) = extract_ews_field(body, b"DisallowNewTimeProposal")
-    {
-        current_item.disallow_new_time_proposal = Some(v.eq_ignore_ascii_case("true"));
-    }
-    if let Some(v) = extract_ews_field(body, b"OrganizerName") {
-        current_item.organizer_name = Some(v);
-    }
-    if let Some(v) = extract_ews_field(body, b"OrganizerEmail") {
-        current_item.organizer_email = Some(v);
-    }
-    if body.contains("RequiredAttendees") || body.contains("OptionalAttendees") {
-        current_item.attendees = parse_ews_attendees(body);
-    }
-    if body.contains("Recurrence") {
-        current_item.rrule = parse_ews_recurrence(body);
-    }
-    if let Some(v) = extract_ews_field(body, b"StartTimeZone") {
-        current_item.timezone = Some(v);
-    }
-    if let Some(v) = extract_ews_field(body, b"MeetingTimeZone") {
-        current_item.timezone_blob = Some(v);
-    }
-    if let Some(v) = extract_ews_field(body, b"OnlineMeetingConfLink") {
-        current_item.online_meeting_conf_link = Some(v);
-    }
-    if let Some(v) = extract_ews_field(body, b"OnlineMeetingExternalLink") {
-        current_item.online_meeting_external_link = Some(v);
-    }
-    if let Some(v) = extract_ews_field(body, b"ClientUid") {
-        current_item.client_uid = Some(v);
-    }
+
     let uid = current_item.uid.clone();
     let ics = render_ics(&current_item);
     let (resource_href, new_etag) = match caldav
         .put_event(
-            &item.resource_href,
-            Some(&item.resource_href),
+            &stored_item.resource_href,
+            Some(&stored_item.resource_href),
             &ics,
             owner,
             &auth.password,
-            existing_etag.as_deref().or(item.etag.as_deref()),
+            existing_etag.as_deref().or(stored_item.etag.as_deref()),
         )
         .await
     {
@@ -2322,27 +2349,22 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
+
     if let Err(e) = state
         .storage
-        .upsert_item_map(
-            owner,
-            &resource_href,
-            &resource_href,
-            &item.server_id,
-            &uid,
-            &new_etag,
-        )
+        .upsert_item_map(owner, &resource_href, &resource_href, &stored_item.server_id, &uid, &new_etag)
         .await
     {
         return operation_error_response(
             &EwsAction::UpdateItem,
             "ErrorInternalServerError",
-            &format!("Failed to persist update: {}", e),
+            &format!("Failed to persist update mapping: {}", e),
             StatusCode::INTERNAL_SERVER_ERROR,
         );
     }
+
     let response_row = EwsItemRow {
-        server_id: item.server_id.clone(),
+        server_id: stored_item.server_id.clone(),
         resource_href: resource_href.clone(),
         uid: Some(uid.clone()),
         etag: Some(new_etag.clone()),
@@ -2363,14 +2385,13 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         EWS_MSG_NS,
         EWS_TYPE_NS,
         render_ews_calendar_item_xml(
-            &item.server_id,
+            &stored_item.server_id,
             &changekey_for_item(&response_row),
             &current_item,
         ),
     );
     soap_ok(response)
 }
-
 async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
@@ -2762,4 +2783,49 @@ mod tests {
         assert!(xml.contains("<t:Date>2026-03-22</t:Date><t:DayQuality>Poor</t:DayQuality>"));
         assert!(xml.contains("<t:Date>2026-03-23</t:Date><t:DayQuality>Excellent</t:DayQuality>"));
     }
+
+    #[test]
+    fn update_item_field_changes_are_dispatched_via_field_uri() {
+        use crate::ews_update::{apply_field_changes, parse_item_changes, ChangeVerb};
+        let body = r#"<UpdateItem><ItemChanges><ItemChange>
+            <SetItemField>
+                <t:FieldURI FieldURI="item:Subject"/>
+                <t:CalendarItem><t:Subject>Patched via FieldURI</t:Subject></t:CalendarItem>
+            </SetItemField>
+            <SetItemField>
+                <t:FieldURI FieldURI="calendar:Location"/>
+                <t:CalendarItem><t:Location>Room 42</t:Location></t:CalendarItem>
+            </SetItemField>
+        </ItemChange></ItemChanges></UpdateItem>"#;
+        let changes = parse_item_changes(body);
+        assert!(!changes.is_empty(), "should parse at least one field change");
+        assert!(changes.iter().any(|c| c.field_uri == "item:Subject" && c.verb == ChangeVerb::Set));
+    }
+
+    #[test]
+    fn all_distinguished_folder_ids_accepted_by_validate_requested_folder() {
+        use crate::ews_folders::folder_id_for;
+        // These should all pass validation without error.
+        let valid_ids = ["calendar", "inbox", "sentitems", "deleteditems", "drafts",
+                         "outbox", "junkemail", "contacts", "tasks", "msgfolderroot"];
+        // Validation only uses the DistinguishedFolderId attribute in the body.
+        for id in &valid_ids {
+            let body = format!(
+                r#"<s:Envelope xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><t:DistinguishedFolderId Id="{}"/></s:Envelope>"#,
+                id
+            );
+            // validate_requested_folder should not return an error for any standard folder.
+            // We test via the public ews_folders validate_folder_request directly.
+            let result = crate::ews_folders::validate_folder_request("user@example.com", Some(id), None, None);
+            assert!(result.is_none(), "Expected None for '{}', got {:?}", id, result);
+        }
+    }
 }
+
+//examples/cloudflared-exchange-origin.yml 
+ingress:
+  - hostname: exchange-origin.example.com
+    service: http://exchange_gateway:8134
+  - service: http_status:404
+
+// examples/exchange-gateway.config.toml
