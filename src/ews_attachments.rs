@@ -1,4 +1,5 @@
-mod ews_attachments;
+/* File: src/ews_attachments.rs */
+// Removed the line `mod ews_attachments;`
 //!
 //! This module implements comprehensive Exchange Web Services attachment operations
 //! including CreateAttachment, GetAttachment, DeleteAttachment with support for
