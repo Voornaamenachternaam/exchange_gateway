@@ -1641,16 +1641,17 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     // For FindFolder on MsgFolderRoot, enumerate first-level children.
     // For FindFolder on any other folder, return empty (no sub-folders in gateway).
-    let (total_count_for_cal, children_xml) = if distinguished_str == "msgfolderroot" || distinguished_str.is_empty() {
+    let (total_count_for_cal, cal_xml_content) = if distinguished_str == "msgfolderroot" || distinguished_str.is_empty() {
         let count = load_current_calendar_items(state, owner, &auth.password, None)
             .await
             .map(|items| items.len())
             .unwrap_or(0);
-        let children = render_child_folders_xml(owner);
         // We need to inject the actual count into the calendar folder XML.
-        // render_child_folders_xml returns count=0; re-render with real count.
         let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
         (1usize, cal_xml)
+    } else {
+        (0usize, String::new())
+    };
     } else {
         // Subfolder enumeration for non-root folders: always empty for this gateway.
         (0usize, String::new())
