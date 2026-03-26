@@ -762,7 +762,7 @@ pub struct DeviceAccessController;
 impl DeviceAccessController {
     /// Check if device can access EAS
     pub fn can_access_eas(device: &DeviceRecord) -> bool {
-        device.state.can_sync() && matches!(device.access_state, AccessState::Allowed)
+        device.state.can_sync() && matches!(device.access_state, AccessState::Allowed | AccessState::Restricted)
     }
 
     /// Check if device can access specific folder type
