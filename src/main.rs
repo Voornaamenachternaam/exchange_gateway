@@ -487,40 +487,6 @@ fn build_autodiscover_response(email: Option<&str>) -> String {
         .unwrap()
 }
 
-/// Extract email from autodiscover request
-fn extract_email_from_autodiscover(xml: &str) -> Option<String> {
-    let mut reader = quick_xml::Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut in_email = false;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(e)) => {
-                if e.name().local_name().as_ref() == b"EMailAddress" {
-                    in_email = true;
-                }
-            }
-            Ok(quick_xml::events::Event::Text(t)) if in_email => {
-                if let Ok(text) = t.decode() {
-                    return Some(text.into_owned());
-                }
-            }
-            Ok(quick_xml::events::Event::End(e)) => {
-                if e.name().local_name().as_ref() == b"EMailAddress" {
-                    in_email = false;
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    None
-}
-
 /// Build autodiscover response
 fn build_autodiscover_response(email: Option<&str>, gateway_host: &str) -> String {
     let email = email.unwrap_or("user@example.com");
@@ -548,17 +514,6 @@ fn build_autodiscover_response(email: Option<&str>, gateway_host: &str) -> Strin
         email.split('@').next().unwrap_or("User"),
         email,
         gateway_host
-    )
-}
-          <Name>Exchange Gateway</Name>
-        </Server>
-      </Settings>
-    </Action>
-  </Response>
-</Autodiscover>"#,
-        email.split('@').next().unwrap_or("User"),
-        email,
-        domain
     )
 }
 
