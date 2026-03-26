@@ -36,6 +36,17 @@ pub struct Config {
     /// Example: "exchange.mail.example.com"
     #[serde(default)]
     pub gateway_host: String,
+fn extract_host_from_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    // Strip any path component.
+    let host_and_port = after_scheme.split('/').next()?;
+    if host_and_port.is_empty() {
+        return None;
+    }
+    Some(host_and_port.to_string())
 }
 
 impl Config {
