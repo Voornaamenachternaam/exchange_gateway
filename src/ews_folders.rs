@@ -192,11 +192,15 @@ pub fn render_folder_xml(
     } else {
         format!(
             r#"<t:ParentFolderId Id="{parent}" ChangeKey="{ck}" />"#,
+    let parent_xml = if matches!(folder, DistinguishedFolder::MsgFolderRoot) {
+        String::new()
+    } else {
+        format!(
+            r#"<t:ParentFolderId Id="{parent}" ChangeKey="{ck}" />"#,
             parent = parent,
-            ck = &parent[5..]
+            ck = &parent[prefix_len..]
         )
     };
-        )
     };
     format!(
         r#"<t:{el}><t:FolderId Id="{fid}" ChangeKey="{ck}" />{parent_xml}<t:DisplayName>{display}</t:DisplayName><t:FolderClass>{class}</t:FolderClass><t:TotalCount>{count}</t:TotalCount><t:ChildFolderCount>{child_count}</t:ChildFolderCount></t:{el}>"#,
