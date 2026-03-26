@@ -466,7 +466,80 @@ fn build_autodiscover_response(email: Option<&str>) -> String {
       <Settings>
         <Server>
           <Type>MobileSync</Type>
+    // Build autodiscover response
+    let gateway_host = state.config.gateway_host.clone();
+    let response = build_autodiscover_response(email.as_deref(), &gateway_host);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/xml")
+        .body(Body::from(response))
+        .unwrap()
+}
+
+/// Extract email from autodiscover request
+fn extract_email_from_autodiscover(xml: &str) -> Option<String> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_email = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(e)) => {
+                if e.name().local_name().as_ref() == b"EMailAddress" {
+                    in_email = true;
+                }
+            }
+            Ok(quick_xml::events::Event::Text(t)) if in_email => {
+                if let Ok(text) = t.decode() {
+                    return Some(text.into_owned());
+                }
+            }
+            Ok(quick_xml::events::Event::End(e)) => {
+                if e.name().local_name().as_ref() == b"EMailAddress" {
+                    in_email = false;
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    None
+}
+
+/// Build autodiscover response
+fn build_autodiscover_response(email: Option<&str>, gateway_host: &str) -> String {
+    let email = email.unwrap_or("user@example.com");
+
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006">
+    <Culture>en:us</Culture>
+    <User>
+      <DisplayName>{}</DisplayName>
+      <EMailAddress>{}</EMailAddress>
+    </User>
+    <Action>
+      <Settings>
+        <Server>
+          <Type>MobileSync</Type>
           <Url>https://{}/Microsoft-Server-ActiveSync</Url>
+          <Name>Exchange Gateway</Name>
+        </Server>
+      </Settings>
+    </Action>
+  </Response>
+</Autodiscover>"#,
+        email.split('@').next().unwrap_or("User"),
+        email,
+        gateway_host
+    )
+}
           <Name>Exchange Gateway</Name>
         </Server>
       </Settings>
