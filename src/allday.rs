@@ -67,7 +67,25 @@ impl AllDayEvent {
              DTEND;VALUE=DATE:{}\r\n\
              TRANSP:TRANSPARENT\r\n\
              END:VEVENT\r\n",
-            uid, summary, dtstart, dtend
+    /// Convert to iCalendar format
+    pub fn to_ical(&self, uid: &str, summary: &str) -> String {
+        let dtstart = self.date.format("%Y%m%d").to_string();
+        let end_date = self.date + Duration::days(self.duration_days);
+        let dtend = end_date.format("%Y%m%d").to_string();
+        
+        let sanitize = |s: &str| s.replace("\r", "").replace("\n", "");
+        
+        format!(
+            "BEGIN:VEVENT\r\n\
+             UID:{}\r\n\
+             SUMMARY:{}\r\n\
+             DTSTART;VALUE=DATE:{}\r\n\
+             DTEND;VALUE=DATE:{}\r\n\
+             TRANSP:TRANSPARENT\r\n\
+             END:VEVENT\r\n",
+            sanitize(uid), sanitize(summary), dtstart, dtend
+        )
+    }
         )
     }
     
