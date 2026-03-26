@@ -203,7 +203,17 @@ impl FreeBusyGenerator {
     }
     
     /// Generate merged free/busy string from calendar events
+    /// Generate merged free/busy string from calendar events
     pub fn generate_merged_free_busy(
+        &self,
+        events: &[CalendarEvent],
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> String {
+        if start >= end {
+            return String::new();
+        }
+        let num_slots = ((end - start).num_minutes() as usize) / 30;
         &self,
         events: &[CalendarEvent],
         start: DateTime<Utc>,
