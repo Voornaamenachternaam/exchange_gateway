@@ -537,8 +537,36 @@ impl SearchRequest {
         };
 
         // Check for DeepTraversal element
-        req.deep_traversal = xml.contains("<DeepTraversal") || xml.contains("<DeepTraversal/");
-        req.rebuild_results = xml.contains("<RebuildResults") || xml.contains("<RebuildResults/");
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        let mut current_element: Option<String> = None;
+        let mut in_options = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(e)) => {
+                    let name = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
+                    current_element = Some(name.clone());
+                    match name.as_str() {
+                        "Options" => in_options = true,
+                        "DeepTraversal" if in_options => req.deep_traversal = true,
+                        "RebuildResults" if in_options => req.rebuild_results = true,
+                        _ => {}
+                    }
+                }
+                Ok(quick_xml::events::Event::End(e)) => {
+                    if e.name().local_name().as_ref() == b"Options" {
+                        in_options = false;
+                    }
+                    current_element = None;
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(format!("XML parse error: {}", e)),
+                _ => {}
+            }
+            buf.clear();
+        }
 
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
