@@ -580,89 +580,50 @@ impl<S: AttachmentStore> AttachmentHandler<S> {
     }
 
     /// Generate EWS CreateAttachment response XML
-    pub fn generate_create_response_xml(&self, response: &CreateAttachmentResponse) -> String {
-        let mut xml = String::new();
-        xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
-        xml.push_str("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">");
-        xml.push_str("<s:Body>");
-        xml.push_str("<m:CreateAttachmentResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\">");
-        xml.push_str("<m:ResponseMessages>");
-        xml.push_str("<m:CreateAttachmentResponseMessage ResponseClass=\"Success\">");
-        xml.push_str(&format!("<m:ResponseCode>{}</m:ResponseCode>", response.response_code));
-        
+pub fn generate_create_response_xml(&self, response: &CreateAttachmentResponse) -> String {
+        use quick_xml::events::{BytesEnd, BytesStart, Event};
+        use quick_xml::Writer;
+        use std::io::Cursor;
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut writer = Writer::new_with_indent(buffer, b' ', 4);
+
+        let _ = writer.write_event(Event::Decl(quick_xml::events::BytesDecl::new("1.0", Some("utf-8"), None)));
+        let mut envelope = BytesStart::new("s:Envelope");
+        envelope.push_attribute(("xmlns:s", "http://schemas.xmlsoap.org/soap/envelope/"));
+        let _ = writer.write_event(Event::Start(envelope));
+        let _ = writer.write_event(Event::Start(BytesStart::new("s:Body")));
+
+        let mut create_resp = BytesStart::new("m:CreateAttachmentResponse");
+        create_resp.push_attribute(("xmlns:m", "http://schemas.microsoft.com/exchange/services/2006/messages"));
+        create_resp.push_attribute(("xmlns:t", "http://schemas.microsoft.com/exchange/services/2006/types"));
+        let _ = writer.write_event(Event::Start(create_resp));
+        let _ = writer.write_event(Event::Start(BytesStart::new("m:ResponseMessages")));
+        let _ = writer.write_event(Event::Start(BytesStart::new("m:CreateAttachmentResponseMessage")));
+        writer.create_element("m:ResponseCode").write_text_content(quick_xml::events::BytesText::new(&response.response_code)).unwrap();
+
         if let Some(ref parent_id) = response.parent_item_id {
-            xml.push_str(&format!("<m:ParentItemId Id=\"{}\"", parent_id));
+            let mut parent_item = BytesStart::new("m:ParentItemId");
+            parent_item.push_attribute(("Id", parent_id.as_str()));
             if let Some(ref change_key) = response.parent_item_change_key {
-                xml.push_str(&format!(" ChangeKey=\"{}\"", change_key));
+                parent_item.push_attribute(("ChangeKey", change_key.as_str()));
             }
-            xml.push_str("/>");
+            let _ = writer.write_event(Event::Empty(parent_item));
         }
-        
-        xml.push_str("<m:Attachments>");
-        for attachment in &response.attachments {
-            xml.push_str(&attachment.to_ews_xml());
-        }
-        xml.push_str("</m:Attachments>");
-        
-        xml.push_str("</m:CreateAttachmentResponseMessage>");
-        xml.push_str("</m:ResponseMessages>");
-        xml.push_str("</m:CreateAttachmentResponse>");
-        xml.push_str("</s:Body>");
-        xml.push_str("</s:Envelope>");
-        
-        xml
-    }
 
-    /// Generate EWS GetAttachment response XML
-    pub fn generate_get_response_xml(&self, response: &GetAttachmentResponse) -> String {
-        let mut xml = String::new();
-        xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
-        xml.push_str("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">");
-        xml.push_str("<s:Body>");
-        xml.push_str("<m:GetAttachmentResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\">");
-        xml.push_str("<m:ResponseMessages>");
-        
+        let _ = writer.write_event(Event::Start(BytesStart::new("m:Attachments")));
         for attachment in &response.attachments {
-            xml.push_str("<m:GetAttachmentResponseMessage ResponseClass=\"Success\">");
-            xml.push_str(&format!("<m:ResponseCode>{}</m:ResponseCode>", response.response_code));
-            xml.push_str("<m:Attachments>");
-            xml.push_str(&attachment.to_ews_xml());
-            xml.push_str("</m:Attachments>");
-            xml.push_str("</m:GetAttachmentResponseMessage>");
+            let _ = writer.write_raw(attachment.to_ews_xml().as_bytes());
         }
-        
-        xml.push_str("</m:ResponseMessages>");
-        xml.push_str("</m:GetAttachmentResponse>");
-        xml.push_str("</s:Body>");
-        xml.push_str("</s:Envelope>");
-        
-        xml
-    }
+        let _ = writer.write_event(Event::End(BytesEnd::new("m:Attachments")));
+        let _ = writer.write_event(Event::End(BytesEnd::new("m:CreateAttachmentResponseMessage")));
+        let _ = writer.write_event(Event::End(BytesEnd::new("m:ResponseMessages")));
+        let _ = writer.write_event(Event::End(BytesEnd::new("m:CreateAttachmentResponse")));
+        let _ = writer.write_event(Event::End(BytesEnd::new("s:Body")));
+        let _ = writer.write_event(Event::End(BytesEnd::new("s:Envelope")));
 
-    /// Generate EWS DeleteAttachment response XML
-    pub fn generate_delete_response_xml(&self, response: &DeleteAttachmentResponse) -> String {
-        let mut xml = String::new();
-        xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
-        xml.push_str("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">");
-        xml.push_str("<s:Body>");
-        xml.push_str("<m:DeleteAttachmentResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\">");
-        xml.push_str("<m:ResponseMessages>");
-        
-        for attachment_id in &response.deleted_attachment_ids {
-            xml.push_str("<m:DeleteAttachmentResponseMessage ResponseClass=\"Success\">");
-            xml.push_str(&format!("<m:ResponseCode>{}</m:ResponseCode>", response.response_code));
-            xml.push_str(&format!("<m:RootItemId Id=\"{}\"/>", attachment_id));
-            xml.push_str("</m:DeleteAttachmentResponseMessage>");
-        }
-        
-        xml.push_str("</m:ResponseMessages>");
-        xml.push_str("</m:DeleteAttachmentResponse>");
-        xml.push_str("</s:Body>");
-        xml.push_str("</s:Envelope>");
-        
-        xml
+        String::from_utf8(writer.into_inner().into_inner()).unwrap()
     }
-}
 
 /// XML escape helper
 fn xml_escape(input: &str) -> String {
