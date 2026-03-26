@@ -57,6 +57,8 @@ impl Config {
 
 /// Extract the host (and optional port) from a URL string.
 fn extract_host_from_url(url: &str) -> Option<String> {
+    url::Url::parse(url).ok()?.host_str().map(|h| h.to_string())
+}
     let url = url.trim();
     let after_scheme = url
         .strip_prefix("https://")
