@@ -565,55 +565,73 @@ impl EwsCalendarOps {
         ical
     }
     
-    fn apply_updates_to_ical(ical: &str, updates: &[PropertyUpdate]) -> Result<String, String> {
-        let mut lines: Vec<String> = ical.lines().map(|s| s.to_string()).collect();
-        
-        for update in updates {
-            match update {
-                PropertyUpdate::Set { property, value } => {
-                    // Find and replace or add property
-                    let prop_upper = property.to_uppercase();
-                    let mut found = false;
-                    
-                    for line in &mut lines {
-                        if line.to_uppercase().starts_with(&prop_upper) {
-                            *line = format!("{}:{}", property, value);
-                            found = true;
-                            break;
-                        }
-                    }
-                    
-                    if !found {
-                        // Add before END:VEVENT
-                        if let Some(pos) = lines.iter().position(|l| l.starts_with("END:VEVENT")) {
-                            lines.insert(pos, format!("{}:{}", property, value));
-                        }
+fn apply_updates_to_ical(ical: &str, updates: &[PropertyUpdate]) -> Result<String, String> {
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    // Unfold lines first
+    for line in ical.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            current_line.push_str(&line[1..]);
+        } else {
+            if !current_line.is_empty() {
+                lines.push(current_line);
+            }
+            current_line = line.to_string();
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    for update in updates {
+        match update {
+            PropertyUpdate::Set { property, value } => {
+                let prop_upper = property.to_uppercase();
+                let mut found = false;
+                for line in &mut lines {
+                    if line.to_uppercase().starts_with(&format!("{}:", prop_upper)) {
+                        *line = format!("{}:{}", property, value);
+                        found = true;
+                        break;
                     }
                 }
-                PropertyUpdate::Delete { property } => {
-                    let prop_upper = property.to_uppercase();
-                    lines.retain(|line| !line.to_uppercase().starts_with(&prop_upper));
-                }
-                PropertyUpdate::Append { property, value } => {
-                    // Add before END:VEVENT
+                if !found {
                     if let Some(pos) = lines.iter().position(|l| l.starts_with("END:VEVENT")) {
                         lines.insert(pos, format!("{}:{}", property, value));
                     }
                 }
             }
-        }
-        
-        // Update DTSTAMP
-        let now = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        for line in &mut lines {
-            if line.starts_with("DTSTAMP:") {
-                *line = format!("DTSTAMP:{}", now);
-                break;
+            PropertyUpdate::Delete { property } => {
+                let prop_upper = property.to_uppercase();
+                lines.retain(|line| !line.to_uppercase().starts_with(&format!("{}:", prop_upper)));
+            }
+            PropertyUpdate::Append { property, value } => {
+                if let Some(pos) = lines.iter().position(|l| l.starts_with("END:VEVENT")) {
+                    lines.insert(pos, format!("{}:{}", property, value));
+                }
             }
         }
-        
-        Ok(lines.join("\r\n"))
     }
+
+    // Update DTSTAMP
+    let now = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut dtstamp_found = false;
+    for line in &mut lines {
+        if line.starts_with("DTSTAMP:") {
+            *line = format!("DTSTAMP:{}", now);
+            dtstamp_found = true;
+            break;
+        }
+    }
+    if !dtstamp_found {
+        if let Some(pos) = lines.iter().position(|l| l.starts_with("BEGIN:VEVENT")) {
+            lines.insert(pos + 1, format!("DTSTAMP:{}", now));
+        }
+    }
+
+    Ok(lines.join("\r\n"))
+}
     
     fn parse_calendar_response(ical: &str, item_id: &str, change_key: &str) -> Result<CalendarItemResponse, ErrorResponse> {
         // Parse iCalendar and build response
