@@ -549,7 +549,21 @@ impl EwsCalendarOps {
             event.set_location(location);
         }
 
-        calendar.push(event);
+        if request.is_all_day {
+            event.set_start(request.start.date_naive());
+            event.set_end(request.end.date_naive());
+        } else {
+            event.set_start(request.start);
+            event.set_end(request.end);
+        }
+
+        if request.is_recurring {
+            if let Some(ref recurrence) = request.recurrence {
+                event.push(Property::new("RRULE", &build_rrule(recurrence).trim()));
+            }
+        }
+
+        if let Some(ref body) = request.body {
         calendar.to_string()
     }
     
