@@ -243,6 +243,12 @@ impl ExceptionManager {
                 xml.push_str("<IsException>1</IsException>");
                 
                 if let Some(ref start) = exception.modified_start {
+                    xml.push_str(&format!("<StartTime>{}</StartTime>", start.format("%Y-%m-%dT%H:%M:%S.000Z")));
+                }
+                
+                if let Some(ref end) = exception.modified_end {
+                    xml.push_str(&format!("<EndTime>{}</EndTime>", end.format("%Y-%m-%dT%H:%M:%S.000Z")));
+                }
                     xml.push_str(&format!(
                         "<StartTime>{}</StartTime>",
                         start.format("%Y-%m-%dT%H:%M:%S.000Z")
