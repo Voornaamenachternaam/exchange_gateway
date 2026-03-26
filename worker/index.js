@@ -51,7 +51,7 @@ export default {
       path.includes('/autodiscover.json')
     ) {
       if (path.includes('.json')) {
-        return handleAutodiscoverJson(env);
+        return handleAutodiscoverJson(env, request);
       }
       if (path.endsWith('.svc')) {
         return handleAutodiscoverSoap(request, env);
@@ -60,6 +60,12 @@ export default {
     }
 
     return new Response('Not Found', { status: 404 });
+  },
+
+  // Scheduled cron trigger: clean up expired idempotency keys.
+  // Configured in wrangler.toml: crons = ["0 * * * *"]
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(cleanupIdempotencyKeys(env));
   }
 };
 
@@ -292,13 +298,13 @@ async function handleGetClientSyncCommand(url, request, env) {
   return Response.json((result.results || [])[0] || null);
 }
 
-async function recordChangeJournal(env, owner, serverId, op) {
+async function recordChangeJournal(env, owner, serverId, op, resourceHref) {
   await env.EXCHANGE_DB
     .prepare(`
-      INSERT INTO change_journal (owner, server_id, op, created_at)
-      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO change_journal (owner, server_id, op, resource_href, created_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
     `)
-    .bind(owner, serverId, op)
+    .bind(owner, serverId, op, resourceHref || null)
     .run();
 }
 
@@ -331,7 +337,7 @@ async function handleUpsertItemMap(request, env) {
     .bind(owner, server_id)
     .run();
 
-  await recordChangeJournal(env, owner, server_id, 'upsert');
+  await recordChangeJournal(env, owner, server_id, 'upsert', resource_href);
 
   return Response.json({ success: true });
 }
@@ -399,7 +405,7 @@ async function handleAddDeleteTombstone(request, env) {
     .bind(owner, serverId)
     .run();
 
-  await recordChangeJournal(env, owner, serverId, 'delete');
+  await recordChangeJournal(env, owner, serverId, 'delete', null);
 
   return Response.json({ success: true });
 }
@@ -500,19 +506,54 @@ async function handleApiRequest(request, env) {
   }
 }
 
-async function handleAutodiscoverJson(env) {
+async function handleAutodiscoverJson(env, request) {
   const domain = env.GATEWAY_HOST;
   if (!domain) return new Response('Config Error', { status: 500 });
 
-  const payload = {
-    Protocol: 'Exchange',
-    Url: `https://${domain}/EWS/Exchange.asmx`,
-    EwsUrl: `https://${domain}/EWS/Exchange.asmx`,
-    ActiveSyncUrl: `https://${domain}/Microsoft-Server-ActiveSync`,
-    MobileSyncUrl: `https://${domain}/Microsoft-Server-ActiveSync`,
-    ExternalEwsUrl: `https://${domain}/EWS/Exchange.asmx`,
-    InternalEwsUrl: `https://${domain}/EWS/Exchange.asmx`
-  };
+  const url = new URL(request.url);
+  // Support Autodiscover v2: ?Email=…&Protocol=… query parameters.
+  // Modern Outlook for Windows 11 and Android 15 use this form.
+  const protocol = (url.searchParams.get('Protocol') || url.searchParams.get('protocol') || 'Exchange').toLowerCase();
+
+  const ewsUrl = `https://${domain}/EWS/Exchange.asmx`;
+  const asUrl = `https://${domain}/Microsoft-Server-ActiveSync`;
+  const v1Url = `https://${domain}/autodiscover/autodiscover.xml`;
+
+  let payload;
+  if (protocol === 'activesync') {
+    payload = {
+      Protocol: 'ActiveSync',
+      Url: asUrl,
+      ActiveSyncUrl: asUrl,
+      MobileSyncUrl: asUrl,
+    };
+  } else if (protocol === 'ews') {
+    payload = {
+      Protocol: 'Ews',
+      Url: ewsUrl,
+      EwsUrl: ewsUrl,
+      ExternalEwsUrl: ewsUrl,
+      InternalEwsUrl: ewsUrl,
+    };
+  } else if (protocol === 'autodiscoverv1') {
+    payload = {
+      Protocol: 'AutodiscoverV1',
+      Url: v1Url,
+    };
+  } else {
+    // Default: full Exchange response with all endpoints.
+    payload = {
+      Protocol: 'Exchange',
+      Url: ewsUrl,
+      EwsUrl: ewsUrl,
+      ExternalEwsUrl: ewsUrl,
+      InternalEwsUrl: ewsUrl,
+      ActiveSyncUrl: asUrl,
+      MobileSyncUrl: asUrl,
+      ExternalEwsVersion: 'Exchange2016',
+      EwsSupportedSchemas: 'Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016',
+    };
+  }
 
   return new Response(JSON.stringify(payload), {
     headers: privateNoStoreHeaders({ 'Content-Type': 'application/json' })
@@ -931,3 +972,18 @@ async function handleListJournalSinceSeq(url, request, env) {
 
   return Response.json(result.results || []);
 }
+
+async function cleanupIdempotencyKeys(env) {
+  // Remove idempotency keys older than 24 hours to prevent unbounded growth.
+  try {
+    await env.EXCHANGE_DB
+      .prepare(`
+        DELETE FROM api_idempotency
+        WHERE created_at < datetime('now', '-24 hours')
+      `)
+      .run();
+  } catch (e) {
+    console.error('Failed to clean up idempotency keys:', e);
+  }
+}
+
