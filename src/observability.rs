@@ -486,9 +486,6 @@ impl Histogram {
             values.push(value);
         }
     }
-            values.push(value);
-        }
-    }
 
     /// Get all values
     pub fn get_values(&self) -> Vec<f64> {
