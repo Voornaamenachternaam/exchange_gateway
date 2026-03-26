@@ -508,7 +508,7 @@ impl Histogram {
         if values.is_empty() {
             return 0.0;
         }
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values.sort_by(|a, b| a.total_cmp(b));
         let index = ((p / 100.0) * (values.len() - 1) as f64) as usize;
         values[index.min(values.len() - 1)]
     }
