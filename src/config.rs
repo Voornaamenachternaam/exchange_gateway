@@ -71,19 +71,9 @@ fn extract_host_from_url(url: &str) -> Option<String> {
     url::Url::parse(url).ok()?.host_str().map(|h| h.to_string())
 }
 fn extract_host_from_url(url: &str) -> Option<String> {
-    url::Url::parse(url).ok()?.host_str().map(|h| h.to_string())
-}
+/// Extract the host (and optional port) from a URL string.
 fn extract_host_from_url(url: &str) -> Option<String> {
-    let url = url.trim();
-    let after_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    // Strip any path component.
-    let host_and_port = after_scheme.split('/').next()?;
-    if host_and_port.is_empty() {
-        return None;
-    }
-    Some(host_and_port.to_string())
+    url::Url::parse(url).ok()?.host_str().map(|h| h.to_string())
 }
 
 #[cfg(test)]
