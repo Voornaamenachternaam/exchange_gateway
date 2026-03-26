@@ -715,37 +715,20 @@ impl CalDavClientExt {
 
     /// Parse iCalendar data into CalendarEvent
     fn parse_ical_event(&self, ical: &str) -> Option<CalendarEvent> {
-        let mut event = CalendarEvent::default();
+        use icalendar::{parser::unfold, Calendar, Component, Event};
+        let calendar = ical.parse::<Calendar>().ok()?;
+        let event = calendar.components().find_map(|c| c.as_event())?;
 
-        for line in ical.lines() {
-            if line.starts_with("UID:") {
-                event.uid = line[4..].to_string();
-            } else if line.starts_with("SUMMARY:") {
-                event.summary = Some(line[8..].to_string());
-            } else if line.starts_with("DTSTART") {
-                if let Some(pos) = line.find(':') {
-                    event.dt_start = Some(line[pos + 1..].to_string());
-                }
-            } else if line.starts_with("DTEND") {
-                if let Some(pos) = line.find(':') {
-                    event.dt_end = Some(line[pos + 1..].to_string());
-                }
-            } else if line.starts_with("LOCATION:") {
-                event.location = Some(line[9..].to_string());
-            } else if line.starts_with("DESCRIPTION:") {
-                event.description = Some(line[12..].to_string());
-            } else if line.starts_with("ORGANIZER") {
-                if let Some(pos) = line.find("mailto:") {
-                    event.organizer_email = Some(line[pos + 7..].to_string());
-                }
-            }
-        }
-
-        if event.uid.is_empty() {
-            None
-        } else {
-            Some(event)
-        }
+        Some(CalendarEvent {
+            uid: event.get_uid()?.to_string(),
+            summary: event.get_summary().map(|s| s.to_string()),
+            dt_start: event.get_start().map(|dt| dt.to_string()),
+            dt_end: event.get_end().map(|dt| dt.to_string()),
+            location: event.get_location().map(|l| l.to_string()),
+            description: event.get_description().map(|d| d.to_string()),
+            organizer_email: event.get_organizer().map(|o| o.to_string()),
+            ..Default::default()
+        })
     }
 }
 
