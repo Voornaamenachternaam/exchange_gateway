@@ -258,7 +258,7 @@ impl SlidingWindowRateLimiter {
         
         self.counters.retain(|_, counter| {
             counter.clean_old(window, now);
-            !counter.timestamps.is_empty() || counter.blocked_until.is_some()
+            !counter.timestamps.is_empty() || counter.is_blocked(now)
         });
     }
 }
