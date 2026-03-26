@@ -360,7 +360,34 @@ impl EwsCalendarOps {
         let calendar_url = format!("{}/calendars/default/", caldav.base_url);
         
         // Build CalDAV query from restriction
-        let query = Self::build_caldav_query(&request.restriction, request.max_items)?;
+        // Build CalDAV query from restriction
+        let query = Self::build_caldav_query(&request.restriction, request.max_items + request.offset as i32)?;
+        
+        // Execute query
+        let events = caldav.query_calendar(&calendar_url, &query).await
+            .map_err(|e| ErrorResponse::internal_error(format!("Query failed: {}", e)))?;
+        
+        // Parse responses
+        let mut responses = Vec::new();
+        for event in events {
+            let change_key = generate_change_key();
+            if let Ok(response) = Self::parse_calendar_response(&event.data, &event.uid, &change_key) {
+                responses.push(response);
+            }
+        }
+        
+        // Apply sorting
+        Self::apply_sorting(&mut responses, &request.sort_order);
+        
+        // Apply pagination
+        let offset = request.offset as usize;
+        let max_items = request.max_items as usize;
+        let paginated: Vec<_> = responses.into_iter()
+            .skip(offset)
+            .take(max_items)
+            .collect();
+        
+        Ok(paginated)
         
         // Execute query
         let events = caldav.query_calendar(&calendar_url, &query).await
