@@ -724,21 +724,13 @@ fn build_eas_event_elements(
             }
             builder.add_element("AttendeeType", &attendee.attendee_type.to_string());
             builder.end_element("Attendee");
-        }
-        builder.end_element("Attendees");
-    }
+    let sanitized_name = attachment.name.replace('\n', "").replace('\r', "");
+    let sanitized_type = attachment.content_type.replace('\n', "").replace('\r', "");
 
-    // Add recurrence if present
-    if let Some(ref recurrence) = event.recurrence {
-        builder.start_element("Recurrence", "Calendar");
-        builder.add_element("Type", &recurrence.recurrence_type.to_string());
-        if let Some(ref until) = recurrence.until {
-            builder.add_element("Until", until);
-        }
-        if let Some(occurrences) = recurrence.occurrences {
-            builder.add_element("Occurrences", &occurrences.to_string());
-        }
-        if let Some(interval) = recurrence.interval {
+    let attach_line = format!(
+        "ATTACH;FMTTYPE={};FILENAME={}:{}",
+        sanitized_type, sanitized_name, encoded
+    );
             builder.add_element("Interval", &interval.to_string());
         }
         if let Some(day_of_week) = recurrence.day_of_week {
