@@ -289,6 +289,9 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
 ///   - `AutodiscoverV1`   → returns a redirect URL for v1 Autodiscover
 ///   - (omitted/unknown)  → returns the Exchange / EWS endpoint (default)
 pub fn handle_autodiscover_json(host: &str, protocol: Option<&str>, email: Option<&str>) -> AdResponse {
+    if host.contains(['/', '@', '?', '#']) {
+        return (StatusCode::BAD_REQUEST, vec![], "Invalid host".to_string());
+    }
     let ews_url = format!("https://{}/EWS/Exchange.asmx", host);
     let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host);
     let v1_url = format!("https://{}/autodiscover/autodiscover.xml", host);
