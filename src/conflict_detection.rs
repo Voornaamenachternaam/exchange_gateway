@@ -443,19 +443,10 @@ pub fn build_eas_conflict_response(item_id: &str, server_version: &str) -> Strin
     <Status>7</Status>
     <ServerVersion>{}</ServerVersion>
 </Conflict>"#,
-        crate::xml_builder::xml_escape(item_id),
-        crate::xml_builder::xml_escape(server_version)
-    )
-}
+use crate::xml_builder;
 
-/// Build EWS conflict response
-pub fn build_ews_conflict_response(item_id: &str) -> String {
-    format!(
-        r#"<t:ConflictResolution>NeverOverwrite</t:ConflictResolution>
-<t:ConflictItems>
-    <t:ItemId Id="{}" />
-</t:ConflictItems>"#,
-        crate::xml_builder::xml_escape(item_id)
+/// Build EAS conflict response
+pub fn build_eas_conflict_response(item_id: &str, server_version: &str) -> String {
     )
 }
 
