@@ -51,10 +51,88 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     let mut buf = Vec::new();
     let mut results = Vec::new();
 
-    #[derive(PartialEq)]
+    #[derive(PartialEq, Clone)]
     enum State {
         Root,
         InVerb(ChangeVerb),
+        CollectPayload(ChangeVerb, String, usize),
+    }
+
+    let mut state = State::Root;
+    let mut payload_buf = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let local = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
+                match &state {
+                    State::Root => {
+                        if let Some(verb) = match local.as_str() {
+                            "SetItemField" => Some(ChangeVerb::Set),
+                            "AppendToItemField" => Some(ChangeVerb::Append),
+                            "DeleteItemField" => Some(ChangeVerb::Delete),
+                            _ => None,
+                        } {
+                            state = State::InVerb(verb);
+                        }
+                    }
+                    State::InVerb(verb) => {
+                        if local == "FieldURI" {
+                            let mut field_uri = String::new();
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"FieldURI" {
+                                    if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                                        field_uri = v.to_string();
+                                    }
+                                }
+                            }
+                            if !field_uri.is_empty() {
+                                state = State::CollectPayload(verb.clone(), field_uri, 1);
+                                payload_buf.clear();
+                            }
+                        }
+                    }
+                    State::CollectPayload(verb, uri, depth) => {
+                        state = State::CollectPayload(verb.clone(), uri.clone(), depth + 1);
+                        payload_buf.push_str(&format!("<{}>", local));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let local = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
+                match &state {
+                    State::CollectPayload(verb, uri, depth) => {
+                        if *depth == 1 && matches!(local.as_str(), "SetItemField" | "AppendToItemField" | "DeleteItemField") {
+                            results.push(EwsFieldChange { verb: verb.clone(), field_uri: uri.clone(), payload_xml: payload_buf.clone() });
+                            state = State::Root;
+                        } else {
+                            payload_buf.push_str(&format!("</{}>", local));
+                            state = State::CollectPayload(verb.clone(), uri.clone(), depth - 1);
+                        }
+                    }
+                    State::InVerb(_) => {
+                        if matches!(local.as_str(), "SetItemField" | "AppendToItemField" | "DeleteItemField") {
+                            state = State::Root;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if let State::CollectPayload(_, _, _) = &state {
+                    if let Ok(text) = t.decode() {
+                        payload_buf.push_str(&text);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    results
+}
         CollectPayload(ChangeVerb, String, usize), // (verb, field_uri, depth)
     }
 
