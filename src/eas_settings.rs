@@ -535,25 +535,44 @@ impl SettingsHandler {
 
     /// Parse Settings request from XML
     pub fn parse_request(&self, xml: &str) -> Result<SettingsRequest, String> {
-        // Simplified parsing - in production, use a proper XML parser
-        if xml.contains("<Get>") && xml.contains("<UserInformation>") {
-            Ok(SettingsRequest::GetUserInformation)
-        } else if xml.contains("<Get>") && xml.contains("<Oof>") {
-            Ok(SettingsRequest::GetOofSettings)
-        } else if xml.contains("<Set>") && xml.contains("<Oof>") {
-            // Parse OOF settings from XML
-            Ok(SettingsRequest::SetOofSettings(OofSettings {
-                state: OofState::Disabled,
-                external_audience: ExternalAudience::None,
-                start_time: None,
-                end_time: None,
-                internal_reply: None,
-                external_reply: None,
-                body_type: OofBodyType::PlainText,
-            }))
-        } else {
-            Err("Unknown Settings request type".to_string())
+        use quick_xml::events::Event;
+        use quick_xml::reader::Reader;
+
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        let mut is_get = false;
+        let mut is_set = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => {
+                    match e.name().local_name().as_ref() {
+                        b"Get" => is_get = true,
+                        b"Set" => is_set = true,
+                        b"UserInformation" if is_get => return Ok(SettingsRequest::GetUserInformation),
+                        b"Oof" if is_get => return Ok(SettingsRequest::GetOofSettings),
+                        b"Oof" if is_set => {
+                            return Ok(SettingsRequest::SetOofSettings(OofSettings {
+                                state: OofState::Disabled,
+                                external_audience: ExternalAudience::None,
+                                start_time: None,
+                                end_time: None,
+                                internal_reply: None,
+                                external_reply: None,
+                                body_type: OofBodyType::PlainText,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(format!("XML parse error: {}", e)),
+                _ => (),
+            }
+            buf.clear();
         }
+        Err("Unknown Settings request type".to_string())
     }
 }
 
