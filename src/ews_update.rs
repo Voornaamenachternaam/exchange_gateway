@@ -456,12 +456,11 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                     }
                 }
             }
-                ChangeVerb::Delete => item.rrule = None,
-                _ => {
-                    item.rrule = parse_ews_recurrence(payload);
-                }
-            },
-            "calendar:recurrence" => item.rrule = parse_ews_recurrence(payload),
+441:                ChangeVerb::Delete => item.rrule = None,
+442:                _ => {
+443:                    item.rrule = parse_ews_recurrence(payload);
+444:                }
+445:            },
             "calendar:requiredattendees"
             | "calendar:optionalattendees" => {
                 let attendees = parse_ews_attendees(payload);
