@@ -1,4 +1,4 @@
-//! EWS Attachment Operations - Complete Attachment CRUD for EWS
+mod ews_attachments;
 //!
 //! This module implements comprehensive Exchange Web Services attachment operations
 //! including CreateAttachment, GetAttachment, DeleteAttachment with support for
