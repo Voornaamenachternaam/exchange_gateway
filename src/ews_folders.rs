@@ -226,7 +226,7 @@ pub fn validate_folder_request(
 
     // Check explicit folder IDs — must belong to this owner.
     for id in [explicit_id, explicit_sync_id].into_iter().flatten() {
-        if id != calendar_id && id != root_id
+        if id != "root" && id != calendar_id && id != root_id
             && !["FLD-", "CAL-", "ROOT-"]
                 .iter()
                 .any(|prefix| id.starts_with(prefix))
