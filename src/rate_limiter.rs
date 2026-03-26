@@ -225,6 +225,7 @@ impl SlidingWindowRateLimiter {
             // Apply cooldown if configured
             if let Some(cooldown) = self.config.cooldown {
                 counter.block(cooldown, now);
+                return RateLimitResult::Denied { retry_after: retry_after.max(cooldown) };
             }
 
             return RateLimitResult::Denied { retry_after };
