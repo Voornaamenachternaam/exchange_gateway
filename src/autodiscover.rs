@@ -343,6 +343,13 @@ fn serde_json_string(s: &str) -> String {
 // ---------------------------------------------------------------------------
 // Axum handler integration types (used from main.rs routing if desired)
 // ---------------------------------------------------------------------------
+fn serde_json_string(s: &str) -> String {
+    serde_json::to_string(s).expect("Failed to serialize string to JSON")
+}
+
+// ---------------------------------------------------------------------------
+// Axum handler integration types (used from main.rs routing if desired)
+// ---------------------------------------------------------------------------
 
 /// Query parameters for Autodiscover v2 JSON.
 #[derive(serde::Deserialize)]
