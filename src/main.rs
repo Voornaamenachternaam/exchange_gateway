@@ -48,16 +48,42 @@ use crate::storage::Storage;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Middleware: reject bodies whose Content-Length exceeds MAX_BODY_BYTES.
-async fn body_size_limit(req: Request, next: Next) -> Response {
-    if let Some(cl) = req
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
-    {
-        if cl > MAX_BODY_BYTES {
-            return (StatusCode::PAYLOAD_TOO_LARGE, "Request body exceeds limit").into_response();
-        }
+use axum::{
+    Router,
+    extract::Request,
+    http::{StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{any, get, post},
+};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tower_http::limit::RequestBodyLimitLayer;
+use tracing_subscriber::EnvFilter;
+
+mod autodiscover;
+mod caldav;
+mod calendar;
+mod config;
+mod eas;
+mod ews;
+mod ews_folders;
+mod ews_update;
+mod models;
+mod storage;
+mod sync;
+mod timezone;
+mod wbxml;
+
+use crate::config::Config;
+use crate::models::AppState;
+use crate::storage::Storage;
+
+/// Maximum permitted request body size (4 MiB).
+/// All legitimate Outlook EWS/EAS XML payloads are well within this limit.
+/// Enforced via `RequestBodyLimitLayer`, which caps both fixed-length and chunked bodies.
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
     }
     next.run(req).await
 }
