@@ -596,7 +596,8 @@ impl CalDavClientExt {
 
         // Add EXDATE for the instance
         let exdate = instance_date.format("%Y%m%dT%H%M%SZ").to_string();
-        let exdate_line = format!("EXDATE:{\n}\r\n", exdate);
+        let exdate_line = format!("EXDATE:{}\r\n", exdate);
+
 
         let mut updated = event_data;
         if let Some(pos) = updated.find("END:VEVENT") {
