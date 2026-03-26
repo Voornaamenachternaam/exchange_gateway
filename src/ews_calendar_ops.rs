@@ -835,18 +835,21 @@ fn generate_change_key() -> String {
         .collect()
 }
 
-// Placeholder trait implementations for CalDavClientExt
-trait CalDavClientExt {
-    async fn put_calendar_object(&self, url: &str, data: &str) -> Result<(), String>;
-    async fn get_calendar_object(&self, url: &str) -> Result<String, String>;
-    async fn delete_calendar_object(&self, url: &str) -> Result<(), String>;
-    async fn soft_delete_item(&self, url: &str) -> Result<(), String>;
-    async fn move_item_to_trash(&self, url: &str, trash_url: &str) -> Result<(), String>;
-    async fn query_calendar(&self, calendar_url: &str, query: &str) -> Result<Vec<CalDavEvent>, String>;
-    async fn query_calendar_changes(&self, calendar_url: &str, since: DateTime<Utc>) -> Result<Vec<CalDavChange>, String>;
-}
-
-struct CalDavEvent {
-    uid: String,
-    data: String,
-}
+--- src/ews_calendar_ops.rs
++++ src/ews_calendar_ops.rs
+@@ -838,15 +838,0 @@
+-// Placeholder trait implementations for CalDavClientExt
+-trait CalDavClientExt {
+-    async fn put_calendar_object(&self, url: &str, data: &str) -> Result<(), String>;
+-    async fn get_calendar_object(&self, url: &str) -> Result<String, String>;
+-    async fn delete_calendar_object(&self, url: &str) -> Result<(), String>;
+-    async fn soft_delete_item(&self, url: &str) -> Result<(), String>;
+-    async fn move_item_to_trash(&self, url: &str, trash_url: &str) -> Result<(), String>;
+-    async fn query_calendar(&self, calendar_url: &str, query: &str) -> Result<Vec<CalDavEvent>, String>;
+-    async fn query_calendar_changes(&self, calendar_url: &str, since: DateTime<Utc>) -> Result<Vec<CalDavChange>, String>;
+-}
+-
+-struct CalDavEvent {
+-    uid: String,
+-    data: String,
+-}
