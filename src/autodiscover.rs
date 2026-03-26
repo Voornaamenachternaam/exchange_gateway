@@ -351,6 +351,10 @@ fn serde_json_string(s: &str) -> String {
 // Axum handler integration types (used from main.rs routing if desired)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Axum handler integration types (used from main.rs routing if desired)
+// ---------------------------------------------------------------------------
+
     #[serde(rename = "Email", alias = "email")]
     pub email: Option<String>,
     #[serde(rename = "Protocol", alias = "protocol")]
