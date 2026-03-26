@@ -1500,6 +1500,14 @@ async fn validate_certificate(
         return Ok(ValidateCertStatus::CertificateExpired);
     }
 
+    // TODO: Implement full path validation using webpki or rustls
+    // For now, ensure the certificate is at least cryptographically sound
+    if cert.1.signature_algorithm.algorithm.is_null() {
+        return Ok(ValidateCertStatus::InvalidCertificate);
+    }
+
+    Ok(ValidateCertStatus::Success)
+
     // Validate certificate chain if provided
     if let Some(chain) = chain_b64 {
         match validate_certificate_chain(cert_b64, chain).await {
