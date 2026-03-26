@@ -477,7 +477,15 @@ impl Histogram {
 
     /// Record a value
     pub fn record(&self, value: f64) {
+    /// Record a value
+    pub fn record(&self, value: f64) {
         if let Ok(mut values) = self.values.lock() {
+            if values.len() >= 1000 {
+                values.remove(0);
+            }
+            values.push(value);
+        }
+    }
             values.push(value);
         }
     }
