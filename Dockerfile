@@ -1,7 +1,7 @@
 # Dockerfile
 # Gap 8 (Security hardening): non-root runtime user, health check, clean dependency cache.
 
-FROM rust:1.94.0-slim AS builder
+FROM rust:1.94.1-slim AS builder
 WORKDIR /app
 COPY Cargo.toml ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
