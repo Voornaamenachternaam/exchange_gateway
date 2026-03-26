@@ -686,7 +686,7 @@ fn apply_updates_to_ical(ical: &str, updates: &[PropertyUpdate]) -> Result<Strin
                 Ok(format!("<c:prop-filter name=\"{}\"><c:text-match match-type=\"contains\">{}</c:text-match></c:prop-filter>",
                     field, xml_escape(value)))
             }
-            _ => Ok(String::new()),
+            _ => Err("Unsupported restriction type".to_string()),
         }
     }
     
