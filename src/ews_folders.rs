@@ -224,13 +224,28 @@ pub fn validate_folder_request(
 
     // Check explicit folder IDs — must belong to this owner.
     for id in [explicit_id, explicit_sync_id].into_iter().flatten() {
-        if id != "root" && id != calendar_id && id != root_id
-            && !["FLD-", "CAL-", "ROOT-"]
-                .iter()
-                .any(|prefix| id.starts_with(prefix))
-        {
+    let all_owner_ids: Vec<String> = [
+        DistinguishedFolder::Calendar,
+        DistinguishedFolder::MsgFolderRoot,
+        DistinguishedFolder::Inbox,
+        DistinguishedFolder::SentItems,
+        DistinguishedFolder::DeletedItems,
+        DistinguishedFolder::Drafts,
+        DistinguishedFolder::Outbox,
+        DistinguishedFolder::JunkEmail,
+        DistinguishedFolder::Contacts,
+        DistinguishedFolder::Tasks,
+        DistinguishedFolder::Notes,
+        DistinguishedFolder::Journal,
+    ]
+    .iter()
+    .map(|&f| folder_id_for(owner, f))
+    .collect();
+    for id in [explicit_id, explicit_sync_id].into_iter().flatten() {
+        if id != "root" && !all_owner_ids.iter().any(|oid| oid == id) {
             return Some("ErrorFolderNotFound");
         }
+    }
     }
 
     // Check DistinguishedFolderId — any valid distinguished ID is accepted,
