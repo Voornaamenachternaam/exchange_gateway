@@ -440,7 +440,38 @@ impl EwsCalendarOps {
         let mut updates = Vec::new();
         let mut deletes = Vec::new();
         
+        // Build sync results
+        let mut creates = Vec::new();
+        let mut updates = Vec::new();
+        let mut deletes = Vec::new();
+        
         for change in changes {
+            if request.ignore.contains(&change.uid) {
+                continue;
+            }
+            
+            if (creates.len() + updates.len() + deletes.len()) >= request.max_changes as usize {
+                break;
+            }
+            
+            let change_key = generate_change_key();
+            
+            match change.change_type {
+                CalDavChangeType::Create => {
+                    if let Ok(response) = Self::parse_calendar_response(&change.data, &change.uid, &change_key) {
+                        creates.push(response);
+                    }
+                }
+                CalDavChangeType::Update => {
+                    if let Ok(response) = Self::parse_calendar_response(&change.data, &change.uid, &change_key) {
+                        updates.push(response);
+                    }
+                }
+                CalDavChangeType::Delete => {
+                    deletes.push(change.uid);
+                }
+            }
+        }
             if request.ignore.contains(&change.uid) {
                 continue;
             }
