@@ -101,82 +101,30 @@ pub struct InstanceIdChange {
 }
 
 /// Parses InstanceId from Sync request for v16.0+ protocol
+use serde::Deserialize;
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct InstanceIdChange {
+    #[serde(rename = "ServerId")]
+    pub server_id: String,
+    #[serde(rename = "InstanceId")]
+    pub instance_id: String,
+    #[serde(skip)]
+    pub is_exception_change: bool,
+    #[serde(skip)]
+    pub is_exception_delete: bool,
+}
+
 pub fn parse_instance_id_changes(xml: &str) -> Vec<InstanceIdChange> {
-    let mut changes = Vec::new();
-    let mut reader = quick_xml::Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut current_change: Option<InstanceIdChange> = None;
-    let mut in_change = false;
-    let mut in_delete = false;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(e)) => {
-                let name = e.name();
-                match name.local_name().as_ref() {
-                    b"Change" => {
-                        in_change = true;
-                        current_change = Some(InstanceIdChange::default());
-                    }
-                    b"Delete" => {
-                        in_delete = true;
-                        current_change = Some(InstanceIdChange::default());
-                    }
-                    _ => {}
-                }
-            }
-            Ok(quick_xml::events::Event::Text(t)) => {
-                if let Some(ref mut change) = current_change {
-                    if let Ok(text) = t.decode() {
-                        let text = text.into_owned();
-                        // Check for InstanceId element (airsyncbase namespace)
-                        if xml.contains("InstanceId")
-                            && (xml.contains("airsyncbase:InstanceId")
-                                || xml.contains("<InstanceId"))
-                        {
-                            // This is a v16.0+ exception change
-                            if let Some(prev_text) = xml.rfind("<InstanceId").and_then(|pos| {
-                                let start = pos + "<InstanceId".len();
-                                xml[start..].find('>').map(|end| &xml[start..start + end])
-                            }) {
-                                // Extract the InstanceId value from previous parsing
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(quick_xml::events::Event::End(e)) => {
-                let name = e.name();
-                match name.local_name().as_ref() {
-                    b"Change" => {
-                        if let Some(change) = current_change.take() {
-                            if !change.server_id.is_empty() {
-                                changes.push(change);
-                            }
-                        }
-                        in_change = false;
-                    }
-                    b"Delete" => {
-                        if let Some(mut change) = current_change.take() {
-                            change.is_exception_delete = true;
-                            if !change.server_id.is_empty() {
-                                changes.push(change);
-                            }
-                        }
-                        in_delete = false;
-                    }
-                    _ => {}
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
+    use quick_xml::de::from_str;
+    
+    // Using quick-xml's deserialization for robust parsing
+    // This assumes the XML structure aligns with the InstanceIdChange struct
+    match from_str::<Vec<InstanceIdChange>>(xml) {
+        Ok(changes) => changes,
+        Err(_) => Vec::new(),
     }
-
-    changes
+}
 }
 
 /// Extracts InstanceId value from XML element
