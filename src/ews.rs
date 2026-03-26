@@ -2288,10 +2288,8 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                 _ => current_item.sensitivity,
             };
         }
-        if body.contains("ResponseRequested") {
-            if let Some(v) = extract_ews_field(body, b"ResponseRequested") {
-                current_item.response_requested = Some(v.eq_ignore_ascii_case("true"));
-            }
+        if let Some(v) = extract_ews_field(body, b"ResponseRequested") {
+            current_item.response_requested = Some(v.eq_ignore_ascii_case("true"));
         }
         if let Some(v) = extract_ews_field(body, b"DisallowNewTimeProposal") {
             current_item.disallow_new_time_proposal = Some(v.eq_ignore_ascii_case("true"));
