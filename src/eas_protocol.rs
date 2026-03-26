@@ -103,18 +103,6 @@ pub struct InstanceIdChange {
 /// Parses InstanceId from Sync request for v16.0+ protocol
 use serde::Deserialize;
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct InstanceIdChange {
-    #[serde(rename = "ServerId")]
-    pub server_id: String,
-    #[serde(rename = "InstanceId")]
-    pub instance_id: String,
-    #[serde(skip)]
-    pub is_exception_change: bool,
-    #[serde(skip)]
-    pub is_exception_delete: bool,
-}
-
 pub fn parse_instance_id_changes(xml: &str) -> Vec<InstanceIdChange> {
     use quick_xml::de::from_str;
     
@@ -124,7 +112,6 @@ pub fn parse_instance_id_changes(xml: &str) -> Vec<InstanceIdChange> {
         Ok(changes) => changes,
         Err(_) => Vec::new(),
     }
-}
 }
 
 /// Extracts InstanceId value from XML element
