@@ -455,114 +455,44 @@ impl EwsCalendarOps {
     // Helper methods
     
     fn build_ical_from_request(request: &CreateCalendarItemRequest, uid: &str) -> String {
-        let now = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        
-        let mut ical = format!(
-            "BEGIN:VCALENDAR\r\n\
-             VERSION:2.0\r\n\
-             PRODID:-//Exchange Gateway//EN\r\n\
-             METHOD:PUBLISH\r\n\
-             BEGIN:VEVENT\r\n\
-             UID:{}\r\n\
-             DTSTAMP:{}\r\n",
-            uid, now
-        );
-        
-        // Add organizer
+        use icalendar::{Calendar, Event, Component, Property};
+
+        let mut calendar = Calendar::new();
+        calendar.push(Property::new("VERSION", "2.0"));
+        calendar.push(Property::new("PRODID", "-//Exchange Gateway//EN"));
+        calendar.push(Property::new("METHOD", "PUBLISH"));
+
+        let mut event = Event::new();
+        event.set_uid(uid);
+        event.set_dtstamp(Utc::now());
+        event.set_summary(&request.subject);
+
         if let Some(ref email) = request.organizer_email {
-            let name_part = request.organizer_name.as_ref()
-                .map(|n| format!("CN={};", n))
-                .unwrap_or_default();
-            ical.push_str(&format!(
-                "ORGANIZER;{}{}:mailto:{}\r\n",
-                name_part,
-                if request.is_recurring { "RSVP=TRUE;" } else { "" },
-                email
-            ));
+            let mut organizer = Property::new("ORGANIZER", &format!("mailto:{}", email));
+            if let Some(ref name) = request.organizer_name {
+                organizer.add(Property::new("CN", name));
+            }
+            event.push(organizer);
         }
-        
-        // Add attendees
-        for attendee in &request.attendees {
-            let name_part = attendee.name.as_ref()
-                .map(|n| format!("CN={};", n))
-                .unwrap_or_default();
-            let role = match attendee.attendee_type {
-                1 => "REQ-PARTICIPANT",
-                2 => "OPT-PARTICIPANT",
-                _ => "NON-PARTICIPANT",
-            };
-            let partstat = match attendee.attendee_status {
-                Some(3) => "ACCEPTED",
-                Some(2) => "TENTATIVE",
-                Some(4) => "DECLINED",
-                _ => "NEEDS-ACTION",
-            };
-            
-            ical.push_str(&format!(
-                "ATTENDEE;{}ROLE={};PARTSTAT={};RSVP=TRUE:mailto:{}\r\n",
-                name_part, role, partstat, attendee.email
-            ));
-        }
-        
-        // Add times
+
         if request.is_all_day {
-            ical.push_str(&format!(
-                "DTSTART;VALUE=DATE:{}\r\n",
-                request.start.format("%Y%m%d")
-            ));
-            ical.push_str(&format!(
-                "DTEND;VALUE=DATE:{}\r\n",
-                request.end.format("%Y%m%d")
-            ));
+            event.set_start(request.start.date_naive());
+            event.set_end(request.end.date_naive());
         } else {
-            ical.push_str(&format!(
-                "DTSTART:{}\r\n",
-                request.start.format("%Y%m%dT%H%M%SZ")
-            ));
-            ical.push_str(&format!(
-                "DTEND:{}\r\n",
-                request.end.format("%Y%m%dT%H%M%SZ")
-            ));
+            event.set_start(request.start);
+            event.set_end(request.end);
         }
-        
-        // Add summary
-        ical.push_str(&format!("SUMMARY:{}\r\n", request.subject));
-        
-        // Add body/description
+
         if let Some(ref body) = request.body {
-            ical.push_str(&format!("DESCRIPTION:{}\r\n", body.replace("\n", "\\n")));
+            event.set_description(body);
         }
-        
-        // Add location
+
         if let Some(ref location) = request.location {
-            ical.push_str(&format!("LOCATION:{}\r\n", location));
+            event.set_location(location);
         }
-        
-        // Add recurrence if present
-        if let Some(ref recurrence) = request.recurrence {
-            ical.push_str(&build_rrule(recurrence));
-        }
-        
-        // Add categories
-        if !request.categories.is_empty() {
-            ical.push_str(&format!("CATEGORIES:{}\r\n", request.categories.join(",")));
-        }
-        
-        // Add reminder
-        if let Some(minutes) = request.reminder_minutes_before_start {
-            ical.push_str(&format!(
-                "BEGIN:VALARM\r\n\
-                 ACTION:DISPLAY\r\n\
-                 DESCRIPTION:Reminder\r\n\
-                 TRIGGER:-PT{}M\r\n\
-                 END:VALARM\r\n",
-                minutes
-            ));
-        }
-        
-        ical.push_str("END:VEVENT\r\nEND:VCALENDAR\r\n");
-        
-        ical
+
+        calendar.push(event);
+        calendar.to_string()
     }
     
 fn apply_updates_to_ical(ical: &str, updates: &[PropertyUpdate]) -> Result<String, String> {
