@@ -519,87 +519,60 @@ impl AutodiscoverService {
 
     /// Generate POX XML response
     pub fn generate_pox_xml(&self, response: &PoxAutodiscoverResponse) -> String {
-        let mut xml = String::new();
-        xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
-        xml.push_str("<Autodiscover xmlns=\"http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006\">");
-        xml.push_str("<Response xmlns=\"http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a\">");
-        
-        // User section
-        xml.push_str("<User>");
-        xml.push_str(&format!("<DisplayName>{}</DisplayName>", response.user.display_name));
-        xml.push_str(&format!("<LegacyDN>{}</LegacyDN>", response.user.legacy_dn));
-        xml.push_str(&format!("<AutoDiscoverSMTPAddress>{}</AutoDiscoverSMTPAddress>", response.user.autodiscover_smtp_address));
-        xml.push_str(&format!("<DeploymentId>{}</DeploymentId>", response.user.deployment_id));
-        xml.push_str("</User>");
-        
-        // Account section
-        xml.push_str("<Account>");
-        xml.push_str(&format!("<AccountType>{}</AccountType>", response.account.account_type));
-        xml.push_str(&format!("<Action>{}</Action>", response.account.action));
-        xml.push_str(&format!("<MicrosoftOnline>{}</MicrosoftOnline>", if response.account.microsoft_online { "true" } else { "false" }));
-        
-        // Protocols
-        for protocol in &response.protocols {
-            xml.push_str("<Protocol>");
-            xml.push_str(&format!("<Type>{}</Type>", protocol.protocol_type));
-            
-            if let Some(ref server) = protocol.server {
-                xml.push_str(&format!("<Server>{}</Server>", server));
-            }
-            if let Some(ref server_dn) = protocol.server_dn {
-                xml.push_str(&format!("<ServerDN>{}</ServerDN>", server_dn));
-            }
-            if let Some(ref server_version) = protocol.server_version {
-                xml.push_str(&format!("<ServerVersion>{}</ServerVersion>", server_version));
-            }
-            if let Some(ref as_url) = protocol.as_url {
-                xml.push_str(&format!("<ASUrl>{}</ASUrl>", as_url));
-            }
-            if let Some(ref ews_url) = protocol.ews_url {
-                xml.push_str(&format!("<EwsUrl>{}</EwsUrl>", ews_url));
-            }
-            if let Some(ref ecp_url) = protocol.ecp_url {
-                xml.push_str(&format!("<EcpUrl>{}</EcpUrl>", ecp_url));
-            }
-            if let Some(ref oab_url) = protocol.oab_url {
-                xml.push_str(&format!("<OABUrl>{}</OABUrl>", oab_url));
-            }
-            if let Some(ref um_url) = protocol.um_url {
-                xml.push_str(&format!("<UMUrl>{}</UMUrl>", um_url));
-            }
-            if let Some(ref oof_url) = protocol.oof_url {
-                xml.push_str(&format!("<OOFUrl>{}</OOFUrl>", oof_url));
-            }
-            if let Some(ref login_name) = protocol.login_name {
-                xml.push_str(&format!("<LoginName>{}</LoginName>", login_name));
-            }
-            if let Some(domain_required) = protocol.domain_required {
-                xml.push_str(&format!("<DomainRequired>{}</DomainRequired>", if domain_required { "on" } else { "off" }));
-            }
-            if let Some(ref domain_name) = protocol.domain_name {
-                xml.push_str(&format!("<DomainName>{}</DomainName>", domain_name));
-            }
-            if let Some(spa) = protocol.spa {
-                xml.push_str(&format!("<SPA>{}</SPA>", if spa { "on" } else { "off" }));
-            }
-            if let Some(ssl) = protocol.ssl {
-                xml.push_str(&format!("<SSL>{}</SSL>", if ssl { "on" } else { "off" }));
-            }
-            if let Some(ref auth_package) = protocol.auth_package {
-                xml.push_str(&format!("<AuthPackage>{}</AuthPackage>", auth_package));
-            }
-            if let Some(ref mapi_http_url) = protocol.mapi_http_url {
-                xml.push_str(&format!("<MapiHttpUrl>{}</MapiHttpUrl>", mapi_http_url));
-            }
-            
-            xml.push_str("</Protocol>");
-        }
-        
-        xml.push_str("</Account>");
-        xml.push_str("</Response>");
-        xml.push_str("</Autodiscover>");
-        
-        xml
+        use quick_xml::events::{BytesStart, BytesText, Event};
+        use quick_xml::Writer;
+        use std::io::Cursor;
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut writer = Writer::new_with_indent(buffer, b' ', 4);
+
+        let _ = writer.write_event(Event::DeclXml(quick_xml::events::BytesDecl::new("1.0", Some("utf-8"), None)));
+        let mut root = BytesStart::new("Autodiscover");
+        root.push_attribute(("xmlns", "http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"));
+        let _ = writer.create_element("Autodiscover").write_inner_content(|writer| {
+            let mut resp = BytesStart::new("Response");
+            resp.push_attribute(("xmlns", "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"));
+            writer.create_element_from(resp).write_inner_content(|writer| {
+                writer.create_element("User").write_inner_content(|writer| {
+                    let _ = writer.create_element("DisplayName").write_text_content(BytesText::new(&response.user.display_name));
+                    let _ = writer.create_element("LegacyDN").write_text_content(BytesText::new(&response.user.legacy_dn));
+                    let _ = writer.create_element("AutoDiscoverSMTPAddress").write_text_content(BytesText::new(&response.user.autodiscover_smtp_address));
+                    let _ = writer.create_element("DeploymentId").write_text_content(BytesText::new(&response.user.deployment_id));
+                    Ok(())
+                })?;
+                writer.create_element("Account").write_inner_content(|writer| {
+                    let _ = writer.create_element("AccountType").write_text_content(BytesText::new(&response.account.account_type));
+                    let _ = writer.create_element("Action").write_text_content(BytesText::new(&response.account.action));
+                    let _ = writer.create_element("MicrosoftOnline").write_text_content(BytesText::new(if response.account.microsoft_online { "true" } else { "false" }));
+                    for protocol in &response.protocols {
+                        writer.create_element("Protocol").write_inner_content(|writer| {
+                            let _ = writer.create_element("Type").write_text_content(BytesText::new(&protocol.protocol_type));
+                            if let Some(ref s) = protocol.server { let _ = writer.create_element("Server").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.server_dn { let _ = writer.create_element("ServerDN").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.server_version { let _ = writer.create_element("ServerVersion").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.as_url { let _ = writer.create_element("ASUrl").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.ews_url { let _ = writer.create_element("EwsUrl").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.ecp_url { let _ = writer.create_element("EcpUrl").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.oab_url { let _ = writer.create_element("OABUrl").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.um_url { let _ = writer.create_element("UMUrl").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.oof_url { let _ = writer.create_element("OOFUrl").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.login_name { let _ = writer.create_element("LoginName").write_text_content(BytesText::new(s)); }
+                            if let Some(d) = protocol.domain_required { let _ = writer.create_element("DomainRequired").write_text_content(BytesText::new(if d { "on" } else { "off" })); }
+                            if let Some(ref s) = protocol.domain_name { let _ = writer.create_element("DomainName").write_text_content(BytesText::new(s)); }
+                            if let Some(s) = protocol.spa { let _ = writer.create_element("SPA").write_text_content(BytesText::new(if s { "on" } else { "off" })); }
+                            if let Some(s) = protocol.ssl { let _ = writer.create_element("SSL").write_text_content(BytesText::new(if s { "on" } else { "off" })); }
+                            if let Some(ref s) = protocol.auth_package { let _ = writer.create_element("AuthPackage").write_text_content(BytesText::new(s)); }
+                            if let Some(ref s) = protocol.mapi_http_url { let _ = writer.create_element("MapiHttpUrl").write_text_content(BytesText::new(s)); }
+                            Ok(())
+                        })?;
+                    }
+                    Ok(())
+                })?;
+                Ok(())
+            })?;
+            Ok(())
+        });
+        String::from_utf8(writer.into_inner().into_inner()).unwrap_or_default()
     }
 }
 
