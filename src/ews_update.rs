@@ -428,7 +428,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                     }
                 }
             },
-            "calendar:isresponserequested" | "calendar:responseRequested" => match verb {
+            "calendar:isresponserequested" | "calendar:responserequested" => match verb {
                 ChangeVerb::Delete => item.response_requested = None,
                 _ => {
                     if let Some(v) = extract_ews_field(payload, b"IsResponseRequested")
