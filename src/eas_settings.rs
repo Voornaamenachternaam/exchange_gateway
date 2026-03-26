@@ -458,79 +458,86 @@ impl SettingsHandler {
 
     /// Generate Settings response XML
     pub fn generate_response_xml(&self, response: &SettingsResponse) -> String {
-        let mut xml = String::new();
-        xml.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
-        xml.push_str("<Settings xmlns=\"Settings:\">");
-        xml.push_str(&format!("<Status>{}</Status>", response.status.as_u8()))
-        ;
+        use quick_xml::events::{BytesEnd, BytesStart, Event};
+        use quick_xml::Writer;
+        use std::io::Cursor;
 
-        // User Information
+        let mut buffer = Cursor::new(Vec::new());
+        let mut writer = Writer::new_with_indent(&mut buffer, b' ', 4);
+
+        let _ = writer.write_event(Event::Decl(quick_xml::events::BytesDecl::new("1.0", Some("utf-8"), None)));
+        let mut root = BytesStart::new("Settings");
+        root.push_attribute(("xmlns", "Settings:"));
+        let _ = writer.write_event(Event::Start(root));
+
+        let _ = writer.create_element("Status").write_text_content(quick_xml::events::BytesText::new(&response.status.as_u8().to_string()));
+
         if let Some(ref user_info) = response.user_information {
-            xml.push_str("<UserInformation>");
-            xml.push_str(&format!("<Status>{}</Status>", EasStatus::Success.as_u8()));
-            xml.push_str("<Accounts>");
-            
-            for account in &user_info.accounts {
-                xml.push_str("<Account>");
-                xml.push_str(&format!("<AccountId>{}</AccountId>", xml_escape(&account.account_id)));
-                xml.push_str(&format!("<AccountName>{}</AccountName>", xml_escape(&account.account_name)));
-                xml.push_str(&format!("<UserDisplayName>{}</UserDisplayName>", xml_escape(&account.user_display_name)));
-                xml.push_str(&format!("<SendAddress>{}</SendAddress>", xml_escape(&account.send_address)));
-                xml.push_str("<EmailAddresses>");
-                
-                for email in &account.email_addresses {
-                    xml.push_str("<SMTPAddress>");
-                    xml.push_str(&format!("<Address>{}</Address>", xml_escape(&email.address)));
-                    xml.push_str(&format!("<DisplayName>{}</DisplayName>", xml_escape(&email.display_name)));
-                    xml.push_str(&format!("<IsPrimary>{}</IsPrimary>", if email.is_primary { "1" } else { "0" }));
-                    xml.push_str("</SMTPAddress>");
-                }
-                
-                xml.push_str("</EmailAddresses>");
-                xml.push_str("</Account>");
-            }
-            
-            xml.push_str("</Accounts>");
-            xml.push_str("</UserInformation>");
+            let _ = writer.create_element("UserInformation").write_inner_content(|w| {
+                let _ = w.create_element("Status").write_text_content(quick_xml::events::BytesText::new(&EasStatus::Success.as_u8().to_string()));
+                let _ = w.create_element("Accounts").write_inner_content(|w| {
+                    for account in &user_info.accounts {
+                        let _ = w.create_element("Account").write_inner_content(|w| {
+                            let _ = w.create_element("AccountId").write_text_content(quick_xml::events::BytesText::new(&account.account_id));
+                            let _ = w.create_element("AccountName").write_text_content(quick_xml::events::BytesText::new(&account.account_name));
+                            let _ = w.create_element("UserDisplayName").write_text_content(quick_xml::events::BytesText::new(&account.user_display_name));
+                            let _ = w.create_element("SendAddress").write_text_content(quick_xml::events::BytesText::new(&account.send_address));
+                            let _ = w.create_element("EmailAddresses").write_inner_content(|w| {
+                                for email in &account.email_addresses {
+                                    let _ = w.create_element("SMTPAddress").write_inner_content(|w| {
+                                        let _ = w.create_element("Address").write_text_content(quick_xml::events::BytesText::new(&email.address));
+                                        let _ = w.create_element("DisplayName").write_text_content(quick_xml::events::BytesText::new(&email.display_name));
+                                        let _ = w.create_element("IsPrimary").write_text_content(quick_xml::events::BytesText::new(if email.is_primary { "1" } else { "0" }));
+                                        Ok(())
+                                    });
+                                }
+                                Ok(())
+                            });
+                            Ok(())
+                        });
+                    }
+                    Ok(())
+                });
+                Ok(())
+            });
         }
 
-        // OOF Settings
         if let Some(ref oof) = response.oof_settings {
-            xml.push_str("<Oof>");
-            xml.push_str(&format!("<Status>{}</Status>", EasStatus::Success.as_u8()));
-            xml.push_str("<Get>");
-            xml.push_str(&format!("<OofState>{}</OofState>", oof.state.as_u8()));
-            xml.push_str(&format!("<StartTime>{}</StartTime>", oof.start_time.map(|t| t.to_rfc3339()).unwrap_or_default()));
-            xml.push_str(&format!("<EndTime>{}</EndTime>", oof.end_time.map(|t| t.to_rfc3339()).unwrap_or_default()));
-            xml.push_str(&format!("<OofMessageInternal>{}</OofMessageInternal>", 
-                xml_escape(&oof.internal_reply.clone().unwrap_or_default())));
-            xml.push_str(&format!("<OofMessageExternal>{}</OofMessageExternal>", 
-                xml_escape(&oof.external_reply.clone().unwrap_or_default())));
-            xml.push_str(&format!("<ExternalAudience>{}</ExternalAudience>", oof.external_audience.as_u8()));
-            xml.push_str(&format!("<BodyType>{}</BodyType>", oof.body_type.as_u8()));
-            xml.push_str("</Get>");
-            xml.push_str("</Oof>");
+            let _ = writer.create_element("Oof").write_inner_content(|w| {
+                let _ = w.create_element("Status").write_text_content(quick_xml::events::BytesText::new(&EasStatus::Success.as_u8().to_string()));
+                let _ = w.create_element("Get").write_inner_content(|w| {
+                    let _ = w.create_element("OofState").write_text_content(quick_xml::events::BytesText::new(&oof.state.as_u8().to_string()));
+                    let _ = w.create_element("StartTime").write_text_content(quick_xml::events::BytesText::new(&oof.start_time.map(|t| t.to_rfc3339()).unwrap_or_default()));
+                    let _ = w.create_element("EndTime").write_text_content(quick_xml::events::BytesText::new(&oof.end_time.map(|t| t.to_rfc3339()).unwrap_or_default()));
+                    let _ = w.create_element("OofMessageInternal").write_text_content(quick_xml::events::BytesText::new(&oof.internal_reply.clone().unwrap_or_default()));
+                    let _ = w.create_element("OofMessageExternal").write_text_content(quick_xml::events::BytesText::new(&oof.external_reply.clone().unwrap_or_default()));
+                    let _ = w.create_element("ExternalAudience").write_text_content(quick_xml::events::BytesText::new(&oof.external_audience.as_u8().to_string()));
+                    let _ = w.create_element("BodyType").write_text_content(quick_xml::events::BytesText::new(&oof.body_type.as_u8().to_string()));
+                    Ok(())
+                });
+                Ok(())
+            });
         }
 
-        // Device Password
         if let Some(ref pwd) = response.device_password {
-            xml.push_str("<DevicePassword>");
-            xml.push_str(&format!("<Status>{}</Status>", pwd.status.as_u8()));
-            if let Some(ref msg) = pwd.message {
-                xml.push_str(&format!("<Message>{}</Message>", xml_escape(msg)));
-            }
-            xml.push_str("</DevicePassword>");
+            let _ = writer.create_element("DevicePassword").write_inner_content(|w| {
+                let _ = w.create_element("Status").write_text_content(quick_xml::events::BytesText::new(&pwd.status.as_u8().to_string()));
+                if let Some(ref msg) = pwd.message {
+                    let _ = w.create_element("Message").write_text_content(quick_xml::events::BytesText::new(msg));
+                }
+                Ok(())
+            });
         }
 
-        // Device Information
         if let Some(ref info) = response.device_information {
-            xml.push_str("<DeviceInformation>");
-            xml.push_str(&format!("<Status>{}</Status>", info.status.as_u8()));
-            xml.push_str("</DeviceInformation>");
+            let _ = writer.create_element("DeviceInformation").write_inner_content(|w| {
+                let _ = w.create_element("Status").write_text_content(quick_xml::events::BytesText::new(&info.status.as_u8().to_string()));
+                Ok(())
+            });
         }
 
-        xml.push_str("</Settings>");
-        xml
+        let _ = writer.write_event(Event::End(BytesEnd::new("Settings")));
+        String::from_utf8(buffer.into_inner()).unwrap_or_default()
     }
 
     /// Parse Settings request from XML
