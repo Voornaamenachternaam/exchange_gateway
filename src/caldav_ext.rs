@@ -115,7 +115,25 @@ impl CalDavClientExt {
             return Err(format!("PROPFIND failed: {}", response.status()));
         }
 
+        let response = self
+            .client
+            .request(Method::from_bytes(b"PROPFIND").unwrap(), folder_url)
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .header("Depth", "1")
+            .basic_auth(&self.username, Some(&self.password))
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("PROPFIND failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("PROPFIND failed: {}", response.status()));
+        }
+
         let text = response
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
             .text()
             .await
             .map_err(|e| format!("Failed to read response: {}", e))?;
