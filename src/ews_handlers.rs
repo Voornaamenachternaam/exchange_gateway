@@ -772,7 +772,55 @@ fn parse_delete_attachment_request(body: &str) -> Result<DeleteAttachmentRequest
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
-                current_element = Some(name);
+fn parse_delete_attachment_request(body: &str) -> Result<DeleteAttachmentRequest, ErrorResponse> {
+    let mut request = DeleteAttachmentRequest::default();
+
+    let mut reader = Reader::from_str(body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut current_element: Option<String> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
+                current_element = Some(name.clone());
+                if name == "AttachmentId" {
+                    for attr in e.attributes() {
+                        if let Ok(attr) = attr {
+                            if attr.key.local_name().as_ref() == b"Id" {
+                                request.attachment_ids.push(String::from_utf8_lossy(&attr.value).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if let Some(ref elem) = current_element {
+                    if elem == "AttachmentId" {
+                        if let Ok(text) = t.decode() {
+                            let text = text.into_owned();
+                            if !text.is_empty() {
+                                request.attachment_ids.push(text);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(_)) => {
+                current_element = None;
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(ErrorResponse::bad_request(format!("XML parse error: {}", e)));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(request)
+}
             }
             Ok(Event::Text(t)) => {
                 if let Some(ref elem) = current_element {
