@@ -212,7 +212,11 @@ async fn handle_sync(
     if is_initial_sync {
         // Return new sync key
         let new_sync_key = generate_sync_key();
+        let new_sync_key = generate_sync_key();
         sync_state.sync_key = new_sync_key.clone();
+        state.sync_states.set_sync_state(user, device_id, &collection_id, sync_state).await;
+
+        builder.start_element("Collections", "AirSync");
 
         builder.start_element("Collections", "AirSync");
         builder.start_element("Collection", "AirSync");
