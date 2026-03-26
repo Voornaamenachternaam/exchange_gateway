@@ -61,39 +61,44 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     let mut state = State::Root;
     let mut payload_buf = String::new();
 
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                let local = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
-                match &state {
-                    State::Root => {
-                        let verb = match local.as_str() {
-                            "SetItemField" => Some(ChangeVerb::Set),
-                            "AppendToItemField" => Some(ChangeVerb::Append),
-                            "DeleteItemField" => Some(ChangeVerb::Delete),
-                            _ => None,
-                        };
-                        if let Some(v) = verb {
-                            state = State::InVerb(v);
-                        }
-                    }
-                    State::InVerb(verb) => {
-                        // Look for FieldURI element with its FieldURI attribute.
-                        if local == "FieldURI" {
-                            let mut field_uri_val = String::new();
-                            for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"FieldURI" {
-                                    if let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
-                                    {
-                                        field_uri_val = v.to_string();
-                                    }
-                                }
-                            }
-                            if !field_uri_val.is_empty() {
-                                state = State::CollectPayload(verb.clone(), field_uri_val, 0);
-                                payload_buf.clear();
-                            }
-                        }
+96:                        }
+97:                        // Handle self-closing FieldURI elements.
+98:                        if local == "FieldURI" {
+99:                            let mut field_uri_val = String::new();
+100:                            for attr in e.attributes().flatten() {
+101:                                if attr.key.local_name().as_ref() == b"FieldURI" {
+102:                                    if let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+103:                                    {
+104:                                        field_uri_val = v.to_string();
+105:                                    }
+106:                                }
+107:                            }
+108:                            if !field_uri_val.is_empty() {
+109:                                state = State::CollectPayload(verb.clone(), field_uri_val, 0);
+110:                                payload_buf.clear();
+111:                            }
+112:                        }
+113:                    }
+114:                    Ok(Event::Empty(ref e)) => {
+115:                        let local = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
+116:                        if let State::InVerb(verb) = &state {
+117:                            if local == "FieldURI" {
+118:                                let mut field_uri_val = String::new();
+119:                                for attr in e.attributes().flatten() {
+120:                                    if attr.key.local_name().as_ref() == b"FieldURI" {
+121:                                        if let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+122:                                        {
+123:                                            field_uri_val = v.to_string();
+124:                                        }
+125:                                    }
+126:                                }
+127:                                if !field_uri_val.is_empty() {
+128:                                    state = State::CollectPayload(verb.clone(), field_uri_val, 0);
+129:                                    payload_buf.clear();
+130:                                }
+131:                            }
+132:                        }
+133:                    }
                         // Also handle IndexedFieldURI and ExtendedFieldURI — we skip
                         // those as Outlook calendar operations don't use them for
                         // calendar:* fields.
