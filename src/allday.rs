@@ -1,4 +1,4 @@
-// src/allday.rs
+pub mod allday;
 // All-Day Event Handling for Exchange Gateway
 //
 // Closes gaps:
