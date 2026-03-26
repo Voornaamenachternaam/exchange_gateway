@@ -359,7 +359,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                     }
                 }
             },
-            "calendar:legacyfreebusy status" | "calendar:legacyfreebusystatus" => match verb {
+            "calendar:legacyfreebusystatus" => match verb {
                 ChangeVerb::Delete => item.busy_status = None,
                 _ => {
                     if let Some(v) = extract_ews_field(payload, b"LegacyFreeBusyStatus")
