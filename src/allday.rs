@@ -295,7 +295,14 @@ pub fn merge_adjacent_alldays(events: &[AllDayEvent]) -> Vec<AllDayEvent> {
         
         if event.date <= current_end {
             // Merge
+        if event.date <= current_end {
+            // Merge: Only extend if the new event ends after the current end
             let new_end = event.date + Duration::days(event.duration_days);
+            let current_end_date = current.date + Duration::days(current.duration_days);
+            if new_end > current_end_date {
+                current.duration_days = (new_end - current.date).num_days();
+            }
+        } else {
             let new_duration = (new_end - current.date).num_days();
             current.duration_days = new_duration;
         } else {
