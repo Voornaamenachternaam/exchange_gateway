@@ -427,7 +427,11 @@ async fn fetch_ews_attachment(
     // Fetch from CalDAV (this would be user-specific in production)
     let caldav = &state.caldav_client;
     let calendar_url = format!("{}/calendars/default/", caldav.base_url);
-    let event_url = format!("{}{}.ics", calendar_url, event_uid);
+    let event_uid = parts[0];
+    if event_uid.contains('/') || event_uid.contains('\') || event_uid.contains("..") {
+        return Err("Invalid event UID".to_string());
+    }
+    let attach_name = parts[1];
 
     let event_data = caldav
         .get_calendar_object(&event_url)
