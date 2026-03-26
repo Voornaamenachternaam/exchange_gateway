@@ -670,7 +670,22 @@ async fn store_ews_attachment(
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let encoded = STANDARD.encode(&attachment.content);
 
+    // Add attachment to iCalendar
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let encoded = STANDARD.encode(&attachment.content);
+
+    let sanitized_name = attachment.name.replace(['
+', '
+'], "");
+    let sanitized_type = attachment.content_type.replace(['
+', '
+'], "");
+
     let attach_line = format!(
+        "ATTACH;FMTTYPE={};FILENAME={}:{}
+",
+        sanitized_type, sanitized_name, encoded
+    );
         "ATTACH;FMTTYPE={};FILENAME={}:{}\r\n",
         attachment.content_type, attachment.name, encoded
     );
