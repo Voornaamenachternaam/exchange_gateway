@@ -94,17 +94,6 @@ CREATE TABLE device_info (
 );
 
 CREATE TABLE api_idempotency (
-    idempotency_key TEXT PRIMARY KEY,
-    route_name      TEXT    NOT NULL,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE schema_version (
-    version     INTEGER PRIMARY KEY,
-    description TEXT    NOT NULL,
-    applied_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE INDEX idx_sync_lookup           ON sync_state(owner, collection_id);
 CREATE INDEX idx_item_map_owner_time   ON item_map(owner, updated_at);
 CREATE INDEX idx_item_map_resource     ON item_map(owner, resource_href);
@@ -116,6 +105,9 @@ CREATE INDEX idx_client_sync_lookup    ON client_sync_command(owner, collection_
 CREATE INDEX idx_ews_sync_lookup       ON ews_sync_state(user_email, folder_id);
 CREATE INDEX idx_provision_lookup      ON provision_state(owner, device_id);
 CREATE INDEX idx_idempotency_created   ON api_idempotency(created_at);
+
+INSERT INTO schema_version (version, description)
+VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
 
 INSERT INTO schema_version (version, description)
 VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
