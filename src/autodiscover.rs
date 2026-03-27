@@ -89,28 +89,6 @@ fn no_cache_headers_soap() -> Vec<(&'static str, &'static str)> {
         ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
     ]
 }
-    ]
-}
-
-fn no_cache_headers_json() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("Content-Type", "application/json; charset=utf-8"),
-        ("Cache-Control", "private, no-store"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        ("X-Frame-Options", "DENY"),
-    ]
-}
-
-fn no_cache_headers_soap() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("Content-Type", "application/soap+xml; charset=utf-8"),
-        ("Cache-Control", "private, no-store"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        ("X-Frame-Options", "DENY"),
-    ]
-}
 
 /// Extract the email address from an Autodiscover v1 XML request body.
 /// Public alias used by main.rs autodiscover route handler.
