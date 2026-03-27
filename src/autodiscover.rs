@@ -60,12 +60,6 @@ fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
         ("X-Frame-Options", "DENY"),
         ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
     ]
-}
-    vec![
-        ("Content-Type", "application/xml; charset=utf-8"),
-        ("Cache-Control", "private, no-store"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
 fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Content-Type", "application/xml; charset=utf-8"),
