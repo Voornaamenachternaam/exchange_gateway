@@ -1,5 +1,3 @@
--- d1_schema.sql  (schema version 2)
--- Gap 9: change_journal.resource_href added inline; additional indexes for performance.
 
 DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS item_map;
@@ -42,7 +40,6 @@ CREATE TABLE deleted_item_tombstone (
     UNIQUE(owner, server_id)
 );
 
--- resource_href stored inline to avoid JOIN on delete operations.
 CREATE TABLE change_journal (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     owner         TEXT    NOT NULL,
@@ -116,13 +113,13 @@ CREATE TABLE api_idempotency (
 );
 
 CREATE INDEX idx_api_idempotency_created ON api_idempotency(created_at);
-+++ b/d1_schema.sql
-@@ -110,11 +110,6 @@
--CREATE TABLE api_idempotency (
--    idempotency_key TEXT PRIMARY KEY,
--    route_name TEXT NOT NULL,
--    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
--);
+
+CREATE TABLE api_idempotency (
+    idempotency_key TEXT PRIMARY KEY,
+    route_name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX idx_item_map_owner_time   ON item_map(owner, updated_at);
 CREATE INDEX idx_item_map_resource     ON item_map(owner, resource_href);
 CREATE INDEX idx_item_map_uid          ON item_map(owner, uid);
