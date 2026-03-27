@@ -372,7 +372,13 @@ impl FreeBusyGenerator {
         }
         
         // Create day start/end in UTC
-        let day_start = DateTime::from_naive_utc_and_offset(
+use chrono_tz::Tz;
+use std::str::FromStr;
+
+// Inside generate_suggestions_for_day or where working hours are used:
+let tz: Tz = working_hours.timezone.parse().unwrap_or(Tz::UTC);
+let day_start = tz.from_local_datetime(&date.and_time(working_hours.start_time)).unwrap().with_timezone(&Utc);
+let day_end = tz.from_local_datetime(&date.and_time(working_hours.end_time)).unwrap().with_timezone(&Utc);
             date.and_time(working_hours.start_time),
             Utc
         );
