@@ -1331,45 +1331,6 @@ fn operation_error_response(
         EwsAction::DeleteItem => "DeleteItemResponseMessage",
         EwsAction::ResolveNames => "ResolveNamesResponseMessage",
     };
-    let top = match action {
-        EwsAction::GetFolder => "GetFolderResponse",
-        EwsAction::FindFolder => "FindFolderResponse",
-        EwsAction::FindItem => "FindItemResponse",
-        EwsAction::GetItem => "GetItemResponse",
-        EwsAction::GetUserAvailability => "GetUserAvailabilityResponse",
-        EwsAction::SyncFolderItems => "SyncFolderItemsResponse",
-        EwsAction::CreateItem => "CreateItemResponse",
-        EwsAction::UpdateItem => "UpdateItemResponse",
-        EwsAction::DeleteItem => "DeleteItemResponse",
-        EwsAction::ResolveNames => "ResolveNamesResponse",
-    };
-
-    let xml = format!(
-        r#"<{top} xmlns:m="{msg_ns}">
-  <m:ResponseMessages>
-    <m:{resp} ResponseClass="Error">
-      <m:MessageText>{message}</m:MessageText>
-      <m:ResponseCode>{code}</m:ResponseCode>
-      <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
-    </m:{resp}>
-  </m:ResponseMessages>
-</{top}>"#,
-        top = top,
-        msg_ns = EWS_MSG_NS,
-        resp = resp,
-        message = xml_escape(message),
-        code = xml_escape(code)
-    );
-    (
-        status,
-        [("Content-Type", "text/xml; charset=utf-8")],
-        format!(
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>{}</s:Body></s:Envelope>",
-            xml
-        ),
-    )
-        .into_response()
-}
 
 /// Validate the requested folder IDs against the owner's namespace.
 ///
@@ -1409,16 +1370,6 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
                 folder_id_for(owner, DistinguishedFolder::Journal),
             ];
             if fid != "root" && !valid_ids.contains(fid) {
-                return Err(operation_error_response(
-                    action,
-                    "ErrorFolderNotFound",
-                    "Requested folder was not found for this mailbox",
-                    StatusCode::OK,
-                ));
-            }
-        }
-    }
-            {
                 return Err(operation_error_response(
                     action,
                     "ErrorFolderNotFound",
