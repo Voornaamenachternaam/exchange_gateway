@@ -308,7 +308,23 @@ impl SyncConflictHandler {
         
         // Register server states
         for (item_id, state) in server_state {
-            self.detector.register_item(
+    /// Register or update item state
+    pub fn register_or_update_item(&mut self, item_id: &str, change_key: &str, last_modified: DateTime<Utc>) {
+        if let Some(state) = self.item_states.get_mut(item_id) {
+            state.change_key = change_key.to_string();
+            state.last_modified = last_modified;
+            state.version += 1;
+        } else {
+            let state = ItemState {
+                item_id: item_id.to_string(),
+                change_key: change_key.to_string(),
+                last_modified,
+                version: 1,
+                is_deleted: false,
+            };
+            self.item_states.insert(item_id.to_string(), state);
+        }
+    }
                 item_id,
                 &state.change_key,
                 state.last_modified,
