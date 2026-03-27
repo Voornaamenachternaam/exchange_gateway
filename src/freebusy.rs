@@ -647,7 +647,15 @@ fn build_ews_working_hours(hours: &WorkingHours) -> String {
     xml.push_str(&format!("<t:EndTimeInMinutes>{}</t:EndTimeInMinutes>",
         hours.end_time.hour() * 60 + hours.end_time.minute()));
     
-    // Working days bitmask (bit 0 = Sunday)
+    // Working days string (space-separated day names)
+    let mut working_days = Vec::new();
+    let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    for (i, &is_working) in hours.work_days.iter().enumerate() {
+        if is_working && i < days.len() {
+            working_days.push(days[i]);
+        }
+    }
+    xml.push_str(&format!("<t:WorkingDays>{}</t:WorkingDays>", working_days.join(" ")));
     let mut days_mask: u32 = 0;
     for (i, &is_working) in hours.work_days.iter().enumerate() {
         if is_working {
