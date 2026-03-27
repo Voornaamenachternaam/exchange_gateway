@@ -193,7 +193,6 @@ async fn main() -> anyhow::Result<()> {
         // ── Security middleware ───────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .with_state(app_state);
-        .with_state(app_state);
 
     let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
