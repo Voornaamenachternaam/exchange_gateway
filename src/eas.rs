@@ -1579,9 +1579,9 @@ pub async fn handle(
 mod tests {
     use super::{
         command_from_query, extract_all_tag_text, extract_first_tag_text, extract_root_command,
-        parse_item_operations_fetches, parse_search_request, validate_payload,
+        parse_item_operations_fetches, parse_ping_folders, parse_search_request, validate_payload,
     };
-    use crate::calendar::{Attendee, CalendarItem};
+    use crate::calendar::{parse_datetime, Attendee, CalendarItem};
     use chrono::{TimeZone, Utc};
     use std::collections::HashMap;
 
