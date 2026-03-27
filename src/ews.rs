@@ -1,23 +1,5 @@
 // src/ews.rs
-//
-// Gaps closed in this revision (per GAP_ANALYSIS.md):
-//   Gap 4.1 — handle_update_item now uses ews_update::parse_item_changes /
-//              apply_field_changes for full FieldURI-dispatched per-field patching
-//              per Binder1 t:UnindexedFieldURIType (calendar:* and item:* FieldURIs).
-//   Gap 4.2 — handle_get_folder / handle_find_folder now use ews_folders module
-//              to support all standard EWS distinguished folder IDs:
-//              inbox, sentitems, deleteditems, drafts, outbox, junkemail,
-//              contacts, tasks, notes (in addition to calendar / msgfolderroot).
-//   Gap 4.2 — validate_requested_folder now accepts all DistinguishedFolderId
-//              values recognised by ews_folders::DistinguishedFolder.
-//
-// Gaps closed in this revision (per GAP_ANALYSIS.md):
-//   Gap 4.1 — UpdateItem now uses ews_update::parse_item_changes /
-//              apply_field_changes for full FieldURI-dispatched patching.
-//   Gap 4.2 — GetFolder / FindFolder / validate_requested_folder now use
-//              ews_folders for all distinguished folder IDs Outlook requests.
-//   Gap 4 (EAS ValidateCert) — Binder1 §2.2.3.177.18 Status 17 response now
-//              built in EWS ValidateCert stub (EAS path handled separately).
+
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
