@@ -41,7 +41,89 @@ fn extract_host_from_url(url: &str) -> Option<String> {
 }
 
 impl Config {
+use serde::Deserialize;
+use std::fs;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Config {
+    /// TCP address to listen on, e.g. "0.0.0.0:8134".
+    pub bind: String,
+
+    /// Base URL of the Stalwart Mailserver CalDAV endpoint.
+    /// Example: "http://172.28.0.10:8080/dav/"
+    pub caldav_base: String,
+
+    /// URL of the Cloudflare Worker API used for D1-backed sync state.
+    /// Example: "https://exchange.mail.example.com/api"
+    pub worker_url: String,
+
+    /// Shared secret used to authenticate gateway → Worker API calls.
+    pub worker_secret: String,
+
+    /// HMAC secret used to derive stable EAS/EWS server-IDs from CalDAV HREFs.
+    /// Must be a long random hex string; never reuse across installations.
+    pub hmac_secret: String,
+
+    /// Public hostname of this gateway as seen by Outlook clients.
+    /// Used in Autodiscover responses (EwsUrl, ASUrl, MobileSyncUrl).
+    /// If absent, defaults to the host portion of `worker_url`.
+    /// Example: "exchange.mail.example.com"
+    #[serde(default)]
+    pub gateway_host: String,
+}
+
 impl Config {
+    pub fn load(path: &str) -> anyhow::Result<Self> {
+        let s = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
+        let mut cfg: Config = toml::from_str(&s)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
+
+        // Derive gateway_host from worker_url if not explicitly set.
+        if cfg.gateway_host.is_empty() {
+            cfg.gateway_host = extract_host_from_url(&cfg.worker_url)
+                .unwrap_or_else(|| "localhost".to_string());
+        }
+
+        Ok(cfg)
+    }
+}
+
+/// Extract the host (and optional port) from a URL string.
+fn extract_host_from_url(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    Some(match parsed.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_host_from_https_url() {
+        assert_eq!(
+            extract_host_from_url("https://exchange.example.com/api"),
+            Some("exchange.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_host_with_port() {
+        assert_eq!(
+            extract_host_from_url("http://localhost:8080/api"),
+            Some("localhost:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_invalid_url() {
+        assert!(extract_host_from_url("not-a-url").is_none());
+    }
+}
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let s = fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
