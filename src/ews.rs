@@ -1658,10 +1658,6 @@ let (total_count_for_cal, cal_xml_content) = if distinguished_str == "msgfolderr
             .unwrap_or(0);
         // We need to inject the actual count into the calendar folder XML.
         let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
-        (1usize, cal_xml)
-    } else {
-        (0usize, String::new())
-    };
     } else {
         // Subfolder enumeration for non-root folders: always empty for this gateway.
         (0usize, String::new())
