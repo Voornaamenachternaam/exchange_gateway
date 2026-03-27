@@ -87,7 +87,7 @@ impl DistinguishedFolder {
             Self::Notes => "IPF.Note",
             Self::Journal => "IPF.Journal",
             Self::MsgFolderRoot => "IPF",
-            _ => "IPF",
+            _ => "IPF.Note",
         }
     }
 
