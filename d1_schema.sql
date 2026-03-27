@@ -104,8 +104,6 @@ CREATE TABLE schema_version (
 
 INSERT INTO schema_version (version, description) VALUES (1, "initial gateway typed schema");
 
-INSERT INTO schema_version (version, description) VALUES (1, "initial gateway typed schema");
-
 CREATE TABLE api_idempotency (
     idempotency_key TEXT PRIMARY KEY,
     route_name TEXT NOT NULL,
