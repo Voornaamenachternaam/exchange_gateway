@@ -301,7 +301,31 @@ async function handleGetClientSyncCommand(url, request, env) {
 async function recordChangeJournal(env, owner, serverId, op, resourceHref) {
   await env.EXCHANGE_DB
     .prepare(`
-      INSERT INTO change_journal (owner, server_id, op, resource_href, created_at)
+async function handleGetClientSyncCommand(url, request, env) {
+  const urlObj = new URL(request.url);
+  const owner = urlObj.searchParams.get('owner');
+  const seq = parseInt(urlObj.searchParams.get('seq') || '0');
+
+  const result = await env.EXCHANGE_DB
+    .prepare(`
+      SELECT server_id, op, resource_href 
+      FROM change_journal 
+      WHERE owner = ? AND id > ? 
+      ORDER BY id ASC
+    `)
+    .bind(owner, seq)
+    .all();
+
+  // When processing journal entries, use the journal's resource_href if present,
+  // as it represents the most recent state at the time of the operation.
+  const items = (result.results || []).map(row => ({
+    server_id: row.server_id,
+    op: row.op,
+    resource_href: row.resource_href
+  }));
+
+  return Response.json(items);
+}
       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
     `)
     .bind(owner, serverId, op, resourceHref || null)
