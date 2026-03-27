@@ -362,7 +362,47 @@ impl SyncConflictHandler {
                     resolved_at: Utc::now(),
                 });
             } else {
+                    ConflictResolution::ClientWins => {
+                        // Apply client change
+                        applied_changes.push(change.clone());
+                        match change.change_type {
+                            ChangeType::Delete => self.detector.mark_deleted(item_id),
+                            _ => self.detector.update_item(item_id, &generate_change_key()),
+                        }
+                    }
+                    ConflictResolution::ServerWins => {
+                        // Reject client change
+                        rejected_changes.push(change.clone());
+                    }
+                    ConflictResolution::Merge => {
+                        // Attempt merge
+                        if let Some(merged) = self.attempt_merge(change, &conflict) {
+                            applied_changes.push(merged);
+                        } else {
+                            // Merge failed, use server version
+                            rejected_changes.push(change.clone());
+                        }
+                    }
+                    _ => {
+                        // Default to server wins
+                        rejected_changes.push(change.clone());
+                    }
+                }
+                
+                conflicts.push(ResolvedConflict {
+                    item_id: item_id.to_string(),
+                    conflict_type: conflict.conflict_type,
+                    resolution,
+                    resolved_at: Utc::now(),
+                });
+            } else {
                 // No conflict, apply change
+                applied_changes.push(change.clone());
+                match change.change_type {
+                    ChangeType::Delete => self.detector.mark_deleted(item_id),
+                    _ => self.detector.update_item(item_id, &generate_change_key()),
+                }
+            }
                 applied_changes.push(change.clone());
                 self.detector.update_item(item_id, &generate_change_key());
             }
