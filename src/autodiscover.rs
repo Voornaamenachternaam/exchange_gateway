@@ -288,62 +288,55 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
 ///   - `Ews`              → returns the EWS endpoint
 ///   - `AutodiscoverV1`   → returns a redirect URL for v1 Autodiscover
 ///   - (omitted/unknown)  → returns the Exchange / EWS endpoint (default)
-pub fn handle_autodiscover_json(host: &str, protocol: Option<&str>, email: Option<&str>) -> AdResponse {
-    if host.contains(['/', '@', '?', '#']) {
-        return (StatusCode::BAD_REQUEST, vec![], "Invalid host".to_string());
-    }
-    let ews_url = format!("https://{}/EWS/Exchange.asmx", host);
-    let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host);
-    let v1_url = format!("https://{}/autodiscover/autodiscover.xml", host);
-
-    let proto = protocol
-        .unwrap_or("Exchange")
-        .to_ascii_lowercase();
-    let email_str = email.unwrap_or_default();
-
-    let body = match proto.as_str() {
-        "activesync" => {
-            format!(
-                r#"{{"Protocol":"ActiveSync","Url":"{as_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","LoginName":{email_json}}}"#,
-                as_url = as_url,
-                email_json = serde_json_string(email_str)
-            )
-        }
-        "ews" => {
-            format!(
-                r#"{{"Protocol":"Ews","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}"}}"#,
-                ews_url = ews_url
-            )
-        }
-        "autodiscoverv1" => {
-            // Redirect to v1 autodiscover endpoint.
-            format!(
-                r#"{{"Protocol":"AutodiscoverV1","Url":"{v1_url}"}}"#,
-                v1_url = v1_url
-            )
-        }
-        _ => {
-            // Default: Exchange / combined response with all endpoints.
-            format!(
-                r#"{{"Protocol":"Exchange","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}}"#,
-                ews_url = ews_url,
-                as_url = as_url
-            )
-        }
-    };
-
-    (StatusCode::OK, no_cache_headers_json(), body)
-}
-
-/// Minimal JSON string encoder — only handles the common email address case.
-fn serde_json_string(s: &str) -> String {
-    serde_json::to_string(s).expect("Failed to serialize string to JSON")
-}
-
-// ---------------------------------------------------------------------------
-// Axum handler integration types (used from main.rs routing if desired)
-// ---------------------------------------------------------------------------
-pub fn handle_autodiscover_json(host: &str, protocol: Option<&str>, email: Option<&str>) -> AdResponse {
+346,393c346
+< pub fn handle_autodiscover_json(host: &str, protocol: Option<&str>, email: Option<&str>) -> AdResponse {
+<     if host.contains(['/', '@', '?', '#']) {
+<         return (StatusCode::BAD_REQUEST, vec![], "Invalid host".to_string());
+<     }
+<     let ews_url = format!("https://{}/EWS/Exchange.asmx", host);
+<     let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host);
+<     let v1_url = format!("https://{}/autodiscover/autodiscover.xml", host);
+< 
+<     let proto = protocol
+<         .unwrap_or("Exchange")
+<         .to_ascii_lowercase();
+<     let email_str = email.unwrap_or_default();
+< 
+<     let body = match proto.as_str() {
+<         "activesync" => {
+<             format!(
+<                 r#"{{"Protocol":"ActiveSync","Url":"{as_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","LoginName":{email_json}}}"#, 
+<                 as_url = as_url,
+<                 email_json = serde_json_string(email_str)
+<             )
+<         }
+<         "ews" => {
+<             format!(
+<                 r#"{{"Protocol":"Ews","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}"}}"#, 
+<                 ews_url = ews_url
+<             )
+<         }
+<         "autodiscoverv1" => {
+<             format!(
+<                 r#"{{"Protocol":"AutodiscoverV1","Url":"{v1_url}"}}"#, 
+<                 v1_url = v1_url
+<             )
+<         }
+<         _ => {
+<             format!(
+<                 r#"{{"Protocol":"Exchange","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}}"#, 
+<                 ews_url = ews_url,
+<                 as_url = as_url
+<             )
+<         }
+<     };
+< 
+<     (StatusCode::OK, no_cache_headers_json(), body)
+< }
+< 
+< fn serde_json_string(s: &str) -> String {
+<     serde_json::to_string(s).expect("Failed to serialize string to JSON")
+< }
     if host.contains(['/', '@', '?', '#']) {
         return (StatusCode::BAD_REQUEST, vec![], "Invalid host".to_string());
     }
