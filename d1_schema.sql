@@ -102,9 +102,6 @@ CREATE TABLE api_idempotency (
 
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY,
-    description TEXT NOT NULL
-);
-    version INTEGER PRIMARY KEY,
     description TEXT NOT NULL,
     applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
