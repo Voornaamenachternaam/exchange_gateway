@@ -107,45 +107,50 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
 
 fn detect_action(xml: &str) -> Option<EwsAction> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    // Note: trim_text behavior is different in quick-xml 0.39, not using config_mut
     let mut buf = Vec::new();
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let name = e.name().local_name();
-                if name.as_ref() == b"GetFolder" {
+        let event = reader.read_event_into(&mut buf);
+        match event {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                let name = e.name();
+                let local_name = name.local_name();
+                if local_name.as_ref() == b"GetFolder" {
                     return Some(EwsAction::GetFolder);
                 }
-                if name.as_ref() == b"FindFolder" {
+                if local_name.as_ref() == b"FindFolder" {
                     return Some(EwsAction::FindFolder);
                 }
-                if name.as_ref() == b"FindItem" {
+                if local_name.as_ref() == b"FindItem" {
                     return Some(EwsAction::FindItem);
                 }
-                if name.as_ref() == b"GetItem" {
+                if local_name.as_ref() == b"GetItem" {
                     return Some(EwsAction::GetItem);
                 }
-                if name.as_ref() == b"GetUserAvailabilityRequest" {
+                if local_name.as_ref() == b"GetUserAvailabilityRequest" {
                     return Some(EwsAction::GetUserAvailability);
                 }
-                if name.as_ref() == b"SyncFolderItems" {
+                if local_name.as_ref() == b"SyncFolderItems" {
                     return Some(EwsAction::SyncFolderItems);
                 }
-                if name.as_ref() == b"CreateItem" {
+                if local_name.as_ref() == b"CreateItem" {
                     return Some(EwsAction::CreateItem);
                 }
-                if name.as_ref() == b"UpdateItem" {
+                if local_name.as_ref() == b"UpdateItem" {
                     return Some(EwsAction::UpdateItem);
                 }
-                if name.as_ref() == b"DeleteItem" {
+                if local_name.as_ref() == b"DeleteItem" {
                     return Some(EwsAction::DeleteItem);
                 }
-                if name.as_ref() == b"ResolveNames" {
+                if local_name.as_ref() == b"ResolveNames" {
                     return Some(EwsAction::ResolveNames);
                 }
             }
             Ok(Event::Eof) => return None,
-            Err(_) => return None,
+            Err(e) => {
+                eprintln!("DEBUG: Parse error: {:?}", e);
+                return None;
+            }
             _ => {}
         }
         buf.clear();
@@ -2512,7 +2517,9 @@ mod tests {
     #[test]
     fn detects_get_item_action() {
         let xml = r#"<s:Envelope><s:Body><m:GetItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#;
-        assert_eq!(detect_action(xml), Some(EwsAction::GetItem));
+        let result = detect_action(xml);
+        eprintln!("detect_action result: {:?}", result);
+        assert_eq!(result, Some(EwsAction::GetItem));
     }
 
     #[test]

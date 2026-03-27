@@ -1727,7 +1727,7 @@ mod tests {
             ),
             (
                 "Search",
-                r#"<Search xmlns="Search:"><Name>Mailbox</Name><Query>x</Query></Search>"#,
+                r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name></Store><Query>x</Query></Search>"#,
             ),
             (
                 "MeetingResponse",
