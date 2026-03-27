@@ -2505,7 +2505,8 @@ mod tests {
         ews_calendar_event_details_xml, extract_tag_texts, encode_sync_state_cursor,
         merge_merged_freebusy,
     };
-    use crate::calendar::{parse_datetime, parse_ping_folders, Attendee, CalendarException, CalendarItem, EasRecurrence};
+    use crate::calendar::{parse_datetime, Attendee, CalendarException, CalendarItem};
+    use crate::eas::parse_ping_folders;
     use chrono::{TimeZone, Utc};
 
     #[test]
