@@ -25,6 +25,8 @@ ENV RUST_LOG="info"
 ENV TZ="UTC"
 USER gateway
 EXPOSE 8134
+# Health check a lightweight, always-available endpoint, like a simple status or the root.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8134/autodiscover/autodiscover.json || exit 1
+    CMD curl -f http://localhost:8134/ || exit 1
+# Or, create a dedicated /health endpoint that performs basic self-tests.
 CMD ["/usr/local/bin/exchange_gateway"]
