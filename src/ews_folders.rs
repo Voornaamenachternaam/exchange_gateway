@@ -182,10 +182,11 @@ pub fn render_folder_xml(
     let parent_xml = if matches!(folder, DistinguishedFolder::MsgFolderRoot) {
         String::new()
     } else {
+        let parent_prefix_len = parent.find('-').map(|i| i + 1).unwrap_or(5);
         format!(
             r#"<t:ParentFolderId Id="{parent}" ChangeKey="{ck}" />"#,
             parent = parent,
-            ck = &parent[prefix_len..]
+            ck = &parent[parent_prefix_len..]
         )
     };
     format!(
