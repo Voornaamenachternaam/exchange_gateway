@@ -1409,9 +1409,33 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
     // An explicit FolderId must belong to this owner (calendar or root).
     for maybe_id in [&explicit_id, &parent_id, &sync_id] {
         if let Some(fid) = maybe_id {
-            if fid != &cal_folder_id && fid != &root_folder_id
-                && !fid.starts_with("FLD-")
-                && fid != "root"
+    // An explicit FolderId must belong to this owner (calendar or root).
+    for maybe_id in [&explicit_id, &parent_id, &sync_id] {
+        if let Some(fid) = maybe_id {
+            let valid_ids = [
+                folder_id_for(owner, DistinguishedFolder::Calendar),
+                folder_id_for(owner, DistinguishedFolder::MsgFolderRoot),
+                folder_id_for(owner, DistinguishedFolder::Inbox),
+                folder_id_for(owner, DistinguishedFolder::SentItems),
+                folder_id_for(owner, DistinguishedFolder::DeletedItems),
+                folder_id_for(owner, DistinguishedFolder::Drafts),
+                folder_id_for(owner, DistinguishedFolder::Outbox),
+                folder_id_for(owner, DistinguishedFolder::JunkEmail),
+                folder_id_for(owner, DistinguishedFolder::Contacts),
+                folder_id_for(owner, DistinguishedFolder::Tasks),
+                folder_id_for(owner, DistinguishedFolder::Notes),
+                folder_id_for(owner, DistinguishedFolder::Journal),
+            ];
+            if fid != "root" && !valid_ids.contains(fid) {
+                return Err(operation_error_response(
+                    action,
+                    "ErrorFolderNotFound",
+                    "Requested folder was not found for this mailbox",
+                    StatusCode::OK,
+                ));
+            }
+        }
+    }
             {
                 return Err(operation_error_response(
                     action,
