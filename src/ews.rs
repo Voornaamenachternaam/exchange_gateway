@@ -2500,10 +2500,12 @@ async fn handle_resolve_names(auth: &AuthContext, body: &str) -> Response {
 mod tests {
     use super::{
         EwsAction, detect_action, operation_error_response, parse_calendar_view_window,
-        parse_sync_state_marker, render_ews_calendar_item_xml, requested_freebusy_view_type,
-        requested_item_shape, suggestions_xml_for_window, validate_schema,
+        parse_sync_state_marker, render_ews_calendar_item_xml, render_ews_recurrence_xml,
+        requested_freebusy_view_type, requested_item_shape, suggestions_xml_for_window, validate_schema,
+        ews_calendar_event_details_xml, extract_tag_texts, encode_sync_state_cursor,
+        merge_merged_freebusy,
     };
-    use crate::calendar::{Attendee, CalendarException, CalendarItem};
+    use crate::calendar::{parse_datetime, parse_ping_folders, Attendee, CalendarException, CalendarItem, EasRecurrence};
     use chrono::{TimeZone, Utc};
 
     #[test]
