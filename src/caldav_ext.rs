@@ -561,6 +561,20 @@ impl CalDavClientExt {
         }
 
         // No changes detected (simplified - production would track sync tokens)
+        // If we can't get sync token, assume there might be changes
+            if response.is_err() {
+                return Ok(true);
+            }
+
+            // Check if sync token has changed (simplified)
+            // In production, compare current token with stored token
+            let new_token = response.headers().get("DAV").and_then(|h| h.to_str().ok());
+            if new_token.is_some() {
+                return Ok(true);
+            }
+        }
+
+        // No changes detected
         Ok(false)
     }
 
