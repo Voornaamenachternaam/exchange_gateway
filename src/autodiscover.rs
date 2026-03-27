@@ -337,52 +337,118 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
 < fn serde_json_string(s: &str) -> String {
 <     serde_json::to_string(s).expect("Failed to serialize string to JSON")
 < }
-    if host.contains(['/', '@', '?', '#']) {
-        return (StatusCode::BAD_REQUEST, vec![], "Invalid host".to_string());
-    }
-    let ews_url = format!("https://{}/EWS/Exchange.asmx", host);
-    let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host);
-    let v1_url = format!("https://{}/autodiscover/autodiscover.xml", host);
-
-    let proto = protocol
-        .unwrap_or("Exchange")
-        .to_ascii_lowercase();
-    let email_str = email.unwrap_or_default();
-
-    let body = match proto.as_str() {
-        "activesync" => {
-            format!(
-                r#"{{"Protocol":"ActiveSync","Url":"{as_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","LoginName":{email_json}}}"#, 
-                as_url = as_url,
-                email_json = serde_json_string(email_str)
-            )
-        }
-        "ews" => {
-            format!(
-                r#"{{"Protocol":"Ews","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}"}}"#, 
-                ews_url = ews_url
-            )
-        }
-        "autodiscoverv1" => {
-            format!(
-                r#"{{"Protocol":"AutodiscoverV1","Url":"{v1_url}"}}"#, 
-                v1_url = v1_url
-            )
-        }
-        _ => {
-            format!(
-                r#"{{"Protocol":"Exchange","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}}"#, 
-                ews_url = ews_url,
-                as_url = as_url
-            )
-        }
-    };
-
-    (StatusCode::OK, no_cache_headers_json(), body)
-}
-
 fn serde_json_string(s: &str) -> String {
     serde_json::to_string(s).expect("Failed to serialize string to JSON")
+}
+
+#[derive(serde::Deserialize)]
+pub struct AutodiscoverJsonParams {
+    #[serde(rename = "Email", alias = "email")]
+    pub email: Option<String>,
+    #[serde(rename = "Protocol", alias = "protocol")]
+    pub protocol: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v2_json_default_returns_exchange_protocol() {
+        let (status, _, body) = handle_autodiscover_json("mail.example.com", None, None);
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"Protocol\":\"Exchange\""));
+        assert!(body.contains("EwsUrl"));
+        assert!(body.contains("ActiveSyncUrl"));
+    }
+
+    #[test]
+    fn v2_json_activesync_returns_activesync_url() {
+        let (status, _, body) =
+            handle_autodiscover_json("mail.example.com", Some("ActiveSync"), Some("u@example.com"));
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"Protocol\":\"ActiveSync\""));
+        assert!(body.contains("/Microsoft-Server-ActiveSync"));
+        assert!(!body.contains("EwsUrl"));
+    }
+
+    #[test]
+    fn v2_json_ews_returns_ews_url() {
+        let (status, _, body) =
+            handle_autodiscover_json("mail.example.com", Some("Ews"), None);
+        assert!(body.contains("\"Protocol\":\"Ews\""));
+        assert!(body.contains("/EWS/Exchange.asmx"));
+    }
+
+    #[test]
+    fn v2_json_autodiscoverv1_returns_redirect_url() {
+        let (status, _, body) =
+            handle_autodiscover_json("mail.example.com", Some("AutodiscoverV1"), None);
+        assert!(body.contains("\"Protocol\":\"AutodiscoverV1\""));
+        assert!(body.contains("autodiscover.xml"));
+    }
+
+    #[test]
+    fn v1_xml_contains_all_required_endpoints() {
+        let (status, _, body) =
+            handle_autodiscover_xml("mail.example.com", "", "user@example.com");
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<EwsUrl>"));
+        assert!(body.contains("<ASUrl>"));
+        assert!(body.contains("<EcpUrl>"));
+        assert!(body.contains("<OABUrl>"));
+        assert!(body.contains("<OOFUrl>"));
+        assert!(body.contains("MobileSync"));
+        assert!(body.contains("EXCH"));
+        assert!(body.contains("EXPR"));
+        assert!(body.contains("user@example.com"));
+    }
+
+    #[test]
+    fn v1_xml_xss_safe() {
+        let (_, _, body) =
+            handle_autodiscover_xml("mail.example.com", "", "<script>alert(1)</script>@example.com");
+        assert!(!body.contains("<script>"));
+        assert!(body.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn soap_contains_all_required_settings() {
+        let soap_body = r#"<s:Envelope><s:Body><a:GetUserSettingsRequestMessage>
+            <a:Request><a:Users><a:User><a:EMailAddress>user@example.com</a:EMailAddress></a:User></a:Users>
+            </a:Request></a:GetUserSettingsRequestMessage></s:Body></s:Envelope>"#;
+        let (status, _, body) = handle_autodiscover_soap("mail.example.com", soap_body);
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("ExternalEwsUrl"));
+        assert!(body.contains("MobileSyncServer"));
+        assert!(body.contains("EwsSupportedSchemas"));
+        assert!(body.contains("Exchange2016"));
+        assert!(body.contains("user@example.com"));
+    }
+
+    #[test]
+    fn soap_xss_safe() {
+        let soap_body = r#"<a:EMailAddress><script>bad</script>@example.com</a:EMailAddress>"#;
+        let (_, _, body) = handle_autodiscover_soap("mail.example.com", soap_body);
+        assert!(!body.contains("<script>"));
+    }
+
+    #[test]
+    fn extract_email_from_v1_xml_works() {
+        let body = r#"<Autodiscover><Request><EMailAddress>user@example.com</EMailAddress></Request></Autodiscover>"#;
+        assert_eq!(
+            extract_email_from_v1_xml(body).as_deref(),
+            Some("user@example.com")
+        );
+    }
+
+    #[test]
+    fn v1_xml_headers_include_security_headers() {
+        let (_, headers, _) = handle_autodiscover_xml("mail.example.com", "", "u@example.com");
+        let keys: Vec<&str> = headers.iter().map(|(k, _)| *k).collect();
+        assert!(keys.contains(&"X-Content-Type-Options"));
+        assert!(keys.contains(&"Cache-Control"));
+    }
 }
 
 #[derive(serde::Deserialize)]
