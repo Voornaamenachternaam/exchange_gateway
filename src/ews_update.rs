@@ -153,8 +153,6 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     }
     results
 }
-        CollectPayload(ChangeVerb, String, usize), // (verb, field_uri, depth)
-    }
 
     let mut state = State::Root;
     let mut payload_buf = String::new();
