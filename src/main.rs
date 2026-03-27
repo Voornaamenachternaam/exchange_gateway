@@ -189,7 +189,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         // ── Security middleware ───────────────────────────────────────────
-        .layer(middleware::from_fn(body_size_limit))
+    .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
+        // ── Security middleware ───────────────────────────────────────────
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .with_state(app_state);
         .with_state(app_state);
 
     let addr: SocketAddr = config.bind.parse()?;
