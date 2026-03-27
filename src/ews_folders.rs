@@ -79,14 +79,17 @@ impl DistinguishedFolder {
 
     /// Returns the IPF class string for this folder.
     pub fn folder_class(self) -> &'static str {
+    pub fn folder_class(self) -> &'static str {
         match self {
             Self::Calendar => "IPF.Appointment",
             Self::Contacts => "IPF.Contact",
             Self::Tasks => "IPF.Task",
             Self::Notes => "IPF.Note",
             Self::Journal => "IPF.Journal",
+            Self::MsgFolderRoot => "IPF",
             _ => "IPF.Note",
         }
+    }
     }
 
     /// Returns the EWS element name for the folder response.
