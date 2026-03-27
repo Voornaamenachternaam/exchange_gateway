@@ -1852,8 +1852,8 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_eas_sync_mutations, parse_ews_attendees, parse_ews_recurrence, parse_ics_event,
-        render_ics,
+        parse_datetime, parse_eas_sync_mutations, parse_ews_attendees, parse_ews_recurrence,
+        parse_ics_event, render_ics, EasRecurrence,
     };
 
     #[test]
