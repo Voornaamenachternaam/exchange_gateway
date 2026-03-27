@@ -78,7 +78,8 @@ impl DistinguishedFolder {
     }
 
     /// Returns the IPF class string for this folder.
-pub fn folder_class(self) -> &'static str {
+    /// Returns the IPF class string for this folder.
+    pub fn folder_class(self) -> &'static str {
         match self {
             Self::Calendar => "IPF.Appointment",
             Self::Contacts => "IPF.Contact",
@@ -86,7 +87,7 @@ pub fn folder_class(self) -> &'static str {
             Self::Notes => "IPF.Note",
             Self::Journal => "IPF.Journal",
             Self::MsgFolderRoot => "IPF",
-            _ => "IPF.Note",
+            _ => "IPF",
         }
     }
 
