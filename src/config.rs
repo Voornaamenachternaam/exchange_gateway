@@ -40,11 +40,6 @@ fn extract_host_from_url(url: &str) -> Option<String> {
     let url = url::Url::parse(url).ok()?;
     let host = url.host_str()?;
     Some(match url.port() {
-        Some(port) => format!("{}:{}", host, port),
-        None => host.to_string(),
-    })
-}
-
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let s = fs::read_to_string(path)
@@ -62,16 +57,6 @@ impl Config {
     }
 }
 
-/// Extract the host (and optional port) from a URL string.
-fn extract_host_from_url(url: &str) -> Option<String> {
-    let parsed = url::Url::parse(url).ok()?;
-    let host = parsed.host_str()?;
-    Some(match parsed.port() {
-        Some(port) => format!("{}:{}", host, port),
-        None => host.to_string(),
-    })
-}
-fn extract_host_from_url(url: &str) -> Option<String> {
 /// Extract the host (and optional port) from a URL string.
 fn extract_host_from_url(url: &str) -> Option<String> {
     url::Url::parse(url).ok()?.host_str().map(|h| h.to_string())
