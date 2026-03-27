@@ -113,10 +113,10 @@ impl DistinguishedFolder {
     }
 
     /// Returns the stable parent folder ID for this folder.
-    pub fn parent_id(self) -> &'static str {
+    pub fn parent_id(self) -> Option<&'static str> {
         match self {
-            Self::MsgFolderRoot => "root",
-            _ => "root",
+            Self::MsgFolderRoot => None,
+            _ => Some("root"),
         }
     }
 }
