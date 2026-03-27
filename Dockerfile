@@ -5,7 +5,7 @@ FROM rust:1.94.0-slim AS builder
 WORKDIR /app
 COPY Cargo.toml ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
-RUN cargo build --release 2>/dev/null || true
+RUN cargo build --release 2>&1 | grep -v 'error\[E' || true
 RUN rm -rf src
 COPY src ./src
 RUN touch src/main.rs && cargo build --release
