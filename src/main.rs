@@ -84,9 +84,6 @@ use crate::storage::Storage;
 /// All legitimate Outlook EWS/EAS XML payloads are well within this limit.
 /// Enforced via `RequestBodyLimitLayer`, which caps both fixed-length and chunked bodies.
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-    }
-    next.run(req).await
-}
 
 // ---------------------------------------------------------------------------
 // Autodiscover route handlers (thin wrappers over autodiscover.rs functions)
