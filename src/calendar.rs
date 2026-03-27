@@ -158,7 +158,7 @@ struct EasBuilder {
 }
 
 #[derive(Default)]
-struct EasRecurrence {
+pub struct EasRecurrence {
     kind: Option<u8>,
     interval: Option<u32>,
     day_of_week: Option<String>,

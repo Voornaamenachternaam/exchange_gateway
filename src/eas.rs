@@ -214,7 +214,7 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
     values
 }
 
-fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
+pub fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
