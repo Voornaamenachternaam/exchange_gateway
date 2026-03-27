@@ -37,9 +37,10 @@ pub struct Config {
     #[serde(default)]
     pub gateway_host: String,
 fn extract_host_from_url(url: &str) -> Option<String> {
-    let url = url::Url::parse(url).ok()?;
-    let host = url.host_str()?;
-    Some(match url.port() {
+    url::Url::parse(url).ok()?.host_str().map(|h| h.to_string())
+}
+
+impl Config {
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let s = fs::read_to_string(path)
