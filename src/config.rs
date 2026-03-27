@@ -64,7 +64,12 @@ impl Config {
 
 /// Extract the host (and optional port) from a URL string.
 fn extract_host_from_url(url: &str) -> Option<String> {
-    url::Url::parse(url).ok()?.host_str().map(|h| h.to_string())
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    Some(match parsed.port() {
+        Some(port) => format!("{}:{}", host, port),
+        None => host.to_string(),
+    })
 }
 fn extract_host_from_url(url: &str) -> Option<String> {
 /// Extract the host (and optional port) from a URL string.
