@@ -219,10 +219,24 @@ pub fn validate_folder_request(
     explicit_id: Option<&str>,
     explicit_sync_id: Option<&str>,
 ) -> Option<&'static str> {
-    let calendar_id = folder_id_for(owner, DistinguishedFolder::Calendar);
-    let root_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+    let all_owner_ids: Vec<String> = [
+        DistinguishedFolder::Calendar,
+        DistinguishedFolder::MsgFolderRoot,
+        DistinguishedFolder::Inbox,
+        DistinguishedFolder::SentItems,
+        DistinguishedFolder::DeletedItems,
+        DistinguishedFolder::Drafts,
+        DistinguishedFolder::Outbox,
+        DistinguishedFolder::JunkEmail,
+        DistinguishedFolder::Contacts,
+        DistinguishedFolder::Tasks,
+        DistinguishedFolder::Notes,
+        DistinguishedFolder::Journal,
+    ]
+    .iter()
+    .map(|&f| folder_id_for(owner, f))
+    .collect();
 
-    // Check explicit folder IDs — must belong to this owner.
     // Check explicit folder IDs — must belong to this owner.
     for id in [explicit_id, explicit_sync_id].into_iter().flatten() {
         if id != "root" && !all_owner_ids.iter().any(|oid| oid == id) {
