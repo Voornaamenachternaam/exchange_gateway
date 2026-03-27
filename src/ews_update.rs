@@ -311,15 +311,13 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                                 a.attendee_type != Some(2)
                             } else {
                                 a.attendee_type == Some(2)
-                            }
-459:441:                ChangeVerb::Delete => item.rrule = None,
-460:442:                _ => {
-461:443:                    item.rrule = parse_ews_recurrence(payload);
-462:444:                }
-463:445:            },
-464:            "calendar:requiredattendees"
-465:            | "calendar:optionalattendees" => {
-322:345:                let attendees = parse_ews_attendees(payload);
+                            }               ChangeVerb::Delete => item.rrule = None,
+                _ => {
+                   item.rrule = parse_ews_recurrence(payload);
+               }
+           },           "calendar:requiredattendees"
+            | "calendar:optionalattendees" => {
+                let attendees = parse_ews_attendees(payload);
                 match verb {
                     ChangeVerb::Delete | ChangeVerb::Set => {
                         let is_optional = uri.contains("optional");
@@ -337,15 +335,13 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                     ChangeVerb::Append => {
                         item.attendees.extend(attendees);
                     }
-                }
-490:                        item.attendees.extend(attendees);
-491:                    }
-492:                }
-493:            }
+                }                       item.attendees.extend(attendees);
+                   }
+               }
+            }
             "calendar:organizer" => match verb {
                 ChangeVerb::Delete => {
                     item.organizer_name = None;
-                    item.organizer_email = None;
                 }
                 _ => {
                     if let Some(v) = extract_ews_field(payload, b"EmailAddress") {
