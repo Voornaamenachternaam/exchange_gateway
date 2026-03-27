@@ -94,7 +94,16 @@ CREATE TABLE device_info (
 );
 
 CREATE TABLE api_idempotency (
+CREATE TABLE api_idempotency (
+    idempotency_key TEXT PRIMARY KEY,
+    route_name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE schema_version (
+    version INTEGER PRIMARY KEY,
+    description TEXT NOT NULL
+);
     version INTEGER PRIMARY KEY,
     description TEXT NOT NULL,
     applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
