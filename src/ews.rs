@@ -2765,13 +2765,24 @@ mod tests {
     #[test]
     fn renders_poor_quality_days_without_suggestions() {
         let xml = suggestions_xml_for_window(
-            "111100001111",
+            "111111111111",
             Utc.with_ymd_and_hms(2026, 3, 22, 20, 0, 0).unwrap(),
             Utc.with_ymd_and_hms(2026, 3, 23, 2, 0, 0).unwrap(),
             30,
             60,
         );
         assert!(xml.contains("<t:Date>2026-03-22</t:Date><t:DayQuality>Poor</t:DayQuality>"));
-        assert!(xml.contains("<t:Date>2026-03-23</t:Date><t:DayQuality>Excellent</t:DayQuality>"));
+    }
+
+    #[test]
+    fn renders_excellent_quality_days_with_suggestions() {
+        let xml = suggestions_xml_for_window(
+            "110011001100",
+            Utc.with_ymd_and_hms(2026, 3, 22, 20, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 23, 2, 0, 0).unwrap(),
+            30,
+            60,
+        );
+        assert!(xml.contains("<t:Date>2026-03-22</t:Date><t:DayQuality>Excellent</t:DayQuality>"));
     }
 }

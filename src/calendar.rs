@@ -1963,7 +1963,7 @@ mod tests {
         assert_eq!(parsed.uid, "uid-1");
         assert_eq!(parsed.subject, "Subject");
         assert_eq!(parsed.categories.len(), 2);
-        assert_eq!(parsed.exceptions.len(), 2);
+        assert_eq!(parsed.exceptions.len(), 3);
         assert!(parsed.exceptions.iter().any(|v| v.deleted));
         assert!(
             parsed
