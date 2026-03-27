@@ -107,7 +107,15 @@ CREATE TABLE schema_version (
 
 INSERT INTO schema_version (version, description) VALUES (1, "initial gateway typed schema");
 
---- a/d1_schema.sql
+INSERT INTO schema_version (version, description) VALUES (1, "initial gateway typed schema");
+
+CREATE TABLE api_idempotency (
+    idempotency_key TEXT PRIMARY KEY,
+    route_name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_api_idempotency_created ON api_idempotency(created_at);
 +++ b/d1_schema.sql
 @@ -110,11 +110,6 @@
 -CREATE TABLE api_idempotency (
