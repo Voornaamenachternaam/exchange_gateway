@@ -26,8 +26,5 @@ ENV TZ="UTC"
 USER gateway
 EXPOSE 8134
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf -o /dev/null -w '%{http_code}' \
-        -H 'Content-Type: text/xml' \
-        --data '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body/></s:Envelope>' \
-        http://localhost:8134/EWS/Exchange.asmx | grep -qE "^(200|401|500)$" || exit 1
+    CMD curl -f http://localhost:8134/ || exit 1
 CMD ["/usr/local/bin/exchange_gateway"]
