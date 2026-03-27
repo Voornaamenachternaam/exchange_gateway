@@ -564,7 +564,11 @@ impl PolicyEngine {
         let mut buffer = Cursor::new(Vec::new());
         let mut writer = Writer::new_with_indent(&mut buffer, b' ', 4);
 
+        let mut buffer = Cursor::new(Vec::new());
+        let mut writer = Writer::new_with_indent(&mut buffer, b' ', 4);
+
         let _ = writer.create_element("Provision").write_inner_content(|writer| {
+            writer.create_element("EASProvisionDoc").write_inner_content(|writer| {
             writer.create_element("Policies").write_inner_content(|writer| {
                 writer.create_element("Policy").write_inner_content(|writer| {
                     writer.create_element("PolicyType").write_text_content(BytesText::new(policy.policy_type.as_str())).unwrap();
