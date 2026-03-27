@@ -1,4 +1,4 @@
-//! Rate Limiter - Production-Grade Rate Limiting and Throttling
+mod rate_limiter;
 //!
 //! This module implements comprehensive rate limiting for the Exchange Gateway
 //! including per-user, per-device, per-IP, and per-endpoint rate limiting with
