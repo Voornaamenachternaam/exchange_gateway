@@ -92,7 +92,7 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                             }
                         }
                     }
-State::CollectPayload(verb, uri, depth) => { writer.write_event(Event::Start(e.clone())).ok(); payload_buf.push_str(&format!("<{}>", String::from_utf8_lossy(e.name().as_ref()))); state = State::CollectPayload(verb, uri, depth + 1); }
+                    State::CollectPayload(verb, uri, depth) => { payload_buf.push_str(&format!("<{}>", String::from_utf8_lossy(e.name().as_ref()))); state = State::CollectPayload(verb.clone(), uri.clone(), depth + 1); }
                     _ => {}
                 }
             }
