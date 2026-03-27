@@ -92,7 +92,35 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                             }
                         }
                     }
-                    State::CollectPayload(verb, uri, depth) => { payload_buf.push_str(&format!("<{}>", String::from_utf8_lossy(e.name().as_ref()))); state = State::CollectPayload(verb.clone(), uri.clone(), depth + 1); }
+use serde::Deserialize;
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ItemChange {
+    #[serde(rename = "SetItemField", default)]
+    set_item_fields: Vec<FieldChange>,
+    #[serde(rename = "AppendToItemField", default)]
+    append_to_item_fields: Vec<FieldChange>,
+    #[serde(rename = "DeleteItemField", default)]
+    delete_item_fields: Vec<FieldChange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FieldChange {
+    #[serde(rename = "FieldURI")]
+    field_uri: String,
+    #[serde(flatten)]
+    payload: serde_json::Value,
+}
+
+pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
+    let mut results = Vec::new();
+    if let Ok(changes) = quick_xml::de::from_str::<ItemChange>(body) {
+        for f in changes.set_item_fields { results.push(EwsFieldChange { verb: ChangeVerb::Set, field_uri: f.field_uri, payload_xml: f.payload.to_string() }); }
+        for f in changes.append_to_item_fields { results.push(EwsFieldChange { verb: ChangeVerb::Append, field_uri: f.field_uri, payload_xml: f.payload.to_string() }); }
+        for f in changes.delete_item_fields { results.push(EwsFieldChange { verb: ChangeVerb::Delete, field_uri: f.field_uri, payload_xml: f.payload.to_string() }); }
+    }
+    results
+}
                     _ => {}
                 }
             }
