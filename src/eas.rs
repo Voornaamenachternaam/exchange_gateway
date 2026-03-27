@@ -2,6 +2,7 @@ use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::sync;
+use crate::sync::xml_escape;
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -464,17 +465,14 @@ fn options_response(request_id: &str) -> Response {
 }
 
 fn throttled_response(request_id: &str) -> Response {
-    let mut r = (
+    let body = "Throttled";
+    let mut response = (
         StatusCode::SERVICE_UNAVAILABLE,
-        [(
-            "Retry-After",
-            Box::leak(RETRY_AFTER_SECONDS.to_string().into_boxed_str()),
-        )],
-        "Throttled",
-    )
-        .into_response();
-    inject_common_headers(&mut r, request_id);
-    r
+        [(header::RETRY_AFTER.as_str(), &RETRY_AFTER_SECONDS.to_string())],
+        body,
+    ).into_response();
+    inject_common_headers(&mut response, request_id);
+    response
 }
 
 fn bad_request_response(request_id: &str, msg: &str) -> Response {

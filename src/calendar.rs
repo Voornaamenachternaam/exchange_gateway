@@ -1450,20 +1450,10 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     current.exceptions.push(exception);
                 }
                 if matches!(name.as_slice(), b"Add" | b"Change" | b"Delete") {
-                    match current_kind.take() {
-                        Some(EasOpKind::Add) => out.push(EasSyncMutation::Add {
-                            client_id: current.client_id.clone(),
-                            item: current.into_item()?,
-                        }),
-                        Some(EasOpKind::Change) => out.push(EasSyncMutation::Change {
-                            server_id: current.server_id.clone().unwrap_or_default(),
-                            patch: current.into_patch(),
-                        }),
-                        Some(EasOpKind::Delete) => out.push(EasSyncMutation::Delete {
-                            server_id: current.server_id.clone().unwrap_or_default(),
-                        }),
-                        None => {}
-                    }
+                    let kind = current_kind.take();
+                    let mutation = process_eas_mutation(kind, current)?;
+                    out.push(mutation);
+                    current = EasBuilder::default();
                 }
                 stack.pop();
             }
@@ -1475,6 +1465,31 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
     }
 
     Ok(out)
+}
+
+fn process_eas_mutation(
+    kind: Option<EasOpKind>,
+    current: EasBuilder,
+) -> Result<EasSyncMutation> {
+    match kind {
+        Some(EasOpKind::Add) => {
+            let client_id = current.client_id.clone();
+            let item = current.into_item()?;
+            Ok(EasSyncMutation::Add { client_id, item })
+        }
+        Some(EasOpKind::Change) => {
+            let server_id = current.server_id.clone();
+            let patch = current.into_patch();
+            Ok(EasSyncMutation::Change {
+                server_id: server_id.unwrap_or_default(),
+                patch,
+            })
+        }
+        Some(EasOpKind::Delete) => Ok(EasSyncMutation::Delete {
+            server_id: current.server_id.unwrap_or_default(),
+        }),
+        None => Err(anyhow!("missing operation kind")),
+    }
 }
 
 pub fn extract_ews_field(xml: &str, tag: &[u8]) -> Option<String> {

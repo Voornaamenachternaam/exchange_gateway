@@ -1024,7 +1024,7 @@ async fn merged_freebusy_for_mailbox(
     let caldav = CaldavClient::new(&state.cfg);
     if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
         && let Some(collection_href) = calendars.first()
-        && let Ok(events_xml) = caldav
+        && let Ok(calendar_events_data) = caldav
             .query_events(
                 collection_href,
                 &start.format("%Y%m%dT%H%M%SZ").to_string(),
@@ -1034,7 +1034,8 @@ async fn merged_freebusy_for_mailbox(
             )
             .await
     {
-        let mut reader = Reader::from_str(&events_xml);
+        let events_data = calendar_events_data;
+        let mut reader = Reader::from_str(&events_data);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
         let mut in_calendar_data = false;
@@ -1991,14 +1992,15 @@ async fn handle_sync_folder_items(
             let change_key = changekey_for_item(&item.row);
             let change_tag = if since == 0 { "Create" } else { "Update" };
             changes_xml.push_str(&format!(
-                r#"<t:{change_tag}>{}</t:{change_tag}>"#,
-                change_tag = change_tag,
+                r#"<t:{}>{}</t:{}>"#,
+                change_tag,
                 render_ews_calendar_item_xml_with_shape(
                     &item.row.server_id,
                     &change_key,
                     &item.item,
                     shape
-                )
+                ),
+                change_tag
             ));
         }
     }

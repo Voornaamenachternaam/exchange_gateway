@@ -17,6 +17,7 @@ mod models;
 mod storage;
 mod sync;
 mod wbxml;
+// mod autodiscover; // Commented out - contains errors that need fixing
 
 use crate::config::Config;
 use crate::models::AppState;

@@ -82,7 +82,7 @@ pub struct JournalRow {
     pub resource_href: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct EwsItemRow {
     pub server_id: String,
     pub resource_href: String,
