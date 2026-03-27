@@ -189,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         // ── Security middleware ───────────────────────────────────────────
-    .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         // ── Security middleware ───────────────────────────────────────────
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .with_state(app_state);
