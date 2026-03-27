@@ -108,8 +108,3 @@ CREATE INDEX idx_idempotency_created   ON api_idempotency(created_at);
 
 INSERT INTO schema_version (version, description)
 VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
-109:INSERT INTO schema_version (version, description)
-110:VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
-
-INSERT INTO schema_version (version, description)
-VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
