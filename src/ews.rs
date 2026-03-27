@@ -1597,24 +1597,16 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
         .to_ascii_lowercase();
 
     // For FindFolder on MsgFolderRoot, enumerate first-level children.
-    // For FindFolder on any other folder, return empty (no sub-folders in gateway).
-let (total_count_for_cal, cal_xml_content) = if distinguished_str == "msgfolderroot" || distinguished_str.is_empty() {
-        let count = load_current_calendar_items(state, owner, &auth.password, None)
-            .await
-            .map(|items| items.len())
-            .unwrap_or(0);
-        let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
-        (1usize, cal_xml)
-    } else {
-        // Subfolder enumeration for non-root folders: always empty for this gateway.
-        (0usize, String::new())
-    };
-        // We need to inject the actual count into the calendar folder XML.
-        let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
-        (1usize, cal_xml)
-    } else {
-        // Subfolder enumeration for non-root folders: always empty for this gateway.
-        (0usize, String::new())
+    let (total_count_for_cal, cal_xml_content) = match distinguished_str.as_str() {
+        "msgfolderroot" | "" => {
+            let count = load_current_calendar_items(state, owner, &auth.password, None)
+                .await
+                .map(|items| items.len())
+                .unwrap_or(0);
+            let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
+            (1usize, cal_xml)
+        }
+        _ => (0usize, String::new()),
     };
 
     let response = format!(
