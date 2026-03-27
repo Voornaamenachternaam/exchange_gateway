@@ -92,30 +92,7 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                             }
                         }
                     }
-                    State::CollectPayload(verb, uri, depth) => {
-                        let mut writer = quick_xml::writer::Writer::new(Vec::new());
-                        let mut depth = 1;
-                        while depth > 0 {
-                            match reader.read_event_into(&mut buf) {
-                                Ok(Event::Start(e)) => {
-                                    writer.write_event(Event::Start(e.clone())).ok();
-                                    depth += 1;
-                                }
-                                Ok(Event::End(e)) => {
-                                    depth -= 1;
-                                    if depth > 0 {
-                                        writer.write_event(Event::End(e.clone())).ok();
-                                    }
-                                }
-                                Ok(Event::Text(e)) => {
-                                    writer.write_event(Event::Text(e.clone())).ok();
-                                }
-                                _ => {}
-                            }
-                            buf.clear();
-                        }
-                        payload_buf = String::from_utf8(writer.into_inner()).unwrap_or_default();
-                    }
+State::CollectPayload(verb, uri, depth) => { writer.write_event(Event::Start(e.clone())).ok(); payload_buf.push_str(&format!("<{}>", String::from_utf8_lossy(e.name().as_ref()))); state = State::CollectPayload(verb, uri, depth + 1); }
                     _ => {}
                 }
             }
