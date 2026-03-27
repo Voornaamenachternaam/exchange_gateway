@@ -319,30 +319,25 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
 463:445:            },
 464:            "calendar:requiredattendees"
 465:            | "calendar:optionalattendees" => {
-466:                let attendees = parse_ews_attendees(payload);
-467:                match verb {
-468:                    ChangeVerb::Delete => {
-469:                        let is_optional = uri.contains("optional");
-470:                        item.attendees.retain(|a| {
-471:                            if is_optional {
-472:                                a.attendee_type != Some(2)
-473:                            } else {
-474:                                a.attendee_type == Some(2)
-475:                            }
-476:                        });
-477:                    }
-478:                    ChangeVerb::Append => {
-479:                        item.attendees.extend(attendees);
-480:                    }
-481:                    ChangeVerb::Set => {
-482:                        let is_optional = uri.contains("optional");
-483:                        item.attendees.retain(|a| {
-484:                            if is_optional {
-485:                                a.attendee_type != Some(2)
-486:                            } else {
-487:                                a.attendee_type == Some(2)
-488:                            }
-489:                        });
+322:345:                let attendees = parse_ews_attendees(payload);
+                match verb {
+                    ChangeVerb::Delete | ChangeVerb::Set => {
+                        let is_optional = uri.contains("optional");
+                        item.attendees.retain(|a| {
+                            if is_optional {
+                                a.attendee_type != Some(2)
+                            } else {
+                                a.attendee_type == Some(2)
+                            }
+                        });
+                        if verb == ChangeVerb::Set {
+                            item.attendees.extend(attendees);
+                        }
+                    }
+                    ChangeVerb::Append => {
+                        item.attendees.extend(attendees);
+                    }
+                }
 490:                        item.attendees.extend(attendees);
 491:                    }
 492:                }
