@@ -133,7 +133,17 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                             state = State::Root;
                         } else {
                             payload_buf.push_str(&format!("</{}>", local));
+                            State::CollectPayload(verb, uri, depth) => {
+                        if *depth == 1 && matches!(local.as_str(), "SetItemField" | "AppendToItemField" | "DeleteItemField") {
+                            results.push(EwsFieldChange { verb: verb.clone(), field_uri: uri.clone(), payload_xml: payload_buf.clone() });
+                            state = State::Root;
+                        } else if *depth > 1 {
+                            payload_buf.push_str(&format!("</{}>", local));
                             state = State::CollectPayload(verb.clone(), uri.clone(), depth - 1);
+                        } else {
+                            state = State::Root;
+                        }
+                    }
                         }
                     }
                     State::InVerb(_) => {
