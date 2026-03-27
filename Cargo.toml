@@ -2,7 +2,7 @@
 name = "exchange_gateway"
 version = "1.0.21"
 edition = "2024"
-rust-version = "1.93.1"
+rust-version = "1.94.1"
 
 [dependencies]
 axum = { version = "^0.8.8", features = ["macros"] }
