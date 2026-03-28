@@ -468,7 +468,8 @@ pub async fn apply_meeting_response(
             &etag,
         )
         .await?;
-        .await?;
+    Ok(())
+}
     Ok(())
 }
 
