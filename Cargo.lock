@@ -377,6 +377,7 @@ dependencies = [
  "hyper",
  "icalendar",
  "lazy_static",
+ "once_cell",
  "quick-xml",
  "reqwest",
  "rrule",
