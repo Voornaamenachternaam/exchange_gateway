@@ -127,7 +127,9 @@ impl CaldavClient {
         if let Some(etag) = if_match {
             req = req.header(IF_MATCH, etag);
         } else {
-            req = req.header(IF_NONE_MATCH, "*");
+            if resource_href.is_none() {
+                req = req.header(IF_NONE_MATCH, "*");
+            }
         }
 
         let resp = req.send().await?;
