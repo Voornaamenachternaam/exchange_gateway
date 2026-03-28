@@ -104,12 +104,6 @@ CREATE TABLE schema_version (
 
 INSERT INTO schema_version (version, description) VALUES (1, "initial gateway typed schema");
 
-CREATE TABLE api_idempotency (
-    idempotency_key TEXT PRIMARY KEY,
-    route_name TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE INDEX idx_api_idempotency_created ON api_idempotency(created_at);
 CREATE INDEX idx_item_map_owner_time   ON item_map(owner, updated_at);
 CREATE INDEX idx_item_map_resource     ON item_map(owner, resource_href);
