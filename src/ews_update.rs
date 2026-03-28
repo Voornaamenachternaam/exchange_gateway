@@ -60,7 +60,8 @@ fn xml_escape_attr(s: &str) -> String {
 }
 
 fn local_name_bytes(name: &[u8]) -> String {
-    String::from_utf8_lossy(name).into_owned()
+    let local = name.rsplit(|b| *b == b':').next().unwrap_or(name);
+    String::from_utf8_lossy(local).into_owned()
 }
 
 fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::encoding::Decoder) {
