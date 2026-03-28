@@ -720,7 +720,7 @@ async fn handle_ping(
         }
 
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let sleep_for = remaining.min(Duration::from_secs(1));
+        let sleep_for = remaining.min(Duration::from_secs(15));
         tokio::time::sleep(sleep_for).await;
     }
 }
