@@ -487,9 +487,7 @@ async function handleApiRequest(request, env) {
     return new Response('Only SELECT queries are permitted', { status: 403 });
   }
 
-  const trimmed = query.trim().toUpperCase();
-  // Consider replacing this entire function with specific data access methods.
-  if (!trimmed.startsWith('SELECT')) {
+  try {
     let stmt = env.EXCHANGE_DB.prepare(query);
     if (params && Array.isArray(params)) {
       stmt = stmt.bind(...params);
