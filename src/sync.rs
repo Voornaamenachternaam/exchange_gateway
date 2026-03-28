@@ -112,6 +112,12 @@ pub async fn apply_client_sync_mutations(
                     continue;
                 }
 
+                let mut item = item;
+                if item.uid.is_empty() {
+                    item.uid = client_id
+                        .clone()
+                        .unwrap_or_else(|| Uuid::new_v4().to_string());
+                }
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(&collection_href, None, &ics, username, password, None)
@@ -119,13 +125,6 @@ pub async fn apply_client_sync_mutations(
                 {
                     Ok((resource_href, etag)) => {
                         let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
-                        let uid = if item.uid.is_empty() {
-                            client_id
-                                .clone()
-                                .unwrap_or_else(|| Uuid::new_v4().to_string())
-                        } else {
-                            item.uid
-                        };
                         state
                             .storage
                             .upsert_item_map(
@@ -133,7 +132,7 @@ pub async fn apply_client_sync_mutations(
                                 &collection_href,
                                 &resource_href,
                                 &server_id,
-                                &uid,
+                                &item.uid,
                                 &etag,
                             )
                             .await?;
