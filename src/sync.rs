@@ -1177,12 +1177,12 @@ pub async fn perform_sync(
             continue;
         }
         let resource_href = ev.href.clone();
+        let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
+        seen_ids.insert(server_id.clone());
         let etag = ev.etag.trim_matches('"').to_string();
         let Some(item) = parse_ics_event(&ev.ics) else {
             continue;
         };
-        let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
-        seen_ids.insert(server_id.clone());
 
         let existing = existing_map.get(&server_id);
         let is_new = existing.is_none();
