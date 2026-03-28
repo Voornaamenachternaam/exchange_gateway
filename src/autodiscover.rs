@@ -52,7 +52,7 @@ fn xml_escape(s: &str) -> String {
 }
 
 fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
-    vec![(
+    vec![
         ("Content-Type", "application/xml; charset=utf-8"),
         ("Cache-Control", "private, no-store"),
         ("X-Content-Type-Options", "nosniff"),
@@ -60,6 +60,7 @@ fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
         ("X-Frame-Options", "DENY"),
         ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
     ]
+}
 fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Content-Type", "application/xml; charset=utf-8"),
