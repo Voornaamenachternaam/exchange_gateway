@@ -15,6 +15,11 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
+    
+    // Handle CORS preflight requests
+    if (request.method === 'OPTIONS') {
+      return corsPreflightResponse();
+    }
 
     if (isForwardedPath(path)) {
       return handleGatewayForward(request, env, ctx);
@@ -41,7 +46,7 @@ export default {
     if (path === '/api/get_ews_item_by_id') return handleGetEwsItemById(url, request, env);
 
     if (path.startsWith('/api/')) {
-      return handleApiRequest(request, env);
+      return withCors(await handleApiRequest(request, env));
     }
 
     if (
@@ -88,6 +93,33 @@ function subtleEqual(a, b) {
   let mismatch = 0;
   for (let i = 0; i < a.length; i += 1) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return mismatch === 0;
+}
+
+// CORS headers for browser-based access
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Gateway-Secret, Idempotency-Key',
+  'Access-Control-Max-Age': '86400',
+};
+
+function withCors(response) {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(CORS_HEADERS)) {
+    headers.set(key, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+function corsPreflightResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: CORS_HEADERS
+  });
 }
 
 async function readJson(request) {

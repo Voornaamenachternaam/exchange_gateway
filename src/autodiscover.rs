@@ -2,15 +2,27 @@
 
 use crate::config::Config;
 use axum::{
-    extract::{Query, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    extract::Query,
+    http::StatusCode,
+    response::Response,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Autodiscover request handler type — returned from each sub-handler.
 pub type AdResponse = (StatusCode, Vec<(&'static str, &'static str)>, String);
+
+/// Query parameters for Autodiscover JSON endpoint
+/// Used by Outlook for Windows and mobile clients
+#[derive(Debug, Deserialize, Default)]
+pub struct AutodiscoverJsonParams {
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub redirecturl: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -246,6 +258,160 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
         settings = settings
     );
     (StatusCode::OK, no_cache_headers_soap(), xml)
+}
+
+// ---------------------------------------------------------------------------
+// Autodiscover v2 JSON (Outlook 2013+, Office 365, new Outlook)
+// ---------------------------------------------------------------------------
+
+/// Respond to a GET /autodiscover/autodiscover.json request.
+///
+/// This is the modern Autodiscover endpoint used by:
+/// - Outlook for Windows (new Outlook)
+/// - Outlook for iOS/Android
+/// - Office 365 hybrid configurations
+///
+/// Returns JSON with protocol configuration for EWS and ActiveSync.
+pub fn handle_autodiscover_json(
+    host: &str,
+    protocol: Option<&str>,
+    email: Option<&str>,
+) -> AdResponse {
+    let email = email.unwrap_or_default();
+    
+    // Validate email format
+    if !email.contains('@') {
+        let error = serde_json::json!({
+            "error": {
+                "code": "InvalidRequest",
+                "message": "Email address is required"
+            }
+        });
+        return (
+            StatusCode::BAD_REQUEST,
+            no_cache_headers_json(),
+            error.to_string(),
+        );
+    }
+
+    // Build the JSON response following Outlook Autodiscover JSON schema
+    let json = serde_json::json!({
+        "Protocol": "HTTP",
+        "Url": format!("https://{}", host),
+        "AuthenticationDisplayName": "Basic Authentication",
+        "AuthenticationMethod": "Basic",
+        "EmailAddress": email,
+        "ExchangeServer": "Stalwart Mail",
+        "ServerExclusiveConnect": "off",
+        "ServerVersion": "Exchange2016",
+        "PublicFolderServer": host,
+        "ActiveDirectoryServer": host,
+        "Capabilities": {
+            "Account": {
+                "Type": "EmailAddress",
+                "Discovered": true
+            },
+            "Calendar": {
+                "EmailAddress": email,
+                "PrimarySmtpAddress": email,
+                "AllMailboxesInSync": true
+            },
+            "Contacts": {
+                "EmailAddress": email,
+                "PrimarySmtpAddress": email,
+                "AllMailboxesInSync": true
+            },
+            "Tasks": {
+                "EmailAddress": email,
+                "PrimarySmtpAddress": email,
+                "AllMailboxesInSync": true
+            },
+            "Journal": {
+                "EmailAddress": email,
+                "PrimarySmtpAddress": email
+            },
+            "EwsAvailability": true,
+            "EwsGetUserAvailability": true,
+            "EwsFindFoldersInRoot": true,
+            "SyncCalendarWithMobile": true,
+            "SyncContactsWithMobile": true,
+            "SyncTasksWithMobile": true,
+            "FullMemberSync": true,
+            "GroupingExclusions": [],
+            "MailboxSearch": true,
+            "MailboxSortByLastAccessTime": false,
+            "OrganizationHierarchy": false,
+            "PremiumClient": true,
+            "SearchFoldersEnabled": true,
+            "ShowGALAsSearchResult": true,
+            "UMEnabled": false,
+            "VirtualDirectories": {
+                "OWA": {
+                    "Internal": format!("https://{}/owa", host),
+                    "External": format!("https://{}/owa", host)
+                },
+                "EWS": {
+                    "Internal": format!("https://{}/EWS/Exchange.asmx", host),
+                    "External": format!("https://{}/EWS/Exchange.asmx", host)
+                },
+                "Autodiscover": {
+                    "Internal": format!("https://{}/Autodiscover/Autodiscover.svc", host),
+                    "External": format!("https://{}/Autodiscover/Autodiscover.svc", host)
+                },
+                "MAPI": {
+                    "Internal": format!("https://{}/mapi", host),
+                    "External": format!("https://{}/mapi", host)
+                }
+            }
+        },
+        "Policies": [
+            {
+                "Name": "Individual",
+                "PolicyState": "Enabled",
+                "PolicyType": "Individual"
+            }
+        ],
+        "UserDisplayName": email.split('@').next().unwrap_or(email),
+        "UserLegacyDN": format!("/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={}/cn=Mailbox GUID", host),
+        "UserPrincipalName": email,
+        "ExternalEwsUrl": format!("https://{}/EWS/Exchange.asmx", host),
+        "InternalEwsUrl": format!("https://{}/EWS/Exchange.asmx", host),
+        "ExternalOwaUrl": format!("https://{}/owa", host),
+        "InternalOwaUrl": format!("https://{}/owa", host),
+        "ExternalRpcHttpUrl": format!("https://{}/rpc", host),
+        "InternalRpcHttpUrl": format!("https://{}/rpc", host),
+        "ExternalMapiHttpUrl": format!("https://{}/mapi", host),
+        "InternalMapiHttpUrl": format!("https://{}/mapi", host),
+        "ExternalEcpUrl": format!("https://{}/ecp", host),
+        "InternalEcpUrl": format!("https://{}/ecp", host),
+        "ExternalEwsVersion": "Exchange2016",
+        "InternalEwsVersion": "Exchange2016",
+        "MobileSyncMailboxGuid": generate_mailbox_guid(email),
+        "PreferredDomain": email.split('@').last().unwrap_or("")
+    });
+
+    (StatusCode::OK, no_cache_headers_json(), json.to_string())
+}
+
+/// Generate a consistent mailbox GUID from email address
+/// This ensures the same mailbox gets the same GUID across requests
+fn generate_mailbox_guid(email: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    
+    let mut hasher = DefaultHasher::new();
+    email.hash(&mut hasher);
+    let hash = hasher.finish();
+    
+    // Format as GUID-like string: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        hash,
+        (hash >> 32) & 0xFFFF,
+        (hash >> 48) & 0xFFFF,
+        (hash >> 16) & 0xFFFF,
+        hash & 0xFFFFFFFFFFFF
+    )
 }
 
 
