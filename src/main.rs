@@ -158,6 +158,17 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { StatusCode::OK }))
+        .route("/EWS/Exchange.asmx", post(ews::handle))
+        .route("/EWS/*path", post(ews::handle))
+        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
+        .route("/autodiscover/autodiscover.xml", post(autodiscover_xml))
+        .route("/Autodiscover/Autodiscover.xml", post(autodiscover_xml))
+        .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))
+        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
+        .route("/autodiscover/autodiscover.json", get(autodiscover_json))
+        .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .with_state(app_state);
 
     let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
