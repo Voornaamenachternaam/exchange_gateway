@@ -27,6 +27,8 @@ tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter"] }
 urlencoding = "^2.1.3"
 base64 = "^0.22.1"
+url = "^2.5.8"
+tower-http = { version = "^0.6.8", features = ["trace"] }
 
 [profile.release]
 opt-level = 3
