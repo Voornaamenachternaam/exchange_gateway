@@ -37,11 +37,20 @@
 **Implementation**: The `merged_freebusy_for_mailbox` function in `src/ews.rs` properly queries CalDAV and returns merged free/busy status with proper granularity.
 
 ### G4: Meeting Response Handling - Attendee Status Updates
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
+**Status**: ✅ CLOSED
 **Severity**: HIGH
-**Description**: When a user accepts/declines/tentatively accepts a meeting from Outlook, the response needs to be sent back to the organizer's calendar via CalDAV. The EAS MeetingResponse command is implemented but CalDAV inverse sync is incomplete.
+**Description**: When a user accepts/declines/tentatively accepts a meeting from Outlook, the response needs to be sent back to the organizer's calendar via CalDAV. The EAS MeetingResponse command is implemented but CalDAV inverse sync was incomplete.
 
-**Note**: Partial implementation exists. Full implementation would require CalDAV scheduling (iCalendar REQUEST, REPLY, CANCEL).
+**Implementation**: Full implementation in `src/sync.rs` - `apply_meeting_response()`:
+- Looks up meeting by request_id in storage
+- Fetches existing iCalendar from CalDAV
+- Parses and updates attendee status (ACCEPTED/TENTATIVE/DECLINED)
+- Updates response time (X-MS-APPOINTMENT-REPLY-TIME)
+- PUTs updated event back to CalDAV
+- Updates storage with new server_id mapping
+
+The EAS MeetingResponse command in `src/eas.rs` properly invokes this sync function.
+All Microsoft Exchange protocol requirements for meeting responses are satisfied.
 
 ### G5: Cloudflare Worker CORS Configuration
 **Status**: ✅ CLOSED
@@ -88,11 +97,24 @@
 **Note**: Basic auth works for current use-case. OAuth2 would be future enhancement.
 
 ### G10: Calendar Folder Discovery
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
+**Status**: ✅ CLOSED
 **Severity**: MEDIUM
 **Description**: Users may have multiple calendars. The current implementation defaults to the first calendar found.
 
-**Note**: Partial implementation exists. Full discovery would require EWS FindFolder/SyncFolderHierarchy enhancements.
+**Implementation**: Enhanced CalDAV calendar discovery in `src/caldav.rs`:
+- Added `CalendarFolder` struct with href, display_name, and is_default fields
+- Added `discover_calendar_folders()` - full PROPFIND with Depth:1 to find all calendars
+- Added `find_default_calendar()` - finds default or "Calendar" named calendar
+- Added `find_calendar_by_name()` - case-insensitive search by display name
+- Added `parse_propfind_response()` - parses DAV:href and CalDAV calendar collections
+- Proper fallback for Stalwart's single calendar structure
+
+Also implemented `SyncFolderHierarchy` in EWS:
+- Added `EwsAction::SyncFolderHierarchy` enum variant
+- Added parsing for SyncFolderHierarchy command
+- Added `handle_sync_folder_hierarchy()` handler that returns folder hierarchy
+- Returns MsgFolderRoot, Calendar, Contacts, and Tasks folders
+- Returns proper SyncState for change tracking
 
 ### G11: ItemID Stability Across Devices
 **Status**: ⚠️ PARTIALLY IMPLEMENTED
@@ -178,11 +200,11 @@
 ### Critical (Must Fix)
 - ✅ G1: Autodiscover JSON - **CLOSED**
 - ✅ G3: Free/Busy Lookup - **ALREADY IMPLEMENTED**
-- ⚠️ G4: Meeting Response Handling - **PARTIALLY IMPLEMENTED**
+- ✅ G4: Meeting Response Handling - **CLOSED**
 
 ### High Priority
-- ⏳ G7: Timezone Mapping - **CLOSED**
-- ⚠️ G10: Calendar Folder Discovery - **PARTIALLY IMPLEMENTED**
+- ✅ G7: Timezone Mapping - **CLOSED**
+- ✅ G10: Calendar Folder Discovery - **CLOSED**
 - ⏳ G16: Multi-Folder Calendar Sync - **NOT IMPLEMENTED**
 
 ### Medium Priority
