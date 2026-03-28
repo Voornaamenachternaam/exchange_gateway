@@ -859,7 +859,14 @@ pub fn render_ics(item: &CalendarItem) -> String {
         .exceptions
         .iter()
         .filter(|v| v.deleted)
-        .map(|v| format_ical_datetime(&v.exception_start, item.all_day))
+        .map(|v| {
+            format_ical_datetime_with_timezone(
+                &v.exception_start,
+                item.all_day,
+                item.timezone.as_deref(),
+            )
+            .1
+        })
         .collect();
     if !item.exdates.is_empty() || !deleted_exdates.is_empty() {
         let mut exdates: Vec<String> = item
