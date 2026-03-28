@@ -167,7 +167,7 @@ impl CaldavClient {
             return Ok(href.to_string());
         }
         let base = reqwest::Url::parse(&self.base)?;
-        Ok(base.join(href.trim_start_matches('/'))?.to_string())
+        Ok(base.join(href)?.to_string())
     }
 
     fn resolve_resource_url(
