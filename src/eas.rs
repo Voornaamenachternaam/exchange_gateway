@@ -58,6 +58,7 @@ struct SearchRequest {
 const MAX_REQUESTS_PER_WINDOW: usize = 60;
 const WINDOW: Duration = Duration::from_secs(60);
 const RETRY_AFTER_SECONDS: u64 = 30;
+const MAX_FREEBUSY_DAYS: i64 = 30;
 
 #[derive(Clone, Debug)]
 struct EasRequest {
@@ -402,12 +403,6 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         }
         if xml.contains("<Add") && !xml.contains("<ClientId>") {
             return Err("Sync Add requires ClientId");
-        }
-        if xml.contains("AppointmentReplyTime") {
-            return Err("AppointmentReplyTime is response-only in Sync requests");
-        }
-        if xml.contains("ResponseType") {
-            return Err("ResponseType is response-only in Sync requests");
         }
     }
 
@@ -828,9 +823,18 @@ async fn handle_resolve_recipients(
                 "ResolveRecipients Availability requires StartTime",
             );
         };
-        let end = extract_first_tag_text(xml, b"EndTime")
-            .and_then(|v| parse_datetime(&v))
-            .unwrap_or_else(|| start + chrono::Duration::days(7));
+        let end = {
+            let parsed_end = extract_first_tag_text(xml, b"EndTime")
+                .and_then(|v| parse_datetime(&v))
+                .unwrap_or_else(|| start + chrono::Duration::days(7));
+            let max_end = start + chrono::Duration::days(MAX_FREEBUSY_DAYS);
+            let clamped = if parsed_end > max_end { max_end } else { parsed_end };
+            if clamped <= start {
+                start + chrono::Duration::days(7)
+            } else {
+                clamped
+            }
+        };
         Some((start, end))
     } else {
         None
@@ -943,7 +947,7 @@ async fn handle_settings(
         .into_iter()
         .map(|email| {
             format!(
-                "<Settings:EmailAddresses><Settings:SmtpAddress>{}</Settings:SmtpAddress><Settings:PrimarySmtpAddress>{}</Settings:PrimarySmtpAddress></Settings:EmailAddresses>",
+                "<EmailAddresses><SmtpAddress>{}</SmtpAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
                 sync::xml_escape(&email),
                 sync::xml_escape(&primary_email)
             )
