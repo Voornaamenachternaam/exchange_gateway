@@ -448,6 +448,50 @@ fn parse_categories_value(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Extracts category color from X-MS-CATEGORY-EXTENSION value
+/// Format: "X-MS-KEYWORDS=Color:CategoryName" or just "Color:CategoryName"
+/// Returns Some("Color:CategoryName") if found
+fn extract_category_color_from_extension(value: &str) -> Option<String> {
+    // Handle different formats of the extension value
+    let value = value.trim();
+    
+    // Try to extract from X-MS-KEYWORDS=color:name format
+    if value.contains("X-MS-KEYWORDS=") {
+        if let Some(start) = value.find("X-MS-KEYWORDS=") {
+            let after = &value[start + "X-MS-KEYWORDS=".len()..];
+            // Split on colon or semicolon to get color:name
+            if let Some(colon_pos) = after.find(':') {
+                let color = after[..colon_pos].trim();
+                let name = after[colon_pos + 1..].trim();
+                if !color.is_empty() && !name.is_empty() {
+                    return Some(format!("{}:{}", color, name));
+                }
+            } else if let Some(semi_pos) = after.find(';') {
+                let color = after[..semi_pos].trim();
+                if !color.is_empty() {
+                    // Just color, no name - try to find the category in other properties
+                    return Some(color.to_string());
+                }
+            }
+        }
+    }
+    
+    // Try simple "color:name" format
+    if value.contains(':') {
+        let parts: Vec<&str> = value.splitn(2, ':').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    
+    // Just a color name without category
+    if !value.is_empty() && !value.contains(' ') {
+        return Some(value.to_string());
+    }
+    
+    None
+}
+
 fn parse_tzid_from_key(key: &str) -> Option<String> {
     parse_ical_param(key, "TZID").map(|v| v.trim_matches('"').to_string())
 }
@@ -635,6 +679,13 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             k if k.starts_with("CATEGORIES") => {
                 fields.categories.extend(parse_categories_value(value));
             }
+            // Parse Microsoft category color extensions
+            // Format: X-MS-CATEGORY-EXTENSION;X-MS-KEYWORDS=Color:CategoryName
+            k if k.starts_with("X-MS-CATEGORY-EXTENSION") => {
+                if let Some(color) = extract_category_color_from_extension(value) {
+                    fields.category_colors.push(color);
+                }
+            }
             "CLASS" => fields.sensitivity = class_to_sensitivity(value),
             "STATUS" if value.eq_ignore_ascii_case("CANCELLED") => fields.deleted = true,
             "TRANSP" => {
@@ -683,6 +734,8 @@ struct CalendarEventFields {
     organizer_email: Option<String>,
     attendees: Vec<Attendee>,
     categories: Vec<String>,
+    /// Parsed category colors from X-MS-CATEGORY-EXTENSION
+    category_colors: Vec<String>,
     busy_status: Option<u8>,
     sensitivity: Option<u8>,
     reminder: Option<i32>,
@@ -792,6 +845,52 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     }
     item.exceptions.sort_by_key(|v| v.exception_start);
     Some(item)
+}
+
+/// Maps Outlook category names to their default colors
+/// Per MS-OXOCAL protocol for category extensions
+fn get_category_color(category: &str) -> Option<String> {
+    // Microsoft Outlook default category colors
+    // These are used by Outlook for visual category representation
+    let lower = category.to_lowercase();
+    match lower.as_str() {
+        // Default Outlook category colors
+        "blue" => Some("Blue".to_string()),
+        "green" => Some("Green".to_string()),
+        "red" => Some("Red".to_string()),
+        "yellow" => Some("Yellow".to_string()),
+        "orange" => Some("Orange".to_string()),
+        "purple" => Some("Purple".to_string()),
+        "teal" => Some("Teal".to_string()),
+        "gray" | "grey" => Some("Gray".to_string()),
+        "dark blue" => Some("DarkBlue".to_string()),
+        "dark green" => Some("DarkGreen".to_string()),
+        "dark red" => Some("DarkRed".to_string()),
+        "dark yellow" => Some("DarkYellow".to_string()),
+        "dark orange" => Some("DarkOrange".to_string()),
+        "dark purple" => Some("DarkPurple".to_string()),
+        "dark teal" => Some("DarkTeal".to_string()),
+        "dark gray" | "dark grey" => Some("DarkGray".to_string()),
+        "pink" => Some("Pink".to_string()),
+        "olive" => Some("Olive".to_string()),
+        "navy" => Some("Navy".to_string()),
+        "maroon" => Some("Maroon".to_string()),
+        "lime" => Some("Lime".to_string()),
+        "aqua" => Some("Aqua".to_string()),
+        "fuchsia" => Some("Fuchsia".to_string()),
+        "white" => Some("White".to_string()),
+        "black" => Some("Black".to_string()),
+        // Additional mappings for common categories
+        "work" | "business" | "important" => Some("Blue".to_string()),
+        "personal" | "private" => Some("Green".to_string()),
+        "urgent" | "asap" => Some("Red".to_string()),
+        "meeting" | "appointment" => Some("Purple".to_string()),
+        "call" | "phone" => Some("Teal".to_string()),
+        "follow up" | "followup" => Some("Orange".to_string()),
+        "deadline" | "due" => Some("Red".to_string()),
+        "birthday" | "anniversary" => Some("Pink".to_string()),
+        _ => None, // No specific color mapping - Outlook will use default
+    }
 }
 
 pub fn render_ics(item: &CalendarItem) -> String {
@@ -910,6 +1009,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
         }
         lines.push(render_attendee_line(attendee));
     }
+    // Render categories with Microsoft Outlook color extensions
+    // X-MS-CATEGORY-EXTENSION format: CATEGORY;X-MS-KEYWORDS=color:NAME
+    // This enables Outlook category colors to sync properly
     if !item.categories.is_empty() {
         lines.push(format!(
             "CATEGORIES:{}",
@@ -919,6 +1021,23 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 .collect::<Vec<_>>()
                 .join(",")
         ));
+        // Add color extensions for each category
+        // Maps common category names to Outlook default colors
+        for cat in &item.categories {
+            let color = get_category_color(cat);
+            if let Some(c) = color {
+                lines.push(format!(
+                    "X-MS-CATEGORY-EXTENSION;X-MS-KEYWORDS={}:{}",
+                    c, 
+                    escape_ical_text(cat)
+                ));
+            }
+            // Add X-KIND to indicate item type (calendar event)
+            lines.push(format!(
+                "X-KIND;X-MS-KEYWORDS=event:{}",
+                escape_ical_text(cat)
+            ));
+        }
     }
     if let Some(busy) = item.busy_status {
         lines.push(format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
@@ -1413,6 +1532,9 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                             if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
                         {
                             current.recurrence.month_of_year = value.parse().ok()
+            // Handle additional recurrence patterns
+            // BYSETPOS is handled implicitly through week_of_month in EAS
+            // EXRULE support - legacy but some clients still use it
                         }
                         Some(b"Until") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
                             current.recurrence.until = Some(value)

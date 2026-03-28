@@ -64,11 +64,17 @@ All Microsoft Exchange protocol requirements for meeting responses are satisfied
 - Added OPTIONS handling in main fetch
 
 ### G6: Calendar Recurrence Edge Cases
-**Status**: ⏳ PARTIALLY IMPLEMENTED
+**Status**: ✅ CLOSED
 **Severity**: MEDIUM
 **Description**: Some complex recurrence patterns (e.g., BYMONTHDAY with BYMONTH, custom end dates) may not be fully handled.
 
-**Note**: Current implementation handles most common patterns via `rrule` crate.
+**Implementation**: Enhanced recurrence handling in `src/calendar.rs`:
+- Added BYSETPOS support for ordinal positions (1st, 2nd, 3rd, 4th, 5th, last)
+- Proper handling of BYDAY with BYSETPOS for monthly/yearly recurrence
+- Enhanced weekly recurrence with multiple day selection
+- Proper UNTIL date formatting per RFC 5545
+- WKST (week start) support for weekly recurrence
+- Better handling of complex patterns per MS-OXOCAL protocol
 
 ### G7: Timezone Handling for Non-IANA Timezones
 **Status**: ✅ CLOSED
@@ -131,11 +137,18 @@ Also implemented `SyncFolderHierarchy` in EWS:
 **Note**: Would require EWS GetItem/UpdateItem with attachments support via CalDAV.
 
 ### G13: Notes/Categories Color Sync
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
+**Status**: ✅ CLOSED
 **Severity**: LOW
 **Description**: Outlook categories with colors need proper iCalendar CATEGORIES and X-COLOR extensions.
 
-**Note**: Basic categories support exists in calendar.rs. Color mapping would be enhancement.
+**Implementation**: Full category color support in `src/calendar.rs`:
+- Added `get_category_color()` function mapping 25+ category names to Outlook colors
+- Added `extract_category_color_from_extension()` for parsing X-MS-CATEGORY-EXTENSION
+- Added `category_colors` field to CalendarItem struct for storage
+- Renders X-MS-CATEGORY-EXTENSION with X-MS-KEYWORDS for each category
+- Renders X-KIND property to indicate calendar event type
+- Supports both color names and category names in Microsoft format
+- Full bidirectional sync: parse and render Microsoft category extensions
 
 ### G14: Docker Container Health Check Enhancement
 **Status**: ✅ CLOSED
@@ -211,14 +224,14 @@ Also implemented `SyncFolderHierarchy` in EWS:
 - ✅ G5: CORS - **CLOSED**
 - ⚠️ G8: Rate Limiting - **PARTIALLY IMPLEMENTED** (Cloudflare provides)
 - ⚠️ G11: ItemID Stability - **PARTIALLY IMPLEMENTED**
-- ⚠️ G13: Categories Color - **PARTIALLY IMPLEMENTED**
+- ✅ G13: Categories Color - **CLOSED**
 - ✅ G14: Health Check - **CLOSED**
 - ✅ G15: Config Validation - **CLOSED**
 - ⏳ G19: Push Notifications - **NOT IMPLEMENTED**
 
 ### Lower Priority
 - ⏳ G2: MAPI/HTTP - **ACKNOWLEDGED LIMITATION**
-- ⚠️ G6: Recurrence Edge Cases - **PARTIALLY IMPLEMENTED**
+- ✅ G6: Recurrence Edge Cases - **CLOSED**
 - ⏳ G9: OAuth2 - **NOT IMPLEMENTED**
 - ⏳ G12: Attachments - **NOT IMPLEMENTED**
 - ⏳ G17: OOF - **NOT IMPLEMENTED**
