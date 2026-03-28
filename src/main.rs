@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = Router::new()
-        .route("/health", get(|| async { StatusCode::OK }))
+        .route("/health", get(health_check))
         .route("/EWS/Exchange.asmx", post(ews::handle))
         .route("/EWS/*path", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
@@ -143,4 +143,22 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+// Enhanced health check that verifies Cloudflare Worker connectivity
+async fn health_check(State(state): State<Arc<AppState>>) -> Response {
+    // Check Cloudflare Worker connectivity
+    let worker_ok = match state.storage.get_latest_change_seq().await {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("Health check: Worker connectivity failed: {}", e);
+            false
+        }
+    };
+    
+    if worker_ok {
+        (StatusCode::OK, "OK").into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "Worker unavailable").into_response()
+    }
 }
