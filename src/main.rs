@@ -1,16 +1,4 @@
 // src/main.rs
-//
-// Gaps closed in this revision (per GAP_ANALYSIS.md):
-//
-//   Gap 6 (Autodiscover topology) — Gateway-side Autodiscover routes now
-//   registered for all three Outlook formats (XML, SOAP, JSON v2) at every
-//   path variant Outlook may attempt. The gateway now serves Autodiscover
-//   independently of the Cloudflare Worker.
-//
-//   Gap 8 (Security hardening) — Body-size limiting middleware applied before
-//   any XML parsing occurs, preventing oversized-body DoS.
-//
-//   New modules registered: autodiscover, ews_update, ews_folders, timezone.
 
 use axum::{
     Router,
@@ -169,26 +157,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = Router::new()
-        // ── EWS ──────────────────────────────────────────────────────────
-        .route("/EWS/Exchange.asmx", post(ews::handle))
-        .route("/EWS/*path", post(ews::handle))
-        // ── EAS ──────────────────────────────────────────────────────────
-        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
-        // ── Autodiscover v1 XML ──────────────────────────────────────────
-        // Outlook tries both casing variants.
-        .route("/autodiscover/autodiscover.xml", post(autodiscover_xml))
-        .route("/Autodiscover/Autodiscover.xml", post(autodiscover_xml))
-        // ── Autodiscover v1 SOAP ─────────────────────────────────────────
-        .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))
-        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
-        // ── Autodiscover v2 JSON ─────────────────────────────────────────
-        // Modern Outlook uses ?Email=…&Protocol=… query params.
-        .route("/autodiscover/autodiscover.json", get(autodiscover_json))
-        .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
-        // ── Security middleware ───────────────────────────────────────────
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-        .with_state(app_state);
-        .with_state(app_state);
+        .route("/health", get(|| async { StatusCode::OK }))
 
     let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
