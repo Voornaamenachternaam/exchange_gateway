@@ -1,15 +1,15 @@
 // src/main.rs
 
-use axum::{
-    Router,
-    extract::Request,
-    http::{StatusCode, header},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::{any, get, post},
-};
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use axum::{
+    extract::{DefaultBodyLimit, Query, State},
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{any, get, post},
+    Router,
+};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -32,73 +32,32 @@ use crate::models::AppState;
 use crate::storage::Storage;
 
 /// Maximum permitted request body size (4 MiB).
-/// All legitimate Outlook EWS/EAS XML payloads are well within this limit.
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-
-/// Middleware: reject bodies whose Content-Length exceeds MAX_BODY_BYTES.
-use axum::{
-    Router,
-    extract::Request,
-    http::{StatusCode, header},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::{any, get, post},
-};
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::net::TcpListener;
-use tower_http::limit::RequestBodyLimitLayer;
-use tracing_subscriber::EnvFilter;
-
-mod autodiscover;
-mod caldav;
-mod calendar;
-mod config;
-mod eas;
-mod ews;
-mod ews_folders;
-mod ews_update;
-mod models;
-mod storage;
-mod sync;
-mod timezone;
-mod wbxml;
-
-use crate::config::Config;
-use crate::models::AppState;
-use crate::storage::Storage;
-
-/// Maximum permitted request body size (4 MiB).
-/// All legitimate Outlook EWS/EAS XML payloads are well within this limit.
-/// Enforced via `RequestBodyLimitLayer`, which caps both fixed-length and chunked bodies.
-const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-
-// ---------------------------------------------------------------------------
-// Autodiscover route handlers (thin wrappers over autodiscover.rs functions)
-// ---------------------------------------------------------------------------
 
 async fn autodiscover_xml(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     body: String,
 ) -> Response {
     let host = &state.cfg.gateway_host;
     let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
+    let (status, hdrs, body_out) =
+        autodiscover::handle_autodiscover_xml(host, &body, &email);
     build_response(status, &hdrs, body_out)
 }
 
 async fn autodiscover_soap(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     body: String,
 ) -> Response {
     let host = &state.cfg.gateway_host;
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_soap(host, &body);
+    let (status, hdrs, body_out) =
+        autodiscover::handle_autodiscover_soap(host, &body);
     build_response(status, &hdrs, body_out)
 }
 
 async fn autodiscover_json(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<autodiscover::AutodiscoverJsonParams>,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<autodiscover::AutodiscoverJsonParams>,
 ) -> Response {
     let host = &state.cfg.gateway_host;
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_json(
@@ -126,35 +85,40 @@ fn build_response(
     resp
 }
 
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let config = match Config::load("/etc/exchange-gateway/config.toml") {
+    let config_path = std::env::var("GATEWAY_CONFIG")
+        .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
+
+    let config = match Config::load(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("CRITICAL: Failed to load config: {}", e);
+            eprintln!(
+                "CRITICAL: Failed to load config from {}: {}",
+                config_path, e
+            );
             return Err(e);
         }
     };
 
-    let config_path = std::env::var("GATEWAY_CONFIG").unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".into());
-    let config = match Config::load(&config_path) {
+    tracing::info!(
         "Exchange Gateway starting. bind={} gateway_host={}",
         config.bind,
         config.gateway_host
     );
 
-    let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
+    let storage = Arc::new(Storage::new(
+        &config.worker_url,
+        &config.worker_secret,
+    )?);
+
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
-        storage: storage.clone(),
+        storage,
     });
 
     let app = Router::new()
@@ -168,12 +132,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app_state);
 
     let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
+
     tracing::info!("Listening on {}", addr);
+
     axum::serve(listener, app).await?;
+
     Ok(())
 }
