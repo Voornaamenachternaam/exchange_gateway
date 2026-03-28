@@ -44,7 +44,6 @@ for elem in root.iter():
 raise SystemExit(1)
 PY
 }
-}
 
 request_xml() {
   local url="$1"
