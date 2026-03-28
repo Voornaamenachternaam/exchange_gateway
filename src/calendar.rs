@@ -1728,12 +1728,14 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
                         Some(b"Name") => attendee.name = Some(value),
                         Some(b"EmailAddress") => attendee.email = value,
                         Some(b"ResponseType") => {
-                            attendee.attendee_status = match value.as_str() {
-                                "Accept" => Some(3),
-                                "Tentative" => Some(2),
-                                "Decline" => Some(4),
-                                _ => Some(5),
+                            let (status, partstat) = match value.as_str() {
+                                "Accept" => (Some(3), Some("ACCEPTED".to_string())),
+                                "Tentative" => (Some(2), Some("TENTATIVE".to_string())),
+                                "Decline" => (Some(4), Some("DECLINED".to_string())),
+                                _ => (Some(5), Some("NEEDS-ACTION".to_string())),
                             };
+                            attendee.attendee_status = status;
+                            attendee.partstat = partstat;
                         }
                         _ => {}
                     }
