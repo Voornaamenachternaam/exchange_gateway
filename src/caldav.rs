@@ -192,18 +192,18 @@ impl CaldavClient {
         
         // Return the default calendar or first one
         calendars
-            .into_iter()
+            .iter()
             .find(|c| c.is_default)
             .or_else(|| {
                 // Find by name patterns like "Calendar", "Default", etc.
-                calendars.into_iter().find(|c| {
+                calendars.iter().find(|c| {
                     c.display_name
                         .as_ref()
                         .map(|n| n.to_lowercase().contains("calendar") || n.to_lowercase() == "default")
                         .unwrap_or(false)
                 })
             })
-            .map(|c| c.href)
+            .map(|c| c.href.clone())
             .ok_or_else(|| anyhow!("no calendars found for user"))
     }
 
