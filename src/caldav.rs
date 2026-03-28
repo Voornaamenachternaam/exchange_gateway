@@ -77,6 +77,9 @@ impl CaldavClient {
             .body(report)
             .send()
             .await?;
+        if !resp.status().is_success() && resp.status().as_u16() != 207 {
+            return Err(anyhow::anyhow!("failed to query events: {}", resp.status()));
+        }
         Ok(resp.text().await?)
     }
 
