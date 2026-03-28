@@ -1,41 +1,4 @@
 // src/config.rs
-//
-// Gap closed: Autodiscover responses require a gateway_host value so they can
-// construct correct EwsUrl / ASUrl / MobileSyncUrl endpoint strings. The
-// previous config only carried bind/caldav_base/worker_url/worker_secret/hmac_secret.
-// A new optional `gateway_host` field is added; if absent it defaults to the
-// hostname portion of `worker_url` (which is the Cloudflare-published hostname
-// in all reference deployments).
-
-use serde::Deserialize;
-use std::fs;
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct Config {
-    /// TCP address to listen on, e.g. "0.0.0.0:8134".
-    pub bind: String,
-
-    /// Base URL of the Stalwart Mailserver CalDAV endpoint.
-    /// Example: "http://172.28.0.10:8080/dav/"
-    pub caldav_base: String,
-
-    /// URL of the Cloudflare Worker API used for D1-backed sync state.
-    /// Example: "https://exchange.mail.example.com/api"
-    pub worker_url: String,
-
-    /// Shared secret used to authenticate gateway → Worker API calls.
-    pub worker_secret: String,
-
-    /// HMAC secret used to derive stable EAS/EWS server-IDs from CalDAV HREFs.
-    /// Must be a long random hex string; never reuse across installations.
-    pub hmac_secret: String,
-
-    /// Public hostname of this gateway as seen by Outlook clients.
-    /// Used in Autodiscover responses (EwsUrl, ASUrl, MobileSyncUrl).
-    /// If absent, defaults to the host portion of `worker_url`.
-    /// Example: "exchange.mail.example.com"
-    #[serde(default)]
-    pub gateway_host: String,
 use serde::Deserialize;
 use std::fs;
 
