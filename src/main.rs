@@ -144,7 +144,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    tracing::info!(
+    let config_path = std::env::var("GATEWAY_CONFIG").unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".into());
+    let config = match Config::load(&config_path) {
         "Exchange Gateway starting. bind={} gateway_host={}",
         config.bind,
         config.gateway_host
