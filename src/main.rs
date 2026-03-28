@@ -1,153 +1,146 @@
 // src/main.rs
-mod active_sync;
-mod config;
-mod db;
-mod ews;
-mod jmap_client;
-mod utils;
-mod wbxml;
 
-use axum::{
-    Router,
-    extract::State,
-    http::{HeaderMap, StatusCode, Uri, header},
-    response::IntoResponse,
-    routing::{get, post},
-};
-use config::AppConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::trace::TraceLayer;
-use tracing_subscriber::prelude::*;
+
+use axum::{
+    extract::{DefaultBodyLimit, Query, State},
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{any, get, post},
+    Router,
+};
+use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
+
+mod autodiscover;
+mod caldav;
+mod calendar;
+mod config;
+mod eas;
+mod ews;
+mod ews_folders;
+mod ews_update;
+mod models;
+mod storage;
+mod sync;
+mod timezone;
+mod wbxml;
+
+use crate::config::Config;
+use crate::models::AppState;
+use crate::storage::Storage;
+
+/// Maximum permitted request body size (4 MiB).
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+async fn autodiscover_xml(
+    State(state): State<Arc<AppState>>,
+    body: String,
+) -> Response {
+    let host = &state.cfg.gateway_host;
+    let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
+    let (status, hdrs, body_out) =
+        autodiscover::handle_autodiscover_xml(host, &body, &email);
+    build_response(status, &hdrs, body_out)
+}
+
+async fn autodiscover_soap(
+    State(state): State<Arc<AppState>>,
+    body: String,
+) -> Response {
+    let host = &state.cfg.gateway_host;
+    let (status, hdrs, body_out) =
+        autodiscover::handle_autodiscover_soap(host, &body);
+    build_response(status, &hdrs, body_out)
+}
+
+async fn autodiscover_json(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<autodiscover::AutodiscoverJsonParams>,
+) -> Response {
+    let host = &state.cfg.gateway_host;
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_json(
+        host,
+        params.protocol.as_deref(),
+        params.email.as_deref(),
+    );
+    build_response(status, &hdrs, body_out)
+}
+
+fn build_response(
+    status: StatusCode,
+    hdrs: &[(&'static str, &'static str)],
+    body: String,
+) -> Response {
+    let mut resp = (status, body).into_response();
+    for (k, v) in hdrs {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            resp.headers_mut().insert(name, value);
+        }
+    }
+    resp
+}
 
 #[tokio::main]
-async fn main() {
-    let filter = tracing_subscriber::EnvFilter::new(
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,exchange_gateway=debug".into()),
-    );
-
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let config = match AppConfig::from_env() {
-        Ok(c) => Arc::new(c),
+    let config_path = std::env::var("GATEWAY_CONFIG")
+        .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
+
+    let config = match Config::load(&config_path) {
+        Ok(c) => c,
         Err(e) => {
-            tracing::error!("Configuration Error: {}", e);
-            std::process::exit(1);
+            eprintln!(
+                "CRITICAL: Failed to load config from {}: {}",
+                config_path, e
+            );
+            return Err(e);
         }
     };
+
+    tracing::info!(
+        "Exchange Gateway starting. bind={} gateway_host={}",
+        config.bind,
+        config.gateway_host
+    );
+
+    let storage = Arc::new(Storage::new(
+        &config.worker_url,
+        &config.worker_secret,
+    )?);
+
+    let app_state = Arc::new(AppState {
+        cfg: config.clone(),
+        storage,
+    });
 
     let app = Router::new()
-        .route("/Microsoft-Server-ActiveSync", post(handle_active_sync))
-        .route("/Microsoft-Server-ActiveSync", get(handle_options))
-        .route("/EWS/Exchange.asmx", post(handle_ews))
-        .fallback(handle_fallback)
-        .layer(TraceLayer::new_for_http())
-        .with_state(config);
+        .route("/health", get(|| async { StatusCode::OK }))
+        .route("/EWS/Exchange.asmx", post(ews::handle))
+        .route("/EWS/*path", post(ews::handle))
+        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
+        .route("/autodiscover/autodiscover.xml", post(autodiscover_xml))
+        .route("/Autodiscover/Autodiscover.xml", post(autodiscover_xml))
+        .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))
+        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
+        .route("/autodiscover/autodiscover.json", get(autodiscover_json))
+        .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .with_state(app_state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8134));
-    tracing::info!("Exchange Gateway v1.0.21 listening on {}", addr);
+    let addr: SocketAddr = config.bind.parse()?;
+    let listener = TcpListener::bind(addr).await?;
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-}
+    tracing::info!("Listening on {}", addr);
 
-async fn handle_fallback(uri: Uri) -> impl IntoResponse {
-    tracing::warn!("Unhandled request: {}", uri);
-    (StatusCode::NOT_FOUND, "Not Found")
-}
+    axum::serve(listener, app).await?;
 
-async fn handle_options() -> impl IntoResponse {
-    let mut headers = HeaderMap::new();
-    headers.insert("MS-Server-ActiveSync", "15.0".parse().unwrap());
-    headers.insert(header::ALLOW, "OPTIONS,POST".parse().unwrap());
-    (StatusCode::OK, headers, "")
-}
-
-async fn handle_active_sync(
-    State(config): State<Arc<AppConfig>>,
-    headers: HeaderMap,
-    body: bytes::Bytes,
-) -> impl IntoResponse {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if !auth_header.starts_with("Basic ") {
-        return (
-            StatusCode::UNAUTHORIZED,
-            HeaderMap::new(),
-            "Unauthorized".into(),
-        );
-    }
-
-    let xml_request = match wbxml::decode(&body) {
-        Ok(xml) => xml,
-        Err(e) => {
-            tracing::error!("WBXML decode error: {:?}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                HeaderMap::new(),
-                "Bad WBXML".into(),
-            );
-        }
-    };
-
-    let response_xml = active_sync::process_request(&config, &xml_request, &headers).await;
-
-    match wbxml::encode(&response_xml) {
-        Ok(wbxml_data) => {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                header::CONTENT_TYPE,
-                "application/vnd.ms-sync.wbxml".parse().unwrap(),
-            );
-            headers.insert("MS-Server-ActiveSync", "15.0".parse().unwrap());
-            (StatusCode::OK, headers, wbxml_data)
-        }
-        Err(e) => {
-            tracing::error!("WBXML encode error: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                HeaderMap::new(),
-                "Encoding Error".into(),
-            )
-        }
-    }
-}
-
-async fn handle_ews(
-    State(config): State<Arc<AppConfig>>,
-    headers: HeaderMap,
-    body: bytes::Bytes,
-) -> impl IntoResponse {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    if !auth_header.starts_with("Basic ") {
-        return (
-            StatusCode::UNAUTHORIZED,
-            HeaderMap::new(),
-            "Unauthorized".into(),
-        );
-    }
-
-    let xml_request = match std::str::from_utf8(&body) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                HeaderMap::new(),
-                "Invalid UTF-8".into(),
-            );
-        }
-    };
-
-    let response_xml = ews::process_request(&config, &xml_request, &headers).await;
-    (StatusCode::OK, HeaderMap::new(), response_xml.into_bytes())
+    Ok(())
 }

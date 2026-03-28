@@ -1,22 +1,109 @@
-use std::env;
+/// src/config.rs
+use serde::Deserialize;
+use std::fs;
+use url::Url;
 
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub jmap_url: String,
-    pub db_api_url: String,
-    pub db_auth_token: String,
-    pub timezone: String,
-    pub smtp_url: String,
+/// Configuration for the Exchange Gateway.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Config {
+    /// TCP address to listen on, e.g. "0.0.0.0:8134".
+    pub bind: String,
+
+    /// Base URL of the Stalwart Mailserver CalDAV endpoint.
+    /// Example: "http://172.28.0.10:8080/dav/"
+    pub caldav_base: String,
+
+    /// URL of the Cloudflare Worker API used for D1-backed sync state.
+    /// Example: "https://exchange.mail.example.com/api"
+    pub worker_url: String,
+
+    /// Shared secret used to authenticate gateway → Worker API calls.
+    pub worker_secret: String,
+
+    /// HMAC secret used to derive stable EAS/EWS server-IDs from CalDAV HREFs.
+    /// Must be a long random hex string; never reuse across installations.
+    pub hmac_secret: String,
+
+    /// Public hostname of this gateway as seen by Outlook clients.
+    /// Used in Autodiscover responses (EwsUrl, ASUrl, MobileSyncUrl).
+    /// If absent, defaults to the host portion of `worker_url`.
+    /// Example: "exchange.mail.example.com"
+    #[serde(default)]
+    pub gateway_host: String,
 }
 
-impl AppConfig {
-    pub fn from_env() -> Result<Self, String> {
-        Ok(Self {
-            jmap_url: env::var("JMAP_URL").map_err(|_| "JMAP_URL missing")?,
-            db_api_url: env::var("CF_D1_API_URL").map_err(|_| "CF_D1_API_URL missing")?,
-            db_auth_token: env::var("GATEWAY_SECRET").map_err(|_| "GATEWAY_SECRET missing")?,
-            timezone: env::var("GATEWAY_TZ").map_err(|_| "GATEWAY_TZ missing")?,
-            smtp_url: env::var("SMTP_URL").map_err(|_| "SMTP_URL missing")?,
-        })
+impl Config {
+    /// Loads the configuration from a TOML file at the specified path.
+    /// If `gateway_host` is missing, it is automatically derived from `worker_url`.
+    pub fn load(path: &str) -> anyhow::Result<Self> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read config file at '{path}': {e}"))?;
+        
+        let mut cfg: Config = toml::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {e}"))?;
+
+        // Derive gateway_host from worker_url if not explicitly set.
+        if cfg.gateway_host.is_empty() {
+            cfg.gateway_host = extract_host_from_url(&cfg.worker_url)
+                .unwrap_or_else(|| "localhost".to_string());
+        }
+
+        Ok(cfg)
+    }
+}
+
+/// Extract the host (and optional port) from a URL string.
+fn extract_host_from_url(url_str: &str) -> Option<String> {
+    let parsed = Url::parse(url_str).ok()?;
+    let host = parsed.host_str()?;
+    
+    match parsed.port() {
+        Some(port) => Some(format!("{host}:{port}")),
+        None => Some(host.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_host_from_https_url() {
+        assert_eq!(
+            extract_host_from_url("https://exchange.example.com/api"),
+            Some("exchange.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_host_with_port() {
+        assert_eq!(
+            extract_host_from_url("http://localhost:8080/api"),
+            Some("localhost:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_invalid_url() {
+        assert!(extract_host_from_url("not-a-url").is_none());
+    }
+
+    #[test]
+    fn config_derives_host_correctly() {
+        // Mocking a scenario where gateway_host is empty
+        let mut cfg = Config {
+            bind: "0.0.0.0:8134".into(),
+            caldav_base: "http://dav.internal".into(),
+            worker_url: "https://worker.example.com/api".into(),
+            worker_secret: "secret".into(),
+            hmac_secret: "hmac".into(),
+            gateway_host: "".into(),
+        };
+
+        if cfg.gateway_host.is_empty() {
+            cfg.gateway_host = extract_host_from_url(&cfg.worker_url).unwrap();
+        }
+        
+        assert_eq!(cfg.gateway_host, "worker.example.com");
     }
 }

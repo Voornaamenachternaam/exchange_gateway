@@ -1,1252 +1,517 @@
 // src/wbxml.rs
-use bytes::Buf;
-use quick_xml::Reader;
-use quick_xml::escape;
-use quick_xml::events::Event;
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
-use std::io::Cursor;
-use std::sync::OnceLock;
-use thiserror::Error;
 
-// WBXML Global Tokens
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
-const STR_I: u8 = 0x03; // Inline string
-const STR_T: u8 = 0x04; // String table (rarely used in EAS but supported per spec)
+const ENTITY: u8 = 0x02;
+const STR_I: u8 = 0x03;
+const LITERAL: u8 = 0x04;
+const STR_T: u8 = 0x83;
+const OPAQUE: u8 = 0xC3;
 
-// WBXML Header constants
-const WBXML_VERSION: u8 = 0x03; // WBXML 1.3
-const WBXML_PUBLIC_ID: u8 = 0x01; // Unknown/Any
-const WBXML_CHARSET_UTF8: u8 = 0x6A; // IANA charset ID for UTF-8
-const WBXML_STRTBL_EMPTY: u8 = 0x00;
+lazy_static::lazy_static! {
+    static ref TAG_TO_NAME: HashMap<(u8, u8), &'static str> = {
+        let mut m = HashMap::new();
 
-#[derive(Debug, Error)]
-pub enum WbXmlError {
-    #[error("Unexpected end of input")]
-    UnexpectedEof,
-    #[error("Invalid WBXML header")]
-    InvalidHeader,
-    #[error("Unknown tag token: {0} on page {1}")]
-    UnknownTag(u8, u8),
-    #[error("Unknown code page: {0}")]
-    UnknownPage(u8),
-    #[error("Invalid global token: {0}")]
-    InvalidGlobalToken(u8),
-    #[error("XML parsing error: {0}")]
-    XmlError(#[from] quick_xml::Error),
-    #[error("String table not supported in this context")]
-    StringTableUnsupported,
-    #[error("Malformed string")]
-    MalformedString,
-    #[error("Ambiguous tag without context")]
-    AmbiguousTag,
-}
+        // Code Page 0: AirSync
+        m.insert((0, 0x05), "Sync");
+        m.insert((0, 0x06), "Responses");
+        m.insert((0, 0x07), "Add");
+        m.insert((0, 0x08), "Change");
+        m.insert((0, 0x09), "Delete");
+        m.insert((0, 0x0A), "Fetch");
+        m.insert((0, 0x0B), "SyncKey");
+        m.insert((0, 0x0C), "ClientId");
+        m.insert((0, 0x0D), "ServerId");
+        m.insert((0, 0x0E), "Status");
+        m.insert((0, 0x0F), "Collection");
+        m.insert((0, 0x10), "Class");
+        m.insert((0, 0x12), "CollectionId");
+        m.insert((0, 0x16), "Commands");
+        m.insert((0, 0x17), "Options");
+        m.insert((0, 0x1B), "Conflict");
+        m.insert((0, 0x1C), "Collections");
+        m.insert((0, 0x1D), "ApplicationData");
+        m.insert((0, 0x27), "ConversationMode");
 
-// --- Code Page Definitions (Per MS-ASWBXML) ---
 
-#[derive(Debug, Clone)]
-struct TagInfo {
-    name: &'static str,
-    token: u8,
-}
+        // Code Page 1: Contacts (ASCNTC subset)
+        m.insert((1, 0x05), "Contacts:Anniversary");
+        m.insert((1, 0x08), "Contacts:Birthday");
+        m.insert((1, 0x13), "Contacts:BusinessPhoneNumber");
+        m.insert((1, 0x19), "Contacts:CompanyName");
+        m.insert((1, 0x1B), "Contacts:Email1Address");
+        m.insert((1, 0x1F), "Contacts:FirstName");
+        m.insert((1, 0x29), "Contacts:LastName");
+        m.insert((1, 0x2B), "Contacts:MobilePhoneNumber");
 
-// Static lookup tables generated from MS-ASWBXML spec
-static CODE_PAGES: OnceLock<Vec<HashMap<u8, TagInfo>>> = OnceLock::new();
-static TAG_TO_TOKEN_MAP: OnceLock<HashMap<String, (u8, u8)>> = OnceLock::new();
-static NS_TO_PAGE_MAP: OnceLock<HashMap<String, u8>> = OnceLock::new();
+        // Code Page 2: Email (subset for ASEMAL)
+        m.insert((2, 0x05), "Email:Attachment");
+        m.insert((2, 0x06), "Email:Attachments");
+        m.insert((2, 0x07), "Email:AttName");
+        m.insert((2, 0x08), "Email:AttSize");
+        m.insert((2, 0x14), "Email:Subject");
+        m.insert((2, 0x16), "Email:To");
+        m.insert((2, 0x17), "Email:Cc");
+        m.insert((2, 0x18), "Email:From");
+        m.insert((2, 0x0C), "Email:Body");
 
-fn get_code_pages() -> &'static Vec<HashMap<u8, TagInfo>> {
-    CODE_PAGES.get_or_init(|| {
-        let mut pages = Vec::with_capacity(17);
+        // Code Page 4: Calendar (ASCAL)
+        m.insert((4, 0x05), "Calendar:Timezone");
+        m.insert((4, 0x06), "Calendar:AllDayEvent");
+        m.insert((4, 0x07), "Calendar:Attendees");
+        m.insert((4, 0x08), "Calendar:Attendee");
+        m.insert((4, 0x09), "Calendar:Email");
+        m.insert((4, 0x0A), "Calendar:Name");
+        m.insert((4, 0x0D), "Calendar:BusyStatus");
+        m.insert((4, 0x0E), "Calendar:Categories");
+        m.insert((4, 0x0F), "Calendar:Category");
+        m.insert((4, 0x11), "Calendar:DtStamp");
+        m.insert((4, 0x12), "Calendar:EndTime");
+        m.insert((4, 0x13), "Calendar:Exception");
+        m.insert((4, 0x14), "Calendar:Exceptions");
+        m.insert((4, 0x15), "Calendar:Deleted");
+        m.insert((4, 0x16), "Calendar:ExceptionStartTime");
+        m.insert((4, 0x17), "Calendar:Location");
+        m.insert((4, 0x18), "Calendar:MeetingStatus");
+        m.insert((4, 0x19), "Calendar:OrganizerEmail");
+        m.insert((4, 0x1A), "Calendar:OrganizerName");
+        m.insert((4, 0x1B), "Calendar:Recurrence");
+        m.insert((4, 0x1C), "Calendar:Type");
+        m.insert((4, 0x1D), "Calendar:Until");
+        m.insert((4, 0x1E), "Calendar:Occurrences");
+        m.insert((4, 0x1F), "Calendar:Interval");
+        m.insert((4, 0x20), "Calendar:DayOfWeek");
+        m.insert((4, 0x21), "Calendar:DayOfMonth");
+        m.insert((4, 0x22), "Calendar:WeekOfMonth");
+        m.insert((4, 0x23), "Calendar:MonthOfYear");
+        m.insert((4, 0x24), "Calendar:Reminder");
+        m.insert((4, 0x25), "Calendar:Sensitivity");
+        m.insert((4, 0x26), "Calendar:Subject");
+        m.insert((4, 0x27), "Calendar:StartTime");
+        m.insert((4, 0x28), "Calendar:UID");
+        m.insert((4, 0x29), "Calendar:AttendeeStatus");
+        m.insert((4, 0x2A), "Calendar:AttendeeType");
+        m.insert((4, 0x33), "Calendar:DisallowNewTimeProposal");
+        m.insert((4, 0x34), "Calendar:ResponseRequested");
+        m.insert((4, 0x35), "Calendar:AppointmentReplyTime");
+        m.insert((4, 0x36), "Calendar:ResponseType");
+        m.insert((4, 0x37), "Calendar:CalendarType");
+        m.insert((4, 0x38), "Calendar:IsLeapMonth");
+        m.insert((4, 0x39), "Calendar:FirstDayOfWeek");
+        m.insert((4, 0x3A), "Calendar:OnlineMeetingConfLink");
+        m.insert((4, 0x3B), "Calendar:OnlineMeetingExternalLink");
+        m.insert((4, 0x3C), "Calendar:ClientUid");
 
-        // Page 0: AirSync
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Sync",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Responses",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Add",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "Change",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Delete",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Fetch",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "SyncKey",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "ClientId",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "ServerId",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0E,
-            TagInfo {
-                name: "Status",
-                token: 0x0E,
-            },
-        );
-        page.insert(
-            0x0F,
-            TagInfo {
-                name: "Collection",
-                token: 0x0F,
-            },
-        );
-        page.insert(
-            0x10,
-            TagInfo {
-                name: "Class",
-                token: 0x10,
-            },
-        );
-        page.insert(
-            0x11,
-            TagInfo {
-                name: "Version",
-                token: 0x11,
-            },
-        );
-        page.insert(
-            0x12,
-            TagInfo {
-                name: "Collections",
-                token: 0x12,
-            },
-        );
-        page.insert(
-            0x13,
-            TagInfo {
-                name: "GetChanges",
-                token: 0x13,
-            },
-        );
-        page.insert(
-            0x14,
-            TagInfo {
-                name: "MoreAvailable",
-                token: 0x14,
-            },
-        );
-        page.insert(
-            0x15,
-            TagInfo {
-                name: "WindowSize",
-                token: 0x15,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Commands",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x17,
-            TagInfo {
-                name: "Options",
-                token: 0x17,
-            },
-        );
-        page.insert(
-            0x18,
-            TagInfo {
-                name: "FilterType",
-                token: 0x18,
-            },
-        );
-        page.insert(
-            0x19,
-            TagInfo {
-                name: "Truncation",
-                token: 0x19,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "RTF",
-                token: 0x1A,
-            },
-        );
-        page.insert(
-            0x1B,
-            TagInfo {
-                name: "ConversationMode",
-                token: 0x1B,
-            },
-        );
-        page.insert(
-            0x1C,
-            TagInfo {
-                name: "MaxItems",
-                token: 0x1C,
-            },
-        );
-        page.insert(
-            0x1D,
-            TagInfo {
-                name: "HeartbeatInterval",
-                token: 0x1D,
-            },
-        );
-        page.insert(
-            0x1E,
-            TagInfo {
-                name: "Folders",
-                token: 0x1E,
-            },
-        );
-        page.insert(
-            0x1F,
-            TagInfo {
-                name: "Folder",
-                token: 0x1F,
-            },
-        );
-        page.insert(
-            0x20,
-            TagInfo {
-                name: "ApplicationData",
-                token: 0x20,
-            },
-        );
-        page.insert(
-            0x21,
-            TagInfo {
-                name: "DeletesAsMoves",
-                token: 0x21,
-            },
-        );
-        page.insert(
-            0x22,
-            TagInfo {
-                name: "Supported",
-                token: 0x22,
-            },
-        );
-        page.insert(
-            0x23,
-            TagInfo {
-                name: "SoftDelete",
-                token: 0x23,
-            },
-        );
-        page.insert(
-            0x24,
-            TagInfo {
-                name: "MIMETruncation",
-                token: 0x24,
-            },
-        );
-        page.insert(
-            0x25,
-            TagInfo {
-                name: "MIMESize",
-                token: 0x25,
-            },
-        );
-        page.insert(
-            0x26,
-            TagInfo {
-                name: "BodyPreference",
-                token: 0x26,
-            },
-        );
-        page.insert(
-            0x27,
-            TagInfo {
-                name: "BodyPartPreference",
-                token: 0x27,
-            },
-        );
-        page.insert(
-            0x28,
-            TagInfo {
-                name: "RightsManagementSupport",
-                token: 0x28,
-            },
-        );
-        pages.push(page);
+        // Code Page 5: Move
+        m.insert((5, 0x05), "MoveItems");
+        m.insert((5, 0x06), "Move");
+        m.insert((5, 0x07), "SrcMsgId");
+        m.insert((5, 0x08), "SrcFldId");
+        m.insert((5, 0x09), "DstFldId");
+        m.insert((5, 0x0A), "Response");
+        m.insert((5, 0x0B), "Status");
 
-        // Page 1: Contacts (Selected relevant tags)
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Anniversary",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "AssistantName",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x17,
-            TagInfo {
-                name: "CompanyName",
-                token: 0x17,
-            },
-        );
-        page.insert(
-            0x1F,
-            TagInfo {
-                name: "FirstName",
-                token: 0x1F,
-            },
-        );
-        page.insert(
-            0x29,
-            TagInfo {
-                name: "LastName",
-                token: 0x29,
-            },
-        );
-        page.insert(
-            0x2A,
-            TagInfo {
-                name: "MiddleName",
-                token: 0x2A,
-            },
-        );
-        pages.push(page);
+        // Code Page 6: GetItemEstimate
+        m.insert((6, 0x05), "GetItemEstimate");
+        m.insert((6, 0x06), "Version");
+        m.insert((6, 0x07), "Collections");
+        m.insert((6, 0x08), "Collection");
+        m.insert((6, 0x09), "Class");
+        m.insert((6, 0x0A), "CollectionId");
+        m.insert((6, 0x0B), "DateTime");
+        m.insert((6, 0x0C), "Estimate");
+        m.insert((6, 0x0D), "Response");
+        m.insert((6, 0x0E), "Status");
 
-        // Page 2: Email
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "DateReceived",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Importance",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Subject",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Read",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "From",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0F,
-            TagInfo {
-                name: "AllDayEvent",
-                token: 0x0F,
-            },
-        );
-        page.insert(
-            0x13,
-            TagInfo {
-                name: "EndTime",
-                token: 0x13,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Location",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "Reminder",
-                token: 0x1A,
-            },
-        );
-        page.insert(
-            0x1E,
-            TagInfo {
-                name: "Type",
-                token: 0x1E,
-            },
-        );
-        page.insert(
-            0x26,
-            TagInfo {
-                name: "StartTime",
-                token: 0x26,
-            },
-        );
-        page.insert(
-            0x27,
-            TagInfo {
-                name: "Sensitivity",
-                token: 0x27,
-            },
-        );
-        page.insert(
-            0x35,
-            TagInfo {
-                name: "TimeZone",
-                token: 0x35,
-            },
-        );
-        page.insert(
-            0x36,
-            TagInfo {
-                name: "Attendees",
-                token: 0x36,
-            },
-        );
-        page.insert(
-            0x37,
-            TagInfo {
-                name: "Attendee",
-                token: 0x37,
-            },
-        );
-        page.insert(
-            0x38,
-            TagInfo {
-                name: "Email",
-                token: 0x38,
-            },
-        );
-        page.insert(
-            0x39,
-            TagInfo {
-                name: "Name",
-                token: 0x39,
-            },
-        );
-        page.insert(
-            0x3A,
-            TagInfo {
-                name: "AttendeeStatus",
-                token: 0x3A,
-            },
-        );
-        page.insert(
-            0x3B,
-            TagInfo {
-                name: "AttendeeType",
-                token: 0x3B,
-            },
-        );
-        pages.push(page);
+        // Code Page 8: MeetingResponse
+        m.insert((8, 0x05), "MeetingResponse");
+        m.insert((8, 0x06), "Request");
+        m.insert((8, 0x07), "Result");
+        m.insert((8, 0x08), "Status");
+        m.insert((8, 0x09), "UserResponse");
+        m.insert((8, 0x0A), "InstanceId");
 
-        // Page 3: AirSyncBase
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Body",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "BodyType",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Data",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "EstimatedDataSize",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Truncated",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Attachments",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "Attachment",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "DisplayName",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "FileReference",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x12,
-            TagInfo {
-                name: "NativeBodyType",
-                token: 0x12,
-            },
-        );
-        page.insert(
-            0x14,
-            TagInfo {
-                name: "Preview",
-                token: 0x14,
-            },
-        );
-        page.insert(
-            0x15,
-            TagInfo {
-                name: "BodyPart",
-                token: 0x15,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Status",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x17,
-            TagInfo {
-                name: "BodyPartPreference",
-                token: 0x17,
-            },
-        );
-        page.insert(
-            0x18,
-            TagInfo {
-                name: "Type",
-                token: 0x18,
-            },
-        );
-        page.insert(
-            0x19,
-            TagInfo {
-                name: "TruncationSize",
-                token: 0x19,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "AllOrNone",
-                token: 0x1A,
-            },
-        );
-        pages.push(page);
+        // Code Page 10: ResolveRecipients
+        m.insert((10, 0x05), "ResolveRecipients");
+        m.insert((10, 0x06), "Response");
+        m.insert((10, 0x07), "Status");
+        m.insert((10, 0x08), "Type");
+        m.insert((10, 0x09), "Recipient");
 
-        // Page 4: Calendar
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "TimeZone",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "AllDayEvent",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Attendees",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "Attendee",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Email",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Name",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "AttendeeStatus",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "AttendeeType",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "BusyStatus",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x10,
-            TagInfo {
-                name: "DtStamp",
-                token: 0x10,
-            },
-        );
-        page.insert(
-            0x11,
-            TagInfo {
-                name: "EndTime",
-                token: 0x11,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "Location",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x1A,
-            TagInfo {
-                name: "Recurrence",
-                token: 0x1A,
-            },
-        );
-        page.insert(
-            0x1B,
-            TagInfo {
-                name: "RecurrenceType",
-                token: 0x1B,
-            },
-        );
-        page.insert(
-            0x23,
-            TagInfo {
-                name: "Reminder",
-                token: 0x23,
-            },
-        );
-        page.insert(
-            0x24,
-            TagInfo {
-                name: "Sensitivity",
-                token: 0x24,
-            },
-        );
-        page.insert(
-            0x25,
-            TagInfo {
-                name: "Subject",
-                token: 0x25,
-            },
-        );
-        page.insert(
-            0x26,
-            TagInfo {
-                name: "StartTime",
-                token: 0x26,
-            },
-        );
-        page.insert(
-            0x27,
-            TagInfo {
-                name: "UID",
-                token: 0x27,
-            },
-        );
-        page.insert(
-            0x29,
-            TagInfo {
-                name: "DisallowNewTimeProposal",
-                token: 0x29,
-            },
-        );
-        page.insert(
-            0x2A,
-            TagInfo {
-                name: "ResponseRequested",
-                token: 0x2A,
-            },
-        );
-        pages.push(page);
+        // Code Page 11: ValidateCert
+        m.insert((11, 0x05), "ValidateCert");
+        m.insert((11, 0x06), "Certificates");
+        m.insert((11, 0x07), "Certificate");
+        m.insert((11, 0x0B), "Status");
 
-        // Page 7: Tasks
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Subject",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x1F,
-            TagInfo {
-                name: "Reminder",
-                token: 0x1F,
-            },
-        );
-        pages.push(page);
+        // Code Page 7: FolderHierarchy
+        m.insert((7, 0x05), "Folders");
+        m.insert((7, 0x06), "Folder");
+        m.insert((7, 0x07), "DisplayName");
+        m.insert((7, 0x08), "ServerId");
+        m.insert((7, 0x09), "ParentId");
+        m.insert((7, 0x0A), "Type");
+        m.insert((7, 0x0C), "Status");
+        m.insert((7, 0x0E), "Changes");
+        m.insert((7, 0x0F), "Add");
+        m.insert((7, 0x10), "Delete");
+        m.insert((7, 0x11), "Update");
+        m.insert((7, 0x12), "SyncKey");
+        m.insert((7, 0x16), "FolderSync");
+        m.insert((7, 0x17), "Count");
 
-        // Page 10: Ping
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Ping",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Status",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "HeartbeatInterval",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "Folders",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Folder",
-                token: 0x0A,
-            },
-        );
-        pages.push(page);
+        // Code Page 13: Ping
+        m.insert((13, 0x05), "Ping");
+        m.insert((13, 0x07), "Status");
+        m.insert((13, 0x08), "HeartbeatInterval");
+        m.insert((13, 0x09), "Folders");
+        m.insert((13, 0x0A), "Folder");
+        m.insert((13, 0x0B), "Id");
+        m.insert((13, 0x0C), "Class");
 
-        // Page 11: Provision
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Provision",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Policies",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x07,
-            TagInfo {
-                name: "Policy",
-                token: 0x07,
-            },
-        );
-        page.insert(
-            0x08,
-            TagInfo {
-                name: "PolicyType",
-                token: 0x08,
-            },
-        );
-        page.insert(
-            0x09,
-            TagInfo {
-                name: "PolicyKey",
-                token: 0x09,
-            },
-        );
-        page.insert(
-            0x0A,
-            TagInfo {
-                name: "Data",
-                token: 0x0A,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "Status",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "RemoteWipe",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "EASProvisionDoc",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0E,
-            TagInfo {
-                name: "DevicePasswordEnabled",
-                token: 0x0E,
-            },
-        );
-        page.insert(
-            0x10,
-            TagInfo {
-                name: "RequireDeviceEncryption",
-                token: 0x10,
-            },
-        );
-        pages.push(page);
+        // Code Page 14: Provision
+        m.insert((14, 0x05), "Provision");
+        m.insert((14, 0x06), "Policies");
+        m.insert((14, 0x07), "Policy");
+        m.insert((14, 0x08), "PolicyType");
+        m.insert((14, 0x09), "PolicyKey");
+        m.insert((14, 0x0A), "Data");
+        m.insert((14, 0x0B), "Status");
 
-        // Page 12: Settings
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Settings",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Status",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x16,
-            TagInfo {
-                name: "DeviceInformation",
-                token: 0x16,
-            },
-        );
-        page.insert(
-            0x19,
-            TagInfo {
-                name: "FriendlyName",
-                token: 0x19,
-            },
-        );
-        pages.push(page);
+        // Code Page 17: AirSyncBase
+        m.insert((17, 0x05), "AirSyncBase:BodyPreference");
+        m.insert((17, 0x06), "AirSyncBase:Type");
+        m.insert((17, 0x07), "AirSyncBase:TruncationSize");
+        m.insert((17, 0x0A), "AirSyncBase:Body");
+        m.insert((17, 0x0B), "AirSyncBase:Data");
+        m.insert((17, 0x0C), "AirSyncBase:EstimatedDataSize");
+        m.insert((17, 0x0D), "AirSyncBase:Truncated");
 
-        // Page 14: ItemOperations
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "ItemOperations",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Fetch",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "Status",
-                token: 0x0D,
-            },
-        );
-        page.insert(
-            0x0E,
-            TagInfo {
-                name: "Response",
-                token: 0x0E,
-            },
-        );
-        pages.push(page);
+        // Code Page 18: Settings
+        m.insert((18, 0x05), "Settings");
+        m.insert((18, 0x06), "Status");
+        m.insert((18, 0x1A), "EnableOutboundSMS");
 
-        // Page 16: Search
-        let mut page = HashMap::new();
-        page.insert(
-            0x05,
-            TagInfo {
-                name: "Search",
-                token: 0x05,
-            },
-        );
-        page.insert(
-            0x06,
-            TagInfo {
-                name: "Store",
-                token: 0x06,
-            },
-        );
-        page.insert(
-            0x0B,
-            TagInfo {
-                name: "Status",
-                token: 0x0B,
-            },
-        );
-        page.insert(
-            0x0C,
-            TagInfo {
-                name: "Response",
-                token: 0x0C,
-            },
-        );
-        page.insert(
-            0x0D,
-            TagInfo {
-                name: "Result",
-                token: 0x0D,
-            },
-        );
-        pages.push(page);
 
-        pages
-    })
-}
+        // Code Page 9: Tasks (ASTASK subset)
+        m.insert((9, 0x08), "Tasks:Complete");
+        m.insert((9, 0x09), "Tasks:DateCompleted");
+        m.insert((9, 0x0D), "Tasks:DueDate");
+        m.insert((9, 0x0F), "Tasks:Importance");
+        m.insert((9, 0x17), "Tasks:StartDate");
+        m.insert((9, 0x18), "Tasks:Subject");
 
-// Build a reverse map for Encoding: Name -> (Page, Token)
-fn get_tag_to_token_map() -> &'static HashMap<String, (u8, u8)> {
-    TAG_TO_TOKEN_MAP.get_or_init(|| {
-        let mut map = HashMap::new();
-        for (page_idx, page) in get_code_pages().iter().enumerate() {
-            for info in page.values() {
-                map.insert(info.name.to_string(), (page_idx as u8, info.token));
-            }
-        }
-        map
-    })
-}
+        // Code Page 19: DocumentLibrary (ASDOC subset)
+        m.insert((19, 0x05), "DocumentLibrary:LinkId");
+        m.insert((19, 0x06), "DocumentLibrary:DisplayName");
+        m.insert((19, 0x07), "DocumentLibrary:IsFolder");
+        m.insert((19, 0x08), "DocumentLibrary:CreationDate");
+        m.insert((19, 0x09), "DocumentLibrary:LastModifiedDate");
 
-fn get_ns_to_page_map() -> &'static HashMap<String, u8> {
-    NS_TO_PAGE_MAP.get_or_init(|| {
-        let mut map = HashMap::new();
-        map.insert("AirSync".to_string(), 0);
-        map.insert("AirSyncBase".to_string(), 3);
-        map.insert("Calendar".to_string(), 4);
-        map.insert("Email".to_string(), 2);
-        map.insert("Tasks".to_string(), 7);
-        map.insert("Ping".to_string(), 10);
-        map.insert("Provision".to_string(), 11);
-        map.insert("Settings".to_string(), 12);
-        map.insert("ItemOperations".to_string(), 14);
-        map.insert("Search".to_string(), 16);
-        map
-    })
-}
+        // Code Page 23: Notes (ASNOTE subset)
+        m.insert((23, 0x05), "Notes:Subject");
+        m.insert((23, 0x06), "Notes:MessageClass");
+        m.insert((23, 0x07), "Notes:LastModifiedDate");
+        m.insert((23, 0x08), "Notes:Categories");
+        m.insert((23, 0x0B), "Notes:Body");
 
-/// Encode XML string to WBXML bytes
-pub fn encode(xml: &str) -> Result<Vec<u8>, WbXmlError> {
-    let mut buf = Vec::new();
+        // Code Page 24: RightsManagement (ASRM subset)
+        m.insert((24, 0x05), "RightsManagement:RightsManagementSupport");
+        m.insert((24, 0x06), "RightsManagement:RightsManagementTemplates");
+        m.insert((24, 0x08), "RightsManagement:RightsManagementLicense");
 
-    // Write Header
-    buf.push(WBXML_VERSION);
-    buf.push(WBXML_PUBLIC_ID);
-    buf.push(WBXML_CHARSET_UTF8);
-    buf.push(WBXML_STRTBL_EMPTY);
+        // Code Page 21: ComposeMail (ASEMAIL)
+        m.insert((21, 0x05), "SendMail");
+        m.insert((21, 0x06), "SmartForward");
+        m.insert((21, 0x07), "SmartReply");
+        m.insert((21, 0x08), "SaveInSentItems");
+        m.insert((21, 0x0B), "Mime");
 
-    let mut current_page = 0;
-    let mut tag_stack: Vec<String> = Vec::new();
-
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let (prefix_opt, local_name) = extract_name_parts(e.name());
-                handle_element_start(
-                    &mut buf,
-                    &mut current_page,
-                    &mut tag_stack,
-                    prefix_opt,
-                    local_name,
-                )?;
-            }
-            Ok(Event::Empty(ref e)) => {
-                let (prefix_opt, local_name) = extract_name_parts(e.name());
-                handle_element_start(
-                    &mut buf,
-                    &mut current_page,
-                    &mut tag_stack,
-                    prefix_opt,
-                    local_name.clone(),
-                )?;
-                buf.push(END);
-                tag_stack.pop();
-            }
-            Ok(Event::End(ref _e)) => {
-                if !tag_stack.is_empty() {
-                    buf.push(END);
-                    tag_stack.pop();
-                }
-            }
-            Ok(Event::Text(ref e)) => {
-                // Fix for quick-xml 0.39: unescape is a free function
-                let text_str =
-                    std::str::from_utf8(e.as_ref()).map_err(|_| WbXmlError::MalformedString)?;
-                let text = escape::unescape(text_str).map_err(|_| WbXmlError::MalformedString)?;
-
-                if !text.is_empty() {
-                    buf.push(STR_I);
-                    buf.extend_from_slice(text.as_bytes());
-                    buf.push(0x00);
-                }
-            }
-            Ok(Event::Eof) => break,
-            _ => {}
-        }
-    }
-
-    Ok(buf)
-}
-
-fn handle_element_start(
-    buf: &mut Vec<u8>,
-    current_page: &mut u8,
-    tag_stack: &mut Vec<String>,
-    prefix_opt: Option<&str>,
-    local_name: String,
-) -> Result<(), WbXmlError> {
-    let (page, token) = {
-        if let Some(prefix) = prefix_opt {
-            if let Some(&target_page) = get_ns_to_page_map().get(prefix) {
-                if let Some(&(_, token)) = get_tag_to_token_map().get(&local_name) {
-                    (target_page, token)
-                } else {
-                    return Err(WbXmlError::UnknownTag(0, target_page));
-                }
-            } else {
-                lookup_tag(&local_name, *current_page)?
-            }
-        } else {
-            lookup_tag(&local_name, *current_page)?
-        }
+        m
     };
 
-    if page != *current_page {
-        buf.push(SWITCH_PAGE);
-        buf.push(page);
-        *current_page = page;
-    }
-
-    buf.push(token | 0x40);
-    tag_stack.push(local_name);
-
-    Ok(())
+    static ref NAME_TO_TAG: HashMap<&'static str, (u8, u8)> = {
+        let mut m = HashMap::new();
+        for ((cp, id), name) in TAG_TO_NAME.iter() {
+            m.insert(*name, (*cp, *id));
+        }
+        m
+    };
 }
 
-fn lookup_tag(local_name: &str, current_page: u8) -> Result<(u8, u8), WbXmlError> {
-    if let Some(&(page, token)) = get_tag_to_token_map().get(local_name) {
-        Ok((page, token))
-    } else {
-        Err(WbXmlError::UnknownTag(0, current_page))
-    }
-}
+pub struct Wbxml;
 
-/// Decode WBXML bytes to XML string
-pub fn decode(bytes: &[u8]) -> Result<String, WbXmlError> {
-    let mut cursor = Cursor::new(bytes);
-
-    let version = cursor.get_u8();
-    let _public_id = cursor.get_u8();
-    let charset = cursor.get_u8();
-    let strtbl_len = cursor.get_u8();
-
-    if strtbl_len != 0 {
-        return Err(WbXmlError::StringTableUnsupported);
+impl Wbxml {
+    pub fn new() -> Self {
+        Wbxml
     }
 
-    if version != WBXML_VERSION || charset != WBXML_CHARSET_UTF8 {
-        return Err(WbXmlError::InvalidHeader);
-    }
-
-    let mut xml = String::new();
-    let mut current_page = 0;
-    let mut tag_stack: Vec<String> = Vec::new();
-
-    while cursor.has_remaining() {
-        let token = cursor.get_u8();
-
-        match token {
-            SWITCH_PAGE => {
-                if !cursor.has_remaining() {
-                    return Err(WbXmlError::UnexpectedEof);
-                }
-                current_page = cursor.get_u8();
+    fn read_mb_uint(bytes: &[u8], pos: &mut usize) -> Result<u32> {
+        let mut result: u32 = 0;
+        let mut count = 0;
+        loop {
+            if *pos >= bytes.len() {
+                return Err(anyhow!("Truncated WBXML mb_u_int32"));
             }
-            END => {
-                if let Some(tag) = tag_stack.pop() {
-                    xml.push_str(&format!("</{}>", tag));
-                }
+            let b = bytes[*pos];
+            *pos += 1;
+            result = (result << 7) | u32::from(b & 0x7F);
+            count += 1;
+            if (b & 0x80) == 0 {
+                break;
             }
-            STR_I => {
-                let mut str_bytes = Vec::new();
-                loop {
-                    if !cursor.has_remaining() {
-                        return Err(WbXmlError::UnexpectedEof);
+            if count > 5 {
+                return Err(anyhow!("WBXML mb_u_int32 too large"));
+            }
+        }
+        Ok(result)
+    }
+
+    fn read_inline_str(bytes: &[u8], pos: &mut usize) -> Result<String> {
+        let start = *pos;
+        while *pos < bytes.len() && bytes[*pos] != 0 {
+            *pos += 1;
+        }
+        if *pos >= bytes.len() {
+            return Err(anyhow!("Unterminated STR_I string"));
+        }
+        let s = String::from_utf8(bytes[start..*pos].to_vec())?;
+        *pos += 1; // null terminator
+        Ok(s)
+    }
+
+    pub fn decode(&self, bytes: &[u8]) -> Result<String> {
+        if bytes.is_empty() {
+            return Err(anyhow!("Empty WBXML payload"));
+        }
+        if bytes[0] == b'<' {
+            return Ok(String::from_utf8(bytes.to_vec())?);
+        }
+
+        let mut pos = 0;
+        let _version = *bytes
+            .get(pos)
+            .ok_or_else(|| anyhow!("Missing WBXML version"))?;
+        pos += 1;
+        let _public_id = Self::read_mb_uint(bytes, &mut pos)?;
+        let _charset = Self::read_mb_uint(bytes, &mut pos)?;
+        let str_table_len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+            .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
+
+        if pos + str_table_len > bytes.len() {
+            return Err(anyhow!("WBXML string table exceeds payload"));
+        }
+        let string_table = &bytes[pos..pos + str_table_len];
+        pos += str_table_len;
+
+        let mut current_code_page = 0u8;
+        let mut xml_stack: Vec<String> = Vec::new();
+        let mut output = String::new();
+        output.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+
+        while pos < bytes.len() {
+            let token = bytes[pos];
+            pos += 1;
+
+            match token {
+                SWITCH_PAGE => {
+                    if pos >= bytes.len() {
+                        return Err(anyhow!("WBXML SWITCH_PAGE missing code page"));
                     }
-                    let b = cursor.get_u8();
-                    if b == 0x00 {
-                        break;
-                    }
-                    str_bytes.push(b);
+                    current_code_page = bytes[pos];
+                    pos += 1;
                 }
-                let text = String::from_utf8(str_bytes).map_err(|_| WbXmlError::MalformedString)?;
-                xml.push_str(&text);
-            }
-            STR_T => {
-                return Err(WbXmlError::StringTableUnsupported);
-            }
-            _ => {
-                let has_content = (token & 0x40) != 0;
-                let tag_id = token & 0x3F;
-
-                let pages = get_code_pages();
-                let page = pages
-                    .get(current_page as usize)
-                    .ok_or(WbXmlError::UnknownPage(current_page))?;
-                let tag_info = page
-                    .get(&tag_id)
-                    .ok_or(WbXmlError::UnknownTag(tag_id, current_page))?;
-
-                let tag_name = tag_info.name;
-
-                if has_content {
-                    xml.push_str(&format!("<{}>", tag_name));
-                    tag_stack.push(tag_name.to_string());
-                } else {
-                    xml.push_str(&format!("<{}/>", tag_name));
+                END => {
+                    if let Some(tag) = xml_stack.pop() {
+                        output.push_str(&format!("</{}>", tag));
+                    }
+                }
+                STR_I => {
+                    let content = Self::read_inline_str(bytes, &mut pos)?;
+                    let escaped = content
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;");
+                    output.push_str(&escaped);
+                }
+                STR_T => {
+                    let offset = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                        .map_err(|_| anyhow!("Invalid STR_T offset"))?;
+                    if offset >= string_table.len() {
+                        return Err(anyhow!("STR_T offset outside string table"));
+                    }
+                    let mut end = offset;
+                    while end < string_table.len() && string_table[end] != 0 {
+                        end += 1;
+                    }
+                    let content = String::from_utf8(string_table[offset..end].to_vec())?;
+                    let escaped = content
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;");
+                    output.push_str(&escaped);
+                }
+                ENTITY => {
+                    let ent = Self::read_mb_uint(bytes, &mut pos)?;
+                    output.push_str(&format!("&#{};", ent));
+                }
+                OPAQUE => {
+                    let len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                        .map_err(|_| anyhow!("Invalid OPAQUE length"))?;
+                    if pos + len > bytes.len() {
+                        return Err(anyhow!("OPAQUE data exceeds payload"));
+                    }
+                    let opaque = &bytes[pos..pos + len];
+                    pos += len;
+                    let b64 =
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, opaque);
+                    output.push_str(&b64);
+                }
+                LITERAL => {
+                    return Err(anyhow!("LITERAL token unsupported in this profile"));
+                }
+                _ => {
+                    if token >= 0x05 {
+                        let has_content = (token & 0x40) != 0;
+                        let tag_id = token & 0x3F;
+                        if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
+                            output.push_str(&format!("<{}>", name));
+                            if has_content {
+                                xml_stack.push(name.to_string());
+                            } else {
+                                output.push_str(&format!("</{}>", name));
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        while let Some(tag) = xml_stack.pop() {
+            output.push_str(&format!("</{}>", tag));
+        }
+
+        Ok(output)
     }
 
-    Ok(xml)
+    pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
+        let mut buf = vec![0x03, 0x01, 0x6A, 0x00];
+
+        let mut reader = quick_xml::Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut current_code_page = 0u8;
+        let mut buf_event = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf_event) {
+                Ok(quick_xml::events::Event::Start(e)) => {
+                    let name = e.name().local_name();
+                    let name_str = std::str::from_utf8(name.as_ref())?;
+
+                    if let Some((cp, tag)) = NAME_TO_TAG.get(name_str) {
+                        if *cp != current_code_page {
+                            buf.push(SWITCH_PAGE);
+                            buf.push(*cp);
+                            current_code_page = *cp;
+                        }
+                        buf.push(tag | 0x40);
+                    } else {
+                        let mut found = false;
+                        for (k, (cp, tag)) in NAME_TO_TAG.iter() {
+                            if k.ends_with(name_str) {
+                                if *cp != current_code_page {
+                                    buf.push(SWITCH_PAGE);
+                                    buf.push(*cp);
+                                    current_code_page = *cp;
+                                }
+                                buf.push(tag | 0x40);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            return Err(anyhow!("Unknown tag in encoder: {}", name_str));
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Empty(e)) => {
+                    let name = e.name().local_name();
+                    let name_str = std::str::from_utf8(name.as_ref())?;
+                    if let Some((cp, tag)) = NAME_TO_TAG.get(name_str) {
+                        if *cp != current_code_page {
+                            buf.push(SWITCH_PAGE);
+                            buf.push(*cp);
+                            current_code_page = *cp;
+                        }
+                        buf.push(*tag);
+                    } else {
+                        let mut found = false;
+                        for (k, (cp, tag)) in NAME_TO_TAG.iter() {
+                            if k.ends_with(name_str) {
+                                if *cp != current_code_page {
+                                    buf.push(SWITCH_PAGE);
+                                    buf.push(*cp);
+                                    current_code_page = *cp;
+                                }
+                                buf.push(*tag);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            tracing::warn!("Unknown empty tag in encoder: {}", name_str);
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Text(e)) => {
+                    buf.push(STR_I);
+                    let txt = e
+                        .decode()
+                        .map_err(|e| anyhow!("XML Decode Error: {}", e))?
+                        .into_owned();
+                    buf.extend_from_slice(txt.as_bytes());
+                    buf.push(0x00);
+                }
+                Ok(quick_xml::events::Event::End(_)) => {
+                    buf.push(END);
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Err(e) => return Err(anyhow!("XML Encode Error: {:?}", e)),
+                _ => {}
+            }
+            buf_event.clear();
+        }
+        Ok(buf)
+    }
 }
 
-fn extract_name_parts(name: quick_xml::name::QName<'_>) -> (Option<&str>, String) {
-    let name_bytes = name.0;
-    let name_str = std::str::from_utf8(name_bytes).unwrap_or("");
-    let mut parts = name_str.split(':');
-    let first = parts.next();
-    let second = parts.next();
+#[cfg(test)]
+mod tests {
+    use super::Wbxml;
 
-    match (first, second) {
-        (Some(prefix), Some(local)) => (Some(prefix), local.to_string()),
-        (Some(local), None) => (None, local.to_string()),
-        _ => (None, "Unknown".to_string()),
+    #[test]
+    fn round_trip_sync_with_namespaces() {
+        let codec = Wbxml::new();
+        let xml = r#"<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Collections><Collection><SyncKey>1</SyncKey><CollectionId>1</CollectionId><Commands></Commands></Collection></Collections></Sync>"#;
+        let wb = codec.encode(xml).expect("encode");
+        let dec = codec.decode(&wb).expect("decode");
+        assert!(dec.contains("<Sync>"));
+        assert!(dec.contains("<SyncKey>1</SyncKey>"));
+    }
+
+    #[test]
+    fn round_trip_folder_sync_and_provision() {
+        let codec = Wbxml::new();
+        let folder = r#"<FolderSync xmlns=\"FolderHierarchy:\"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>1</Count></Changes></FolderSync>"#;
+        let wb_folder = codec.encode(folder).expect("encode folder");
+        let folder_dec = codec.decode(&wb_folder).expect("decode folder");
+        assert!(folder_dec.contains("<FolderSync>"));
+
+        let prov = r#"<Provision xmlns=\"Provision:\"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><PolicyKey>1</PolicyKey></Policy></Policies></Provision>"#;
+        let wb_prov = codec.encode(prov).expect("encode provision");
+        let prov_dec = codec.decode(&wb_prov).expect("decode provision");
+        assert!(prov_dec.contains("<Provision>"));
     }
 }
