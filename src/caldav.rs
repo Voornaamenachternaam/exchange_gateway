@@ -25,7 +25,7 @@ impl CaldavClient {
     }
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
-        let url = format!("{}cal/{}/", self.base.trim_end_matches('/'), username);
+        let url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
         let resp = self
             .client
             .request(reqwest::Method::from_bytes(b"PROPFIND")?, &url)
