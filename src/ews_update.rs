@@ -92,26 +92,6 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                             }
                         }
                     }
-use serde::Deserialize;
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct ItemChange {
-    #[serde(rename = "SetItemField", default)]
-    set_item_fields: Vec<FieldChange>,
-    #[serde(rename = "AppendToItemField", default)]
-    append_to_item_fields: Vec<FieldChange>,
-    #[serde(rename = "DeleteItemField", default)]
-    delete_item_fields: Vec<FieldChange>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FieldChange {
-    #[serde(rename = "FieldURI")]
-    field_uri: String,
-    #[serde(flatten)]
-    payload: serde_json::Value,
-}
-
 pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     let mut results = Vec::new();
     if let Ok(changes) = quick_xml::de::from_str::<ItemChange>(body) {
