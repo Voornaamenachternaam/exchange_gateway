@@ -102,7 +102,7 @@ CREATE TABLE schema_version (
     applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO schema_version (version, description) VALUES (1, "initial gateway typed schema");
+INSERT INTO schema_version (version, description) VALUES (1, 'initial gateway typed schema');
 
 CREATE INDEX idx_api_idempotency_created ON api_idempotency(created_at);
 CREATE INDEX idx_item_map_owner_time   ON item_map(owner, updated_at);
