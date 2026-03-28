@@ -29,14 +29,21 @@ require_contains() {
 
 extract_item_id_and_change_key() {
   python3 - "$1" <<'PY'
-import re, sys
-text = open(sys.argv[1], 'r', encoding='utf-8').read()
-m = re.search(r'ItemId Id="([^"]+)" ChangeKey="([^"]+)"', text)
-if not m:
-    raise SystemExit(1)
-print(m.group(1))
-print(m.group(2))
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+for elem in root.iter():
+    if elem.tag.endswith("ItemId"):
+        item_id = elem.attrib.get("Id")
+        change_key = elem.attrib.get("ChangeKey")
+        if item_id and change_key:
+            print(item_id)
+            print(change_key)
+            raise SystemExit(0)
+raise SystemExit(1)
 PY
+}
 }
 
 request_xml() {
