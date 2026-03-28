@@ -464,16 +464,9 @@ fn options_response(request_id: &str) -> Response {
 }
 
 fn throttled_response(request_id: &str) -> Response {
-    let mut r = (
-        StatusCode::SERVICE_UNAVAILABLE,
-        [(
-            "Retry-After",
-            "Retry-After",
-            "30",
-        )],
-        "Throttled",
-    )
-        .into_response();
+    let mut r = (StatusCode::SERVICE_UNAVAILABLE, "Throttled").into_response();
+    r.headers_mut()
+        .insert(header::RETRY_AFTER, RETRY_AFTER_SECONDS.to_string().parse().unwrap());
     inject_common_headers(&mut r, request_id);
     r
 }
