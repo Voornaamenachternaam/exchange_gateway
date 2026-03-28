@@ -1090,7 +1090,6 @@ pub async fn perform_sync(
         )
     };
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
-
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars
