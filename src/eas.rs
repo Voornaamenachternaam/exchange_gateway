@@ -468,7 +468,8 @@ fn throttled_response(request_id: &str) -> Response {
         StatusCode::SERVICE_UNAVAILABLE,
         [(
             "Retry-After",
-            Box::leak(RETRY_AFTER_SECONDS.to_string().into_boxed_str()),
+            "Retry-After",
+            "30",
         )],
         "Throttled",
     )
