@@ -32,7 +32,7 @@ See `CLOUDFLARE_DEPLOYMENT.md` for the full production deployment profile (Worke
 
 ## Rust version
 
-- `rust-version = "1.94.0"`
+- `rust-version = "1.94.1"`
 - `edition = "2024"`
 
 ## License
