@@ -76,8 +76,10 @@ function isForwardedPath(path) {
 function isAuthorized(request, env) {
   const bearer = request.headers.get('Authorization');
   const xSecret = request.headers.get('x-gateway-secret');
-  const expectedBearer = `Bearer ${env.GATEWAY_SECRET}`;
-  return subtleEqual(bearer ?? '', expectedBearer ?? '') || subtleEqual(xSecret ?? '', env.GATEWAY_SECRET ?? '');
+  const secret = env.GATEWAY_SECRET;
+  if (typeof secret !== 'string' || secret.length === 0) return false;
+  const expectedBearer = `Bearer ${secret}`;
+  return subtleEqual(bearer ?? '', expectedBearer) || subtleEqual(xSecret ?? '', secret);
 }
 
 function subtleEqual(a, b) {
