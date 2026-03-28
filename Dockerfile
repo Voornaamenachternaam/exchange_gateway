@@ -5,8 +5,8 @@ FROM rust:1.94.1-slim AS builder
 WORKDIR /app
 COPY Cargo.toml ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
-RUN cargo fetch
-RUN rm -rf src
+RUN cargo build --release
+RUN rm -rf src target/release/deps/exchange_gateway* target/release/exchange_gateway*
 COPY src ./src
 RUN touch src/main.rs && cargo build --release
 
