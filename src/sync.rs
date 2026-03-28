@@ -462,12 +462,13 @@ pub async fn apply_meeting_response(
         .storage
         .upsert_item_map(
             owner,
-            &resource_href,
+            &existing.resource_href,
             &resource_href,
             request_id,
             &item.uid,
             &etag,
         )
+        .await?;
         .await?;
     Ok(())
 }
