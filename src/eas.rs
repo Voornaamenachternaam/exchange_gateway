@@ -857,8 +857,8 @@ async fn handle_resolve_recipients(
         };
         recipient_xml.push_str(&format!(
             "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
-            xml_escape(recipient),
-            xml_escape(recipient),
+            sync::xml_escape(recipient),
+            sync::xml_escape(recipient),
             availability_xml
         ));
     }
@@ -870,7 +870,7 @@ async fn handle_resolve_recipients(
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
-        xml_escape(&primary),
+        sync::xml_escape(&primary),
         recipients.len(),
         recipient_xml
     );
