@@ -432,7 +432,7 @@ impl Wbxml {
                             }
                         }
                         if !found {
-                            tracing::warn!("Unknown tag in encoder: {}", name_str);
+                            return Err(anyhow!("Unknown tag in encoder: {}", name_str));
                         }
                     }
                 }
