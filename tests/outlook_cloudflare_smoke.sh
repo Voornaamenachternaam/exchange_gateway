@@ -116,6 +116,7 @@ if [[ "${RUN_MUTATION_PROBE:-0}" == "1" ]]; then
     "${TMP_DIR}/create.xml" \
     "<?xml version=\"1.0\" encoding=\"utf-8\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:CreateItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\" SendMeetingInvitations=\"SendToNone\"><m:SavedItemFolderId><t:DistinguishedFolderId Id=\"calendar\"/></m:SavedItemFolderId><m:Items><t:CalendarItem><t:Subject>${subject}</t:Subject><t:Start>2026-03-22T12:00:00Z</t:Start><t:End>2026-03-22T13:00:00Z</t:End><t:IsAllDayEvent>false</t:IsAllDayEvent><t:LegacyFreeBusyStatus>Busy</t:LegacyFreeBusyStatus></t:CalendarItem></m:Items></m:CreateItem></s:Body></s:Envelope>"
   mapfile -t item_bits < <(extract_item_id_and_change_key "${TMP_DIR}/create.xml")
+  [[ -n "${item_bits[0]:-}" && -n "${item_bits[1]:-}" ]] || { echo "Failed to extract ItemId/ChangeKey from create response" >&2; exit 1; }
   created_item_id="${item_bits[0]}"
   created_change_key="${item_bits[1]}"
 
