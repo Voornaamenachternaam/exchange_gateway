@@ -1,204 +1,164 @@
-# Exchange Gateway - Gap Analysis for Production Use-Case
+# GAP ANALYSIS — Exchange Gateway
 
-## Use-Case Summary
-- **Objective**: Full native calendar sync between Stalwart Mailserver v0.15.5 (RocksDB backend, ACME TLS) and Outlook clients (Windows 11 new Outlook v20251205004.10, Android 15 Outlook v5.2607.0) without client-side extensions
-- **Architecture**: 
-  - Exchange Gateway Rust Docker container (v1.94.1) running alongside Stalwart Mailserver
-  - Cloudflare Worker (worker/index.js) for D1 database access
-  - Cloudflare D1 SQL database for persistence
-  - Cloudflare Tunnel (cloudflared) for TLS termination to exchange_gateway container
-  - Basic authentication with username/password
-
-## Gaps Identified - With Implementation Status
-
-### G1: Autodiscover JSON Endpoint Missing in Rust Gateway
-**Status**: ✅ CLOSED
-**Severity**: CRITICAL
-**Description**: Outlook clients (especially Android) often use Autodiscover JSON endpoint for auto-configuration. The Rust gateway only handles XML and SOAP endpoints. The Cloudflare Worker has a stub but the Rust gateway needs to handle this route natively for proper Outlook integration.
-
-**Implementation**: Implemented `handle_autodiscover_json` function in `src/autodiscover.rs` that returns complete JSON configuration for:
-- Outlook for Windows (new Outlook)
-- Outlook for iOS/Android
-- Office 365 hybrid configurations
-- Full protocol URLs for EWS, ActiveSync, OWA, MAPI
-
-### G2: Outlook for Windows Compatibility - MAPI/HTTP Not Supported
-**Status**: ⏳ ACKNOWLEDGED LIMITATION
-**Severity**: HIGH
-**Description**: The "new" Outlook for Windows uses MAPI over HTTP protocol which is not implemented. While EAS provides basic sync, the full Outlook experience requires MAPI endpoint compatibility.
-
-**Note**: This is a protocol gap that cannot be fully closed without significant implementation. EAS (ActiveSync) provides sufficient calendar functionality for basic use with new Outlook.
-
-### G3: Free/Busy Lookup Not Implemented
-**Status**: ✅ ALREADY IMPLEMENTED
-**Severity**: HIGH
-**Description**: When scheduling meetings, Outlook requests free/busy information via EWS GetUserAvailability. The implementation exists and queries Stalwart CalDAV for attendee availability.
-
-**Implementation**: The `merged_freebusy_for_mailbox` function in `src/ews.rs` properly queries CalDAV and returns merged free/busy status with proper granularity.
-
-### G4: Meeting Response Handling - Attendee Status Updates
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
-**Severity**: HIGH
-**Description**: When a user accepts/declines/tentatively accepts a meeting from Outlook, the response needs to be sent back to the organizer's calendar via CalDAV. The EAS MeetingResponse command is implemented but CalDAV inverse sync is incomplete.
-
-**Note**: Partial implementation exists. Full implementation would require CalDAV scheduling (iCalendar REQUEST, REPLY, CANCEL).
-
-### G5: Cloudflare Worker CORS Configuration
-**Status**: ✅ CLOSED
-**Severity**: MEDIUM
-**Description**: The Cloudflare Worker may need CORS headers for browser-based testing or direct API access.
-
-**Implementation**: Added CORS helper functions and applied to API responses in `worker/index.js`:
-- Added `CORS_HEADERS` constant
-- Added `withCors()` wrapper function
-- Added `corsPreflightResponse()` for OPTIONS
-- Added OPTIONS handling in main fetch
-
-### G6: Calendar Recurrence Edge Cases
-**Status**: ⏳ PARTIALLY IMPLEMENTED
-**Severity**: MEDIUM
-**Description**: Some complex recurrence patterns (e.g., BYMONTHDAY with BYMONTH, custom end dates) may not be fully handled.
-
-**Note**: Current implementation handles most common patterns via `rrule` crate.
-
-### G7: Timezone Handling for Non-IANA Timezones
-**Status**: ✅ CLOSED
-**Severity**: MEDIUM
-**Description**: Windows uses Windows Time Zone IDs while we use IANA timezone IDs. Conversion needs to handle all Windows timezone IDs.
-
-**Implementation**: Created `src/timezone.rs` with:
-- `WINDOWS_TO_IANA` mapping table for 100+ Windows timezone IDs
-- `IANA_TO_WINDOWS` reverse mapping
-- `windows_to_iana()` and `iana_to_windows()` conversion functions
-- `normalize_timezone()` for parsing various formats
-- Comprehensive test coverage
-
-### G8: Security - Rate Limiting in Rust Gateway
-**Status**: ⏳ PARTIALLY IMPLEMENTED
-**Severity**: MEDIUM
-**Description**: Rate limiting is implemented in Cloudflare Worker but not in the Rust gateway itself.
-
-**Note**: Cloudflare provides rate limiting at the edge. Gateway rate limiting would be for direct access scenarios.
-
-### G9: OAuth2/Bearer Token Authentication Not Supported
-**Status**: ⏳ NOT IMPLEMENTED
-**Severity**: MEDIUM
-**Description**: The gateway only supports Basic authentication. Modern Outlook may require OAuth2.
-
-**Note**: Basic auth works for current use-case. OAuth2 would be future enhancement.
-
-### G10: Calendar Folder Discovery
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
-**Severity**: MEDIUM
-**Description**: Users may have multiple calendars. The current implementation defaults to the first calendar found.
-
-**Note**: Partial implementation exists. Full discovery would require EWS FindFolder/SyncFolderHierarchy enhancements.
-
-### G11: ItemID Stability Across Devices
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
-**Severity**: MEDIUM
-**Description**: ServerIDs generated via HMAC should be stable, but cross-device sync may have issues if HMAC secret differs.
-
-**Note**: Implementation uses HMAC-SHA256 for stable server IDs across devices.
-
-### G12: Attachment Handling Not Implemented
-**Status**: ⏳ NOT IMPLEMENTED
-**Severity**: LOW
-**Description**: Calendar items with attachments (meeting room resources, files) are not fully supported.
-
-**Note**: Would require EWS GetItem/UpdateItem with attachments support via CalDAV.
-
-### G13: Notes/Categories Color Sync
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
-**Severity**: LOW
-**Description**: Outlook categories with colors need proper iCalendar CATEGORIES and X-COLOR extensions.
-
-**Note**: Basic categories support exists in calendar.rs. Color mapping would be enhancement.
-
-### G14: Docker Container Health Check Enhancement
-**Status**: ✅ CLOSED
-**Severity**: LOW
-**Description**: Basic HTTP health check exists but could verify database connectivity.
-
-**Implementation**: Enhanced health check in `src/main.rs` to verify Cloudflare Worker connectivity:
-- Checks storage.get_latest_change_seq() 
-- Returns 503 if worker is unavailable
-- Provides proper status codes for load balancers
-
-### G15: Configuration Validation at Startup
-**Status**: ✅ CLOSED
-**Severity**: LOW
-**Description**: Configuration is loaded but not fully validated.
-
-**Implementation**: Added comprehensive config validation in `src/config.rs`:
-- Validates required fields (bind, caldav_base, worker_url, worker_secret, hmac_secret)
-- Validates URL formats for caldav_base and worker_url
-- Warns about weak secrets (<16 chars for worker_secret, <32 for hmac_secret)
-- Validates gateway_host format (should be hostname only)
-
-### G16: Multi-Folder Calendar Sync
-**Status**: ⏳ NOT IMPLEMENTED
-**Severity**: MEDIUM
-**Description**: Currently only syncs default calendar. Users may have additional calendars.
-
-**Note**: Would require implementing multi-calendar discovery and sync.
-
-### G17: Out-of-Office (OOF) Status Sync
-**Status**: ⏳ NOT IMPLEMENTED
-**Severity**: LOW
-**Description**: Outlook out-of-office settings need to sync with CalDAV.
-
-**Note**: Would require implementation via CalDAV or EWS SetUserOofSettings.
-
-### G18: Contacts and Tasks Sync
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
-**Severity**: LOW
-**Description**: Only calendar is fully implemented. Contacts and Tasks use placeholder data.
-
-**Note**: Placeholder support exists. Full CalDAV addressbook and task-list support would be required.
-
-### G19: Push Notifications
-**Status**: ⏳ NOT IMPLEMENTED
-**Severity**: MEDIUM
-**Description**: Outlook uses Push for real-time updates but EAS Ping is basic.
-
-**Note**: Basic EAS Ping exists. Long-lived connections with proper heartbeat enhancement would be needed.
-
-### G20: Error Handling and Logging Enhancement
-**Status**: ⚠️ PARTIALLY IMPLEMENTED
-**Severity**: LOW
-**Description**: Basic logging exists but needs structured logging for production debugging.
-
-**Note**: Basic tracing exists. Structured logging with correlation IDs would be enhancement.
+Analysis date: 2026-03-29  
+Protocol reference: Binder1.txt (MS-ASAIRS, MS-ASCAL, MS-ASCMD, MS-ASPROV,
+MS-ASWBXML, MS-OXWSCAL, MS-OXWSCORE, MS-OXWSFOLD, MS-OXWSSYNC, and related specs)
 
 ---
 
-## Priority Classification - Status Summary
+## CRITICAL — Code Will Not Compile
 
-### Critical (Must Fix)
-- ✅ G1: Autodiscover JSON - **CLOSED**
-- ✅ G3: Free/Busy Lookup - **ALREADY IMPLEMENTED**
-- ⚠️ G4: Meeting Response Handling - **PARTIALLY IMPLEMENTED**
+### GAP-01 `src/timezone.rs` is missing
+`main.rs` declares `mod timezone;` but the file was never created.
+**STATUS: CLOSED** — file created with EAS TimeZone blob decoder.
 
-### High Priority
-- ⏳ G7: Timezone Mapping - **CLOSED**
-- ⚠️ G10: Calendar Folder Discovery - **PARTIALLY IMPLEMENTED**
-- ⏳ G16: Multi-Folder Calendar Sync - **NOT IMPLEMENTED**
+### GAP-02 `AutodiscoverJsonParams` struct and `handle_autodiscover_json` missing
+`main.rs` references `autodiscover::AutodiscoverJsonParams` and
+`autodiscover::handle_autodiscover_json`, but neither existed in `autodiscover.rs`.
+**STATUS: CLOSED** — both added with full Autodiscover v2 (JSON) implementation.
 
-### Medium Priority
-- ✅ G5: CORS - **CLOSED**
-- ⚠️ G8: Rate Limiting - **PARTIALLY IMPLEMENTED** (Cloudflare provides)
-- ⚠️ G11: ItemID Stability - **PARTIALLY IMPLEMENTED**
-- ⚠️ G13: Categories Color - **PARTIALLY IMPLEMENTED**
-- ✅ G14: Health Check - **CLOSED**
-- ✅ G15: Config Validation - **CLOSED**
-- ⏳ G19: Push Notifications - **NOT IMPLEMENTED**
+---
 
-### Lower Priority
-- ⏳ G2: MAPI/HTTP - **ACKNOWLEDGED LIMITATION**
-- ⚠️ G6: Recurrence Edge Cases - **PARTIALLY IMPLEMENTED**
-- ⏳ G9: OAuth2 - **NOT IMPLEMENTED**
-- ⏳ G12: Attachments - **NOT IMPLEMENTED**
-- ⏳ G17: OOF - **NOT IMPLEMENTED**
-- ⚠️ G18: Contacts/Tasks - **PARTIALLY IMPLEMENTED**
-- ⚠️ G20: Logging - **PARTIALLY IMPLEMENTED**
+## CRITICAL — Wrong WBXML Code-Page Mappings (MS-ASWBXML)
+
+### GAP-03 Code page 8 (MeetingResponse) completely wrong
+Per MS-ASWBXML the correct mapping is:
+`CalendarId=0x05, CollectionId=0x06, MeetingResponse=0x07, RequestId=0x08,
+Request=0x09, Result=0x0A, Status=0x0B, UserResponse=0x0C, InstanceId=0x0E`
+
+The old code had `MeetingResponse=0x05, Request=0x06, …` — offset by two positions.
+Every WBXML MeetingResponse decoded/encoded with wrong tag names, silently breaking
+all meeting accept/decline flows on WBXML clients (Outlook Android 15, etc.).
+**STATUS: CLOSED** — full code page 8 rewritten to spec.
+
+### GAP-04 Code page 7 (FolderHierarchy) missing three tags
+`FolderCreate=0x13`, `FolderDelete=0x14`, `FolderUpdate=0x15` absent.
+**STATUS: CLOSED** — added.
+
+### GAP-05 Code pages 15 (Search) and 20 (ItemOperations) entirely absent
+WBXML encoding for Search and ItemOperations responses emitted "Unknown tag" warnings
+and produced malformed/empty binary payloads.
+**STATUS: CLOSED** — full code pages 15 and 20 added.
+
+### GAP-06 Code page 13 (Ping) missing `MaxFolders=0x0D`
+Ping status-6 (folder count exceeded) WBXML could not encode MaxFolders.
+**STATUS: CLOSED** — added.
+
+### GAP-07 Code page 18 (Settings) severely incomplete
+Only 3 of ~35 tags present. `Get`, `Set`, `DeviceInformation`, `UserInformation`,
+`EmailAddresses`, `SMTPAddress`, `PrimarySmtpAddress`, `Accounts`, `Account`,
+`AccountId`, `AccountName`, `UserDisplayName`, and many more were absent,
+causing garbled Settings WBXML responses.
+**STATUS: CLOSED** — complete Settings code page 18 added.
+
+### GAP-08 Code page 10 (ResolveRecipients) missing availability tags
+`To=0x10`, `RecipientCount=0x12`, `Availability=0x16`, `StartTime=0x17`,
+`EndTime=0x18`, `MergedFreeBusy=0x19` missing. Free/busy WBXML was malformed.
+**STATUS: CLOSED** — full code page 10 rewritten to spec.
+
+### GAP-09 Code page 17 (AirSyncBase) missing `AllOrNone=0x08`
+**STATUS: CLOSED** — added.
+
+### GAP-10 Code page 0 (AirSync) missing modern Outlook tags
+`GetChanges=0x13`, `MoreAvailable=0x14`, `WindowSize=0x15`, `FilterType=0x18`,
+`DeletesAsMoves=0x1E`, `Supported=0x20`, `SoftDelete=0x21`, `MIMESupport=0x22`,
+`MIMETruncation=0x23`, `Wait=0x24`, `Limit=0x25`, `Partial=0x26`,
+`ConversationMode=0x27`, `MaxItems=0x28`, `HeartbeatInterval=0x29` absent.
+**STATUS: CLOSED** — all added.
+
+---
+
+## HIGH — Protocol Correctness (MS-ASCAL §2.2.2.2, §2.2.2.40)
+
+### GAP-11 `validate_payload` did not reject server-only fields in requests
+MS-ASCAL §2.2.2.2: "A command request MUST NOT include the AppointmentReplyTime."
+MS-ASCAL §2.2.2.40: "A command request MUST NOT include the ResponseType element."
+Existing test `validates_sync_rejects_response_only_calendar_fields` expected
+rejection but `validate_payload` never performed the check — test was failing.
+**STATUS: CLOSED** — check added; both server-only fields now rejected in requests.
+
+### GAP-12 Autodiscover JSON v2 handler was undefined stub
+New Outlook Windows 11 and Android 15 issue Autodiscover v2 (JSON) before falling
+back to v1 XML. The route existed in `main.rs` but the handler was missing.
+**STATUS: CLOSED** — full handler with Protocol= query param dispatch added.
+
+### GAP-13 Settings WBXML response silently empty due to missing code page 18
+Covered by GAP-07. **STATUS: CLOSED**.
+
+---
+
+## HIGH — Cloudflare / Deployment Configuration
+
+### GAP-15 Worker name mismatch
+`CLOUDFLARE_DEPLOYMENT.md` and `wrangler.toml` used `exchange-gateway-edge` /
+`exchange-gateway`; user specified `exchange-gateway-db`.
+**STATUS: CLOSED** — all references updated to `exchange-gateway-db`.
+
+### GAP-16 D1 database name mismatch
+Previous database name was `exchange-gateway`; user specified `exchange_gateway_db`.
+**STATUS: CLOSED** — binding and database name updated throughout.
+
+### GAP-17 `docker-compose.yml` did not forward `MAIL_DOMAIN`
+`.env` defines `MAIL_DOMAIN` but it was not passed to the container.
+**STATUS: CLOSED** — env label added.
+
+### GAP-18 `cloudflared-exchange-origin.yml` example wrong for host-mode cloudflared
+The example targeted `http://exchange_gateway:8134` (Docker DNS), but `cloudflared`
+on Ubuntu runs on the host, not inside Docker, so it cannot resolve that name.
+**STATUS: CLOSED** — corrected to `http://localhost:8134` with explanatory comment.
+
+---
+
+## MEDIUM — Robustness / Completeness
+
+### GAP-19 `timezone.rs` lacked EAS TimeZone blob decoder (MS-ASDTYPE §2.7.6)
+The EAS Timezone element carries a 172-byte little-endian binary blob. Passing it
+through opaquely caused DTSTART/DTEND to be mis-stamped for clients relying on the
+blob bias rather than IANA TZID.
+**STATUS: CLOSED** — `decode_eas_timezone_bias()` and `eas_timezone_blob_to_iana()`
+helpers implemented in `timezone.rs`.
+
+### GAP-20 WBXML encoder crashed on unrecognised tags
+Unknown tags returned `Err`, aborting the entire response instead of skipping.
+**STATUS: CLOSED** — encoder logs warning and continues for unknown tags.
+
+### GAP-21 Autodiscover v1 XML EXPR block lacked `<LoginName>`
+Outlook Windows 11 uses `<LoginName>` to pre-fill the username.
+**STATUS: CLOSED** — added to EXPR block.
+
+### GAP-22 `wrangler.toml` body-size limit inconsistency
+Preview env had 4 MiB but production had 1 MiB vs. Rust gateway constant 4 MiB.
+**STATUS: CLOSED** — aligned to 4 MiB everywhere.
+
+### GAP-24 `CLOUDFLARE_DEPLOYMENT.md` lacked additive tunnel ingress guidance
+User's existing cloudflared serves Stalwart webui; guide did not explain adding a
+second ingress rule without breaking the first.
+**STATUS: CLOSED** — extended with additive ingress example.
+
+---
+
+## LOW — Remaining Open Gaps
+
+### GAP-25 EWS push/streaming notifications (MS-OXWSPSNTIF) not implemented
+Outlook falls back to polling SyncFolderItems automatically.
+**OPEN** — out of scope for CalDAV bridge.
+
+### GAP-26 EWS `GetAttachment` / `CreateAttachment` not implemented
+Calendar attachments not bridged. Outlook displays items but cannot access
+attachments. **OPEN** — beyond CalDAV bridge scope.
+
+### GAP-27 EAS Email class sync is stub only
+By design; use-case is calendar-only. **OPEN**.
+
+### GAP-28 WBXML code pages 22 (Email2), 25 (Find) not implemented
+Not needed for calendar sync. **OPEN**.
+
+### GAP-29 EAS TimeZone blob round-trip for Windows-only TZIDs
+When Outlook sends a Windows TZID not in the IANA database, UTC bias fallback is
+used. DST transitions may be slightly wrong until Outlook re-sends the event.
+**OPEN** — acceptable for current use-case.
+
+### GAP-30 IPv6 CalDAV connectivity not tested
+`reqwest::Client` supports IPv6 but `caldav_base` uses a literal IPv4 address. If
+the Stalwart container moves to a dual-stack network, update `config.toml` manually.
+**OPEN** — documentation-only mitigation.

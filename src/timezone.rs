@@ -1,246 +1,424 @@
 // src/timezone.rs
-// Windows Time Zone ID to IANA Time Zone Database mapping
-// Reference: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-time-zoneBil:adjustments
-// Updated: March 2026
+//
+// EAS TimeZone blob support — MS-ASDTYPE §2.7.6
+//
+// The ActiveSync Calendar Timezone element carries a 172-byte little-endian
+// binary structure encoded in base64:
+//
+//   Bias          (4 bytes, LONG)   — UTC offset in minutes (positive = west)
+//   StandardName  (64 bytes)        — 32 UTF-16LE WCHARs, NUL-padded
+//   StandardDate  (16 bytes)        — SYSTEMTIME struct
+//   StandardBias  (4 bytes, LONG)
+//   DaylightName  (64 bytes)        — 32 UTF-16LE WCHARs, NUL-padded
+//   DaylightDate  (16 bytes)        — SYSTEMTIME struct
+//   DaylightBias  (4 bytes, LONG)
+//                          total: 172 bytes
+//
+// We decode the Bias and name strings to map to an IANA timezone where
+// possible, falling back to a fixed-offset Etc/GMT±N representation.
 
-use std::collections::HashMap;
-use once_cell::sync::Lazy;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
-/// Windows Time Zone ID to IANA Timezone mapping
-/// This table maps Windows timezone identifiers to their IANA equivalents
-pub static WINDOWS_TO_IANA: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
-    let mut map = HashMap::new();
-    
-    // UTC time zones
-    map.insert("UTC", "UTC");
-    map.insert("GMT Standard Time", "Europe/London");
-    map.insert("GMT Daylight Time", "Europe/London");
-    
-    // European time zones
-    map.insert("W. Europe Standard Time", "Europe/Paris");
-    map.insert("W. Europe Daylight Time", "Europe/Paris");
-    map.insert("Central Europe Standard Time", "Europe/Berlin");
-    map.insert("Central Europe Daylight Time", "Europe/Berlin");
-    map.insert("Romance Standard Time", "Europe/Paris");
-    map.insert("Romance Daylight Time", "Europe/Paris");
-    map.insert("Central European Standard Time", "Europe/Warsaw");
-    map.insert("Central European Daylight Time", "Europe/Warsaw");
-    map.insert("W. Central Africa Standard Time", "Africa/Lagos");
-    map.insert("E. Europe Standard Time", "Europe/Bucharest");
-    map.insert("E. Europe Daylight Time", "Europe/Bucharest");
-    map.insert("Egypt Standard Time", "Africa/Cairo");
-    map.insert("South Africa Standard Time", "Africa/Johannesburg");
-    map.insert("FLE Standard Time", "Europe/Kyiv");
-    map.insert("FLE Daylight Time", "Europe/Kyiv");
-    map.insert("GTB Standard Time", "Europe/Athens");
-    map.insert("GTB Daylight Time", "Europe/Athens");
-    map.insert("Israel Standard Time", "Asia/Jerusalem");
-    map.insert("Israel Daylight Time", "Asia/Jerusalem");
-    map.insert("Turkey Standard Time", "Europe/Istanbul");
-    map.insert("Turkey Daylight Time", "Europe/Istanbul");
-    map.insert("SA Pacific Standard Time", "America/Bogota");
-    map.insert("SA Pacific Daylight Time", "America/Bogota");
-    map.insert("E. South America Standard Time", "America/Sao_Paulo");
-    map.insert("E. South America Daylight Time", "America/Sao_Paulo");
-    map.insert("Atlantic Standard Time", "America/Halifax");
-    map.insert("Atlantic Daylight Time", "America/Halifax");
-    map.insert("SA Western Standard Time", "America/Caracas");
-    map.insert("SA Western Daylight Time", "America/Caracas");
-    map.insert("Pacific SA Standard Time", "America/Santiago");
-    map.insert("Pacific SA Daylight Time", "America/Santiago");
-    map.insert("Central Brazilian Standard Time", "America/Manaus");
-    map.insert("Central Brazilian Daylight Time", "America/Manaus");
-    map.insert("Montevideo Standard Time", "America/Montevideo");
-    map.insert("Argentina Standard Time", "America/Argentina/Buenos_Aires");
-    map.insert("Mid-Atlantic Standard Time", "Atlantic/South_Georgia");
-    map.insert("Mid-Atlantic Daylight Time", "Atlantic/South_Georgia");
-    
-    // North American time zones
-    map.insert("Eastern Standard Time", "America/New_York");
-    map.insert("Eastern Daylight Time", "America/New_York");
-    map.insert("Central Standard Time", "America/Chicago");
-    map.insert("Central Daylight Time", "America/Chicago");
-    map.insert("Mountain Standard Time", "America/Denver");
-    map.insert("Mountain Daylight Time", "America/Denver");
-    map.insert("US Mountain Standard Time", "America/Phoenix");
-    map.insert("Pacific Standard Time", "America/Los_Angeles");
-    map.insert("Pacific Daylight Time", "America/Los_Angeles");
-    map.insert("US Mountain Standard Time", "America/Phoenix");
-    map.insert("Arizona", "America/Phoenix");
-    map.insert("Saskatchewan Standard Time", "America/Regina");
-    map.insert("Saskatchewan Daylight Time", "America/Regina");
-    map.insert("Central America Standard Time", "America/Guatemala");
-    map.insert("Guadalajara, Mexico City, Monterrey - New", "America/Mexico_City");
-    map.insert("Guadalajara, Mexico City, Monterrey", "America/Mexico_City");
-    map.insert("Mexico City", "America/Mexico_City");
-    map.insert("Central Standard Time (Mexico)", "America/Mexico_City");
-    map.insert("Central Daylight Time (Mexico)", "America/Mexico_City");
-    map.insert("Pacific Standard Time (Mexico)", "America/Tijuana");
-    map.insert("Pacific Daylight Time (Mexico)", "America/Tijuana");
-    map.insert("Atlantic Standard Time", "America/Puerto_Rico");
-    map.insert("SA Eastern Standard Time", "America/Cayenne");
-    map.insert("SA Eastern Daylight Time", "America/Cayenne");
-    
-    // Asia/Pacific time zones
-    map.insert("Tokyo Standard Time", "Asia/Tokyo");
-    map.insert("Tokyo Daylight Time", "Asia/Tokyo");
-    map.insert("Korea Standard Time", "Asia/Seoul");
-    map.insert("Korea Daylight Time", "Asia/Seoul");
-    map.insert("China Standard Time", "Asia/Shanghai");
-    map.insert("China Daylight Time", "Asia/Shanghai");
-    map.insert("Singapore Standard Time", "Asia/Singapore");
-    map.insert("Singapore Daylight Time", "Asia/Singapore");
-    map.insert("Taipei Standard Time", "Asia/Taipei");
-    map.insert("Taipei Daylight Time", "Asia/Taipei");
-    map.insert("W. Australia Standard Time", "Australia/Perth");
-    map.insert("W. Australia Daylight Time", "Australia/Perth");
-    map.insert("AUS Central Standard Time", "Australia/Darwin");
-    map.insert("AUS Central Daylight Time", "Australia/Darwin");
-    map.insert("AUS Eastern Standard Time", "Australia/Sydney");
-    map.insert("AUS Eastern Daylight Time", "Australia/Sydney");
-    map.insert("New Zealand Standard Time", "Pacific/Auckland");
-    map.insert("New Zealand Daylight Time", "Pacific/Auckland");
-    map.insert("E. Australia Standard Time", "Australia/Brisbane");
-    map.insert("E. Australia Daylight Time", "Australia/Brisbane");
-    map.insert("India Standard Time", "Asia/Kolkata");
-    map.insert("India Daylight Time", "Asia/Kolkata");
-    map.insert("Sri Lanka Standard Time", "Asia/Colombo");
-    map.insert("Sri Lanka Daylight Time", "Asia/Colombo");
-    map.insert("Nepal Standard Time", "Asia/Kathmandu");
-    map.insert("SE Asia Standard Time", "Asia/Bangkok");
-    map.insert("SE Asia Daylight Time", "Asia/Bangkok");
-    map.insert("N. Central Asia Standard Time", "Asia/Almaty");
-    map.insert("Myanmar Standard Time", "Asia/Yangon");
-    map.insert("Arab Standard Time", "Asia/Riyadh");
-    map.insert("Arab Daylight Time", "Asia/Riyadh");
-    map.insert("Arabic Standard Time", "Asia/Baghdad");
-    map.insert("Arabic Daylight Time", "Asia/Baghdad");
-    map.insert("Iran Standard Time", "Asia/Tehran");
-    map.insert("Iran Daylight Time", "Asia/Tehran");
-    map.insert("Caucasus Standard Time", "Asia/Yerevan");
-    map.insert("Caucasus Daylight Time", "Asia/Yerevan");
-    map.insert("Georgian Standard Time", "Asia/Tbilisi");
-    map.insert("Afghanistan Standard Time", "Asia/Kabul");
-    map.insert("West Asia Standard Time", "Asia/Tashkent");
-    map.insert("West Asia Daylight Time", "Asia/Tashkent");
-    map.insert("Ekaterinburg Standard Time", "Asia/Yekaterinburg");
-    map.insert("Ekaterinburg Daylight Time", "Asia/Yekaterinburg");
-    map.insert("Central Asia Standard Time", "Asia/Dhaka");
-    map.insert("Central Asia Daylight Time", "Asia/Dhaka");
-    map.insert("Pakistan Standard Time", "Asia/Karachi");
-    map.insert("Pakistan Daylight Time", "Asia/Karachi");
-    map.insert("Bangladesh Standard Time", "Asia/Dhaka");
-    map.insert("Bangladesh Daylight Time", "Asia/Dhaka");
-    map.insert("India Standard Time", "Asia/Kolkata");
-    map.insert("India Daylight Time", "Asia/Kolkata");
-    map.insert("Russia Time Zone 11", "Asia/Anadyr");
-    map.insert("Russia Time Zone 10", "Asia/Magadan");
-    map.insert("North Asia Standard Time", "Asia/Irkutsk");
-    map.insert("North Asia Daylight Time", "Asia/Irkutsk");
-    map.insert("Tomsk Standard Time", "Asia/Tomsk");
-    map.insert("Tomsk Daylight Time", "Asia/Tomsk");
-    map.insert("W. Mongolia Standard Time", "Asia/Ulaanbaatar");
-    map.insert("W. Mongolia Daylight Time", "Asia/Ulaanbaatar");
-    map.insert("China Standard Time", "Asia/Shanghai");
-    map.insert("Taipei Standard Time", "Asia/Taipei");
-    map.insert("Osaka, Sapporo, Tokyo", "Asia/Tokyo");
-    map.insert("Osaka", "Asia/Tokyo");
-    map.insert("Hawaii-Aleutian Standard Time", "Pacific/Honolulu");
-    map.insert("Hawaii-Aleutian Daylight Time", "Pacific/Honolulu");
-    map.insert("Hawaiian Standard Time", "Pacific/Honolulu");
-    map.insert("Alaskan Standard Time", "America/Anchorage");
-    map.insert("Alaskan Daylight Time", "America/Anchorage");
-    map.insert("Yukon Standard Time", "America/Whitehorse");
-    map.insert("Yukon Daylight Time", "America/Whitehorse");
-    
-    // Additional time zones
-    map.insert("Dateline Standard Time", "Pacific/Kwajalein");
-    map.insert("Samoa Standard Time", "Pacific/Apia");
-    map.insert("Samoa Daylight Time", "Pacific/Apia");
-    map.insert("Tonga Standard Time", "Pacific/Tongatapu");
-    map.insert("Fiji Standard Time", "Pacific/Fiji");
-    map.insert("Kamchatka Standard Time", "Asia/Kamchatka");
-    map.insert("Volgograd Standard Time", "Europe/Volgograd");
-    map.insert("Moscow Standard Time", "Europe/Moscow");
-    map.insert("Moscow Daylight Time", "Europe/Moscow");
-    map.insert("St. Petersburg Standard Time", "Europe/Moscow");
-    map.insert("St. Petersburg Daylight Time", "Europe/Moscow");
-    map.insert("Turkey Standard Time", "Europe/Istanbul");
-    map.insert("Libya Standard Time", "Africa/Tripoli");
-    map.insert("Namibia Standard Time", "Africa/Windhoek");
-    map.insert("Greenland Standard Time", "America/Godthab");
-    map.insert("Greenland Daylight Time", "America/Godthab");
-    map.insert("Azores Standard Time", "Atlantic/Azores");
-    map.insert("Azores Daylight Time", "Atlantic/Azores");
-    map.insert("Cape Verde Is. Standard Time", "Atlantic/Cape_Verde");
-    map.insert("Cape Verde Is. Daylight Time", "Atlantic/Cape_Verde");
-    map.insert("Mid-Atlantic Standard Time", "Atlantic/South_Georgia");
-    map.insert("Caucasus Standard Time", "Asia/Yerevan");
-    
-    map
-});
+const TZ_BLOB_LEN: usize = 172;
 
-/// IANA to Windows Time Zone ID mapping (reverse lookup)
-pub static IANA_TO_WINDOWS: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
-    let mut map = HashMap::new();
-    for (windows, iana) in WINDOWS_TO_IANA.iter() {
-        map.insert(*iana, *windows);
+/// Decode the UTC-offset bias (minutes west of UTC) from a base64-encoded
+/// EAS TimeZone blob.  Returns `None` if the blob cannot be decoded.
+pub fn decode_eas_timezone_bias(b64: &str) -> Option<i32> {
+    let bytes = BASE64.decode(b64.trim()).ok()?;
+    if bytes.len() < 4 {
+        return None;
     }
-    map
-});
-
-/// Convert a Windows Time Zone ID to IANA timezone
-/// Returns None if no mapping exists
-pub fn windows_to_iana(windows_id: &str) -> Option<&'static str> {
-    WINDOWS_TO_IANA.get(windows_id).copied()
+    Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-/// Convert an IANA timezone to Windows Time Zone ID
-/// Returns None if no mapping exists
-pub fn iana_to_windows(iana_id: &str) -> Option<&'static str> {
-    IANA_TO_WINDOWS.get(iana_id).copied()
+/// Read a 32-WCHAR (64-byte) UTF-16LE name from `bytes` at `offset`.
+fn read_wchar_name(bytes: &[u8], offset: usize) -> String {
+    let end = offset + 64;
+    if end > bytes.len() {
+        return String::new();
+    }
+    let chars: Vec<u16> = bytes[offset..end]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&c| c != 0)
+        .collect();
+    String::from_utf16_lossy(&chars).to_string()
 }
 
-/// Parse timezone from various formats:
-/// - Windows timezone ID
-/// - IANA timezone (e.g., "America/New_York")
-/// - Custom formats used by Exchange
-/// Returns the IANA timezone identifier
-pub fn normalize_timezone(tz: &str) -> String {
-    let tz = tz.trim();
-    
-    // Try Windows -> IANA first
-    if let Some(iana) = windows_to_iana(tz) {
-        return iana.to_string();
+/// Write a name string as UTF-16LE WCHARs into a 64-byte slot in `blob`.
+fn write_wchar_name(blob: &mut [u8], offset: usize, name: &str) {
+    let mut pos = offset;
+    for ch in name.encode_utf16().take(32) {
+        if pos + 2 > blob.len() {
+            break;
+        }
+        let b = ch.to_le_bytes();
+        blob[pos] = b[0];
+        blob[pos + 1] = b[1];
+        pos += 2;
     }
-    
-    // Already IANA format (contains '/')
-    if tz.contains('/') {
-        // Validate it's a reasonable IANA format
-        if tz.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-') {
-            return tz.to_string();
+}
+
+/// Attempt to map a base64-encoded EAS TimeZone blob to an IANA timezone name.
+///
+/// Algorithm:
+/// 1. Match StandardName / DaylightName against a table of Windows TZ name
+///    substrings → IANA equivalents.
+/// 2. If no match, derive `Etc/GMT±N` from the Bias field (POSIX sign: GMT+N
+///    is N hours *west*).
+///
+/// Returns `None` only when the blob cannot be base64-decoded.
+pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
+    let bytes = BASE64.decode(b64.trim()).ok()?;
+    if bytes.len() < TZ_BLOB_LEN {
+        return None;
+    }
+    let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let std_name = read_wchar_name(&bytes, 4);
+    let dst_name = read_wchar_name(&bytes, 88);
+
+    if let Some(iana) =
+        windows_name_to_iana(&std_name).or_else(|| windows_name_to_iana(&dst_name))
+    {
+        return Some(iana.to_string());
+    }
+
+    // Fallback: POSIX-style Etc/GMT±N (hours, rounded)
+    if bias == 0 {
+        return Some("UTC".to_string());
+    }
+    let hours = bias / 60;
+    Some(format!("Etc/GMT{:+}", hours))
+}
+
+/// Produce a base64-encoded 172-byte EAS TimeZone blob for a known IANA zone.
+/// Returns `None` if the zone is not in the built-in table.
+pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
+    let (bias, std_name, dst_name, std_date, dst_date, std_bias, dst_bias) =
+        iana_to_windows_params(iana)?;
+    let mut blob = [0u8; TZ_BLOB_LEN];
+    blob[0..4].copy_from_slice(&bias.to_le_bytes());
+    write_wchar_name(&mut blob, 4, std_name);
+    blob[68..84].copy_from_slice(&std_date);
+    blob[84..88].copy_from_slice(&std_bias.to_le_bytes());
+    write_wchar_name(&mut blob, 88, dst_name);
+    blob[152..168].copy_from_slice(&dst_date);
+    blob[168..172].copy_from_slice(&dst_bias.to_le_bytes());
+    Some(BASE64.encode(blob))
+}
+
+// ---------------------------------------------------------------------------
+// Internal lookup tables
+// ---------------------------------------------------------------------------
+
+fn windows_name_to_iana(name: &str) -> Option<&'static str> {
+    let n = name.to_ascii_lowercase();
+    // Ordered from most specific to least specific.
+    const TABLE: &[(&str, &str)] = &[
+        ("coordinated universal time", "UTC"),
+        ("greenwich standard time", "UTC"),
+        ("gmt standard time", "Europe/London"),
+        ("w. europe standard time", "Europe/Berlin"),
+        ("central europe standard time", "Europe/Budapest"),
+        ("central european standard time", "Europe/Warsaw"),
+        ("romance standard time", "Europe/Paris"),
+        ("fle standard time", "Europe/Helsinki"),
+        ("gtb standard time", "Europe/Bucharest"),
+        ("e. europe standard time", "Asia/Nicosia"),
+        ("eastern europe standard time", "Asia/Nicosia"),
+        ("turkey standard time", "Europe/Istanbul"),
+        ("russian standard time", "Europe/Moscow"),
+        ("russia time zone 3", "Europe/Moscow"),
+        ("arab standard time", "Asia/Riyadh"),
+        ("arabian standard time", "Asia/Dubai"),
+        ("israel standard time", "Asia/Jerusalem"),
+        ("india standard time", "Asia/Kolkata"),
+        ("china standard time", "Asia/Shanghai"),
+        ("singapore standard time", "Asia/Singapore"),
+        ("tokyo standard time", "Asia/Tokyo"),
+        ("korea standard time", "Asia/Seoul"),
+        ("aus eastern standard time", "Australia/Sydney"),
+        ("eastern standard time", "America/New_York"),
+        ("central standard time", "America/Chicago"),
+        ("mountain standard time", "America/Denver"),
+        ("pacific standard time", "America/Los_Angeles"),
+        ("alaska standard time", "America/Anchorage"),
+        ("hawaiian standard time", "Pacific/Honolulu"),
+        ("atlantic standard time", "America/Halifax"),
+        ("newfoundland standard time", "America/St_Johns"),
+        ("e. south america standard time", "America/Sao_Paulo"),
+        ("sa eastern standard time", "America/Cayenne"),
+        // City fragments for non-standard blobs
+        ("amsterdam", "Europe/Amsterdam"),
+        ("berlin", "Europe/Berlin"),
+        ("brussels", "Europe/Brussels"),
+        ("copenhagen", "Europe/Copenhagen"),
+        ("madrid", "Europe/Madrid"),
+        ("paris", "Europe/Paris"),
+        ("rome", "Europe/Rome"),
+        ("stockholm", "Europe/Stockholm"),
+        ("vienna", "Europe/Vienna"),
+        ("warsaw", "Europe/Warsaw"),
+        ("zagreb", "Europe/Zagreb"),
+        ("helsinki", "Europe/Helsinki"),
+        ("kyiv", "Europe/Kyiv"),
+        ("kiev", "Europe/Kyiv"),
+        ("riga", "Europe/Riga"),
+        ("sofia", "Europe/Sofia"),
+        ("tallinn", "Europe/Tallinn"),
+        ("vilnius", "Europe/Vilnius"),
+        ("bucharest", "Europe/Bucharest"),
+        ("athens", "Europe/Athens"),
+        ("istanbul", "Europe/Istanbul"),
+        ("moscow", "Europe/Moscow"),
+        ("dubai", "Asia/Dubai"),
+        ("calcutta", "Asia/Kolkata"),
+        ("kolkata", "Asia/Kolkata"),
+        ("shanghai", "Asia/Shanghai"),
+        ("singapore", "Asia/Singapore"),
+        ("tokyo", "Asia/Tokyo"),
+        ("seoul", "Asia/Seoul"),
+        ("sydney", "Australia/Sydney"),
+        ("new york", "America/New_York"),
+        ("chicago", "America/Chicago"),
+        ("denver", "America/Denver"),
+        ("los angeles", "America/Los_Angeles"),
+        ("anchorage", "America/Anchorage"),
+        ("honolulu", "Pacific/Honolulu"),
+        ("halifax", "America/Halifax"),
+        ("sao paulo", "America/Sao_Paulo"),
+    ];
+    for &(pattern, iana) in TABLE {
+        if n.contains(pattern) {
+            return Some(iana);
         }
     }
-    
-    // Try case-insensitive Windows lookup
-    for (windows, iana) in WINDOWS_TO_IANA.iter() {
-        if windows.to_lowercase() == tz.to_lowercase() {
-            return iana.to_string();
+    None
+}
+
+/// SYSTEMTIME bytes used for European DST rules (last Sunday in March/October).
+const EU_STD: [u8; 16] = [
+    0, 0, // wYear = 0 (relative)
+    10, 0, // wMonth = October
+    0, 0, // wDayOfWeek = Sunday
+    5, 0, // wDay = 5 (last occurrence)
+    3, 0, // wHour = 03:00
+    0, 0, 0, 0, 0, 0, // min, sec, ms
+];
+const EU_DST: [u8; 16] = [
+    0, 0, 3, 0, 0, 0, 5, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+];
+/// US DST rules: 2nd Sunday in March / 1st Sunday in November.
+const US_DST: [u8; 16] = [
+    0, 0, 3, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+];
+const US_STD: [u8; 16] = [
+    0, 0, 11, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+];
+const NO_DST: [u8; 16] = [0u8; 16];
+
+type TzParams = (i32, &'static str, &'static str, [u8; 16], [u8; 16], i32, i32);
+
+fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
+    Some(match iana {
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => {
+            (0, "Coordinated Universal Time", "", NO_DST, NO_DST, 0, 0)
         }
-    }
-    
-    // Default fallback to UTC
-    "UTC".to_string()
-}
-
-/// Get all available Windows timezone IDs
-pub fn all_windows_timezones() -> Vec<&'static str> {
-    WINDOWS_TO_IANA.keys().copied().collect()
-}
-
-/// Get all available IANA timezone identifiers
-pub fn all_iana_timezones() -> Vec<&'static str> {
-    IANA_TO_WINDOWS.keys().copied().collect()
+        "Europe/London" => (
+            0,
+            "GMT Standard Time",
+            "GMT Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Amsterdam" | "Europe/Berlin" | "Europe/Paris" | "Europe/Rome"
+        | "Europe/Madrid" | "Europe/Stockholm" | "Europe/Brussels"
+        | "Europe/Copenhagen" | "Europe/Vienna" | "Europe/Warsaw"
+        | "Europe/Zagreb" | "Europe/Budapest" => (
+            -60,
+            "W. Europe Standard Time",
+            "W. Europe Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Helsinki" | "Europe/Tallinn" | "Europe/Riga" | "Europe/Vilnius"
+        | "Europe/Kyiv" | "Europe/Bucharest" | "Europe/Athens" | "Europe/Sofia" => (
+            -120,
+            "FLE Standard Time",
+            "FLE Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Moscow" => (
+            -180,
+            "Russian Standard Time",
+            "Russian Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Europe/Istanbul" => (
+            -180,
+            "Turkey Standard Time",
+            "Turkey Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Dubai" => (
+            -240,
+            "Arabian Standard Time",
+            "Arabian Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Kolkata" | "Asia/Calcutta" => (
+            -330,
+            "India Standard Time",
+            "India Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Shanghai" | "Asia/Hong_Kong" => (
+            -480,
+            "China Standard Time",
+            "China Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Singapore" => (
+            -480,
+            "Singapore Standard Time",
+            "Singapore Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Tokyo" => (
+            -540,
+            "Tokyo Standard Time",
+            "Tokyo Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Seoul" => (
+            -540,
+            "Korea Standard Time",
+            "Korea Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Australia/Sydney" => (
+            -600,
+            "AUS Eastern Standard Time",
+            "AUS Eastern Daylight Time",
+            NO_DST,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "America/New_York" => (
+            300,
+            "Eastern Standard Time",
+            "Eastern Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Chicago" => (
+            360,
+            "Central Standard Time",
+            "Central Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Denver" => (
+            420,
+            "Mountain Standard Time",
+            "Mountain Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Los_Angeles" => (
+            480,
+            "Pacific Standard Time",
+            "Pacific Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Anchorage" => (
+            540,
+            "Alaskan Standard Time",
+            "Alaskan Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "Pacific/Honolulu" => (
+            600,
+            "Hawaiian Standard Time",
+            "Hawaiian Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "America/Halifax" => (
+            240,
+            "Atlantic Standard Time",
+            "Atlantic Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/St_Johns" => (
+            210,
+            "Newfoundland Standard Time",
+            "Newfoundland Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Sao_Paulo" => (
+            180,
+            "E. South America Standard Time",
+            "E. South America Daylight Time",
+            NO_DST,
+            NO_DST,
+            0,
+            -60,
+        ),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -248,39 +426,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_windows_to_iana() {
-        assert_eq!(windows_to_iana("Eastern Standard Time"), Some("America/New_York"));
-        assert_eq!(windows_to_iana("Pacific Standard Time"), Some("America/Los_Angeles"));
-        assert_eq!(windows_to_iana("Tokyo Standard Time"), Some("Asia/Tokyo"));
-        assert_eq!(windows_to_iana("GMT Standard Time"), Some("Europe/London"));
+    fn decode_bias_zero_utc() {
+        let blob = [0u8; 172];
+        let b64 = BASE64.encode(blob);
+        assert_eq!(decode_eas_timezone_bias(&b64), Some(0));
     }
 
     #[test]
-    fn converts_iana_to_windows() {
-        assert_eq!(iana_to_windows("America/New_York"), Some("Eastern Standard Time"));
-        assert_eq!(iana_to_windows("Europe/London"), Some("GMT Standard Time"));
+    fn decode_bias_eastern_us() {
+        let mut blob = [0u8; 172];
+        blob[0..4].copy_from_slice(&300i32.to_le_bytes());
+        let b64 = BASE64.encode(blob);
+        assert_eq!(decode_eas_timezone_bias(&b64), Some(300));
     }
 
     #[test]
-    fn normalizes_various_formats() {
-        // Windows format
-        assert_eq!(normalize_timezone("Eastern Standard Time"), "America/New_York");
-        // IANA format
-        assert_eq!(normalize_timezone("America/New_York"), "America/New_York");
-        // Case insensitive Windows
-        assert_eq!(normalize_timezone("eastern standard time"), "America/New_York");
-        // Unknown
-        assert_eq!(normalize_timezone("Invalid/Timezone"), "UTC");
+    fn blob_to_iana_utc_bias() {
+        let blob = [0u8; 172];
+        let b64 = BASE64.encode(blob);
+        assert_eq!(eas_timezone_blob_to_iana(&b64), Some("UTC".to_string()));
     }
 
     #[test]
-    fn lists_all_timezones() {
-        let windows = all_windows_timezones();
-        let iana = all_iana_timezones();
-        
-        assert!(!windows.is_empty());
-        assert!(!iana.is_empty());
-        assert!(windows.contains(&"Eastern Standard Time"));
-        assert!(iana.contains(&"America/New_York"));
+    fn blob_to_iana_via_name_pacific() {
+        let mut blob = [0u8; 172];
+        blob[0..4].copy_from_slice(&480i32.to_le_bytes());
+        write_wchar_name(&mut blob, 4, "Pacific Standard Time");
+        let b64 = BASE64.encode(blob);
+        assert_eq!(
+            eas_timezone_blob_to_iana(&b64),
+            Some("America/Los_Angeles".to_string())
+        );
+    }
+
+    #[test]
+    fn blob_to_iana_fallback_etc_gmt() {
+        let mut blob = [0u8; 172];
+        // bias=120 (2 hours west), no recognisable name
+        blob[0..4].copy_from_slice(&120i32.to_le_bytes());
+        let b64 = BASE64.encode(blob);
+        let result = eas_timezone_blob_to_iana(&b64).unwrap();
+        assert_eq!(result, "Etc/GMT+2");
+    }
+
+    #[test]
+    fn iana_to_blob_round_trip_amsterdam() {
+        let b64 = iana_to_eas_timezone_blob("Europe/Amsterdam").unwrap();
+        let bytes = BASE64.decode(&b64).unwrap();
+        assert_eq!(bytes.len(), 172);
+        let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert_eq!(bias, -60);
+        // Standard name must start with "W. Europe"
+        let name = read_wchar_name(&bytes, 4);
+        assert!(name.starts_with("W. Europe"), "got: {name}");
+    }
+
+    #[test]
+    fn iana_to_blob_utc() {
+        let b64 = iana_to_eas_timezone_blob("UTC").unwrap();
+        let bytes = BASE64.decode(&b64).unwrap();
+        let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert_eq!(bias, 0);
+    }
+
+    #[test]
+    fn unknown_iana_returns_none() {
+        assert!(iana_to_eas_timezone_blob("Not/A/Zone").is_none());
     }
 }

@@ -404,6 +404,18 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         if xml.contains("<Add") && !xml.contains("<ClientId>") {
             return Err("Sync Add requires ClientId");
         }
+        // MS-ASCAL §2.2.2.2: "A command request MUST NOT include the
+        // AppointmentReplyTime element, either as a top-level element or as
+        // a child element of the Exception element."
+        if xml.contains("AppointmentReplyTime") {
+            return Err("AppointmentReplyTime is server-only (MS-ASCAL §2.2.2.2): MUST NOT appear in Sync requests");
+        }
+        // MS-ASCAL §2.2.2.40: "A command request MUST NOT include the
+        // ResponseType element, either as a top-level element or as a child
+        // element of the Exception element."
+        if xml.contains("ResponseType") {
+            return Err("ResponseType is server-only (MS-ASCAL §2.2.2.40): MUST NOT appear in Sync requests");
+        }
     }
 
     if cmd == "meetingresponse" && !xml.contains("<UserResponse>") {
@@ -448,7 +460,7 @@ fn options_response(request_id: &str) -> Response {
             ("MS-ASProtocolVersions", "12.0,12.1,14.0,14.1,16.0,16.1"),
             (
                 "MS-ASProtocolCommands",
-                "Sync,FolderSync,Provision,MeetingResponse",
+                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert,SendMail,SmartReply,SmartForward,MoveItems",
             ),
         ],
         "",
@@ -947,7 +959,7 @@ async fn handle_settings(
         .into_iter()
         .map(|email| {
             format!(
-                "<EmailAddresses><SmtpAddress>{}</SmtpAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
+                "<EmailAddresses><SMTPAddress>{}</SMTPAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
                 sync::xml_escape(&email),
                 sync::xml_escape(&primary_email)
             )
@@ -1587,13 +1599,13 @@ mod tests {
 
     #[test]
     fn parses_root_command() {
-        let xml = r#"<?xml version=\"1.0\"?><Sync xmlns=\"AirSync:\"></Sync>"#;
+        let xml = r#"<?xml version="1.0"?><Sync xmlns="AirSync:"></Sync>"#;
         assert_eq!(extract_root_command(xml).as_deref(), Some("Sync"));
     }
 
     #[test]
     fn parses_sync_key() {
-        let xml = r#"<Sync xmlns=\"AirSync:\"><Collections><Collection><SyncKey>123</SyncKey></Collection></Collections></Sync>"#;
+        let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>123</SyncKey></Collection></Collections></Sync>"#;
         assert_eq!(
             extract_first_tag_text(xml, b"SyncKey").as_deref(),
             Some("123")
@@ -1602,7 +1614,7 @@ mod tests {
 
     #[test]
     fn extracts_sync_class() {
-        let xml = r#"<Sync xmlns=\"AirSync:\"><Collections><Collection><Class>Contacts</Class></Collection></Collections></Sync>"#;
+        let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><Class>Contacts</Class></Collection></Collections></Sync>"#;
         assert_eq!(
             extract_first_tag_text(xml, b"Class").as_deref(),
             Some("Contacts")
@@ -1624,19 +1636,19 @@ mod tests {
 
     #[test]
     fn validates_sync_class() {
-        let xml = r#"<Sync xmlns=\"AirSync:\"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>InvalidClass</Class></Collection></Collections></Sync>"#;
+        let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>InvalidClass</Class></Collection></Collections></Sync>"#;
         assert!(validate_payload("Sync", xml).is_err());
     }
 
     #[test]
     fn validates_ping_required_tags() {
-        let xml = r#"<Ping xmlns=\"Ping:\"><Folders /></Ping>"#;
+        let xml = r#"<Ping xmlns="Ping:"><Folders /></Ping>"#;
         assert!(validate_payload("Ping", xml).is_err());
     }
 
     #[test]
     fn validates_getitemestimate_required_tags() {
-        let xml = r#"<GetItemEstimate xmlns=\"GetItemEstimate:\"></GetItemEstimate>"#;
+        let xml = r#"<GetItemEstimate xmlns="GetItemEstimate:"></GetItemEstimate>"#;
         assert!(validate_payload("GetItemEstimate", xml).is_err());
     }
 
@@ -1646,10 +1658,18 @@ mod tests {
         assert!(validate_payload("Sync", xml).is_err());
     }
 
+    // GAP-11: MS-ASCAL §2.2.2.2 — AppointmentReplyTime MUST NOT be in requests
     #[test]
     fn validates_sync_rejects_response_only_calendar_fields() {
         let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class><Commands><Change><ServerId>abc</ServerId><ApplicationData><Calendar:AppointmentReplyTime xmlns:Calendar="Calendar:">20260322T120000Z</Calendar:AppointmentReplyTime></ApplicationData></Change></Commands></Collection></Collections></Sync>"#;
-        assert!(validate_payload("Sync", xml).is_err());
+        assert!(validate_payload("Sync", xml).is_err(), "AppointmentReplyTime must be rejected in requests");
+    }
+
+    // GAP-11: MS-ASCAL §2.2.2.40 — ResponseType MUST NOT be in requests
+    #[test]
+    fn validates_sync_rejects_response_type_in_request() {
+        let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class><Commands><Change><ServerId>abc</ServerId><ApplicationData><Calendar:ResponseType xmlns:Calendar="Calendar:">3</Calendar:ResponseType></ApplicationData></Change></Commands></Collection></Collections></Sync>"#;
+        assert!(validate_payload("Sync", xml).is_err(), "ResponseType must be rejected in requests");
     }
 
     #[test]
@@ -1758,8 +1778,7 @@ mod tests {
         for (cmd, xml) in cases {
             assert!(
                 validate_payload(cmd, xml).is_ok(),
-                "{} should validate",
-                cmd
+                "{cmd} should validate"
             );
         }
     }
@@ -1788,11 +1807,11 @@ mod tests {
         for (cmd, xml) in cases {
             assert!(
                 validate_payload(cmd, xml).is_err(),
-                "{} wrong namespace should fail",
-                cmd
+                "{cmd} wrong namespace should fail"
             );
         }
     }
+
     #[test]
     fn extracts_multiple_resolve_recipient_targets() {
         let xml = r#"<ResolveRecipients xmlns="ResolveRecipients:"><To>one@example.com</To><To>two@example.com</To></ResolveRecipients>"#;
@@ -1810,6 +1829,7 @@ mod tests {
         assert_eq!(folders[0].id, "1");
         assert_eq!(folders[0].class_name, "Calendar");
     }
+
     #[test]
     fn resolve_recipients_command_detected() {
         let xml = r#"<ResolveRecipients xmlns="ResolveRecipients:"><To>a@example.com</To><Options><Availability><StartTime>2026-03-21T00:00:00Z</StartTime><EndTime>2026-03-22T00:00:00Z</EndTime></Availability></Options></ResolveRecipients>"#;
