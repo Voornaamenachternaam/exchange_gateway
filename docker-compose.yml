@@ -6,9 +6,15 @@ services:
     environment:
       - TZ=${GATEWAY_TZ:-UTC}
       - RUST_LOG=${RUST_LOG:-info}
+      # MAIL_DOMAIN is used by smoke-test scripts and shell tooling that source .env.
+      # The Rust binary reads config.toml instead, but this makes the value available
+      # to any process running inside the container (e.g. health-check scripts).
+      - MAIL_DOMAIN=${MAIL_DOMAIN:-example.com}
     volumes:
       - ./config.toml:/etc/exchange-gateway/config.toml:ro
     ports:
+      # Expose on all interfaces so cloudflared on the Ubuntu host can reach
+      # the container via localhost:8134.
       - "8134:8134"
     networks:
       my-bridge-network:
