@@ -1335,11 +1335,13 @@ async fn handle_get_user_availability(
         <t:FreeBusyViewType>{view_type}</t:FreeBusyViewType>
         <t:MergedFreeBusy>{merged}</t:MergedFreeBusy>
         <t:CalendarEventArray>{events_xml}</t:CalendarEventArray>
+                <t:WorkingHours>{working_hours}</t:WorkingHours>
       </m:FreeBusyView>
     </m:FreeBusyResponse>"#,
             view_type = view_type,
             merged = merged,
-            events_xml = events_xml
+            events_xml = events_xml,
+            working_hours = render_working_hours()
         ));
     }
     let suggestions_xml = if body.contains("SuggestionsViewOptions") {
@@ -1396,6 +1398,35 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
         xml_escape(code)
     );
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
+}
+
+/// Renders WorkingHours element for GetUserAvailability response.
+/// Per [MS-OXWAVLS] section 3.1.4.1.3.27, WorkingHours contains TimeZone and WorkingPeriodArray.
+fn render_working_hours() -> String {
+    r#"<t:TimeZone>
+<t:Bias>0</t:Bias>
+<t:StandardTime>
+<t:Bias>0</t:Bias>
+<t:Time>02:00:00</t:Time>
+<t:DayOfWeek>Sunday</t:DayOfWeek>
+<t:DayOfMonth>1</t:DayOfMonth>
+<t:Month>11</t:Month>
+</t:StandardTime>
+<t:DaylightTime>
+<t:Bias>-60</t:Bias>
+<t:Time>02:00:00</t:Time>
+<t:DayOfWeek>Sunday</t:DayOfWeek>
+<t:DayOfMonth>1</t:DayOfMonth>
+<t:Month>3</t:Month>
+</t:DaylightTime>
+</t:TimeZone>
+<t:WorkingPeriodArray>
+<t:WorkingPeriod>
+<t:DayOfWeek>Monday Tuesday Wednesday Thursday Friday</t:DayOfWeek>
+<t:StartTimeInMinutes>540</t:StartTimeInMinutes>
+<t:EndTimeInMinutes>1020</t:EndTimeInMinutes>
+</t:WorkingPeriod>
+</t:WorkingPeriodArray>"#.to_string()
 }
 
 fn operation_error_response(
