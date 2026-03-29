@@ -469,14 +469,10 @@ fn throttled_response(request_id: &str) -> Response {
         [("Retry-After", RETRY_AFTER_SECONDS.to_string())],
         "Throttled",
     )
-        .into_response();
-    inject_common_headers(&mut r, request_id);
-    r
-}
-    let retry_after: &'static str = Box::leak(RETRY_AFTER_SECONDS.to_string().into_boxed_str());
+    let retry_after = RETRY_AFTER_SECONDS.to_string();
     let mut r = (
         StatusCode::SERVICE_UNAVAILABLE,
-        [("Retry-After", retry_after)],
+        [("Retry-After", retry_after.as_str())],
         "Throttled",
     )
         .into_response();
