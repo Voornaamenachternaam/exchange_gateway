@@ -1,7 +1,8 @@
 // src/main.rs
 use axum::{
     Router,
-    routing::{any, post},
+    routing::{any, post, get},
+    response::Json,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,6 +22,16 @@ mod wbxml;
 use crate::config::Config;
 use crate::models::AppState;
 use crate::storage::Storage;
+use serde_json::json;
+
+// Health endpoint handler
+async fn health() -> Json<serde_json::Value> {
+    Json(json!({
+        "status": "ok",
+        "service": "exchange_gateway",
+        "version": "1.0.21"
+    }))
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,7 +58,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = Router::new()
-        .route("/EWS/*path", post(ews::handle))
+        .route("/health", get(health))
+    .route("/EWS/*path", post(ews::handle))
         .route("/EWS/Exchange.asmx", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
         .with_state(app_state);

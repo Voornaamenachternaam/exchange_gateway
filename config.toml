@@ -1,5 +1,23 @@
+# Exchange Gateway Configuration
+# Production configuration for Stalwart Mailserver v0.15.5
+# Domain: example.com (replace with actual domain)
+
+# Bind address - listens on all interfaces
 bind = "0.0.0.0:8134"
-caldav_base = "http://172.28.0.10:8080/dav/"
-worker_url = "https://exchange.mail.example.com/api"
-worker_secret = "YOUR_GATEWAY_SECRET"
-hmac_secret = "cb790e98fdc2d78ab9ca7b856a51114b136db2c20121461b91d7d22b2ec1323a"
+
+# Stalwart Mailserver CalDAV base URL
+# Uses internal Docker network IP - adjust for your setup
+caldav_base = "http://stalwart:8080/dav/"
+
+# Cloudflare Worker URL for D1 storage
+# Format: https://<worker>.<account>.workers.dev/api
+# Replace with your actual Cloudflare Worker URL
+worker_url = "https://exchange-gateway-db.<your-account>.workers.dev/api"
+
+# Worker secret - generate a strong random secret
+# Use: openssl rand -hex 32
+worker_secret = "YOUR_STRONG_SECRET_HERE"
+
+# HMAC secret for generating server IDs from CalDAV hrefs
+# Use: openssl rand -hex 32
+hmac_secret = "YOUR_HMAC_SECRET_HERE"

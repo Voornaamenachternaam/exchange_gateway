@@ -2,7 +2,7 @@
 name = "exchange_gateway"
 version = "1.0.21"
 edition = "2024"
-rust-version = "1.94.0"
+rust-version = "1.94.1"
 
 [dependencies]
 tokio = { version = "^1.49.0", features = ["full"] }
