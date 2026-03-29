@@ -845,17 +845,14 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         }
         xml.push_str("</Calendar:Categories>");
     }
-
     if let Some(attendees) = &exception.attendees
-        && !attendees.is_empty()
-    {
-        xml.push_str("<Calendar:Attendees>");
-        for attendee in attendees {
-            xml.push_str(&render_attendee_xml(attendee));
+        && !attendees.is_empty() {
+            xml.push_str("<Calendar:Attendees>");
+            for attendee in attendees {
+                xml.push_str(&render_attendee_xml(attendee));
+            }
+            xml.push_str("</Calendar:Attendees>");
         }
-        xml.push_str("</Calendar:Attendees>");
-    }
-
     if let Some(v) = &exception.description {
         xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
         xml.push_str(&format!(
@@ -969,13 +966,10 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         "<Calendar:UID>{}</Calendar:UID>",
         xml_escape(&item.uid)
     ));
-
     if let Some(rrule) = &item.rrule
-        && let Some(rec_xml) = map_rrule_to_recurrence_xml(rrule)
-    {
-        xml.push_str(&rec_xml);
-    }
-
+        && let Some(rec_xml) = map_rrule_to_recurrence_xml(rrule) {
+            xml.push_str(&rec_xml);
+        }
     if !item.exceptions.is_empty() {
         xml.push_str("<Calendar:Exceptions>");
         for exception in &item.exceptions {

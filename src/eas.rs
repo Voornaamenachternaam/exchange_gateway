@@ -15,7 +15,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use lazy_static::lazy_static;
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -1582,6 +1582,7 @@ mod tests {
         parse_item_operations_fetches, parse_search_request, validate_payload,
     };
     use crate::calendar::{Attendee, CalendarItem};
+    
     use chrono::{TimeZone, Utc};
     use std::collections::HashMap;
 
