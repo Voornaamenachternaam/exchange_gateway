@@ -59,7 +59,11 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
-    .route("/EWS/*path", post(ews::handle))
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/EWS/*path", post(ews::handle))
+        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
+        .with_state(app_state);
         .route("/EWS/Exchange.asmx", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
         .with_state(app_state);
