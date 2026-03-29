@@ -14,7 +14,7 @@ MAX_API_BODY_BYTES = "262144"
 
 [[d1_databases]]
 binding = "EXCHANGE_DB"
-database_name = "exchange-gateway"
+database_name = "exchange_gateway_db"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
 [[kv_namespaces]]

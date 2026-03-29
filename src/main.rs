@@ -57,14 +57,16 @@ async fn main() -> anyhow::Result<()> {
         storage: storage.clone(),
     });
 
+    // Build the router with all routes
+    // EWS routes - multiple paths to handle different Outlook clients
+    // /EWS/Exchange.asmx is the primary EWS endpoint
+    // /EWS/*path handles any EWS sub-paths (for WSDL, etc.)
     let app = Router::new()
         .route("/health", get(health))
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/EWS/*path", post(ews::handle))
-        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
-        .with_state(app_state);
         .route("/EWS/Exchange.asmx", post(ews::handle))
+        .route("/EWS/Services.wsdl", get(ews::handle_wsdl))
+        .route("/EWS/*path", post(ews::handle))
+        // ActiveSync endpoint - handles all ActiveSync commands (Sync, FolderSync, Ping, etc.)
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
         .with_state(app_state);
 

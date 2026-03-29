@@ -91,6 +91,85 @@ pub async fn handle(
         EwsAction::ResolveNames => handle_resolve_names(&auth, &body).await,
     }
 }
+// EWS WSDL handler - returns the EWS services WSDL for Outlook client auto-discovery
+pub async fn handle_wsdl() -> Response {
+    let wsdl = r#"<?xml version="1.0" encoding="utf-8"?>
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:tns="http://schemas.microsoft.com/exchange/services/2006"
+    xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+    xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+    targetNamespace="http://schemas.microsoft.com/exchange/services/2006">
+    <wsdl:types>
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <xs:element name="DistinguishedFolderId" type="t:DistinguishedFolderIdType"/>
+            <xs:element name="FolderId" type="t:FolderIdType"/>
+            <xs:element name="ItemId" type="t:ItemIdType"/>
+            <xs:element name="CalendarItem" type="t:CalendarItemType"/>
+            <xs:element name="CalendarFolder" type="t:CalendarFolderType"/>
+            <xs:element name="FolderType" type="t:FolderType"/>
+            <xs:element name="ItemType" type="t:ItemType"/>
+            <xs:element name="MessageType" type="t:MessageType"/>
+        </xs:schema>
+    </wsdl:types>
+    <wsdl:message name="GetFolderSoapIn"><wsdl:part name="request" element="m:GetFolder"/></wsdl:message>
+    <wsdl:message name="GetFolderSoapOut"><wsdl:part name="response" element="m:GetFolderResponse"/></wsdl:message>
+    <wsdl:message name="FindFolderSoapIn"><wsdl:part name="request" element="m:FindFolder"/></wsdl:message>
+    <wsdl:message name="FindFolderSoapOut"><wsdl:part name="response" element="m:FindFolderResponse"/></wsdl:message>
+    <wsdl:message name="FindItemSoapIn"><wsdl:part name="request" element="m:FindItem"/></wsdl:message>
+    <wsdl:message name="FindItemSoapOut"><wsdl:part name="response" element="m:FindItemResponse"/></wsdl:message>
+    <wsdl:message name="GetItemSoapIn"><wsdl:part name="request" element="m:GetItem"/></wsdl:message>
+    <wsdl:message name="GetItemSoapOut"><wsdl:part name="response" element="m:GetItemResponse"/></wsdl:message>
+    <wsdl:message name="CreateItemSoapIn"><wsdl:part name="request" element="m:CreateItem"/></wsdl:message>
+    <wsdl:message name="CreateItemSoapOut"><wsdl:part name="response" element="m:CreateItemResponse"/></wsdl:message>
+    <wsdl:message name="UpdateItemSoapIn"><wsdl:part name="request" element="m:UpdateItem"/></wsdl:message>
+    <wsdl:message name="UpdateItemSoapOut"><wsdl:part name="response" element="m:UpdateItemResponse"/></wsdl:message>
+    <wsdl:message name="DeleteItemSoapIn"><wsdl:part name="request" element="m:DeleteItem"/></wsdl:message>
+    <wsdl:message name="DeleteItemSoapOut"><wsdl:part name="response" element="m:DeleteItemResponse"/></wsdl:message>
+    <wsdl:message name="SyncFolderItemsSoapIn"><wsdl:part name="request" element="m:SyncFolderItems"/></wsdl:message>
+    <wsdl:message name="SyncFolderItemsSoapOut"><wsdl:part name="response" element="m:SyncFolderItemsResponse"/></wsdl:message>
+    <wsdl:message name="GetUserAvailabilitySoapIn"><wsdl:part name="request" element="m:GetUserAvailabilityRequest"/></wsdl:message>
+    <wsdl:message name="GetUserAvailabilitySoapOut"><wsdl:part name="response" element="m:GetUserAvailabilityResponse"/></wsdl:message>
+    <wsdl:message name="ResolveNamesSoapIn"><wsdl:part name="request" element="m:ResolveNames"/></wsdl:message>
+    <wsdl:message name="ResolveNamesSoapOut"><wsdl:part name="response" element="m:ResolveNamesResponse"/></wsdl:message>
+    <wsdl:portType name="ExchangeServicePortType">
+        <wsdl:operation name="GetFolder"><wsdl:input message="tns:GetFolderSoapIn"/><wsdl:output message="tns:GetFolderSoapOut"/></wsdl:operation>
+        <wsdl:operation name="FindFolder"><wsdl:input message="tns:FindFolderSoapIn"/><wsdl:output message="tns:FindFolderSoapOut"/></wsdl:operation>
+        <wsdl:operation name="FindItem"><wsdl:input message="tns:FindItemSoapIn"/><wsdl:output message="tns:FindItemSoapOut"/></wsdl:operation>
+        <wsdl:operation name="GetItem"><wsdl:input message="tns:GetItemSoapIn"/><wsdl:output message="tns:GetItemSoapOut"/></wsdl:operation>
+        <wsdl:operation name="CreateItem"><wsdl:input message="tns:CreateItemSoapIn"/><wsdl:output message="tns:CreateItemSoapOut"/></wsdl:operation>
+        <wsdl:operation name="UpdateItem"><wsdl:input message="tns:UpdateItemSoapIn"/><wsdl:output message="tns:UpdateItemSoapOut"/></wsdl:operation>
+        <wsdl:operation name="DeleteItem"><wsdl:input message="tns:DeleteItemSoapIn"/><wsdl:output message="tns:DeleteItemSoapOut"/></wsdl:operation>
+        <wsdl:operation name="SyncFolderItems"><wsdl:input message="tns:SyncFolderItemsSoapIn"/><wsdl:output message="tns:SyncFolderItemsSoapOut"/></wsdl:operation>
+        <wsdl:operation name="GetUserAvailability"><wsdl:input message="tns:GetUserAvailabilitySoapIn"/><wsdl:output message="tns:GetUserAvailabilitySoapOut"/></wsdl:operation>
+        <wsdl:operation name="ResolveNames"><wsdl:input message="tns:ResolveNamesSoapIn"/><wsdl:output message="tns:ResolveNamesSoapOut"/></wsdl:operation>
+    </wsdl:portType>
+    <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType">
+        <soap:binding transport="http://schemas.xmlsoap.org/soap/http"/>
+        <wsdl:operation name="GetFolder"><soap:operation soapAction="GetFolder"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="FindFolder"><soap:operation soapAction="FindFolder"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="FindItem"><soap:operation soapAction="FindItem"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="GetItem"><soap:operation soapAction="GetItem"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="CreateItem"><soap:operation soapAction="CreateItem"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="UpdateItem"><soap:operation soapAction="UpdateItem"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="DeleteItem"><soap:operation soapAction="DeleteItem"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="SyncFolderItems"><soap:operation soapAction="SyncFolderItems"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="GetUserAvailability"><soap:operation soapAction="GetUserAvailability"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+        <wsdl:operation name="ResolveNames"><soap:operation soapAction="ResolveNames"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+    </wsdl:binding>
+    <wsdl:service name="ExchangeServices">
+        <wsdl:port name="ExchangeServicePort" binding="tns:ExchangeServiceBinding">
+            <soap:address location="https://localhost/EWS/Exchange.asmx"/>
+        </wsdl:port>
+    </wsdl:service>
+</wsdl:definitions>"#;
+    Response::builder(StatusCode::OK)
+        .header("Content-Type", "application/xml; charset=utf-8")
+        .header("Cache-Control", "public, max-age=3600")
+        .body(wsdl.to_string())
+        .unwrap()
+}
+
 
 fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     let auth = headers.get("authorization")?.to_str().ok()?;
