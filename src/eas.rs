@@ -432,7 +432,19 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
 }
 
 fn unauth_response(request_id: &str) -> Response {
+fn unauth_response(request_id: &str) -> Response {
     let mut r = (
+        StatusCode::UNAUTHORIZED,
+        [(
+            header::WWW_AUTHENTICATE.as_str(),
+            "Basic realm=\"Microsoft-Server-ActiveSync\"",
+        )],
+        "Unauthorized",
+    )
+        .into_response();
+    inject_common_headers(&mut r, request_id);
+    r
+}
         StatusCode::UNAUTHORIZED,
         [(
             "WWW-Authenticate",
