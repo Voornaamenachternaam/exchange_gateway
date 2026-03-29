@@ -1451,17 +1451,23 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                 }
                 if matches!(name.as_slice(), b"Add" | b"Change" | b"Delete") {
                     match current_kind.take() {
-                        Some(EasOpKind::Add) => out.push(EasSyncMutation::Add {
-                            client_id: current.client_id.clone(),
-                            item: current.into_item()?,
-                        }),
-                        Some(EasOpKind::Change) => out.push(EasSyncMutation::Change {
-                            server_id: current.server_id.clone().unwrap_or_default(),
-                            patch: current.into_patch(),
-                        }),
-                        Some(EasOpKind::Delete) => out.push(EasSyncMutation::Delete {
-                            server_id: current.server_id.clone().unwrap_or_default(),
-                        }),
+                    Some(EasOpKind::Add) => {
+                        let client_id = current.client_id.clone();
+                        let item = current.into_item()?;
+                        out.push(EasSyncMutation::Add { client_id, item });
+                        current = EasBuilder::default();
+                    }
+                    Some(EasOpKind::Change) => {
+                        let server_id = current.server_id.clone().unwrap_or_default();
+                        let patch = current.into_patch();
+                        out.push(EasSyncMutation::Change { server_id, patch });
+                        current = EasBuilder::default();
+                    }
+                    Some(EasOpKind::Delete) => {
+                        let server_id = current.server_id.clone().unwrap_or_default();
+                        out.push(EasSyncMutation::Delete { server_id });
+                        current = EasBuilder::default();
+                    }
                         None => {}
                     }
                 }

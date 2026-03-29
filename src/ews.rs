@@ -163,11 +163,15 @@ pub async fn handle_wsdl() -> Response {
         </wsdl:port>
     </wsdl:service>
 </wsdl:definitions>"#;
-    Response::builder(StatusCode::OK)
-        .header("Content-Type", "application/xml; charset=utf-8")
-        .header("Cache-Control", "public, max-age=3600")
-        .body(wsdl.to_string())
-        .unwrap()
+    (
+        StatusCode::OK,
+        [
+            ("Content-Type", "application/xml; charset=utf-8"),
+            ("Cache-Control", "public, max-age=3600"),
+        ],
+        wsdl,
+    )
+        .into_response()
 }
 
 
@@ -1103,7 +1107,7 @@ async fn merged_freebusy_for_mailbox(
     let caldav = CaldavClient::new(&state.cfg);
     if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
         && let Some(collection_href) = calendars.first()
-        && let Ok(events_xml) = caldav
+&& let Ok(caldav_events) = caldav
             .query_events(
                 collection_href,
                 &start.format("%Y%m%dT%H%M%SZ").to_string(),
@@ -1113,7 +1117,7 @@ async fn merged_freebusy_for_mailbox(
             )
             .await
     {
-        let mut reader = Reader::from_str(&events_xml);
+let mut reader = Reader::from_str(&caldav_events);
         reader.config_mut().trim_text(true);
         let mut buf = Vec::new();
         let mut in_calendar_data = false;
@@ -1565,7 +1569,7 @@ async fn load_current_calendar_items(
             chrono::Utc::now() + chrono::Duration::weeks(104),
         )
     });
-    let events_xml = caldav
+let caldav_events = caldav
         .query_events(
             &collection_href,
             &start.format("%Y%m%dT%H%M%SZ").to_string(),
@@ -1575,7 +1579,7 @@ async fn load_current_calendar_items(
         )
         .await?;
 
-    let mut reader = Reader::from_str(&events_xml);
+let mut reader = Reader::from_str(&caldav_events);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut href = String::new();
@@ -2071,13 +2075,13 @@ async fn handle_sync_folder_items(
             let change_tag = if since == 0 { "Create" } else { "Update" };
             changes_xml.push_str(&format!(
                 r#"<t:{change_tag}>{}</t:{change_tag}>"#,
-                change_tag = change_tag,
                 render_ews_calendar_item_xml_with_shape(
                     &item.row.server_id,
                     &change_key,
                     &item.item,
                     shape
-                )
+                ),
+                change_tag = change_tag
             ));
         }
     }
