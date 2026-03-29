@@ -83,7 +83,7 @@ This file compares the **current repository state** of `exchange_gateway` and it
 - `FindItem` with CalendarView window support
 - `GetItem` with BaseShape handling (IdOnly, Default, AllProperties)
 - `SyncFolderItems` with continuation support
-- `GetUserAvailability` with merged free/busy and suggestions
+- `GetUserAvailability` with merged free/busy, suggestions, and WorkingHours
 - `CreateItem`, `UpdateItem`, `DeleteItem` with ChangeKey validation
 - `ResolveNames` for recipient lookup
 
@@ -107,6 +107,7 @@ This file compares the **current repository state** of `exchange_gateway` and it
 - MyResponseType computation
 - IsOrganizer flag
 - CalendarEventDetails for availability responses
+- WorkingHours element per [MS-OXWAVLS] section 3.1.4.1.3.27
 
 **Files Modified:** `src/ews.rs`, `src/calendar.rs`
 

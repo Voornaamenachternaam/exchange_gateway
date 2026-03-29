@@ -29,7 +29,7 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({
         "status": "ok",
         "service": "exchange_gateway",
-        "version": "1.0.21"
+        "version": "1.0.22"
     }))
 }
 
