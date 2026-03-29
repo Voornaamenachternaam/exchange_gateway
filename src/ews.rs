@@ -375,7 +375,7 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     extract_tag_texts(xml, tag).into_iter().next()
 }
 
-fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
+pub fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -630,7 +630,7 @@ fn ews_my_response_type(item: &crate::calendar::CalendarItem) -> &'static str {
     derived_response_type(item).unwrap_or("Unknown")
 }
 
-fn ews_calendar_event_details_xml(item: &crate::calendar::CalendarItem) -> String {
+pub fn ews_calendar_event_details_xml(item: &crate::calendar::CalendarItem) -> String {
     let is_private = item.sensitivity.map(|value| value >= 2).unwrap_or(false);
     format!(
         "<t:CalendarEventDetails><t:Subject>{}</t:Subject><t:Location>{}</t:Location><t:IsMeeting>{}</t:IsMeeting><t:IsRecurring>{}</t:IsRecurring><t:IsException>false</t:IsException><t:IsReminderSet>{}</t:IsReminderSet><t:IsPrivate>{}</t:IsPrivate></t:CalendarEventDetails>",
@@ -796,7 +796,7 @@ fn parse_rrule_byday(value: &str) -> Option<(i32, String)> {
     Some((ordinal, code))
 }
 
-fn render_ews_recurrence_xml(rrule: &str, start: chrono::DateTime<chrono::Utc>) -> String {
+pub fn render_ews_recurrence_xml(rrule: &str, start: chrono::DateTime<chrono::Utc>) -> String {
     let mut freq = "";
     let mut interval = "1".to_string();
     let mut byday = None;
@@ -1264,7 +1264,7 @@ fn suggestions_xml_for_window(
     )
 }
 
-fn merge_merged_freebusy(a: &str, b: &str) -> String {
+pub fn merge_merged_freebusy(a: &str, b: &str) -> String {
     let len = a.len().max(b.len());
     let mut merged = String::with_capacity(len);
     let a_bytes = a.as_bytes();
@@ -1965,7 +1965,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     soap_ok(response)
 }
 
-fn encode_sync_state_cursor(last_seen_seq: i64, upper_bound_seq: i64) -> String {
+pub fn encode_sync_state_cursor(last_seen_seq: i64, upper_bound_seq: i64) -> String {
     let payload = format!("seq:{}:{}", last_seen_seq.max(0), upper_bound_seq.max(0));
     STANDARD.encode(payload.as_bytes())
 }
@@ -2613,7 +2613,8 @@ mod tests {
     use super::{
         EwsAction, detect_action, operation_error_response, parse_calendar_view_window,
         parse_sync_state_marker, render_ews_calendar_item_xml, requested_freebusy_view_type,
-        requested_item_shape, suggestions_xml_for_window, validate_schema,
+        requested_item_shape, suggestions_xml_for_window, validate_schema, encode_sync_state_cursor,
+        extract_tag_texts, ews_calendar_event_details_xml, render_ews_recurrence_xml, merge_merged_freebusy,
     };
     use crate::calendar::{Attendee, CalendarException, CalendarItem};
     use chrono::{TimeZone, Utc};

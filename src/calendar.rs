@@ -158,7 +158,7 @@ struct EasBuilder {
 }
 
 #[derive(Default)]
-struct EasRecurrence {
+pub struct EasRecurrence {
     kind: Option<u8>,
     interval: Option<u32>,
     day_of_week: Option<String>,
@@ -1844,7 +1844,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
 mod tests {
     use super::{
         parse_eas_sync_mutations, parse_ews_attendees, parse_ews_recurrence, parse_ics_event,
-        render_ics,
+        render_ics, EasRecurrence, parse_datetime,
     };
 
     #[test]

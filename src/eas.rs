@@ -213,7 +213,7 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
     values
 }
 
-fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
+pub fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -1579,9 +1579,10 @@ pub async fn handle(
 mod tests {
     use super::{
         command_from_query, extract_all_tag_text, extract_first_tag_text, extract_root_command,
-        parse_item_operations_fetches, parse_search_request, validate_payload,
+        parse_item_operations_fetches, parse_ping_folders, parse_search_request, validate_payload,
     };
-    use crate::calendar::{Attendee, CalendarItem};
+    use crate::calendar::{parse_datetime, Attendee, CalendarItem, EasRecurrence};
+    use crate::ews::encode_sync_state_cursor;
     use chrono::{TimeZone, Utc};
     use std::collections::HashMap;
 
