@@ -2,33 +2,40 @@
 
 use crate::config::Config;
 use axum::{
-    extract::Query,
-    http::StatusCode,
-    response::Response,
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Query parameters for the Autodiscover v2 JSON endpoint.
+/// New Outlook (Windows 11 v20251205004.10+, Android 15 v5.2607.0+) issues
+/// GET /autodiscover/autodiscover.json?Protocol=<proto>&Email=<addr>
+/// before falling back to v1 XML.
+#[derive(Debug, Deserialize)]
+pub struct AutodiscoverJsonParams {
+    /// Protocol variant requested. Common values:
+    ///   "Exchange"        — full Exchange endpoint listing (default)
+    ///   "ActiveSync"      — EAS endpoint only
+    ///   "Ews"             — EWS endpoint only
+    ///   "AutodiscoverV1"  — redirect to v1 XML URL
+    #[serde(rename = "Protocol")]
+    pub protocol: Option<String>,
+    /// The email address being configured (informational; not used for routing).
+    #[serde(rename = "Email")]
+    pub email: Option<String>,
+}
 
 /// Autodiscover request handler type — returned from each sub-handler.
 pub type AdResponse = (StatusCode, Vec<(&'static str, &'static str)>, String);
-
-/// Query parameters for Autodiscover JSON endpoint
-/// Used by Outlook for Windows and mobile clients
-#[derive(Debug, Deserialize, Default)]
-pub struct AutodiscoverJsonParams {
-    #[serde(default)]
-    pub protocol: Option<String>,
-    #[serde(default)]
-    pub email: Option<String>,
-    #[serde(default)]
-    pub redirecturl: Option<String>,
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn xml_escape(s: &str) -> String {
+pub fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -42,7 +49,10 @@ fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
-        ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        (
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; sandbox",
+        ),
     ]
 }
 
@@ -53,7 +63,10 @@ fn no_cache_headers_json() -> Vec<(&'static str, &'static str)> {
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
-        ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        (
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; sandbox",
+        ),
     ]
 }
 
@@ -64,7 +77,10 @@ fn no_cache_headers_soap() -> Vec<(&'static str, &'static str)> {
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
-        ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        (
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; sandbox",
+        ),
     ]
 }
 
@@ -75,9 +91,12 @@ pub fn extract_email_from_body_xml(body: &str) -> Option<String> {
 }
 
 fn extract_email_from_v1_xml(body: &str) -> Option<String> {
-    // <EMailAddress>user@example.com</EMailAddress>
-    let start = body.find("<EMailAddress>").map(|i| i + "<EMailAddress>".len())?;
-    let end = body[start..].find("</EMailAddress>").map(|i| start + i)?;
+    let start = body
+        .find("<EMailAddress>")
+        .map(|i| i + "<EMailAddress>".len())?;
+    let end = body[start..]
+        .find("</EMailAddress>")
+        .map(|i| start + i)?;
     let email = body[start..end].trim().to_string();
     if email.contains('@') {
         Some(email)
@@ -88,8 +107,6 @@ fn extract_email_from_v1_xml(body: &str) -> Option<String> {
 
 /// Extract the email address from an Autodiscover v1 SOAP request body.
 fn extract_email_from_soap(body: &str) -> Option<String> {
-    // <a:EMailAddress>user@example.com</a:EMailAddress>
-    // or <Mailbox>user@example.com</Mailbox>
     for (open, close) in [
         ("<EMailAddress>", "</EMailAddress>"),
         ("<a:EMailAddress>", "</a:EMailAddress>"),
@@ -108,16 +125,66 @@ fn extract_email_from_soap(body: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Autodiscover v2 JSON  (new Outlook / Autodiscover protocol version 2)
+// ---------------------------------------------------------------------------
+
+/// Handle GET /autodiscover/autodiscover.json?Protocol=<proto>&Email=<addr>
+///
+/// New Outlook on Windows 11 and Android 15 issues this request before falling
+/// back to v1 XML.  The Protocol= parameter selects the response format:
+///   - "Exchange" (default) → full endpoint listing
+///   - "ActiveSync"         → EAS URL only
+///   - "Ews"                → EWS URL only
+///   - "AutodiscoverV1"     → redirect URL to v1 XML endpoint
+pub fn handle_autodiscover_json(
+    host: &str,
+    protocol: Option<&str>,
+    _email: Option<&str>,
+) -> AdResponse {
+    let ews_url = format!("https://{}/EWS/Exchange.asmx", host);
+    let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host);
+    let v1_url = format!("https://{}/autodiscover/autodiscover.xml", host);
+
+    let body = match protocol
+        .unwrap_or("Exchange")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "activesync" => format!(
+            r#"{{"Protocol":"ActiveSync","Url":"{as_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}"}}"#,
+            as_url = as_url
+        ),
+        "ews" => format!(
+            r#"{{"Protocol":"Ews","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}"}}"#,
+            ews_url = ews_url
+        ),
+        "autodiscoverv1" => format!(
+            r#"{{"Protocol":"AutodiscoverV1","Url":"{v1_url}"}}"#,
+            v1_url = v1_url
+        ),
+        // Default: "Exchange" — full endpoint listing consumed by new Outlook.
+        _ => format!(
+            r#"{{"Protocol":"Exchange","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}}"#,
+            ews_url = ews_url,
+            as_url = as_url
+        ),
+    };
+
+    (StatusCode::OK, no_cache_headers_json(), body)
+}
+
+// ---------------------------------------------------------------------------
 // Autodiscover v1 XML
 // ---------------------------------------------------------------------------
 
-/// Respond to a POST /autodiscover/autodiscover.xml request.
+/// Respond to POST /autodiscover/autodiscover.xml
 ///
-/// Returns the full Exchange Autodiscover response with EXCH, EXPR, and
-/// MobileSync protocol blocks. This is the primary format used by
-/// Outlook for Windows desktop auto-configuration.
+/// Returns the full Exchange Autodiscover v1 response with EXCH, EXPR, and
+/// MobileSync protocol blocks.  This is the primary format used by Outlook
+/// for Windows desktop auto-configuration.
 pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdResponse {
     let email_escaped = xml_escape(email);
+    let host_escaped = xml_escape(host);
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
@@ -159,6 +226,7 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
         <SPA>off</SPA>
         <CertPrincipalName>None</CertPrincipalName>
         <AuthPackage>Basic</AuthPackage>
+        <LoginName>{email}</LoginName>
         <ServerExclusiveConnect>off</ServerExclusiveConnect>
         <TTL>1</TTL>
         <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
@@ -183,7 +251,7 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
     </Account>
   </Response>
 </Autodiscover>"#,
-        host = xml_escape(host),
+        host = host_escaped,
         email = email_escaped,
     );
     (StatusCode::OK, no_cache_headers_xml(), xml)
@@ -193,7 +261,7 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
 // Autodiscover v1 SOAP
 // ---------------------------------------------------------------------------
 
-/// Respond to a POST /autodiscover/autodiscover.svc request.
+/// Respond to POST /autodiscover/autodiscover.svc
 ///
 /// Returns a GetUserSettingsResponseMessage with all settings that Outlook
 /// commonly requests in the SOAP GetUserSettings call.
@@ -224,7 +292,7 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>PublicFolderServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ActiveDirectoryServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>"#,
         email = email_escaped,
-        host = host_escaped
+        host = host_escaped,
     );
 
     let xml = format!(
@@ -260,159 +328,82 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
     (StatusCode::OK, no_cache_headers_soap(), xml)
 }
 
-// ---------------------------------------------------------------------------
-// Autodiscover v2 JSON (Outlook 2013+, Office 365, new Outlook)
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Respond to a GET /autodiscover/autodiscover.json request.
-///
-/// This is the modern Autodiscover endpoint used by:
-/// - Outlook for Windows (new Outlook)
-/// - Outlook for iOS/Android
-/// - Office 365 hybrid configurations
-///
-/// Returns JSON with protocol configuration for EWS and ActiveSync.
-pub fn handle_autodiscover_json(
-    host: &str,
-    protocol: Option<&str>,
-    email: Option<&str>,
-) -> AdResponse {
-    let email = email.unwrap_or_default();
-    
-    // Validate email format
-    if !email.contains('@') {
-        let error = serde_json::json!({
-            "error": {
-                "code": "InvalidRequest",
-                "message": "Email address is required"
-            }
-        });
-        return (
-            StatusCode::BAD_REQUEST,
-            no_cache_headers_json(),
-            error.to_string(),
+    #[test]
+    fn extract_email_from_v1_body() {
+        let body = r#"<Autodiscover xmlns="..."><Request><EMailAddress>alice@example.com</EMailAddress></Request></Autodiscover>"#;
+        assert_eq!(
+            extract_email_from_body_xml(body),
+            Some("alice@example.com".to_string())
         );
     }
 
-    // Build the JSON response following Outlook Autodiscover JSON schema
-    let json = serde_json::json!({
-        "Protocol": "HTTP",
-        "Url": format!("https://{}", host),
-        "AuthenticationDisplayName": "Basic Authentication",
-        "AuthenticationMethod": "Basic",
-        "EmailAddress": email,
-        "ExchangeServer": "Stalwart Mail",
-        "ServerExclusiveConnect": "off",
-        "ServerVersion": "Exchange2016",
-        "PublicFolderServer": host,
-        "ActiveDirectoryServer": host,
-        "Capabilities": {
-            "Account": {
-                "Type": "EmailAddress",
-                "Discovered": true
-            },
-            "Calendar": {
-                "EmailAddress": email,
-                "PrimarySmtpAddress": email,
-                "AllMailboxesInSync": true
-            },
-            "Contacts": {
-                "EmailAddress": email,
-                "PrimarySmtpAddress": email,
-                "AllMailboxesInSync": true
-            },
-            "Tasks": {
-                "EmailAddress": email,
-                "PrimarySmtpAddress": email,
-                "AllMailboxesInSync": true
-            },
-            "Journal": {
-                "EmailAddress": email,
-                "PrimarySmtpAddress": email
-            },
-            "EwsAvailability": true,
-            "EwsGetUserAvailability": true,
-            "EwsFindFoldersInRoot": true,
-            "SyncCalendarWithMobile": true,
-            "SyncContactsWithMobile": true,
-            "SyncTasksWithMobile": true,
-            "FullMemberSync": true,
-            "GroupingExclusions": [],
-            "MailboxSearch": true,
-            "MailboxSortByLastAccessTime": false,
-            "OrganizationHierarchy": false,
-            "PremiumClient": true,
-            "SearchFoldersEnabled": true,
-            "ShowGALAsSearchResult": true,
-            "UMEnabled": false,
-            "VirtualDirectories": {
-                "OWA": {
-                    "Internal": format!("https://{}/owa", host),
-                    "External": format!("https://{}/owa", host)
-                },
-                "EWS": {
-                    "Internal": format!("https://{}/EWS/Exchange.asmx", host),
-                    "External": format!("https://{}/EWS/Exchange.asmx", host)
-                },
-                "Autodiscover": {
-                    "Internal": format!("https://{}/Autodiscover/Autodiscover.svc", host),
-                    "External": format!("https://{}/Autodiscover/Autodiscover.svc", host)
-                },
-                "MAPI": {
-                    "Internal": format!("https://{}/mapi", host),
-                    "External": format!("https://{}/mapi", host)
-                }
-            }
-        },
-        "Policies": [
-            {
-                "Name": "Individual",
-                "PolicyState": "Enabled",
-                "PolicyType": "Individual"
-            }
-        ],
-        "UserDisplayName": email.split('@').next().unwrap_or(email),
-        "UserLegacyDN": format!("/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={}/cn=Mailbox GUID", host),
-        "UserPrincipalName": email,
-        "ExternalEwsUrl": format!("https://{}/EWS/Exchange.asmx", host),
-        "InternalEwsUrl": format!("https://{}/EWS/Exchange.asmx", host),
-        "ExternalOwaUrl": format!("https://{}/owa", host),
-        "InternalOwaUrl": format!("https://{}/owa", host),
-        "ExternalRpcHttpUrl": format!("https://{}/rpc", host),
-        "InternalRpcHttpUrl": format!("https://{}/rpc", host),
-        "ExternalMapiHttpUrl": format!("https://{}/mapi", host),
-        "InternalMapiHttpUrl": format!("https://{}/mapi", host),
-        "ExternalEcpUrl": format!("https://{}/ecp", host),
-        "InternalEcpUrl": format!("https://{}/ecp", host),
-        "ExternalEwsVersion": "Exchange2016",
-        "InternalEwsVersion": "Exchange2016",
-        "MobileSyncMailboxGuid": generate_mailbox_guid(email),
-        "PreferredDomain": email.split('@').last().unwrap_or("")
-    });
+    #[test]
+    fn autodiscover_json_default_exchange() {
+        let (status, hdrs, body) =
+            handle_autodiscover_json("exchange.example.com", None, None);
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("EwsUrl"));
+        assert!(body.contains("ActiveSyncUrl"));
+        assert!(hdrs.iter().any(|(k, _)| *k == "Content-Type"));
+    }
 
-    (StatusCode::OK, no_cache_headers_json(), json.to_string())
+    #[test]
+    fn autodiscover_json_activesync_only() {
+        let (_, _, body) =
+            handle_autodiscover_json("exchange.example.com", Some("ActiveSync"), None);
+        assert!(body.contains("ActiveSync"));
+        assert!(!body.contains("EwsUrl"));
+    }
+
+    #[test]
+    fn autodiscover_json_ews_only() {
+        let (_, _, body) =
+            handle_autodiscover_json("exchange.example.com", Some("Ews"), None);
+        assert!(body.contains("EwsUrl"));
+        assert!(!body.contains("ActiveSyncUrl"));
+    }
+
+    #[test]
+    fn autodiscover_json_autodiscoverv1() {
+        let (_, _, body) =
+            handle_autodiscover_json("exchange.example.com", Some("AutodiscoverV1"), None);
+        assert!(body.contains("AutodiscoverV1"));
+        assert!(body.contains("autodiscover.xml"));
+    }
+
+    #[test]
+    fn autodiscover_xml_contains_required_fields() {
+        let (status, _, body) = handle_autodiscover_xml(
+            "exchange.example.com",
+            "",
+            "alice@example.com",
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<Type>EXCH</Type>"));
+        assert!(body.contains("<Type>EXPR</Type>"));
+        assert!(body.contains("<Type>MobileSync</Type>"));
+        assert!(body.contains("<LoginName>alice@example.com</LoginName>"));
+        assert!(body.contains("EWS/Exchange.asmx"));
+        assert!(body.contains("Microsoft-Server-ActiveSync"));
+    }
+
+    #[test]
+    fn autodiscover_soap_contains_settings() {
+        let body_in = r#"<a:EMailAddress>alice@example.com</a:EMailAddress>"#;
+        let (status, _, body) =
+            handle_autodiscover_soap("exchange.example.com", body_in);
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("ExternalEwsUrl"));
+        assert!(body.contains("MobileSyncServer"));
+        assert!(body.contains("exchange.example.com"));
+    }
+
+    #[test]
+    fn xml_escape_special_chars() {
+        assert_eq!(xml_escape("<a>&\""), "&lt;a&gt;&amp;&quot;");
+    }
 }
-
-/// Generate a consistent mailbox GUID from email address
-/// This ensures the same mailbox gets the same GUID across requests
-fn generate_mailbox_guid(email: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    
-    let mut hasher = DefaultHasher::new();
-    email.hash(&mut hasher);
-    let hash = hasher.finish();
-    
-    // Format as GUID-like string: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        hash,
-        (hash >> 32) & 0xFFFF,
-        (hash >> 48) & 0xFFFF,
-        (hash >> 16) & 0xFFFF,
-        hash & 0xFFFFFFFFFFFF
-    )
-}
-
-
-
