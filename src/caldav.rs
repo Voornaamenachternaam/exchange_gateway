@@ -346,7 +346,13 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
 
     multistatus.responses.into_iter()
         .filter(|r| r.propstats.iter().any(|ps| ps.prop.resourcetype.calendar.is_some()))
-        .map(|r| r.href)
+        .map(|r| {
+            reqwest::Url::parse(home_url)
+                .ok()
+                .and_then(|u| u.join(&r.href).ok())
+                .map(|u| u.to_string())
+                .unwrap_or(r.href)
+        })
         .filter(|href| {
             let path = reqwest::Url::parse(href)
                 .ok()
