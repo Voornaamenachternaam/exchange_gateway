@@ -363,20 +363,15 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     }
 
     if let Some(grammar) = command_grammar(cmd.as_str()) {
-        // GAP-39: WBXML-decoded XML has no xmlns declarations; bare tag names are used.
-        // Accept if either the namespace string OR the root tag name is present.
-        let cmd_capitalized = {
-            let mut c = command.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        let request: CommandRequest = quick_xml::de::from_str(&xml)
+            .map_err(|_| "Request missing expected command root tag or invalid structure")?;
+
+        if let Some(ref ns) = request.xmlns {
+            if ns != grammar.namespace {
+                return Err("Request has incorrect command namespace");
             }
-        };
-        let has_namespace = xml.contains(grammar.namespace);
-        let has_root_tag = xml.contains(&format!("<{}", command))
-            || xml.contains(&format!("<{}", cmd_capitalized));
-        if !has_namespace && !has_root_tag {
-            return Err("Request missing expected command namespace");
+        } else if request.root_tag.to_lowercase() != command.to_lowercase() {
+            return Err("Request missing expected command root tag");
         }
 
         for tag in grammar.required_tags {
