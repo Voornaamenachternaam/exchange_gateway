@@ -364,36 +364,6 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
 
     if let Some(grammar) = command_grammar(cmd.as_str())
  
-[derive(Debug, Deserialize)]
-[serde(tag = "root_tag", rename_all = "PascalCase")]
-enum CommandRequest {
-    Sync { xmlns: Option<String> },
-    FolderSync { xmlns: Option<String> },
-    Provision { xmlns: Option<String> },
-    Settings { xmlns: Option<String> },
-    Ping { xmlns: Option<String> },
-    ItemOperations { xmlns: Option<String> },
-    Search { xmlns: Option<String> },
-    MeetingResponse { xmlns: Option<String> },
-    ResolveRecipients { xmlns: Option<String> },
-    ValidateCert { xmlns: Option<String> },
-    GetItemEstimate { xmlns: Option<String> },
-    SendMail { xmlns: Option<String> },
-    SmartReply { xmlns: Option<String> },
-    SmartForward { xmlns: Option<String> },
-    MoveItems { xmlns: Option<String> },
-}
-
-fn validate_ns(ns: &Option<String>, expected: &str) -> Result<(), &'static str> {
-    if ns.as_deref() == Some(expected) { Ok(()) } else { Err("Request missing expected command namespace") }
-}
-
-    if cmd == "sync" {
-        let class = extract_first_tag_text(xml, b"Class").unwrap_or_else(|| "Calendar".to_string());
-        let supported = [
-            "Calendar", "Contacts", "Email", "Notes", "Tasks",
-            "DocumentLibrary", "SMS", "RightsManagement",
-        ];
         if !supported.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
             return Err("Unsupported Sync class");
         }
