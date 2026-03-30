@@ -1276,7 +1276,7 @@ pub async fn perform_sync(
             break;
         }
         // Update storage NOW — only for this actually-emitted item.
-        let _ = storage
+        if let Err(e) = storage
             .upsert_item_map(
                 owner,
                 &collection_href,
@@ -1285,7 +1285,10 @@ pub async fn perform_sync(
                 &pi.uid,
                 &pi.etag,
             )
-            .await;
+            .await
+        {
+            tracing::warn!("sync: failed to persist item map for {}: {}", pi.server_id, e);
+        }
 
         if pi.is_add {
             commands.push_str("<Add><ServerId>");
