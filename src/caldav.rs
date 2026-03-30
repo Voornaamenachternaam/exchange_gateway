@@ -291,108 +291,70 @@ impl CaldavClient {
 /// includes the home-set itself as the first entry; we must exclude it because
 /// it is *not* a calendar collection — comparing against `home_url` (not
 /// `caldav_base`) ensures the correct entry is filtered out.
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Multistatus {
+    #[serde(rename = "response", default)]
+    responses: Vec<Response>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Response {
+    #[serde(rename = "href")]
+    href: String,
+    #[serde(rename = "propstat")]
+    propstats: Vec<Propstat>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Propstat {
+    #[serde(rename = "prop")]
+    prop: Prop,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Prop {
+    #[serde(rename = "resourcetype")]
+    resourcetype: ResourceType,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct ResourceType {
+    #[serde(rename = "calendar")]
+    calendar: Option<String>,
+}
+
 fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String> {
-    let mut reader = Reader::from_str(xml_body);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
+    let multistatus: Multistatus = match quick_xml::de::from_str(xml_body) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("caldav: XML parse error: {}", e);
+            return Vec::new();
+        }
+    };
 
-    let mut current_href = String::new();
-    let mut in_href = false;
-    let mut is_calendar = false;
-    let mut in_response = false;
-    let mut results = Vec::new();
-
-    // Normalised path of the home-set URL for comparison (strip trailing slash).
     let home_path = reqwest::Url::parse(home_url)
         .ok()
         .map(|u| u.path().trim_end_matches('/').to_string())
         .unwrap_or_else(|| home_url.trim_end_matches('/').to_string());
 
-    // Server root (scheme + host + port) for resolving relative hrefs.
-    let server_root: Option<String> = reqwest::Url::parse(home_url).ok().map(|u| {
-        let port = u.port().map(|p| format!(":{}", p)).unwrap_or_default();
-        format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or("localhost"), port)
-    });
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let local = e.name().local_name();
-                match local.as_ref() {
-                    b"response" => {
-                        in_response = true;
-                        current_href.clear();
-                        is_calendar = false;
-                    }
-                    b"href" if in_response => {
-                        in_href = true;
-                    }
-                    b"calendar" => {
-                        is_calendar = true;
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                if e.name().local_name().as_ref() == b"calendar" {
-                    is_calendar = true;
-                }
-            }
-            Ok(Event::Text(ref t)) if in_href => {
-                if let Ok(text) = t.decode() {
-                    current_href = text.trim().to_string();
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                let local = e.name().local_name();
-                match local.as_ref() {
-                    b"href" => {
-                        in_href = false;
-                    }
-                    b"response" => {
-                        if in_response && is_calendar && !current_href.is_empty() {
-                            // Build absolute URL from the href value.
-                            let abs = if current_href.starts_with("http://")
-                                || current_href.starts_with("https://")
-                            {
-                                current_href.clone()
-                            } else if let Some(ref root) = server_root {
-                                // href is a root-relative path such as
-                                // `/dav/cal/alice/default/`.
-                                format!("{}{}", root, current_href)
-                            } else {
-                                current_href.clone()
-                            };
-
-                            // Exclude the home-set entry itself by comparing
-                            // URL paths (normalised, no trailing slash).
-                            let abs_path = reqwest::Url::parse(&abs)
-                                .ok()
-                                .map(|u| u.path().trim_end_matches('/').to_string())
-                                .unwrap_or_else(|| abs.trim_end_matches('/').to_string());
-
-                            if abs_path != home_path {
-                                results.push(abs);
-                            }
-                        }
-                        in_response = false;
-                        is_calendar = false;
-                        current_href.clear();
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => {
-                tracing::warn!("caldav: XML parse error in PROPFIND response: {}", e);
-                return Vec::new();
-            }
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    results
+    multistatus.responses.into_iter()
+        .filter(|r| r.propstats.iter().any(|ps| ps.prop.resourcetype.calendar.is_some()))
+        .map(|r| r.href)
+        .filter(|href| {
+            let path = reqwest::Url::parse(href)
+                .ok()
+                .map(|u| u.path().trim_end_matches('/').to_string())
+                .unwrap_or_else(|| href.trim_end_matches('/').to_string());
+            path != home_path
+        })
+        .collect()
 }
 
 #[cfg(test)]
