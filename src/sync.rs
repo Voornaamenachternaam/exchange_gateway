@@ -1073,7 +1073,7 @@ pub async fn perform_sync(
                 owner,
                 state_collection_id,
                 &new_sync_key,
-                Some(&sync_seq_to_token(latest_seq)),
+            Some(&sync_seq_to_token(if more_available { since } else { latest_seq })),
             )
             .await?;
         return Ok(format!(
