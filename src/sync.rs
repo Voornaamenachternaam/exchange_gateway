@@ -1073,20 +1073,7 @@ pub async fn perform_sync(
                 owner,
                 state_collection_id,
                 &new_sync_key,
-    // ── GetChanges=0 fast path ────────────────────────────────────────────────
-    // When the client sends GetChanges=0 with a non-zero SyncKey, it only wants
-    // to push mutations — it does not want server changes returned.
-    if !opts.get_changes && incoming_sync_key != "0" {
-        let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
-        let new_sync_key = Uuid::new_v4().to_string();
-        storage
-            .set_sync_key(
-                owner,
-                state_collection_id,
-                &new_sync_key,
                 Some(&sync_seq_to_token(latest_seq)),
-            )
-            .await?;
             )
             .await?;
         return Ok(format!(
