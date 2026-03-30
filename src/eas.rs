@@ -363,16 +363,36 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     }
 
     if let Some(grammar) = command_grammar(cmd.as_str()) {
-        let request: CommandRequest = quick_xml::de::from_str(&xml)
-            .map_err(|_| "Request missing expected command root tag or invalid structure")?;
+use serde::Deserialize;
 
-        if let Some(ref ns) = request.xmlns {
-            if ns != grammar.namespace {
-                return Err("Request has incorrect command namespace");
-            }
-        } else if request.root_tag.to_lowercase() != command.to_lowercase() {
-            return Err("Request missing expected command root tag");
-        }
+#[derive(Debug, Deserialize)]
+#[serde(tag = "root_tag", rename_all = "PascalCase")]
+enum CommandRequest {
+    Sync { xmlns: Option<String> },
+    FolderSync { xmlns: Option<String> },
+    Provision { xmlns: Option<String> },
+    Settings { xmlns: Option<String> },
+    Ping { xmlns: Option<String> },
+    ItemOperations { xmlns: Option<String> },
+    Search { xmlns: Option<String> },
+    MeetingResponse { xmlns: Option<String> },
+    ResolveRecipients { xmlns: Option<String> },
+    ValidateCert { xmlns: Option<String> },
+    GetItemEstimate { xmlns: Option<String> },
+    SendMail { xmlns: Option<String> },
+    SmartReply { xmlns: Option<String> },
+    SmartForward { xmlns: Option<String> },
+    MoveItems { xmlns: Option<String> },
+}
+
+// Inside validate_payload:
+let request: CommandRequest = quick_xml::de::from_str(&xml)
+    .map_err(|_| "Request missing expected command root tag or invalid structure")?;
+
+match request {
+    CommandRequest::Sync { xmlns: ref ns, .. } => validate_ns(ns, grammar.namespace)?,
+    // ... handle other variants similarly
+}
 
         for tag in grammar.required_tags {
             if !xml.contains(&format!("<{}", tag)) {
