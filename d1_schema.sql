@@ -96,7 +96,7 @@ CREATE TABLE device_info (
     imei          TEXT,
     user_agent    TEXT,
     last_seen     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(device_id)
+    UNIQUE(user_email, device_id)
 );
 
 CREATE TABLE api_idempotency (
