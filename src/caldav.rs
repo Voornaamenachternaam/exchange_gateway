@@ -293,41 +293,16 @@ impl CaldavClient {
 /// `caldav_base`) ensures the correct entry is filtered out.
 use serde::Deserialize;
 
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-struct Multistatus {
-    #[serde(rename = "response", default)]
-    responses: Vec<Response>,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-struct Response {
-    #[serde(rename = "href")]
-    href: String,
-    #[serde(rename = "propstat")]
-    propstats: Vec<Propstat>,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-struct Propstat {
-    #[serde(rename = "prop")]
-    prop: Prop,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-struct Prop {
-    #[serde(rename = "resourcetype")]
-    resourcetype: ResourceType,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[derive(Deserialize, Debug, Default)]
 struct ResourceType {
-    #[serde(rename = "calendar")]
-    calendar: Option<String>,
+    #[serde(rename = "calendar", default)]
+    calendar: Option<()>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Prop {
+    #[serde(rename = "resourcetype", default)]
+    resourcetype: ResourceType,
 }
 
 fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String> {
