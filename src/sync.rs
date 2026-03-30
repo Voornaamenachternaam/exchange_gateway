@@ -1345,7 +1345,7 @@ pub async fn perform_sync(
 <SyncKey>{sync_key}</SyncKey>
 <CollectionId>{collection_id}</CollectionId>
 <Status>1</Status>
-{responses}{more}<Commands>{commands}</Commands>
+{more}{responses}<Commands>{commands}</Commands>
 </Collection></Collections>
 </Sync>"#,
         sync_key = new_sync_key,
