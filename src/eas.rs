@@ -1019,16 +1019,6 @@ async fn handle_provision(
             user_agent.as_deref().unwrap_or(""),
         ).await;
     }
-        let _ = state.storage.upsert_device_info(
-            owner, &device_id,
-            friendly_name.as_deref().unwrap_or(""),
-            model.as_deref().unwrap_or(""),
-            os.as_deref().unwrap_or(""),
-            phone_number.as_deref().unwrap_or(""),
-            imei.as_deref().unwrap_or(""),
-            user_agent.as_deref().unwrap_or(""),
-        ).await;
-    }
 
     // Phase 1: Initial policy download (PolicyKey=0).
     if incoming_key == "0" {
