@@ -998,7 +998,17 @@ async fn handle_provision(
 
     // GAP-34: Store DeviceInformation when present (MS-ASPROV §3.1.5.1.1).
     let (friendly_name, model, os, phone_number, imei, user_agent) = parse_device_information(xml);
-    if friendly_name.is_some() || model.is_some() {
+    if [
+        friendly_name.as_ref(),
+        model.as_ref(),
+        os.as_ref(),
+        phone_number.as_ref(),
+        imei.as_ref(),
+        user_agent.as_ref(),
+    ]
+    .iter()
+    .any(|v| v.is_some())
+    {
         let _ = state.storage.upsert_device_info(
             owner, &device_id,
             friendly_name.as_deref().unwrap_or(""),
