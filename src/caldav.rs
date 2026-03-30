@@ -282,15 +282,6 @@ impl CaldavClient {
     }
 }
 
-/// Parse a PROPFIND Depth:1 multistatus response and return the absolute URLs
-/// of all `<D:response>` entries whose `DAV:resourcetype` includes
-/// `<C:calendar/>`.
-///
-/// `home_url` is the calendar home URL that was submitted to PROPFIND (e.g.
-/// `http://172.28.0.10:8080/dav/cal/alice/`).  The Depth:1 response always
-/// includes the home-set itself as the first entry; we must exclude it because
-/// it is *not* a calendar collection — comparing against `home_url` (not
-/// `caldav_base`) ensures the correct entry is filtered out.
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Default)]
@@ -303,6 +294,24 @@ struct ResourceType {
 struct Prop {
     #[serde(rename = "resourcetype", default)]
     resourcetype: ResourceType,
+}
+
+#[derive(Deserialize, Debug)]
+struct Multistatus {
+    #[serde(rename = "response", default)]
+    responses: Vec<DavResponse>,
+}
+
+#[derive(Deserialize, Debug)]
+struct DavResponse {
+    href: String,
+    #[serde(rename = "propstat", default)]
+    propstats: Vec<Propstat>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Propstat {
+    prop: Prop,
 }
 
 fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String> {
