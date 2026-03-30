@@ -1178,16 +1178,35 @@ pub async fn perform_sync(
         .collect::<HashMap<_, _>>();
 
     // ── Build commands with WindowSize enforcement ────────────────────────────
-    let mut commands = String::new();
+    //
+    // Critical fix (previously broken): item_map ETags must be updated ONLY
+    // for items that are actually emitted in this response. Updating all ETags
+    // upfront — before applying WindowSize — caused items that weren't emitted
+    // to be seen as "unchanged" on the next Sync (ETag matched), so they were
+    // silently skipped forever, resulting in data loss when pending changes
+    // exceeded the window size.
+    //
+    // The correct approach:
+    //   1. Collect all pending items (new/changed) WITHOUT touching item_map.
+    //   2. Apply window_size; call upsert_item_map ONLY for emitted items.
+    //   3. Non-emitted items retain their old stored ETag, so the next Sync
+    //      detects them as changed again and emits them.
+
+    // Unified pending-item struct carries all fields needed for both emission
+    // and the deferred upsert_item_map call.
+    struct PendingItem {
+        server_id: String,
+        resource_href: String,
+        uid: String,
+        etag: String,
+        item: CalendarItem,
+        is_add: bool,
+    }
+
+    let mut pending_items: Vec<PendingItem> = Vec::new();
+    let mut pending_deletes: Vec<String> = Vec::new();
     let mut seen_ids = HashSet::new();
     let initial_sync = incoming_sync_key == "0";
-    let mut items_included = 0usize;
-    let mut more_available = false;
-
-    // Collect all pending changes first so we know the total.
-    let mut pending_adds: Vec<(String, String, String, CalendarItem)> = Vec::new(); // (server_id, resource_href, etag, item)
-    let mut pending_changes: Vec<(String, CalendarItem)> = Vec::new();
-    let mut pending_deletes: Vec<String> = Vec::new();
 
     for ev in &events {
         if ev.href.is_empty() {
@@ -1203,30 +1222,29 @@ pub async fn perform_sync(
         };
 
         let existing = existing_map.get(&server_id);
-        let is_new = existing.is_none();
+        let is_add = existing.is_none();
         let changed = existing
             .map(|row| row.etag.as_deref() != Some(etag.as_str()))
             .unwrap_or(true);
 
-        if changed {
-            // Update item map in background (best-effort; don't fail sync on error).
-            let _ = storage
-                .upsert_item_map(owner, &collection_href, &resource_href, &server_id, &item.uid, &etag)
-                .await;
-        }
-
+        // Skip unchanged items on incremental sync.
         if !initial_sync && !changed {
             continue;
         }
 
-        if is_new {
-            pending_adds.push((server_id, resource_href, etag, item));
-        } else {
-            pending_changes.push((server_id, item));
-        }
+        // Do NOT call upsert_item_map here — defer until emission.
+        pending_items.push(PendingItem {
+            server_id,
+            resource_href,
+            uid: item.uid.clone(),
+            etag,
+            item,
+            is_add,
+        });
     }
 
-    // Soft-deletes: items in the existing map but not seen in the CalDAV response.
+    // Record soft-deletes for items that have disappeared from CalDAV entirely
+    // (not subject to windowing — always process regardless of window_size).
     for server_id in existing_map.keys() {
         if !seen_ids.contains(server_id) {
             let _ = storage.add_delete_tombstone(owner, server_id).await;
@@ -1234,52 +1252,55 @@ pub async fn perform_sync(
         }
     }
 
-    // Previously-deleted tombstones (only for incremental sync).
-    let deleted_ids = if initial_sync {
-        Vec::new()
-    } else {
-        storage
+    // Incremental tombstone-based deletes.
+    if !initial_sync {
+        let tombstones = storage
             .list_deleted_since_seq(owner, since)
-            .await?
-            .into_iter()
-            .map(|(_, sid)| sid)
-            .collect()
-    };
-    for sid in &deleted_ids {
-        if !seen_ids.contains(sid.as_str()) {
-            pending_deletes.push(sid.clone());
+            .await
+            .unwrap_or_default();
+        for (_, sid) in tombstones {
+            if !seen_ids.contains(sid.as_str()) {
+                pending_deletes.push(sid);
+            }
         }
     }
 
-    // ── Emit up to window_size items ─────────────────────────────────────────
-    let total_pending = pending_adds.len() + pending_changes.len() + pending_deletes.len();
+    // ── Emit up to window_size items, updating storage only on emission ───────
+    let mut commands = String::new();
+    let mut items_included = 0usize;
+    let mut more_available = false;
 
-    for (server_id, _resource_href, _etag, item) in &pending_adds {
+    for pi in &pending_items {
         if items_included >= window_size {
             more_available = true;
             break;
         }
-        commands.push_str("<Add><ServerId>");
-        commands.push_str(server_id);
-        commands.push_str("</ServerId><ApplicationData>");
-        commands.push_str(&render_calendar_app_data(item));
-        commands.push_str("</ApplicationData></Add>");
-        items_included += 1;
-    }
+        // Update storage NOW — only for this actually-emitted item.
+        let _ = storage
+            .upsert_item_map(
+                owner,
+                &collection_href,
+                &pi.resource_href,
+                &pi.server_id,
+                &pi.uid,
+                &pi.etag,
+            )
+            .await;
 
-    if !more_available {
-        for (server_id, item) in &pending_changes {
-            if items_included >= window_size {
-                more_available = true;
-                break;
-            }
-            commands.push_str("<Change><ServerId>");
-            commands.push_str(server_id);
+        if pi.is_add {
+            commands.push_str("<Add><ServerId>");
+            commands.push_str(&pi.server_id);
             commands.push_str("</ServerId><ApplicationData>");
-            commands.push_str(&render_calendar_app_data(item));
+            commands.push_str(&render_calendar_app_data(&pi.item));
+            commands.push_str("</ApplicationData></Add>");
+        } else {
+            commands.push_str("<Change><ServerId>");
+            commands.push_str(&pi.server_id);
+            commands.push_str("</ServerId><ApplicationData>");
+            commands.push_str(&render_calendar_app_data(&pi.item));
             commands.push_str("</ApplicationData></Change>");
-            items_included += 1;
         }
+        items_included += 1;
     }
 
     if !more_available {
@@ -1308,15 +1329,14 @@ pub async fn perform_sync(
         .await?;
 
     // ── Build response ────────────────────────────────────────────────────────
-    // Include <MoreAvailable/> only when there are remaining items
-    // (MS-ASCMD §2.2.3.116: "it appears only if the client request contained a
-    // WindowSize element and there are still changes to be returned").
-    let more_available_tag = if more_available {
-        "<MoreAvailable/>"
-    } else {
-        ""
-    };
+    // <MoreAvailable/> per MS-ASCMD §2.2.3.116: emitted only when there are
+    // further changes pending.
+    let more_available_tag = if more_available { "<MoreAvailable/>" } else { "" };
 
+    // Per MS-ASCMD §2.2.1.21.2 the Collection element ordering within a Sync
+    // response is: SyncKey, CollectionId, Status, [MoreAvailable], Responses,
+    // Commands. <Responses> (acknowledgements of client-originated mutations)
+    // MUST appear before <Commands> (server-originated changes).
     Ok(format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
@@ -1325,14 +1345,13 @@ pub async fn perform_sync(
 <SyncKey>{sync_key}</SyncKey>
 <CollectionId>{collection_id}</CollectionId>
 <Status>1</Status>
-{more}<Commands>{commands}</Commands>
-{responses}
+{responses}{more}<Commands>{commands}</Commands>
 </Collection></Collections>
 </Sync>"#,
         sync_key = new_sync_key,
         collection_id = xml_escape(collection_id),
+        responses = client_mutation_responses,
         more = more_available_tag,
         commands = commands,
-        responses = client_mutation_responses
     ))
 }

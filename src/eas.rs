@@ -70,7 +70,7 @@ struct EasRequest {
     device_id: Option<String>,
     policy_key: Option<String>,
     window_size: Option<usize>,
-    get_changes: Option<bool>,
+    get_changes: bool,
     filter_type: Option<u8>,
 }
 
@@ -553,10 +553,11 @@ fn parse_request(query: &HashMap<String, String>, xml: &str) -> EasRequest {
         .and_then(|v| v.parse::<usize>().ok())
         .map(|v| if v == 0 || v > 512 { 512 } else { v });
 
-    // GAP-38: Parse GetChanges (absent with non-zero SyncKey = true per spec).
+    // GAP-38: GetChanges is bool; absent means true (per MS-ASCMD §2.2.3.84 SyncKey≠0
+    // interpretation). Option<bool> with .or(Some(true)) was misleading — simplified to bool.
     let get_changes = extract_first_tag_text(xml, b"GetChanges")
         .map(|v| v.trim() != "0")
-        .or(Some(true));
+        .unwrap_or(true); // Per MS-ASCMD §2.2.3.84: absent = true when SyncKey≠0
 
     // GAP-40: Parse FilterType from Options element.
     let filter_type = extract_first_tag_text(xml, b"FilterType")
@@ -1207,7 +1208,7 @@ pub async fn handle(
             // GAP-38/40: Build SyncOptions from parsed request fields.
             let opts = SyncOptions {
                 window_size: req.window_size.unwrap_or(100),
-                get_changes: req.get_changes.unwrap_or(true),
+                get_changes: req.get_changes,
                 filter_start: req.filter_type
                     .map(filter_type_to_start)
                     .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
