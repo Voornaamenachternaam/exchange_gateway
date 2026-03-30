@@ -433,7 +433,7 @@ async function handleAutodiscoverXml(request, env) {
         <EwsPartnerUrl>https://${domain}/EWS/Exchange.asmx</EwsPartnerUrl>
       </Protocol>
       <Protocol>
-        <Type>MobileSync</Type><Server>${domain}</Server><n>Exchange Gateway</n>
+        <Type>MobileSync</Type><Server>${domain}</Server><Name>Exchange Gateway</Name>
         <Url>https://${domain}/Microsoft-Server-ActiveSync</Url>
         <LoginName>${escapeXml(email)}</LoginName>
         <DomainRequired>off</DomainRequired><SSL>on</SSL><AuthPackage>Basic</AuthPackage>
