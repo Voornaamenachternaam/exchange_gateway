@@ -382,7 +382,11 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
                     _ => {}
                 }
             }
-            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                tracing::warn!("caldav: XML parse error in PROPFIND response: {}", e);
+                return Vec::new();
+            }
             _ => {}
         }
         buf.clear();
