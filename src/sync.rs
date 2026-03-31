@@ -1508,9 +1508,10 @@ pub async fn perform_sync(
 1508:        let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
 1509:        seen_ids.insert(server_id.clone());
 1510:        let etag = ev.etag.trim_matches('"').to_string();
-1511:        let Some(item) = parse_ics_event(&ev.ics) else {
-1512:            continue;
-1513:        };
+        let Some(item) = parse_ics_event(&ev.ics) else {
+            tracing::warn!("sync: failed to parse ICS event for href: {}", ev.href);
+            continue;
+        };
 1514:        let existing = existing_map.get(&server_id);
 1515:        let is_add = existing.is_none();
 1516:        let changed = existing
