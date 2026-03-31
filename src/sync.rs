@@ -1,4 +1,3 @@
-```rust
 // src/sync.rs
 use crate::caldav::CaldavClient;
 use crate::calendar::{
@@ -1196,4 +1195,3 @@ pub async fn perform_sync(
         commands = commands,
     ))
 }
-```
