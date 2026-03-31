@@ -310,11 +310,15 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
         .map(|u| u.path().trim_end_matches('/').to_string())
         .unwrap_or_else(|| home_url.trim_end_matches('/').to_string());
 
+    let home_url_parsed = reqwest::Url::parse(home_url).ok();
+    let home_path = home_url_parsed.as_ref()
+        .map(|u| u.path().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| home_url.trim_end_matches('/').to_string());
+
     multistatus.responses.into_iter()
         .filter(|r| r.propstats.iter().any(|ps| ps.prop.resourcetype.calendar.is_some()))
         .map(|r| {
-            reqwest::Url::parse(home_url)
-                .ok()
+            home_url_parsed.as_ref()
                 .and_then(|u| u.join(&r.href).ok())
                 .map(|u| u.to_string())
                 .unwrap_or(r.href)
