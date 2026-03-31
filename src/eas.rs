@@ -154,6 +154,13 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let lower_cmd = command.to_ascii_lowercase();
     let grammar = command_grammar(&lower_cmd).ok_or("Unsupported command")?;
 
+    if xml.trim().is_empty() {
+        return if matches!(lower_cmd.as_str(), "sendmail" | "smartreply" | "smartforward") {
+            Ok(())
+        } else {
+            Err("Empty request body")
+        };
+    }
     if extract_root_command(xml).map(|s| s.to_ascii_lowercase()) != Some(lower_cmd.clone()) {
         return Err("Root element does not match command");
     }
