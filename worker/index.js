@@ -111,9 +111,7 @@ async function checkIdempotency(request, env, routeName) {
   if (!key) return;
   if (key.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(key)) return;
   await env.EXCHANGE_DB
-    .prepare(`INSERT INTO api_idempotency (idempotency_key, route_name, created_at)
-              VALUES (?, ?, CURRENT_TIMESTAMP)
-              ON CONFLICT(idempotency_key) DO NOTHING`)
+    .prepare('INSERT INTO api_idempotency (idempotency_key, route_name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(idempotency_key) DO NOTHING')
     .bind(key, routeName)
     .run();
 }
