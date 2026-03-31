@@ -139,9 +139,10 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
 }
 
 fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
-    query.get(key)
-        .or_else(|| query.get(&key.to_ascii_lowercase()))
-        .cloned()
+    query
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v.clone())
 }
 
 fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
