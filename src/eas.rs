@@ -155,12 +155,9 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let grammar = command_grammar(&lower_cmd).ok_or("Unsupported command")?;
 
     if xml.trim().is_empty() {
-        return if matches!(lower_cmd.as_str(), "sendmail" | "smartreply" | "smartforward") {
-            Ok(())
-        } else {
-            Err("Empty request body")
-        };
+    return Err(Error::UnsupportedCommand);
     }
+    
     if extract_root_command(xml).map(|s| s.to_ascii_lowercase()) != Some(lower_cmd.clone()) {
         return Err("Root element does not match command");
     }
