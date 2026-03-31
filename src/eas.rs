@@ -362,8 +362,15 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         };
     }
 
-    if let Some(grammar) = command_grammar(cmd.as_str())
- 
+    if let Some(grammar) = command_grammar(cmd.as_str()) {
+        if !xml.contains(grammar.namespace) && xml.contains("xmlns") {
+            return Err("Request missing expected command namespace");
+        }
+        for tag in grammar.required_tags {
+            if !xml.contains(&format!("<{}", tag)) {
+                return Err("Request missing required command element");
+            }
+        }
         if !supported.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
             return Err("Unsupported Sync class");
         }
