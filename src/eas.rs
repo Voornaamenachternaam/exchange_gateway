@@ -965,6 +965,7 @@ async fn handle_provision(
         ).await {
             tracing::warn!("Failed to upsert device info for {}: {}", device_id, e);
         }
+    }
 
     // Phase 1: Initial policy download (PolicyKey=0).
     if incoming_key == "0" {
