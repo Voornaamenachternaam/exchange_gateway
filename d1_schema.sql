@@ -81,11 +81,20 @@ CREATE TABLE ews_sync_state (
     UNIQUE(user_email, folder_id)
 );
 
+-- device_info stores information sent by the client in Provision/Settings
+-- requests (MS-ASPROV §3.1.5.1.1, MS-ASCMD §2.2.1.18).
+-- The UNIQUE constraint is on device_id alone because device IDs are globally
+-- unique UUIDs assigned by the client.
 CREATE TABLE device_info (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email    TEXT    NOT NULL,
     device_id     TEXT    NOT NULL,
     friendly_name TEXT,
+    model         TEXT,
+    os            TEXT,
+    phone_number  TEXT,
+    imei          TEXT,
+    user_agent    TEXT,
     last_seen     DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(device_id)
 );
@@ -114,6 +123,10 @@ CREATE INDEX idx_change_journal_op     ON change_journal(owner, op, id);
 CREATE INDEX idx_change_journal_server ON change_journal(owner, server_id);
 CREATE INDEX idx_ews_sync_lookup       ON ews_sync_state(user_email, folder_id);
 CREATE INDEX idx_provision_lookup      ON provision_state(owner, device_id);
+CREATE INDEX idx_device_info_owner     ON device_info(user_email);
 
 INSERT INTO schema_version (version, description)
 VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
+
+INSERT INTO schema_version (version, description)
+VALUES (3, 'v3: device_info expanded with model, os, phone_number, imei, user_agent columns');
