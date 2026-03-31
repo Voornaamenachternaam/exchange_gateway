@@ -371,9 +371,13 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 return Err("Request missing required command element");
             }
         }
+    if cmd == "sync" {
+        let class = extract_first_tag_text(xml, b"Class").unwrap_or_default();
+        let supported = ["Calendar", "Contacts", "Tasks", "Notes", "Email"];
         if !supported.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
             return Err("Unsupported Sync class");
         }
+    }        
         if xml.contains("<Add") && !xml.contains("<ClientId>") {
             return Err("Sync Add requires ClientId");
         }
