@@ -1316,7 +1316,309 @@ pub async fn perform_sync(
             items_included += 1;
         }
     }
-
+pub async fn perform_sync(
+    state: Arc<AppState>,
+    owner: &str,
+    collection_id: &str,
+    state_collection_id: &str,
+    incoming_sync_key: &str,
+    content_class: &str,
+    opts: SyncOptions,
+    username: &str,
+    password: &str,
+    client_mutation_responses: &str,
+) -> Result<String> {
+    let storage = &state.storage;
+    // Clamp window_size to spec limits.
+    let window_size = opts.window_size.min(MAX_WINDOW_SIZE).max(1);
+    // ── Non-Calendar classes: return a minimal placeholder ────────────────────
+    if !content_class.eq_ignore_ascii_case("Calendar") {
+        let class_name = content_class.trim();
+        let normalized = if class_name.is_empty() { "Calendar" } else { class_name };
+        let new_sync_key = Uuid::new_v4().to_string();
+        storage
+            .set_sync_key(owner, state_collection_id, &new_sync_key, Some("token"))
+            .await?;
+        let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
+        let server_id = generate_server_id(&state.cfg.hmac_secret, &pseudo_resource);
+        let app_data = class_placeholder_app_data(normalized, owner);
+        let commands = if app_data.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                xml_escape(&server_id),
+                app_data
+            )
+        };
+        return Ok(format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
+<Collections><Collection>
+<Class>{}</Class>
+<SyncKey>{}</SyncKey>
+<CollectionId>{}</CollectionId>
+<Status>1</Status>
+{}<Commands>{}</Commands>
+</Collection></Collections>
+</Sync>"#,
+            xml_escape(normalized),
+            new_sync_key,
+            xml_escape(collection_id),
+            client_mutation_responses,
+            commands
+        ));
+    }
+    // ── Validate SyncKey ─────────────────────────────────────────────────────
+    let previous_state = storage.get_sync_key(owner, state_collection_id).await?;
+    if incoming_sync_key != "0" {
+        match previous_state.as_ref() {
+            Some((expected_sync_key, _)) if expected_sync_key == incoming_sync_key => {}
+            _ => return Ok(invalid_sync_key_response(collection_id, "Calendar")),
+        }
+    }
+    let since = if incoming_sync_key == "0" {
+        0
+    } else {
+        sync_since_from_token(
+            previous_state
+                .as_ref()
+                .and_then(|(_, token)| token.as_deref()),
+        )
+    };
+    // ── GetChanges=0 fast path ────────────────────────────────────────────────
+    if !opts.get_changes && incoming_sync_key != "0" {
+        let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
+        let new_sync_key = Uuid::new_v4().to_string();
+        storage
+            .set_sync_key(
+                owner,
+                state_collection_id,
+                &new_sync_key,
+                Some(&sync_seq_to_token(latest_seq)),
+            )
+            .await?;
+        return Ok(format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+<Collections><Collection>
+<Class>Calendar</Class>
+<SyncKey>{}</SyncKey>
+<CollectionId>{}</CollectionId>
+<Status>1</Status>
+{}<Commands></Commands>
+</Collection></Collections>
+</Sync>"#,
+            new_sync_key, collection_id, client_mutation_responses
+        ));
+    }
+    // ── Fetch events from CalDAV ──────────────────────────────────────────────
+    let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
+    let caldav = CaldavClient::new(&state.cfg);
+    let calendars = caldav.find_user_calendars(username, password).await?;
+    let collection_href = calendars
+        .first()
+        .ok_or_else(|| anyhow!("no calendars found"))?
+        .clone();
+    let start = opts.filter_start.format("%Y%m%dT%H%M%SZ").to_string();
+    let end = (Utc::now() + Duration::weeks(520))
+1425:        .format("%Y%m%dT%H%M%SZ")
+1426:        .to_string();
+1427:    let events_xml = caldav
+1428:        .query_events(&collection_href, &start, &end, username, password)
+1429:        .await?;
+1430:    // ── Parse events ──────────────────────────────────────────────────────────
+1431:    use quick_xml::events::Event;
+1432:    use quick_xml::Reader;
+1433:    #[derive(Clone)]
+1434:    struct EventItem {
+1435:        href: String,
+1436:        etag: String,
+1437:        ics: String,
+1438:    }
+1439:    let mut reader = Reader::from_str(&events_xml);
+1440:    reader.config_mut().trim_text(true);
+1441:    let mut events = Vec::new();
+1442:    let mut current = EventItem {
+1443:        href: String::new(),
+1444:        etag: String::new(),
+1445:        ics: String::new(),
+1446:    };
+1447:    let mut buf = Vec::new();
+1448:    loop {
+1449:        match reader.read_event_into(&mut buf) {
+1450:            Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
+1451:                b"href" => {
+1452:                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+1453:                        current.href = e.decode().unwrap_or_default().to_string();
+1454:                    }
+1455:                }
+1456:                b"getetag" => {
+1457:                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+1458:                        current.etag = e.decode().unwrap_or_default().to_string();
+1459:                    }
+1460:                }
+1461:                b"calendar-data" => {
+1462:                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+1463:                        current.ics = e.decode().unwrap_or_default().to_string();
+1464:                    }
+1465:                }
+1466:                _ => {}
+1467:            },
+1468:            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
+1469:                if !current.href.is_empty() {
+1470:                    events.push(current.clone());
+1471:                }
+1472:                current = EventItem {
+1473:                    href: String::new(),
+1474:                    etag: String::new(),
+1475:                    ics: String::new(),
+1476:                };
+1477:            }
+1478:            Ok(Event::Eof) => break,
+1479:            _ => {}
+1480:        }
+1481:        buf.clear();
+1482:    }
+1483:    // ── Load existing item map ────────────────────────────────────────────────
+1484:    let existing_map = storage
+1485:        .list_ews_items(owner, 4096, 0)
+1486:        .await?
+1487:        .into_iter()
+1488:        .map(|item| (item.server_id.clone(), item))
+1489:        .collect::<HashMap<_, _>>();
+1490:    // ── Build commands with WindowSize enforcement ────────────────────────────
+1491:    struct PendingItem {
+1492:        server_id: String,
+1493:        resource_href: String,
+1494:        uid: String,
+1495:        etag: String,
+1496:        item: CalendarItem,
+1497:        is_add: bool,
+1498:    }
+1499:    let mut pending_items: Vec<PendingItem> = Vec::new();
+1500:    let mut pending_deletes: Vec<String> = Vec::new();
+1501:    let mut seen_ids = HashSet::new();
+1502:    let initial_sync = incoming_sync_key == "0";
+1503:    for ev in &events {
+1504:        if ev.href.is_empty() {
+1505:            continue;
+1506:        }
+1507:        let resource_href = ev.href.clone();
+1508:        let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
+1509:        seen_ids.insert(server_id.clone());
+1510:        let etag = ev.etag.trim_matches('"').to_string();
+1511:        let Some(item) = parse_ics_event(&ev.ics) else {
+1512:            continue;
+1513:        };
+1514:        let existing = existing_map.get(&server_id);
+1515:        let is_add = existing.is_none();
+1516:        let changed = existing
+1517:            .map(|row| row.etag.as_deref() != Some(etag.as_str()))
+1518:            .unwrap_or(true);
+1519:        if !initial_sync && !changed {
+1520:            continue;
+1521:        }
+1522:        pending_items.push(PendingItem {
+1523:            server_id,
+1524:            resource_href,
+1525:            uid: item.uid.clone(),
+1526:            etag,
+1527:            item,
+1528:            is_add,
+1529:        });
+1530:    }
+1531:    for server_id in existing_map.keys() {
+1532:        if !seen_ids.contains(server_id) {
+1533:            let _ = storage.add_delete_tombstone(owner, server_id).await;
+1534:            let _ = storage.delete_item_by_server_id(owner, server_id).await;
+1535:        }
+1536:    }
+1537:    if !initial_sync {
+1538:        let tombstones = storage
+1539:            .list_deleted_since_seq(owner, since)
+1540:            .await
+1541:            .unwrap_or_default();
+1542:        for (_, sid) in tombstones {
+1543:            if !seen_ids.contains(sid.as_str()) {
+1544:                pending_deletes.push(sid);
+1545:            }
+1546:        }
+1547:    }
+1548:    let mut commands = String::new();
+1549:    let mut items_included = 0usize;
+1550:    let mut more_available = false;
+1551:    for pi in &pending_items {
+1552:        if items_included >= window_size {
+1553:            more_available = true;
+1554:            break;
+1555:        }
+1556:        if let Err(e) = storage
+1557:            .upsert_item_map(
+1558:                owner,
+1559:                &collection_href,
+1560:                &pi.resource_href,
+1561:                &pi.server_id,
+1562:                &pi.uid,
+1563:                &pi.etag,
+1564:            )
+1565:            .await
+1566:        {
+1567:            tracing::warn!("sync: failed to persist item map for {}: {}", pi.server_id, e);
+1568:        }
+1569:        if pi.is_add {
+1570:            commands.push_str("<Add><ServerId>");
+1571:            commands.push_str(&pi.server_id);
+1572:            commands.push_str("</ServerId><ApplicationData>");
+1573:            commands.push_str(&render_calendar_app_data(&pi.item));
+1574:            commands.push_str("</ApplicationData></Add>");
+1575:        } else {
+1576:            commands.push_str("<Change><ServerId>");
+1577:            commands.push_str(&pi.server_id);
+1578:            commands.push_str("</ServerId><ApplicationData>");
+1579:            commands.push_str(&render_calendar_app_data(&pi.item));
+1580:            commands.push_str("</ApplicationData></Change>");
+1581:        }
+1582:        items_included += 1;
+1583:    }
+1584:    if !more_available {
+1585:        for server_id in &pending_deletes {
+1586:            if items_included >= window_size {
+1587:                more_available = true;
+1588:                break;
+1589:            }
+1590:            commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", xml_escape(server_id)));
+1591:            items_included += 1;
+1592:        }
+1593:    }
+1594:    let new_sync_key = Uuid::new_v4().to_string();
+1595:    storage
+1596:        .set_sync_key(
+1597:            owner,
+1598:            state_collection_id,
+1599:            &new_sync_key,
+1600:            Some(&sync_seq_to_token(latest_seq)),
+1601:        )
+1602:        .await?;
+1603:    let more_available_tag = if more_available { "<MoreAvailable/>" } else { "" };
+1604:    Ok(format!(
+1605:        r#"<?xml version="1.0" encoding="utf-8"?>
+1606:<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+1607:<Collections><Collection>
+1608:<Class>Calendar</Class>
+1609:<SyncKey>{sync_key}</SyncKey>
+1610:<CollectionId>{collection_id}</CollectionId>
+1611:<Status>1</Status>
+1612:{more}{responses}<Commands>{commands}</Commands>
+1613:</Collection></Collections>
+1614:</Sync>"#,
+1615:        sync_key = new_sync_key,
+1616:        collection_id = xml_escape(collection_id),
+1617:        responses = client_mutation_responses,
+1618:        more = more_available_tag,
+        commands = commands,
+    ))
+}
     // ── Persist new sync key ──────────────────────────────────────────────────
     let new_sync_key = Uuid::new_v4().to_string();
     storage
