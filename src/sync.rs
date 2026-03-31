@@ -1120,8 +1120,7 @@ pub async fn perform_sync(
             }
         }
     }
-    let max_emitted = pending_items.len().min(window_size) + pending_deletes.len();
-    let mut commands = String::with_capacity(max_emitted * 4096);
+    let mut commands = String::with_capacity(window_size * 4096);
     let mut items_included = 0usize;
     let mut more_available = false;
     for pi in &pending_items {
