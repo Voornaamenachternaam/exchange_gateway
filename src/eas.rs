@@ -344,57 +344,14 @@ fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> 
 }
 
 fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
-    query.iter().find(|(k, _)| k.eq_ignore_ascii_case("Cmd")).map(|(_, v)| v.clone())
-}
-
-fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
-    query.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone())
-}
-
-fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
-    let cmd = command.to_ascii_lowercase();
-
-    if xml.is_empty() {
-        return if matches!(cmd.as_str(), "sendmail" | "smartreply" | "smartforward") {
-            Ok(())
-        } else {
-            Err("Empty request body")
-        };
-    }
-
-    if let Some(grammar) = command_grammar(cmd.as_str()) {
-        if !xml.contains(grammar.namespace) && xml.contains("xmlns") {
-            return Err("Request missing expected command namespace");
-        }
-        for tag in grammar.required_tags {
-            if !xml.contains(&format!("<{}", tag)) {
-                return Err("Request missing required command element");
-            }
-        }
     if cmd == "sync" {
-        let class = extract_first_tag_text(xml, b"Class").unwrap_or_default();
-        let supported = ["Calendar", "Contacts", "Tasks", "Notes", "Email"];
-        if !supported.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
+        const SUPPORTED_SYNC_CLASSES: &[&str] = &[
+            "Calendar", "Contacts", "Email", "Notes", "Tasks",
+            "DocumentLibrary", "SMS", "RightsManagement",
+        ];
+        let class = extract_first_tag_text(xml, b"Class").ok_or("Missing required Sync Class")?;
+        if !SUPPORTED_SYNC_CLASSES.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
             return Err("Unsupported Sync class");
-        }
-    }        
-        if xml.contains("<Add") && !xml.contains("<ClientId>") {
-            return Err("Sync Add requires ClientId");
-        }
-        // MS-ASCAL §2.2.2.2: AppointmentReplyTime MUST NOT be in requests.
-        if xml.contains("AppointmentReplyTime") {
-            return Err("AppointmentReplyTime is server-only (MS-ASCAL §2.2.2.2): MUST NOT appear in Sync requests");
-        }
-        // MS-ASCAL §2.2.2.40: ResponseType MUST NOT be in requests.
-        if xml.contains("ResponseType") {
-            return Err("ResponseType is server-only (MS-ASCAL §2.2.2.40): MUST NOT appear in Sync requests");
-        }
-        // GAP-35: MS-ASCAL §2.2.2.1 + §2.2.2.44: AllDayEvent=1 MUST NOT coexist with Timezone.
-        let has_all_day_1 = xml.contains("<AllDayEvent>1</AllDayEvent>")
-            || xml.contains("<AllDayEvent>true</AllDayEvent>");
-        let has_timezone = xml.contains("<Timezone>") || xml.contains("<Calendar:Timezone>");
-        if has_all_day_1 && has_timezone {
-            return Err("AllDayEvent=1 MUST NOT include Timezone element (MS-ASCAL §2.2.2.44)");
         }
     }
 
