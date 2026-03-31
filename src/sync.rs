@@ -8,7 +8,7 @@ use crate::models::AppState;
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +18,12 @@ use uuid::Uuid;
 type HmacSha256 = Hmac<Sha256>;
 
 pub const INVALID_SYNC_KEY_STATUS: &str = "9";
+
+/// Maximum number of items returned in a single Sync response when the client
+/// does not specify WindowSize. Per MS-ASCMD §2.2.3.199, the server SHOULD
+/// behave as if WindowSize=100 when omitted; absolute maximum is 512.
+const DEFAULT_WINDOW_SIZE: usize = 100;
+const MAX_WINDOW_SIZE: usize = 512;
 
 #[derive(Clone, Debug)]
 pub enum ClientMutationResult {
@@ -51,6 +57,37 @@ fn sync_since_from_token(token: Option<&str>) -> i64 {
         .and_then(|raw| raw.strip_prefix("seq:"))
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0)
+}
+
+/// Convert a FilterType value (MS-ASCMD §2.2.3.68) to a past-cutoff DateTime.
+///
+/// FilterType values for calendar (values 0–7 are defined; 8 is undefined for calendar):
+///   0 = all items (no filter)
+///   1 = 1 day back
+///   2 = 3 days back
+///   3 = 1 week back
+///   4 = 2 weeks back
+///   5 = 1 month back (~30 days)
+///   6 = 3 months back (~90 days)
+///   7 = 6 months back (~180 days)
+///
+/// Per spec: "Calendar items that are in the future or that have recurrence but
+/// no end date are sent to the client regardless of the FilterType element value."
+/// We handle this by always querying to a far-future end date and only constraining
+/// the start date. Items in the future are always included.
+pub fn filter_type_to_start(filter_type: u8) -> chrono::DateTime<Utc> {
+    let now = Utc::now();
+    match filter_type {
+        0 => now - Duration::weeks(520),   // ~10 years — effectively "all"
+        1 => now - Duration::days(1),
+        2 => now - Duration::days(3),
+        3 => now - Duration::weeks(1),
+        4 => now - Duration::weeks(2),
+        5 => now - Duration::days(30),
+        6 => now - Duration::days(90),
+        7 => now - Duration::days(180),
+        _ => now - Duration::weeks(52),    // fallback for unknown values
+    }
 }
 
 pub fn invalid_sync_key_response(collection_id: &str, content_class: &str) -> String {
@@ -191,90 +228,34 @@ pub async fn apply_client_sync_mutations(
                 let mut item = parse_ics_event(&existing_ics)
                     .ok_or_else(|| anyhow!("failed parsing existing calendar item"))?;
 
-                if let Some(v) = patch.uid {
-                    item.uid = v;
-                }
-                if let Some(v) = patch.subject {
-                    item.subject = v;
-                }
-                if let Some(v) = patch.description {
-                    item.description = v;
-                }
-                if let Some(v) = patch.location {
-                    item.location = v;
-                }
-                if let Some(v) = patch.start {
-                    item.start = v;
-                }
-                if let Some(v) = patch.end {
-                    item.end = v;
-                }
-                if let Some(v) = patch.all_day {
-                    item.all_day = v;
-                }
-                if let Some(v) = patch.dtstamp {
-                    item.dtstamp = Some(v);
-                }
-                if let Some(v) = patch.timezone {
-                    item.timezone = Some(v);
-                }
-                if let Some(v) = patch.timezone_blob {
-                    item.timezone_blob = Some(v);
-                }
-                if let Some(v) = patch.rrule {
-                    item.rrule = Some(v);
-                }
-                if let Some(v) = patch.exdates {
-                    item.exdates = v;
-                }
-                if let Some(v) = patch.organizer_name {
-                    item.organizer_name = Some(v);
-                }
-                if let Some(v) = patch.organizer_email {
-                    item.organizer_email = Some(v);
-                }
-                if let Some(v) = patch.attendees {
-                    item.attendees = v;
-                }
-                if let Some(v) = patch.categories {
-                    item.categories = v;
-                }
-                if let Some(v) = patch.busy_status {
-                    item.busy_status = Some(v);
-                }
-                if let Some(v) = patch.sensitivity {
-                    item.sensitivity = Some(v);
-                }
-                if let Some(v) = patch.reminder {
-                    item.reminder = Some(v);
-                }
-                if let Some(v) = patch.response_requested {
-                    item.response_requested = Some(v);
-                }
-                if let Some(v) = patch.disallow_new_time_proposal {
-                    item.disallow_new_time_proposal = Some(v);
-                }
-                if let Some(v) = patch.appointment_reply_time {
-                    item.appointment_reply_time = Some(v);
-                }
-                if let Some(v) = patch.meeting_status {
-                    item.meeting_status = Some(v);
-                }
-                if let Some(v) = patch.response_type {
-                    item.response_type = Some(v);
-                }
-                if let Some(v) = patch.online_meeting_conf_link {
-                    item.online_meeting_conf_link = Some(v);
-                }
-                if let Some(v) = patch.online_meeting_external_link {
-                    item.online_meeting_external_link = Some(v);
-                }
-                if let Some(v) = patch.client_uid {
-                    item.client_uid = Some(v);
-                }
-                if let Some(v) = patch.exceptions {
-                    item.exceptions = v;
-                }
+                if let Some(v) = patch.uid { item.uid = v; }
+                if let Some(v) = patch.subject { item.subject = v; }
+                if let Some(v) = patch.description { item.description = v; }
+                if let Some(v) = patch.location { item.location = v; }
+                if let Some(v) = patch.start { item.start = v; }
+                if let Some(v) = patch.end { item.end = v; }
+                if let Some(v) = patch.all_day { item.all_day = v; }
+                if let Some(v) = patch.dtstamp { item.dtstamp = Some(v); }
+                if let Some(v) = patch.timezone { item.timezone = Some(v); }
+                if let Some(v) = patch.timezone_blob { item.timezone_blob = Some(v); }
+                if let Some(v) = patch.rrule { item.rrule = Some(v); }
+                if let Some(v) = patch.exdates { item.exdates = v; }
+                if let Some(v) = patch.organizer_name { item.organizer_name = Some(v); }
+                if let Some(v) = patch.organizer_email { item.organizer_email = Some(v); }
+                if let Some(v) = patch.attendees { item.attendees = v; }
+                if let Some(v) = patch.categories { item.categories = v; }
+                if let Some(v) = patch.busy_status { item.busy_status = Some(v); }
+                if let Some(v) = patch.sensitivity { item.sensitivity = Some(v); }
+                if let Some(v) = patch.reminder { item.reminder = Some(v); }
+                if let Some(v) = patch.response_requested { item.response_requested = Some(v); }
+                if let Some(v) = patch.disallow_new_time_proposal { item.disallow_new_time_proposal = Some(v); }
+                if let Some(v) = patch.appointment_reply_time { item.appointment_reply_time = Some(v); }
+                if let Some(v) = patch.meeting_status { item.meeting_status = Some(v); }
+                if let Some(v) = patch.response_type { item.response_type = Some(v); }
+                if let Some(v) = patch.online_meeting_conf_link { item.online_meeting_conf_link = Some(v); }
+                if let Some(v) = patch.online_meeting_external_link { item.online_meeting_external_link = Some(v); }
+                if let Some(v) = patch.client_uid { item.client_uid = Some(v); }
+                if let Some(v) = patch.exceptions { item.exceptions = v; }
 
                 let ics = render_ics(&item);
                 match caldav
@@ -615,9 +596,7 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
 
     let mut xml = String::from("<Calendar:Recurrence>");
     xml.push_str(&format!("<Calendar:Type>{freq_val}</Calendar:Type>"));
-    xml.push_str(&format!(
-        "<Calendar:Interval>{interval}</Calendar:Interval>"
-    ));
+    xml.push_str(&format!("<Calendar:Interval>{interval}</Calendar:Interval>"));
     if !day_of_week.is_empty() {
         xml.push_str(&format!(
             "<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>",
@@ -631,11 +610,7 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
         ));
     }
     if matches!(freq_val, 3 | 6) && week_of_month != 0 {
-        let normalized = if week_of_month < 0 {
-            5
-        } else {
-            week_of_month as u32
-        };
+        let normalized = if week_of_month < 0 { 5 } else { week_of_month as u32 };
         xml.push_str(&format!(
             "<Calendar:WeekOfMonth>{}</Calendar:WeekOfMonth>",
             normalized
@@ -651,22 +626,13 @@ fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
         xml.push_str("<Calendar:CalendarType>0</Calendar:CalendarType>");
     }
     if let Some(v) = until {
-        xml.push_str(&format!(
-            "<Calendar:Until>{}</Calendar:Until>",
-            xml_escape(&v)
-        ));
+        xml.push_str(&format!("<Calendar:Until>{}</Calendar:Until>", xml_escape(&v)));
     }
     if let Some(v) = occurrences {
-        xml.push_str(&format!(
-            "<Calendar:Occurrences>{}</Calendar:Occurrences>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:Occurrences>{}</Calendar:Occurrences>", v));
     }
     if let Some(v) = first_day_of_week {
-        xml.push_str(&format!(
-            "<Calendar:FirstDayOfWeek>{}</Calendar:FirstDayOfWeek>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:FirstDayOfWeek>{}</Calendar:FirstDayOfWeek>", v));
     }
     xml.push_str("</Calendar:Recurrence>");
     Some(xml)
@@ -692,16 +658,10 @@ fn render_attendee_xml(attendee: &Attendee) -> String {
         ));
     }
     if let Some(v) = attendee.attendee_type {
-        xml.push_str(&format!(
-            "<Calendar:AttendeeType>{}</Calendar:AttendeeType>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:AttendeeType>{}</Calendar:AttendeeType>", v));
     }
     if let Some(v) = attendee.attendee_status {
-        xml.push_str(&format!(
-            "<Calendar:AttendeeStatus>{}</Calendar:AttendeeStatus>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:AttendeeStatus>{}</Calendar:AttendeeStatus>", v));
     }
     xml.push_str("</Calendar:Attendee>");
     xml
@@ -711,21 +671,13 @@ fn derived_meeting_status(item: &CalendarItem) -> u8 {
     if let Some(v) = item.meeting_status {
         return v;
     }
-
     let is_meeting = !item.attendees.is_empty();
     let organizer = item
         .organizer_email
         .as_deref()
         .map(|v| !v.is_empty())
         .unwrap_or(false);
-
-    if !is_meeting {
-        0
-    } else if organizer {
-        1
-    } else {
-        3
-    }
+    if !is_meeting { 0 } else if organizer { 1 } else { 3 }
 }
 
 fn derived_response_type(item: &CalendarItem) -> Option<u8> {
@@ -758,10 +710,7 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
     }
 
     if let Some(v) = &exception.subject {
-        xml.push_str(&format!(
-            "<Calendar:Subject>{}</Calendar:Subject>",
-            xml_escape(v)
-        ));
+        xml.push_str(&format!("<Calendar:Subject>{}</Calendar:Subject>", xml_escape(v)));
     }
     if let Some(v) = exception.start {
         xml.push_str(&format!(
@@ -783,19 +732,13 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         });
     }
     if let Some(v) = &exception.location {
-        xml.push_str(&format!(
-            "<Calendar:Location>{}</Calendar:Location>",
-            xml_escape(v)
-        ));
+        xml.push_str(&format!("<Calendar:Location>{}</Calendar:Location>", xml_escape(v)));
     }
     if let Some(v) = exception.busy_status {
         xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v));
     }
     if let Some(v) = exception.sensitivity {
-        xml.push_str(&format!(
-            "<Calendar:Sensitivity>{}</Calendar:Sensitivity>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:Sensitivity>{}</Calendar:Sensitivity>", v));
     }
     if let Some(v) = exception.reminder {
         xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
@@ -807,10 +750,7 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         ));
     }
     if let Some(v) = exception.meeting_status {
-        xml.push_str(&format!(
-            "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>", v));
     } else {
         xml.push_str(&format!(
             "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
@@ -818,12 +758,8 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         ));
     }
     if let Some(v) = exception.response_type.or_else(|| derived_response_type(item)) {
-        xml.push_str(&format!(
-            "<Calendar:ResponseType>{}</Calendar:ResponseType>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:ResponseType>{}</Calendar:ResponseType>", v));
     }
-
     if let Some(v) = &exception.categories {
         if !v.is_empty() {
             xml.push_str("<Calendar:Categories>");
@@ -845,7 +781,6 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         }
         xml.push_str("</Calendar:Categories>");
     }
-
     if let Some(attendees) = &exception.attendees
         && !attendees.is_empty()
     {
@@ -855,7 +790,6 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         }
         xml.push_str("</Calendar:Attendees>");
     }
-
     if let Some(v) = &exception.description {
         xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
         xml.push_str(&format!(
@@ -898,23 +832,21 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         "<Calendar:AllDayEvent>0</Calendar:AllDayEvent>"
     });
 
-    if !item.all_day
-        && let Some(v) = &item.timezone
-    {
-        xml.push_str(&format!(
-            "<Calendar:Timezone>{}</Calendar:Timezone>",
-            xml_escape(v)
-        ));
+    // MS-ASCAL §2.2.2.44: Timezone MUST NOT be included when AllDayEvent=1.
+    if !item.all_day {
+        if let Some(v) = &item.timezone {
+            xml.push_str(&format!(
+                "<Calendar:Timezone>{}</Calendar:Timezone>",
+                xml_escape(v)
+            ));
+        }
     }
 
     if let Some(v) = item.busy_status {
         xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v));
     }
     if let Some(v) = item.sensitivity {
-        xml.push_str(&format!(
-            "<Calendar:Sensitivity>{}</Calendar:Sensitivity>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:Sensitivity>{}</Calendar:Sensitivity>", v));
     }
     if let Some(v) = item.reminder {
         xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
@@ -1008,10 +940,7 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         ));
     }
     if let Some(v) = derived_response_type(item) {
-        xml.push_str(&format!(
-            "<Calendar:ResponseType>{}</Calendar:ResponseType>",
-            v
-        ));
+        xml.push_str(&format!("<Calendar:ResponseType>{}</Calendar:ResponseType>", v));
     }
     if let Some(v) = &item.online_meeting_conf_link {
         xml.push_str(&format!(
@@ -1026,13 +955,33 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         ));
     }
     if let Some(v) = &item.client_uid {
-        xml.push_str(&format!(
-            "<Calendar:ClientUid>{}</Calendar:ClientUid>",
-            xml_escape(v)
-        ));
+        xml.push_str(&format!("<Calendar:ClientUid>{}</Calendar:ClientUid>", xml_escape(v)));
     }
 
     xml
+}
+
+/// Parameters controlling how `perform_sync` fetches and returns calendar data.
+pub struct SyncOptions {
+    /// Maximum number of items to return in this response.
+    /// Derived from the Sync request `<WindowSize>` element; defaults to 100.
+    pub window_size: usize,
+    /// When false (GetChanges=0) and SyncKey is non-zero, skip fetching
+    /// server-side changes and return only the updated sync key.
+    pub get_changes: bool,
+    /// Past cutoff derived from the `<FilterType>` element; all calendar items
+    /// in the future are always included regardless of this value.
+    pub filter_start: chrono::DateTime<Utc>,
+}
+
+impl Default for SyncOptions {
+    fn default() -> Self {
+        SyncOptions {
+            window_size: DEFAULT_WINDOW_SIZE,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+        }
+    }
 }
 
 pub async fn perform_sync(
@@ -1042,20 +991,20 @@ pub async fn perform_sync(
     state_collection_id: &str,
     incoming_sync_key: &str,
     content_class: &str,
-    _window_size: usize,
+    opts: SyncOptions,
     username: &str,
     password: &str,
     client_mutation_responses: &str,
 ) -> Result<String> {
     let storage = &state.storage;
 
+    // Clamp window_size to spec limits.
+    let window_size = opts.window_size.min(MAX_WINDOW_SIZE).max(1);
+
+    // ── Non-Calendar classes: return a minimal placeholder ────────────────────
     if !content_class.eq_ignore_ascii_case("Calendar") {
         let class_name = content_class.trim();
-        let normalized = if class_name.is_empty() {
-            "Calendar"
-        } else {
-            class_name
-        };
+        let normalized = if class_name.is_empty() { "Calendar" } else { class_name };
 
         let new_sync_key = Uuid::new_v4().to_string();
         storage
@@ -1094,6 +1043,7 @@ pub async fn perform_sync(
         ));
     }
 
+    // ── Validate SyncKey ─────────────────────────────────────────────────────
     let previous_state = storage.get_sync_key(owner, state_collection_id).await?;
     if incoming_sync_key != "0" {
         match previous_state.as_ref() {
@@ -1112,6 +1062,36 @@ pub async fn perform_sync(
         )
     };
 
+    // ── GetChanges=0 fast path ────────────────────────────────────────────────
+    // When the client sends GetChanges=0 with a non-zero SyncKey, it only wants
+    // to push mutations — it does not want server changes returned.
+    if !opts.get_changes && incoming_sync_key != "0" {
+        let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
+        let new_sync_key = Uuid::new_v4().to_string();
+        storage
+            .set_sync_key(
+                owner,
+                state_collection_id,
+                &new_sync_key,
+                Some(&sync_seq_to_token(latest_seq)),
+            )
+            .await?;
+        return Ok(format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+<Collections><Collection>
+<Class>Calendar</Class>
+<SyncKey>{}</SyncKey>
+<CollectionId>{}</CollectionId>
+<Status>1</Status>
+{}<Commands></Commands>
+</Collection></Collections>
+</Sync>"#,
+            new_sync_key, collection_id, client_mutation_responses
+        ));
+    }
+
+    // ── Fetch events from CalDAV ──────────────────────────────────────────────
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(username, password).await?;
@@ -1120,10 +1100,10 @@ pub async fn perform_sync(
         .ok_or_else(|| anyhow!("no calendars found"))?
         .clone();
 
-    let start = (Utc::now() - chrono::Duration::weeks(52))
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string();
-    let end = (Utc::now() + chrono::Duration::weeks(52))
+    // Start date from FilterType; end date is always far future so future items
+    // and open-ended recurrences are always included per MS-ASCMD §2.2.3.68.
+    let start = opts.filter_start.format("%Y%m%dT%H%M%SZ").to_string();
+    let end = (Utc::now() + Duration::weeks(520))
         .format("%Y%m%dT%H%M%SZ")
         .to_string();
 
@@ -1131,6 +1111,7 @@ pub async fn perform_sync(
         .query_events(&collection_href, &start, &end, username, password)
         .await?;
 
+    // ── Parse events ──────────────────────────────────────────────────────────
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -1188,6 +1169,7 @@ pub async fn perform_sync(
         buf.clear();
     }
 
+    // ── Load existing item map ────────────────────────────────────────────────
     let existing_map = storage
         .list_ews_items(owner, 4096, 0)
         .await?
@@ -1195,15 +1177,41 @@ pub async fn perform_sync(
         .map(|item| (item.server_id.clone(), item))
         .collect::<HashMap<_, _>>();
 
-    let mut commands = String::new();
+    // ── Build commands with WindowSize enforcement ────────────────────────────
+    //
+    // Critical fix (previously broken): item_map ETags must be updated ONLY
+    // for items that are actually emitted in this response. Updating all ETags
+    // upfront — before applying WindowSize — caused items that weren't emitted
+    // to be seen as "unchanged" on the next Sync (ETag matched), so they were
+    // silently skipped forever, resulting in data loss when pending changes
+    // exceeded the window size.
+    //
+    // The correct approach:
+    //   1. Collect all pending items (new/changed) WITHOUT touching item_map.
+    //   2. Apply window_size; call upsert_item_map ONLY for emitted items.
+    //   3. Non-emitted items retain their old stored ETag, so the next Sync
+    //      detects them as changed again and emits them.
+
+    // Unified pending-item struct carries all fields needed for both emission
+    // and the deferred upsert_item_map call.
+    struct PendingItem {
+        server_id: String,
+        resource_href: String,
+        uid: String,
+        etag: String,
+        item: CalendarItem,
+        is_add: bool,
+    }
+
+    let mut pending_items: Vec<PendingItem> = Vec::new();
+    let mut pending_deletes: Vec<String> = Vec::new();
     let mut seen_ids = HashSet::new();
     let initial_sync = incoming_sync_key == "0";
 
-    for ev in events {
+    for ev in &events {
         if ev.href.is_empty() {
             continue;
         }
-
         let resource_href = ev.href.clone();
         let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
         seen_ids.insert(server_id.clone());
@@ -1214,43 +1222,29 @@ pub async fn perform_sync(
         };
 
         let existing = existing_map.get(&server_id);
-        let is_new = existing.is_none();
+        let is_add = existing.is_none();
         let changed = existing
             .map(|row| row.etag.as_deref() != Some(etag.as_str()))
             .unwrap_or(true);
 
-        if changed {
-            storage
-                .upsert_item_map(
-                    owner,
-                    &collection_href,
-                    &resource_href,
-                    &server_id,
-                    &item.uid,
-                    &etag,
-                )
-                .await?;
-        }
-
+        // Skip unchanged items on incremental sync.
         if !initial_sync && !changed {
             continue;
         }
 
-        if is_new {
-            commands.push_str("<Add><ServerId>");
-        } else {
-            commands.push_str("<Change><ServerId>");
-        }
-        commands.push_str(&server_id);
-        commands.push_str("</ServerId><ApplicationData>");
-        commands.push_str(&render_calendar_app_data(&item));
-        if is_new {
-            commands.push_str("</ApplicationData></Add>");
-        } else {
-            commands.push_str("</ApplicationData></Change>");
-        }
+        // Do NOT call upsert_item_map here — defer until emission.
+        pending_items.push(PendingItem {
+            server_id,
+            resource_href,
+            uid: item.uid.clone(),
+            etag,
+            item,
+            is_add,
+        });
     }
 
+    // Record soft-deletes for items that have disappeared from CalDAV entirely
+    // (not subject to windowing — always process regardless of window_size).
     for server_id in existing_map.keys() {
         if !seen_ids.contains(server_id) {
             let _ = storage.add_delete_tombstone(owner, server_id).await;
@@ -1258,26 +1252,375 @@ pub async fn perform_sync(
         }
     }
 
-    let deleted_ids = if initial_sync {
-        Vec::new()
-    } else {
-        storage
+    // Incremental tombstone-based deletes.
+    if !initial_sync {
+        let tombstones = storage
             .list_deleted_since_seq(owner, since)
-            .await?
-            .into_iter()
-            .map(|(_, server_id)| server_id)
-            .collect()
-    };
-
-    for deleted_id in deleted_ids {
-        if !seen_ids.contains(&deleted_id) {
-            commands.push_str(&format!(
-                "<Delete><ServerId>{}</ServerId></Delete>",
-                xml_escape(&deleted_id)
-            ));
+            .await
+            .unwrap_or_default();
+        for (_, sid) in tombstones {
+            if !seen_ids.contains(sid.as_str()) {
+                pending_deletes.push(sid);
+            }
         }
     }
 
+    // ── Emit up to window_size items, updating storage only on emission ───────
+    let mut commands = String::new();
+    let mut items_included = 0usize;
+    let mut more_available = false;
+
+    for pi in &pending_items {
+        if items_included >= window_size {
+            more_available = true;
+            break;
+        }
+        // Update storage NOW — only for this actually-emitted item.
+        if let Err(e) = storage
+            .upsert_item_map(
+                owner,
+                &collection_href,
+                &pi.resource_href,
+                &pi.server_id,
+                &pi.uid,
+                &pi.etag,
+            )
+            .await
+        {
+            tracing::warn!("sync: failed to persist item map for {}: {}", pi.server_id, e);
+        }
+
+        if pi.is_add {
+            commands.push_str("<Add><ServerId>");
+            commands.push_str(&pi.server_id);
+            commands.push_str("</ServerId><ApplicationData>");
+            commands.push_str(&render_calendar_app_data(&pi.item));
+            commands.push_str("</ApplicationData></Add>");
+        } else {
+            commands.push_str("<Change><ServerId>");
+            commands.push_str(&pi.server_id);
+            commands.push_str("</ServerId><ApplicationData>");
+            commands.push_str(&render_calendar_app_data(&pi.item));
+            commands.push_str("</ApplicationData></Change>");
+        }
+        items_included += 1;
+    }
+
+    if !more_available {
+        for server_id in &pending_deletes {
+            if items_included >= window_size {
+                more_available = true;
+                break;
+            }
+            commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", xml_escape(server_id)));
+            items_included += 1;
+        }
+    }
+pub async fn perform_sync(
+    state: Arc<AppState>,
+    owner: &str,
+    collection_id: &str,
+    state_collection_id: &str,
+    incoming_sync_key: &str,
+    content_class: &str,
+    opts: SyncOptions,
+    username: &str,
+    password: &str,
+    client_mutation_responses: &str,
+) -> Result<String> {
+    let storage = &state.storage;
+    // Clamp window_size to spec limits.
+    let window_size = opts.window_size.min(MAX_WINDOW_SIZE).max(1);
+    // ── Non-Calendar classes: return a minimal placeholder ────────────────────
+    if !content_class.eq_ignore_ascii_case("Calendar") {
+        let class_name = content_class.trim();
+        let normalized = if class_name.is_empty() { "Calendar" } else { class_name };
+        let new_sync_key = Uuid::new_v4().to_string();
+        storage
+            .set_sync_key(owner, state_collection_id, &new_sync_key, Some("token"))
+            .await?;
+        let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
+        let server_id = generate_server_id(&state.cfg.hmac_secret, &pseudo_resource);
+        let app_data = class_placeholder_app_data(normalized, owner);
+        let commands = if app_data.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                xml_escape(&server_id),
+                app_data
+            )
+        };
+        return Ok(format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
+<Collections><Collection>
+<Class>{}</Class>
+<SyncKey>{}</SyncKey>
+<CollectionId>{}</CollectionId>
+<Status>1</Status>
+{}<Commands>{}</Commands>
+</Collection></Collections>
+</Sync>"#,
+            xml_escape(normalized),
+            new_sync_key,
+            xml_escape(collection_id),
+            client_mutation_responses,
+            commands
+        ));
+    }
+    // ── Validate SyncKey ─────────────────────────────────────────────────────
+    let previous_state = storage.get_sync_key(owner, state_collection_id).await?;
+    if incoming_sync_key != "0" {
+        match previous_state.as_ref() {
+            Some((expected_sync_key, _)) if expected_sync_key == incoming_sync_key => {}
+            _ => return Ok(invalid_sync_key_response(collection_id, "Calendar")),
+        }
+    }
+    let since = if incoming_sync_key == "0" {
+        0
+    } else {
+        sync_since_from_token(
+            previous_state
+                .as_ref()
+                .and_then(|(_, token)| token.as_deref()),
+        )
+    };
+    // ── GetChanges=0 fast path ────────────────────────────────────────────────
+    if !opts.get_changes && incoming_sync_key != "0" {
+        let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
+        let new_sync_key = Uuid::new_v4().to_string();
+        storage
+            .set_sync_key(
+                owner,
+                state_collection_id,
+                &new_sync_key,
+                Some(&sync_seq_to_token(latest_seq)),
+            )
+            .await?;
+        return Ok(format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+<Collections><Collection>
+<Class>Calendar</Class>
+<SyncKey>{}</SyncKey>
+<CollectionId>{}</CollectionId>
+<Status>1</Status>
+{}<Commands></Commands>
+</Collection></Collections>
+</Sync>"#,
+            new_sync_key, collection_id, client_mutation_responses
+        ));
+    }
+    // ── Fetch events from CalDAV ──────────────────────────────────────────────
+    let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
+    let caldav = CaldavClient::new(&state.cfg);
+    let calendars = caldav.find_user_calendars(username, password).await?;
+    let collection_href = calendars
+        .first()
+        .ok_or_else(|| anyhow!("no calendars found"))?
+        .clone();
+    let start = opts.filter_start.format("%Y%m%dT%H%M%SZ").to_string();
+    let end = (Utc::now() + Duration::weeks(520))
+1425:        .format("%Y%m%dT%H%M%SZ")
+1426:        .to_string();
+1427:    let events_xml = caldav
+1428:        .query_events(&collection_href, &start, &end, username, password)
+1429:        .await?;
+1430:    // ── Parse events ──────────────────────────────────────────────────────────
+1431:    use quick_xml::events::Event;
+1432:    use quick_xml::Reader;
+1433:    #[derive(Clone)]
+1434:    struct EventItem {
+1435:        href: String,
+1436:        etag: String,
+1437:        ics: String,
+1438:    }
+1439:    let mut reader = Reader::from_str(&events_xml);
+1440:    reader.config_mut().trim_text(true);
+1441:    let mut events = Vec::new();
+1442:    let mut current = EventItem {
+1443:        href: String::new(),
+1444:        etag: String::new(),
+1445:        ics: String::new(),
+1446:    };
+1447:    let mut buf = Vec::new();
+1448:    loop {
+1449:        match reader.read_event_into(&mut buf) {
+1450:            Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
+1451:                b"href" => {
+1452:                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+1453:                        current.href = e.decode().unwrap_or_default().to_string();
+1454:                    }
+1455:                }
+1456:                b"getetag" => {
+1457:                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+1458:                        current.etag = e.decode().unwrap_or_default().to_string();
+1459:                    }
+1460:                }
+1461:                b"calendar-data" => {
+1462:                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+1463:                        current.ics = e.decode().unwrap_or_default().to_string();
+1464:                    }
+1465:                }
+1466:                _ => {}
+1467:            },
+1468:            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
+1469:                if !current.href.is_empty() {
+1470:                    events.push(current.clone());
+1471:                }
+1472:                current = EventItem {
+1473:                    href: String::new(),
+1474:                    etag: String::new(),
+1475:                    ics: String::new(),
+1476:                };
+1477:            }
+1478:            Ok(Event::Eof) => break,
+1479:            _ => {}
+1480:        }
+1481:        buf.clear();
+1482:    }
+1483:    // ── Load existing item map ────────────────────────────────────────────────
+1484:    let existing_map = storage
+1485:        .list_ews_items(owner, 4096, 0)
+1486:        .await?
+1487:        .into_iter()
+1488:        .map(|item| (item.server_id.clone(), item))
+1489:        .collect::<HashMap<_, _>>();
+1490:    // ── Build commands with WindowSize enforcement ────────────────────────────
+1491:    struct PendingItem {
+1492:        server_id: String,
+1493:        resource_href: String,
+1494:        uid: String,
+1495:        etag: String,
+1496:        item: CalendarItem,
+1497:        is_add: bool,
+1498:    }
+1499:    let mut pending_items: Vec<PendingItem> = Vec::new();
+1500:    let mut pending_deletes: Vec<String> = Vec::new();
+1501:    let mut seen_ids = HashSet::new();
+1502:    let initial_sync = incoming_sync_key == "0";
+1503:    for ev in &events {
+1504:        if ev.href.is_empty() {
+1505:            continue;
+1506:        }
+1507:        let resource_href = ev.href.clone();
+1508:        let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
+1509:        seen_ids.insert(server_id.clone());
+1510:        let etag = ev.etag.trim_matches('"').to_string();
+        let Some(item) = parse_ics_event(&ev.ics) else {
+            tracing::warn!("sync: failed to parse ICS event for href: {}", ev.href);
+            continue;
+        };
+1514:        let existing = existing_map.get(&server_id);
+1515:        let is_add = existing.is_none();
+1516:        let changed = existing
+1517:            .map(|row| row.etag.as_deref() != Some(etag.as_str()))
+1518:            .unwrap_or(true);
+1519:        if !initial_sync && !changed {
+1520:            continue;
+1521:        }
+1522:        pending_items.push(PendingItem {
+1523:            server_id,
+1524:            resource_href,
+1525:            uid: item.uid.clone(),
+1526:            etag,
+1527:            item,
+1528:            is_add,
+1529:        });
+1530:    }
+1531:    for server_id in existing_map.keys() {
+1532:        if !seen_ids.contains(server_id) {
+1533:            let _ = storage.add_delete_tombstone(owner, server_id).await;
+1534:            let _ = storage.delete_item_by_server_id(owner, server_id).await;
+1535:        }
+1536:    }
+1537:    if !initial_sync {
+1538:        let tombstones = storage
+1539:            .list_deleted_since_seq(owner, since)
+1540:            .await
+1541:            .unwrap_or_default();
+1542:        for (_, sid) in tombstones {
+1543:            if !seen_ids.contains(sid.as_str()) {
+1544:                pending_deletes.push(sid);
+1545:            }
+1546:        }
+1547:    }
+1548:    let mut commands = String::new();
+1549:    let mut items_included = 0usize;
+1550:    let mut more_available = false;
+1551:    for pi in &pending_items {
+1552:        if items_included >= window_size {
+1553:            more_available = true;
+1554:            break;
+1555:        }
+1556:        if let Err(e) = storage
+1557:            .upsert_item_map(
+1558:                owner,
+1559:                &collection_href,
+1560:                &pi.resource_href,
+1561:                &pi.server_id,
+1562:                &pi.uid,
+1563:                &pi.etag,
+1564:            )
+1565:            .await
+1566:        {
+1567:            tracing::warn!("sync: failed to persist item map for {}: {}", pi.server_id, e);
+1568:        }
+1569:        if pi.is_add {
+1570:            commands.push_str("<Add><ServerId>");
+1571:            commands.push_str(&pi.server_id);
+1572:            commands.push_str("</ServerId><ApplicationData>");
+1573:            commands.push_str(&render_calendar_app_data(&pi.item));
+1574:            commands.push_str("</ApplicationData></Add>");
+1575:        } else {
+1576:            commands.push_str("<Change><ServerId>");
+1577:            commands.push_str(&pi.server_id);
+1578:            commands.push_str("</ServerId><ApplicationData>");
+1579:            commands.push_str(&render_calendar_app_data(&pi.item));
+1580:            commands.push_str("</ApplicationData></Change>");
+1581:        }
+1582:        items_included += 1;
+1583:    }
+1584:    if !more_available {
+1585:        for server_id in &pending_deletes {
+1586:            if items_included >= window_size {
+1587:                more_available = true;
+1588:                break;
+1589:            }
+1590:            commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", xml_escape(server_id)));
+1591:            items_included += 1;
+1592:        }
+1593:    }
+1594:    let new_sync_key = Uuid::new_v4().to_string();
+1595:    storage
+1596:        .set_sync_key(
+1597:            owner,
+1598:            state_collection_id,
+1599:            &new_sync_key,
+1600:            Some(&sync_seq_to_token(latest_seq)),
+1601:        )
+1602:        .await?;
+1603:    let more_available_tag = if more_available { "<MoreAvailable/>" } else { "" };
+1604:    Ok(format!(
+1605:        r#"<?xml version="1.0" encoding="utf-8"?>
+1606:<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+1607:<Collections><Collection>
+1608:<Class>Calendar</Class>
+1609:<SyncKey>{sync_key}</SyncKey>
+1610:<CollectionId>{collection_id}</CollectionId>
+1611:<Status>1</Status>
+1612:{more}{responses}<Commands>{commands}</Commands>
+1613:</Collection></Collections>
+1614:</Sync>"#,
+1615:        sync_key = new_sync_key,
+1616:        collection_id = xml_escape(collection_id),
+1617:        responses = client_mutation_responses,
+1618:        more = more_available_tag,
+        commands = commands,
+    ))
+}
+    // ── Persist new sync key ──────────────────────────────────────────────────
     let new_sync_key = Uuid::new_v4().to_string();
     storage
         .set_sync_key(
@@ -1288,17 +1631,30 @@ pub async fn perform_sync(
         )
         .await?;
 
+    // ── Build response ────────────────────────────────────────────────────────
+    // <MoreAvailable/> per MS-ASCMD §2.2.3.116: emitted only when there are
+    // further changes pending.
+    let more_available_tag = if more_available { "<MoreAvailable/>" } else { "" };
+
+    // Per MS-ASCMD §2.2.1.21.2 the Collection element ordering within a Sync
+    // response is: SyncKey, CollectionId, Status, [MoreAvailable], Responses,
+    // Commands. <Responses> (acknowledgements of client-originated mutations)
+    // MUST appear before <Commands> (server-originated changes).
     Ok(format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
 <Collections><Collection>
 <Class>Calendar</Class>
-<SyncKey>{}</SyncKey>
-<CollectionId>{}</CollectionId>
+<SyncKey>{sync_key}</SyncKey>
+<CollectionId>{collection_id}</CollectionId>
 <Status>1</Status>
-{}<Commands>{}</Commands>
+{more}{responses}<Commands>{commands}</Commands>
 </Collection></Collections>
 </Sync>"#,
-        new_sync_key, collection_id, client_mutation_responses, commands
+        sync_key = new_sync_key,
+        collection_id = xml_escape(collection_id),
+        responses = client_mutation_responses,
+        more = more_available_tag,
+        commands = commands,
     ))
 }
