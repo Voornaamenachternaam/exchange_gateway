@@ -455,8 +455,8 @@ async function handleAutodiscoverSoap(request, env) {
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
   <s:Header><a:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" /></s:Header>
   <s:Body>
-    <a:GetUserSettingsResponseMessage xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
-      <a:Response xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
+    <a:GetUserSettingsResponseMessage>
+      <a:Response>
         <a:ErrorCode>NoError</a:ErrorCode><a:ErrorMessage /><a:UserResponses>
           <a:UserResponse>
             <a:ErrorCode>NoError</a:ErrorCode><a:ErrorMessage /><a:RedirectTarget /><a:UserSettingErrors />
