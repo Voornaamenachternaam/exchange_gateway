@@ -16,7 +16,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use lazy_static::lazy_static;
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -90,8 +90,6 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
             namespace: "FolderHierarchy:",
             required_tags: &["SyncKey"],
         }),
-        // GAP-41: Provision requests may contain only DeviceInformation (no Policies)
-        // so we only require the namespace, not specific sub-elements.
         "provision" => Some(CommandGrammar {
             namespace: "Provision:",
             required_tags: &[],
@@ -138,6 +136,69 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         }),
         _ => None,
     }
+}
+
+fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
+    query.get(key)
+        .or_else(|| query.get(&key.to_ascii_lowercase()))
+        .cloned()
+}
+
+fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
+    query.get("Cmd")
+        .or_else(|| query.get("cmd"))
+        .cloned()
+}
+
+fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
+    let lower_cmd = command.to_ascii_lowercase();
+    let grammar = command_grammar(&lower_cmd).ok_or("Unsupported command")?;
+
+    if extract_root_command(xml).map(|s| s.to_ascii_lowercase()) != Some(lower_cmd.clone()) {
+        return Err("Root element does not match command");
+    }
+
+    if xml.contains("xmlns=") && !xml.contains(grammar.namespace) {
+        return Err("Invalid namespace");
+    }
+
+    for &required in grammar.required_tags {
+        if extract_first_tag_text(xml, required.as_bytes()).is_none() {
+            return Err("Missing required tag");
+        }
+    }
+
+    match lower_cmd.as_str() {
+        "sync" => {
+            if let Some(class) = extract_first_tag_text(xml, b"Class") {
+                const SUPPORTED_SYNC_CLASSES: &[&str] = &[
+                    "Calendar", "Contacts", "Email", "Notes", "Tasks",
+                    "DocumentLibrary", "SMS", "RightsManagement",
+                ];
+                if !SUPPORTED_SYNC_CLASSES.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
+                    return Err("Unsupported Sync class");
+                }
+            }
+            if xml.contains("<Add>") && !xml.contains("<ClientId>") {
+                return Err("Add requires ClientId");
+            }
+            if xml.contains("AppointmentReplyTime") || xml.contains("ResponseType") {
+                return Err("Response-only fields not permitted in Sync request");
+            }
+            if let Some(all_day) = extract_first_tag_text(xml, b"AllDayEvent") {
+                if all_day.trim() == "1" && extract_first_tag_text(xml, b"Timezone").is_some() {
+                    return Err("AllDayEvent=1 must not include Timezone");
+                }
+            }
+        }
+        "meetingresponse" => {
+            if extract_first_tag_text(xml, b"UserResponse").is_none() {
+                return Err("MeetingResponse requires UserResponse");
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
@@ -343,25 +404,6 @@ fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> 
         || item.attendees.iter().any(|a| a.email.to_ascii_lowercase().contains(&q))
 }
 
-fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
-    if cmd == "sync" {
-        const SUPPORTED_SYNC_CLASSES: &[&str] = &[
-            "Calendar", "Contacts", "Email", "Notes", "Tasks",
-            "DocumentLibrary", "SMS", "RightsManagement",
-        ];
-        let class = extract_first_tag_text(xml, b"Class").ok_or("Missing required Sync Class")?;
-        if !SUPPORTED_SYNC_CLASSES.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
-            return Err("Unsupported Sync class");
-        }
-    }
-
-    if cmd == "meetingresponse" && !xml.contains("<UserResponse>") {
-        return Err("MeetingResponse requires UserResponse");
-    }
-
-    Ok(())
-}
-
 fn make_request_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -488,21 +530,14 @@ fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
 }
 
 fn parse_request(query: &HashMap<String, String>, xml: &str) -> EasRequest {
-    // GAP-38: Parse WindowSize (default 100, clamp to 512 per MS-ASCMD §2.2.3.199).
     let window_size = extract_first_tag_text(xml, b"WindowSize")
         .and_then(|v| v.parse::<usize>().ok())
         .map(|v| if v == 0 { 100 } else if v > 512 { 512 } else { v });
-
-    // GAP-38: GetChanges is bool; absent means true (per MS-ASCMD §2.2.3.84 SyncKey≠0
-    // interpretation). Option<bool> with .or(Some(true)) was misleading — simplified to bool.
     let get_changes = extract_first_tag_text(xml, b"GetChanges")
         .map(|v| v.trim() != "0")
-        .unwrap_or(true); // Per MS-ASCMD §2.2.3.84: absent = true when SyncKey≠0
-
-    // GAP-40: Parse FilterType from Options element.
+        .unwrap_or(true);
     let filter_type = extract_first_tag_text(xml, b"FilterType")
         .and_then(|v| v.parse::<u8>().ok());
-
     EasRequest {
         command: extract_root_command(xml)
             .or_else(|| command_from_query(query))
@@ -522,7 +557,6 @@ fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String 
     format!("{visible_collection_id}::{device_id}")
 }
 
-/// Parse DeviceInformation block from Provision or Settings request XML.
 fn parse_device_information(xml: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) {
     (
         extract_first_tag_text(xml, b"FriendlyName"),
@@ -534,8 +568,6 @@ fn parse_device_information(xml: &str) -> (Option<String>, Option<String>, Optio
     )
 }
 
-/// Build the EASProvisionDoc XML body. Advertises a permissive security policy.
-/// Per MS-ASPROV §2.2.2.28 this element is REQUIRED in the initial Provision response.
 fn eas_provision_doc_xml() -> &'static str {
     r#"<EASProvisionDoc>
 <DevicePasswordEnabled>0</DevicePasswordEnabled>
@@ -588,11 +620,9 @@ async fn handle_ping(
     const MIN_HEARTBEAT_SECS: u64 = 60;
     const MAX_HEARTBEAT_SECS: u64 = 3540;
     const MAX_PING_FOLDERS: usize = 200;
-
     let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
     let cache_key = format!("{}:{}", owner, device_id);
     let cached = PING_CACHE.lock().ok().and_then(|c| c.get(&cache_key).cloned());
-
     let heartbeat = extract_first_tag_text(xml, b"HeartbeatInterval")
         .and_then(|v| v.parse::<u64>().ok())
         .or_else(|| cached.as_ref().map(|e| e.heartbeat));
@@ -600,12 +630,10 @@ async fn handle_ping(
         let parsed = parse_ping_folders(xml);
         if parsed.is_empty() { cached.map(|e| e.folders).unwrap_or_default() } else { parsed }
     };
-
     if heartbeat.is_none() || folders.is_empty() {
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>3</Status></Ping>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
-
     let heartbeat = heartbeat.unwrap_or(MIN_HEARTBEAT_SECS);
     if !(MIN_HEARTBEAT_SECS..=MAX_HEARTBEAT_SECS).contains(&heartbeat) {
         let corrected = heartbeat.clamp(MIN_HEARTBEAT_SECS, MAX_HEARTBEAT_SECS);
@@ -615,7 +643,6 @@ async fn handle_ping(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
     }
-
     if folders.len() > MAX_PING_FOLDERS {
         let xml = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>6</Status><MaxFolders>{}</MaxFolders></Ping>"#,
@@ -623,16 +650,13 @@ async fn handle_ping(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
     }
-
     if folders.iter().any(|f| !f.id.eq("1") || !f.class_name.eq_ignore_ascii_case("Calendar")) {
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>7</Status></Ping>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
-
     if let Ok(mut cache) = PING_CACHE.lock() {
         cache.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() });
     }
-
     let deadline = Instant::now() + Duration::from_secs(heartbeat);
     loop {
         let mut changed_folders = Vec::new();
@@ -676,7 +700,6 @@ async fn merged_freebusy_for_mailbox(
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
         / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
-
     let caldav = CaldavClient::new(&state.cfg);
     if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
         && let Some(collection_href) = calendars.first()
@@ -741,7 +764,6 @@ async fn handle_resolve_recipients(
         };
         Some((start, end))
     } else { None };
-
     let mut recipient_xml = String::new();
     for recipient in &recipients {
         let avail_xml = if let Some((start, end)) = availability_window {
@@ -753,7 +775,6 @@ async fn handle_resolve_recipients(
             sync::xml_escape(recipient), sync::xml_escape(recipient), avail_xml
         ));
     }
-
     let primary = recipients.first().cloned().unwrap_or_else(|| username.to_string());
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
@@ -775,7 +796,6 @@ async fn load_calendar_events(
         &end.format("%Y%m%dT%H%M%SZ").to_string(),
         username, password,
     ).await?;
-
     let mut reader = Reader::from_str(&events_xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -940,8 +960,6 @@ async fn handle_provision(
 ) -> Response {
     let device_id = req.device_id.clone().unwrap_or_else(|| "unknown-device".to_string());
     let incoming_key = req.policy_key.clone().unwrap_or_else(|| "0".to_string());
-
-    // GAP-34: Store DeviceInformation when present (MS-ASPROV §3.1.5.1.1).
     let (friendly_name, model, os, phone_number, imei, user_agent) = parse_device_information(xml);
     if [
         friendly_name.as_ref(),
@@ -966,14 +984,11 @@ async fn handle_provision(
             tracing::warn!("Failed to upsert device info for {}: {}", device_id, e);
         }
     }
-
-    // Phase 1: Initial policy download (PolicyKey=0).
     if incoming_key == "0" {
         let server_policy_key = Uuid::new_v4().simple().to_string();
         if let Err(e) = state.storage.set_provision_policy(owner, &device_id, &server_policy_key, "pending").await {
             tracing::warn!("request_id={} failed storing provision policy: {}", request_id, e);
         }
-        // GAP-33: EASProvisionDoc is REQUIRED in the initial response per MS-ASPROV §2.2.2.28.
         let response = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
 <Provision xmlns="Provision:">
@@ -994,8 +1009,6 @@ async fn handle_provision(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id);
     }
-
-    // Phase 2: Policy acknowledgement.
     let valid = match state.storage.get_provision_policy(owner, &device_id).await {
         Ok(Some((stored, _))) => stored == incoming_key,
         _ => false,
@@ -1018,7 +1031,6 @@ async fn handle_provision(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id);
     }
-
     success_status_response(wbxml, as_wbxml, "Provision", "Provision:", "2", "", request_id)
 }
 
@@ -1129,7 +1141,6 @@ pub async fn handle(
     if maybe_throttle(&username, &device_id) {
         return throttled_response(&request_id);
     }
-
     match req.command.as_str() {
         "FolderSync" => handle_folder_sync(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await,
         "Provision" => handle_provision(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
@@ -1141,7 +1152,6 @@ pub async fn handle(
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
             let mut mutation_responses = String::new();
-
             if xml.contains("<Add") || xml.contains("<Change") || xml.contains("<Delete")
                 || xml.contains(":Add") || xml.contains(":Change") || xml.contains(":Delete")
             {
@@ -1156,8 +1166,6 @@ pub async fn handle(
                     }
                 }
             }
-
-            // GAP-38/40: Build SyncOptions from parsed request fields.
             let opts = SyncOptions {
                 window_size: req.window_size.unwrap_or(100),
                 get_changes: req.get_changes,
@@ -1165,7 +1173,6 @@ pub async fn handle(
                     .map(filter_type_to_start)
                     .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
             };
-
             match sync::perform_sync(
                 state, &username, collection_id, &state_collection_id,
                 incoming_key, class, opts, &username, &password, &mutation_responses,
@@ -1277,20 +1284,19 @@ mod tests {
     #[test]
     fn validates_sync_rejects_response_only_calendar_fields() {
         let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class><Commands><Change><ServerId>abc</ServerId><ApplicationData><Calendar:AppointmentReplyTime xmlns:Calendar="Calendar:">20260322T120000Z</Calendar:AppointmentReplyTime></ApplicationData></Change></Commands></Collection></Collections></Sync>"#;
-        assert!(validate_payload("Sync", xml).is_err(), "AppointmentReplyTime must be rejected");
+        assert!(validate_payload("Sync", xml).is_err());
     }
 
     #[test]
     fn validates_sync_rejects_response_type_in_request() {
         let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class><Commands><Change><ServerId>abc</ServerId><ApplicationData><Calendar:ResponseType xmlns:Calendar="Calendar:">3</Calendar:ResponseType></ApplicationData></Change></Commands></Collection></Collections></Sync>"#;
-        assert!(validate_payload("Sync", xml).is_err(), "ResponseType must be rejected");
+        assert!(validate_payload("Sync", xml).is_err());
     }
 
-    // GAP-35: AllDayEvent=1 MUST NOT include Timezone (MS-ASCAL §2.2.2.44).
     #[test]
     fn validates_sync_rejects_allday_with_timezone() {
         let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>1</SyncKey><Class>Calendar</Class><Commands><Add><ClientId>x</ClientId><ApplicationData><Calendar:AllDayEvent xmlns:Calendar="Calendar:">1</Calendar:AllDayEvent><Calendar:Timezone xmlns:Calendar="Calendar:">AAAA</Calendar:Timezone></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
-        assert!(validate_payload("Sync", xml).is_err(), "AllDayEvent=1 with Timezone must be rejected");
+        assert!(validate_payload("Sync", xml).is_err());
     }
 
     #[test]
@@ -1359,23 +1365,20 @@ mod tests {
         let t0 = filter_type_to_start(0);
         let t5 = filter_type_to_start(5);
         let t7 = filter_type_to_start(7);
-        // FilterType=0 is the most permissive (furthest in the past).
         assert!(t0 < t5);
         assert!(t5 < t7);
     }
 
     #[test]
     fn wbxml_decoded_xml_passes_namespace_check() {
-        // WBXML-decoded XML has no xmlns; validate_payload must accept it via root tag.
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync><Collections><Collection><CollectionId>1</CollectionId><SyncKey>0</SyncKey><Class>Calendar</Class></Collection></Collections></Sync>"#;
-        assert!(validate_payload("Sync", xml).is_ok(), "WBXML-decoded XML must pass namespace check");
+        assert!(validate_payload("Sync", xml).is_ok());
     }
 
     #[test]
     fn provision_grammar_allows_device_information_only() {
-        // A Provision request with DeviceInformation but no Policies must pass validation.
         let xml = r#"<Provision xmlns="Provision:"><DeviceInformation><Set><FriendlyName>My Phone</FriendlyName><Model>Pixel 9</Model><OS>Android 15</OS></Set></DeviceInformation></Provision>"#;
-        assert!(validate_payload("Provision", xml).is_ok(), "Provision with DeviceInformation only must validate");
+        assert!(validate_payload("Provision", xml).is_ok());
     }
 
     #[test]
@@ -1395,7 +1398,7 @@ mod tests {
             ("Ping", r#"<Ping xmlns="Ping:"><HeartbeatInterval>60</HeartbeatInterval><Folders/></Ping>"#),
         ];
         for (cmd, xml) in cases {
-            assert!(validate_payload(cmd, xml).is_ok(), "{cmd} should validate");
+            assert!(validate_payload(cmd, xml).is_ok());
         }
     }
 
@@ -1408,3 +1411,4 @@ mod tests {
         assert_eq!(folders[0].class_name, "Calendar");
     }
 }
+```
