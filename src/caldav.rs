@@ -3,8 +3,6 @@ use crate::config::Config;
 use anyhow::Result;
 use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
-use quick_xml::Reader;
-use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
