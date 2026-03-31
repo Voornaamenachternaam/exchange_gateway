@@ -580,8 +580,8 @@ async function handleUpsertDeviceInfo(request, env) {
         user_agent    = excluded.user_agent,
         last_seen     = CURRENT_TIMESTAMP
     `)
-    .bind(owner, device_id, friendly_name || null, model || null, os || null,
-          phone_number || null, imei || null, user_agent || null)
+    .bind(owner, device_id, friendly_name, model, os,
+          phone_number, imei, user_agent)
     .run();
   return Response.json({ success: true });
 }
