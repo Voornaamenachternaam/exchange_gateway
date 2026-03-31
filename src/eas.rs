@@ -1415,4 +1415,3 @@ mod tests {
         assert_eq!(folders[0].class_name, "Calendar");
     }
 }
-```
