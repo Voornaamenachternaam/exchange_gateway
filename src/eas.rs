@@ -530,7 +530,7 @@ fn parse_request(query: &HashMap<String, String>, xml: &str) -> EasRequest {
     // GAP-38: Parse WindowSize (default 100, clamp to 512 per MS-ASCMD §2.2.3.199).
     let window_size = extract_first_tag_text(xml, b"WindowSize")
         .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| if v == 0 || v > 512 { 512 } else { v });
+        .map(|v| if v == 0 { 100 } else if v > 512 { 512 } else { v });
 
     // GAP-38: GetChanges is bool; absent means true (per MS-ASCMD §2.2.3.84 SyncKey≠0
     // interpretation). Option<bool> with .or(Some(true)) was misleading — simplified to bool.
