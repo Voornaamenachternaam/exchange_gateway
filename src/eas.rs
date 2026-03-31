@@ -954,7 +954,7 @@ async fn handle_provision(
     .iter()
     .any(|v| v.is_some())
     {
-        let _ = state.storage.upsert_device_info(
+        if let Err(e) = state.storage.upsert_device_info(
             owner, &device_id,
             friendly_name.as_deref().unwrap_or(""),
             model.as_deref().unwrap_or(""),
@@ -962,8 +962,9 @@ async fn handle_provision(
             phone_number.as_deref().unwrap_or(""),
             imei.as_deref().unwrap_or(""),
             user_agent.as_deref().unwrap_or(""),
-        ).await;
-    }
+        ).await {
+            tracing::warn!("Failed to upsert device info for {}: {}", device_id, e);
+        }
 
     // Phase 1: Initial policy download (PolicyKey=0).
     if incoming_key == "0" {
