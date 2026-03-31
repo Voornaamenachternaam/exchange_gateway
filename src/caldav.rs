@@ -24,22 +24,6 @@ impl CaldavClient {
         }
     }
 
-    /// Discover the calendar collections for a user.
-    ///
-    /// Issues PROPFIND Depth:1 on the CalDAV calendar home
-    /// (`{caldav_base}/cal/{username}/`) to find actual calendar collection
-    /// URLs (resourcetype includes `<C:calendar/>`). Per RFC 4791 §7.8, a
-    /// `calendar-query` REPORT is only valid on a calendar *collection*, not
-    /// on the calendar home-set.
-    ///
-    /// The `home_url` is passed to `parse_calendar_collection_hrefs` so it
-    /// can exclude the home-set entry itself from the results — previously the
-    /// function compared against `caldav_base` (e.g. `.../dav/`) which never
-    /// matched the home-set path (e.g. `.../dav/cal/alice/`), so the home-set
-    /// was incorrectly included in the returned collection list.
-    ///
-    /// Falls back to Stalwart's well-known `/dav/cal/{username}/default/` path
-    /// if discovery fails or returns nothing.
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
 
@@ -62,7 +46,7 @@ impl CaldavClient {
             .await;
 
         match resp {
-            Ok(r) if r.status().is_success() || r.status().as_u16() == 207 => {
+            Ok(r) if r.status().is_success() => {
                 // Explicitly handle the body-read Result so transient network
                 // errors are surfaced in logs rather than silently becoming an
                 // empty parse.
