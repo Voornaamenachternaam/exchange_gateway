@@ -305,10 +305,13 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
         }
     };
 
-    let home_url_parsed = reqwest::Url::parse(home_url).map_err(|e| {
-        log::error!("Failed to parse home URL {}: {}", home_url, e);
-        e
-    }).ok();
+    let home_url_parsed = match reqwest::Url::parse(home_url) {
+        Ok(url) => Some(url),
+        Err(e) => {
+            tracing::error!("Failed to parse home URL {}: {}", home_url, e);
+            None
+        }
+    };
     let home_path = home_url_parsed.as_ref()
         .map(|u| u.path().trim_end_matches('/').to_string())
         .unwrap_or_else(|| home_url.trim_end_matches('/').to_string());
