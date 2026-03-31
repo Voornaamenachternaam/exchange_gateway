@@ -1312,6 +1312,15 @@ pub async fn perform_sync(
                 more_available = true;
                 break;
             }
+            commands.push_str(&format!("<Delete><ServerId>{}</ServerId></Delete>", xml_escape(server_id)));
+            items_included += 1;
+        }
+    }
+        for server_id in &pending_deletes {
+            if items_included >= window_size {
+                more_available = true;
+                break;
+            }
             commands.push_str(&format!(
                 "<Delete><ServerId>{}</ServerId></Delete>",
                 xml_escape(server_id)
