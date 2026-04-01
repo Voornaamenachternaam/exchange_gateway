@@ -146,9 +146,11 @@ fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String
 }
 
 fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
-    query.get("Cmd")
-        .or_else(|| query.get("cmd"))
-        .cloned()
+    query
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Cmd"))
+        .map(|(_, v)| v.clone())
+}
 }
 
 fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
