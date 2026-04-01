@@ -1129,7 +1129,7 @@ pub async fn perform_sync(
             more_available = true;
             break;
         }
-        if let Err(e) = storage
+        storage
             .upsert_item_map(
                 owner,
                 &collection_href,
@@ -1138,10 +1138,7 @@ pub async fn perform_sync(
                 &pi.uid,
                 &pi.etag,
             )
-            .await
-        {
-            tracing::warn!("sync: failed to persist item map for {}: {}", pi.server_id, e);
-        }
+            .await?;
         if pi.is_add {
             commands.push_str("<Add><ServerId>");
             commands.push_str(&pi.server_id);
