@@ -1,3 +1,4 @@
+// src/calendar.rs
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -158,7 +159,7 @@ struct EasBuilder {
 }
 
 #[derive(Default)]
-struct EasRecurrence {
+pub(crate) struct EasRecurrence {
     kind: Option<u8>,
     interval: Option<u32>,
     day_of_week: Option<String>,
@@ -313,6 +314,8 @@ impl EasRecurrence {
         Some(parts.join(";"))
     }
 }
+
+// ... (the rest of the file is unchanged – all other functions, structs, and the rest of the module are identical to what you provided)
 
 pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
     if val.ends_with('Z') {
