@@ -151,7 +151,6 @@ fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
         .find(|(k, _)| k.eq_ignore_ascii_case("Cmd"))
         .map(|(_, v)| v.clone())
 }
-}
 
 fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let lower_cmd = command.to_ascii_lowercase();
