@@ -1112,8 +1112,7 @@ pub async fn perform_sync(
     if !initial_sync {
         let tombstones = storage
             .list_deleted_since_seq(owner, since)
-            .await
-            .unwrap_or_default();
+            .await?;
         for (_, sid) in tombstones {
             if !seen_ids.contains(sid.as_str()) {
                 pending_deletes.push(sid);
