@@ -14,6 +14,7 @@ use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
+use hmac::digest::KeyInit;
 type HmacSha256 = Hmac<Sha256>;
 pub const INVALID_SYNC_KEY_STATUS: &str = "9";
 const DEFAULT_WINDOW_SIZE: usize = 100;
