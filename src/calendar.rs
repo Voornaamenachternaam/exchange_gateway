@@ -160,16 +160,16 @@ struct EasBuilder {
 
 #[derive(Default)]
 pub(crate) struct EasRecurrence {
-    kind: Option<u8>,
-    interval: Option<u32>,
-    day_of_week: Option<String>,
-    day_of_month: Option<u32>,
-    week_of_month: Option<u32>,
-    month_of_year: Option<u32>,
-    until: Option<String>,
-    occurrences: Option<u32>,
-    first_day_of_week: Option<u32>,
-    calendar_type: Option<u8>,
+    pub kind: Option<u8>,
+    pub interval: Option<u32>,
+    pub day_of_week: Option<String>,
+    pub day_of_month: Option<u32>,
+    pub week_of_month: Option<u32>,
+    pub month_of_year: Option<u32>,
+    pub until: Option<String>,
+    pub occurrences: Option<u32>,
+    pub first_day_of_week: Option<u32>,
+    pub calendar_type: Option<u8>,
 }
 
 impl EasBuilder {
