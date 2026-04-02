@@ -1,5 +1,4 @@
 // src/ews.rs
-
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
@@ -456,7 +455,7 @@ fn ews_month_name(month: &str) -> &'static str {
 fn ews_days_of_week(byday: &str) -> String {
     byday.replace("MO","Monday").replace("TU","Tuesday").replace("WE","Wednesday")
         .replace("TH","Thursday").replace("FR","Friday").replace("SA","Saturday")
-        .replace("SU","Sunday").replace(',',' ')
+        .replace("SU","Sunday").replace(",", " ")
 }
 
 fn ews_day_of_week_index(ord: i32) -> &'static str {
@@ -750,10 +749,6 @@ fn unauthorized() -> Response {
     (StatusCode::UNAUTHORIZED, [("WWW-Authenticate", "Basic realm=\"EWS\"")], "Unauthorized").into_response()
 }
 
-/// GAP-31: Per MS-OXWSCORE §3.1.4, every EWS SOAP response MUST include a
-/// `<s:Header>` with `<t:ServerVersionInfo>`. Without it, new Outlook for
-/// Windows 11 cannot determine the EWS schema version and falls back to
-/// reduced protocol capability.
 fn soap_ok(inner: String) -> Response {
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -773,7 +768,6 @@ fn soap_ok(inner: String) -> Response {
     (StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
 
-/// GAP-31: soap_fault also includes the SOAP header for consistency.
 fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -797,9 +791,6 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
 
-/// GAP-37: This function was previously malformed — its body contained a nested
-/// `fn validate_requested_folder` definition, making it a compile error.
-/// This is the correct standalone implementation.
 fn operation_error_response(action: &EwsAction, code: &str, message: &str, status: StatusCode) -> Response {
     let resp_msg = match action {
         EwsAction::GetFolder => "GetFolderResponseMessage",
@@ -850,15 +841,12 @@ fn soap_fault_with_status(code: &str, message: &str, status: StatusCode, body_in
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
 
-/// GAP-37: This function previously had a duplicate for loop and brace errors.
-/// This is the correct standalone implementation.
 fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Result<(), Response> {
     let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
     let explicit_id = extract_first_attr(body, b"FolderId", b"Id");
     let parent_id = extract_first_attr(body, b"ParentFolderId", b"Id");
     let sync_id = extract_first_attr(body, b"SyncFolderId", b"Id");
 
-    // Check all explicit IDs belong to this owner.
     let all_owner_ids: Vec<String> = [
         DistinguishedFolder::Calendar, DistinguishedFolder::MsgFolderRoot,
         DistinguishedFolder::Inbox, DistinguishedFolder::SentItems,
@@ -880,7 +868,6 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
         }
     }
 
-    // validate_folder_request checks DistinguishedFolderId against supported values.
     if let Some(error_code) = validate_folder_request(
         owner, distinguished.as_deref(), explicit_id.as_deref(), sync_id.as_deref(),
     ) {
@@ -894,7 +881,6 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
     Ok(())
 }
 
-#[derive(Clone)]
 struct CurrentCalendarItem {
     row: EwsItemRow,
     item: crate::calendar::CalendarItem,
@@ -1253,7 +1239,6 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     if !field_changes.is_empty() {
         apply_field_changes(&mut current_item, &field_changes);
     } else {
-        // Fallback: legacy tag-name extraction.
         if let Some(v) = extract_ews_field(body, b"Subject").or_else(|| extract_ews_field(body, b"Value")) { current_item.subject = v; }
         if let Some(v) = extract_ews_field(body, b"Start").and_then(|v| crate::calendar::parse_datetime(&v)) { current_item.start = v; }
         if let Some(v) = extract_ews_field(body, b"End").and_then(|v| crate::calendar::parse_datetime(&v)) { current_item.end = v; }
@@ -1403,11 +1388,9 @@ mod tests {
         assert_eq!(parse_sync_state_marker(Some(encoded)).ok(), Some((12, 34)));
     }
 
-    // GAP-31: soap_ok must include <s:Header> with ServerVersionInfo.
     #[test]
     fn soap_ok_includes_server_version_header() {
         let resp = soap_ok("<test/>".to_string());
-        // We can't easily inspect the response body in a unit test, but we verify it builds.
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -1507,7 +1490,6 @@ mod tests {
 
     #[test]
     fn operation_error_response_is_standalone_function() {
-        // GAP-37: Verify operation_error_response is callable as a standalone function.
         let resp = operation_error_response(&EwsAction::FindItem, "ErrorInvalidPagingMaxRows", "bad", StatusCode::OK);
         assert_eq!(resp.status(), StatusCode::OK);
     }
