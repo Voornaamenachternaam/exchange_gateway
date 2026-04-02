@@ -19,7 +19,7 @@ chrono = { version = "^0.4.44", features = ["serde"] }
 chrono-tz = "^0.10.4"
 rrule = "^0.14.0"
 icalendar = "^0.17.6"
-hmac = "^0.12.1"
+hmac = "^0.13.0"
 sha2 = "^0.11.0"
 bytes = "^1.11.1"
 lazy_static = "^1.5.0"
