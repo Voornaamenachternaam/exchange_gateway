@@ -1,3 +1,4 @@
+// src/calendar.rs
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -158,7 +159,7 @@ struct EasBuilder {
 }
 
 #[derive(Default)]
-struct EasRecurrence {
+pub(crate) struct EasRecurrence {
     kind: Option<u8>,
     interval: Option<u32>,
     day_of_week: Option<String>,
@@ -1847,7 +1848,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
 mod tests {
 use super::{
     parse_datetime, parse_eas_sync_mutations, parse_ews_attendees, parse_ews_recurrence,
-    parse_ics_event, render_ics,
+    parse_ics_event, render_ics, EasRecurrence,
 };
 
     #[test]
