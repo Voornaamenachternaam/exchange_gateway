@@ -10,6 +10,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{Duration, TimeZone, Utc};
 use hmac::{Hmac, Mac};
+use hmac::digest::KeyInit;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
