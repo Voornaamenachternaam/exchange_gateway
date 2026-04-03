@@ -860,8 +860,7 @@ impl Wbxml {
             buf.push(token);
             return Ok(());
         }
-        tracing::warn!("WBXML encode: unknown tag '{}' — skipped", name_str);
-        Ok(())
+        return Err(anyhow!("WBXML encode: unknown tag '{}'", name_str));
     }
 }
 
