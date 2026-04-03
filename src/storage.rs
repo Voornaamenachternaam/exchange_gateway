@@ -1,5 +1,4 @@
-// src/storage.rs
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -148,8 +147,7 @@ impl Storage {
         if !resp.status().is_success() {
             return Err(anyhow!("worker GET {} returned {}", url, resp.status()));
         }
-        let v = resp.json::<T>().await?;
-        Ok(v)
+        Ok(resp.json::<T>().await?)
     }
 
     pub async fn set_sync_key(
@@ -225,18 +223,25 @@ impl Storage {
         self.post_json(
             "put_client_sync_command",
             &Req { owner, collection_id, client_id, server_id, status },
-        ).await
+        )
+        .await
     }
 
     pub async fn delete_item_by_server_id(&self, owner: &str, server_id: &str) -> Result<()> {
         #[derive(Serialize)]
-        struct Req<'a> { owner: &'a str, server_id: &'a str }
+        struct Req<'a> {
+            owner: &'a str,
+            server_id: &'a str,
+        }
         self.post_json("delete_item_by_server_id", &Req { owner, server_id }).await
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
         #[derive(Serialize)]
-        struct Req<'a> { owner: &'a str, server_id: &'a str }
+        struct Req<'a> {
+            owner: &'a str,
+            server_id: &'a str,
+        }
         self.post_json("add_delete_tombstone", &Req { owner, server_id }).await
     }
 
@@ -245,13 +250,28 @@ impl Storage {
         owner: &str,
         since_unix_ts: i64,
     ) -> Result<Vec<(String, String)>> {
-        let path = format!("list_changes_since?owner={}&since={}", urlencoding::encode(owner), since_unix_ts);
+        let path = format!(
+            "list_changes_since?owner={}&since={}",
+            urlencoding::encode(owner),
+            since_unix_ts
+        );
         let rows: Vec<ChangeRow> = self.get_json(&path).await?;
-        Ok(rows.into_iter().map(|r| (r.server_id, r.resource_href.unwrap_or_default())).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.server_id, r.resource_href.unwrap_or_default()))
+            .collect())
     }
 
-    pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
-        let path = format!("list_deleted_since?owner={}&since={}", urlencoding::encode(owner), since_unix_ts);
+    pub async fn list_deleted_since(
+        &self,
+        owner: &str,
+        since_unix_ts: i64,
+    ) -> Result<Vec<String>> {
+        let path = format!(
+            "list_deleted_since?owner={}&since={}",
+            urlencoding::encode(owner),
+            since_unix_ts
+        );
         let rows: Vec<TombstoneRow> = self.get_json(&path).await?;
         Ok(rows.into_iter().map(|r| r.server_id).collect())
     }
@@ -268,10 +288,14 @@ impl Storage {
     ) -> Result<Vec<(i64, String, Option<String>)>> {
         let path = format!(
             "list_changes_since_seq?owner={}&since={}",
-            urlencoding::encode(owner), since_seq
+            urlencoding::encode(owner),
+            since_seq
         );
         let rows: Vec<ChangeRow> = self.get_json(&path).await?;
-        Ok(rows.into_iter().map(|r| (r.seq.unwrap_or(0), r.server_id, r.resource_href)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.seq.unwrap_or(0), r.server_id, r.resource_href))
+            .collect())
     }
 
     pub async fn list_journal_since_seq(
@@ -283,7 +307,10 @@ impl Storage {
     ) -> Result<Vec<JournalRow>> {
         let path = format!(
             "list_journal_since_seq?owner={}&since={}&until={}&limit={}",
-            urlencoding::encode(owner), since_seq, until_seq, limit
+            urlencoding::encode(owner),
+            since_seq,
+            until_seq,
+            limit
         );
         self.get_json(&path).await
     }
@@ -295,10 +322,14 @@ impl Storage {
     ) -> Result<Vec<(i64, String)>> {
         let path = format!(
             "list_deleted_since_seq?owner={}&since={}",
-            urlencoding::encode(owner), since_seq
+            urlencoding::encode(owner),
+            since_seq
         );
         let rows: Vec<TombstoneRow> = self.get_json(&path).await?;
-        Ok(rows.into_iter().map(|r| (r.seq.unwrap_or(0), r.server_id)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.seq.unwrap_or(0), r.server_id))
+            .collect())
     }
 
     pub async fn set_provision_policy(
@@ -319,14 +350,13 @@ impl Storage {
     ) -> Result<Option<(String, String)>> {
         let path = format!(
             "get_provision_policy?owner={}&device_id={}",
-            urlencoding::encode(owner), urlencoding::encode(device_id)
+            urlencoding::encode(owner),
+            urlencoding::encode(device_id)
         );
         let row: Option<ProvisionRow> = self.get_json(&path).await?;
         Ok(row.map(|r| (r.policy_key, r.policy_status)))
     }
 
-    /// Store device information received from a Provision or Settings request.
-    /// GAP-34/GAP-42: Required for diagnostics and Outlook pairing correctness.
     pub async fn upsert_device_info(
         &self,
         owner: &str,
@@ -352,7 +382,8 @@ impl Storage {
         self.post_json(
             "upsert_device_info",
             &Req { owner, device_id, friendly_name, model, os, phone_number, imei, user_agent },
-        ).await
+        )
+        .await
     }
 
     pub async fn list_ews_items(
@@ -363,7 +394,9 @@ impl Storage {
     ) -> Result<Vec<EwsItemRow>> {
         let path = format!(
             "list_ews_items?owner={}&limit={}&offset={}",
-            urlencoding::encode(owner), limit, offset
+            urlencoding::encode(owner),
+            limit,
+            offset
         );
         self.get_json(&path).await
     }
@@ -371,7 +404,8 @@ impl Storage {
     pub async fn get_ews_sync_state(&self, owner: &str, folder_id: &str) -> Result<Option<String>> {
         let path = format!(
             "get_ews_sync_state?owner={}&folder_id={}",
-            urlencoding::encode(owner), urlencoding::encode(folder_id)
+            urlencoding::encode(owner),
+            urlencoding::encode(folder_id)
         );
         let row: Option<EwsSyncStateRow> = self.get_json(&path).await?;
         Ok(row.map(|r| r.sync_state))
@@ -384,7 +418,8 @@ impl Storage {
     ) -> Result<Option<EwsItemRow>> {
         let path = format!(
             "get_ews_item_by_id?owner={}&server_id={}",
-            urlencoding::encode(owner), urlencoding::encode(server_id)
+            urlencoding::encode(owner),
+            urlencoding::encode(server_id)
         );
         self.get_json(&path).await
     }
@@ -396,7 +431,12 @@ impl Storage {
         sync_state: &str,
     ) -> Result<()> {
         #[derive(Serialize)]
-        struct Req<'a> { owner: &'a str, folder_id: &'a str, sync_state: &'a str }
-        self.post_json("set_ews_sync_state", &Req { owner, folder_id, sync_state }).await
+        struct Req<'a> {
+            owner: &'a str,
+            folder_id: &'a str,
+            sync_state: &'a str,
+        }
+        self.post_json("set_ews_sync_state", &Req { owner, folder_id, sync_state })
+            .await
     }
 }

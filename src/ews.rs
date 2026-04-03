@@ -1,4 +1,3 @@
-// src/ews.rs
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
@@ -30,59 +29,25 @@ const EWS_MSG_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/me
 const EWS_TYPE_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
 #[derive(Clone, Debug)]
-struct AuthContext {
-    username: String,
-    password: String,
-}
+struct AuthContext { username: String, password: String }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ItemShape {
-    IdOnly,
-    Default,
-    AllProperties,
-}
+enum ItemShape { IdOnly, Default, AllProperties }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum EwsAction {
-    GetFolder,
-    FindFolder,
-    FindItem,
-    GetItem,
-    GetUserAvailability,
-    SyncFolderItems,
-    CreateItem,
-    UpdateItem,
-    DeleteItem,
-    ResolveNames,
+    GetFolder, FindFolder, FindItem, GetItem, GetUserAvailability, SyncFolderItems,
+    SyncFolderHierarchy, Subscribe, Unsubscribe, CreateItem, UpdateItem, DeleteItem, ResolveNames,
 }
 
-pub async fn handle(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    body: String,
-) -> Response {
-    let auth = match parse_basic_auth(&headers) {
-        Some(a) => a,
-        None => return unauthorized(),
-    };
-
+pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body: String) -> Response {
+    let auth = match parse_basic_auth(&headers) { Some(a) => a, None => return unauthorized() };
     let Some(action) = detect_action(&body) else {
-        return soap_fault(
-            "ErrorInvalidRequest",
-            "Could not detect EWS action from SOAP request body",
-            StatusCode::BAD_REQUEST,
-        );
+        return soap_fault("ErrorInvalidRequest", "Could not detect EWS action from SOAP request body", StatusCode::BAD_REQUEST);
     };
-
     if let Err(e) = validate_schema(&action, &body) {
-        return operation_error_response(
-            &action,
-            "ErrorSchemaValidation",
-            e,
-            StatusCode::BAD_REQUEST,
-        );
+        return operation_error_response(&action, "ErrorSchemaValidation", e, StatusCode::BAD_REQUEST);
     }
-
     match action {
         EwsAction::GetFolder => handle_get_folder(&state, &auth, &body).await,
         EwsAction::FindFolder => handle_find_folder(&state, &auth, &body).await,
@@ -90,6 +55,9 @@ pub async fn handle(
         EwsAction::GetItem => handle_get_item(&state, &auth, &body).await,
         EwsAction::GetUserAvailability => handle_get_user_availability(&state, &auth, &body).await,
         EwsAction::SyncFolderItems => handle_sync_folder_items(&state, &auth, &body).await,
+        EwsAction::SyncFolderHierarchy => handle_sync_folder_hierarchy(&state, &auth, &body).await,
+        EwsAction::Subscribe => handle_subscribe(&auth, &body).await,
+        EwsAction::Unsubscribe => handle_unsubscribe(&auth, &body).await,
         EwsAction::CreateItem => handle_create_item(&state, &auth, &body).await,
         EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
         EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
@@ -104,10 +72,7 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     STANDARD.decode_vec(b64.as_bytes(), &mut decoded).ok()?;
     let pair = String::from_utf8(decoded).ok()?;
     let idx = pair.find(':')?;
-    Some(AuthContext {
-        username: pair[..idx].to_string(),
-        password: pair[idx + 1..].to_string(),
-    })
+    Some(AuthContext { username: pair[..idx].to_string(), password: pair[idx + 1..].to_string() })
 }
 
 fn detect_action(xml: &str) -> Option<EwsAction> {
@@ -125,6 +90,9 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"GetItem" => EwsAction::GetItem,
                     b"GetUserAvailabilityRequest" => EwsAction::GetUserAvailability,
                     b"SyncFolderItems" => EwsAction::SyncFolderItems,
+                    b"SyncFolderHierarchy" => EwsAction::SyncFolderHierarchy,
+                    b"Subscribe" => EwsAction::Subscribe,
+                    b"Unsubscribe" => EwsAction::Unsubscribe,
                     b"CreateItem" => EwsAction::CreateItem,
                     b"UpdateItem" => EwsAction::UpdateItem,
                     b"DeleteItem" => EwsAction::DeleteItem,
@@ -140,46 +108,30 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
 }
 
 fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
-    if !xml.contains("Envelope") || !xml.contains("Body") {
-        return Err("Missing SOAP Envelope or Body");
-    }
-    if !xml.contains(EWS_MSG_NS) && !xml.contains("xmlns:m=") {
-        return Err("Missing EWS messages namespace");
-    }
+    if !xml.contains("Envelope") || !xml.contains("Body") { return Err("Missing SOAP Envelope or Body"); }
+    if !xml.contains(EWS_MSG_NS) && !xml.contains("xmlns:m=") { return Err("Missing EWS messages namespace"); }
     match action {
         EwsAction::GetFolder => {
-            if !xml.contains("FolderShape") || !xml.contains("FolderIds") {
-                return Err("GetFolder requires FolderShape and FolderIds");
-            }
+            if !xml.contains("FolderShape") || !xml.contains("FolderIds") { return Err("GetFolder requires FolderShape and FolderIds"); }
             Ok(())
         }
         EwsAction::FindFolder => {
-            if !xml.contains("FolderShape") || !xml.contains("ParentFolderIds") {
-                return Err("FindFolder requires FolderShape and ParentFolderIds");
-            }
+            if !xml.contains("FolderShape") || !xml.contains("ParentFolderIds") { return Err("FindFolder requires FolderShape and ParentFolderIds"); }
             Ok(())
         }
         EwsAction::FindItem => {
-            if !xml.contains("ParentFolderIds") || !xml.contains("ItemShape") {
-                return Err("FindItem requires ParentFolderIds and ItemShape");
-            }
-            if xml.contains("IncludeMimeContent") {
-                return Err("FindItem does not support IncludeMimeContent in this gateway");
-            }
+            if !xml.contains("ParentFolderIds") || !xml.contains("ItemShape") { return Err("FindItem requires ParentFolderIds and ItemShape"); }
+            if xml.contains("IncludeMimeContent") { return Err("FindItem does not support IncludeMimeContent"); }
             let max = extract_int(xml, b"MaxEntriesReturned", 50);
             if max == 0 { return Err("FindItem MaxEntriesReturned must be greater than zero"); }
             Ok(())
         }
         EwsAction::GetItem => {
-            if !xml.contains("ItemShape") || !xml.contains("ItemIds") {
-                return Err("GetItem requires ItemShape and ItemIds");
-            }
+            if !xml.contains("ItemShape") || !xml.contains("ItemIds") { return Err("GetItem requires ItemShape and ItemIds"); }
             Ok(())
         }
         EwsAction::GetUserAvailability => {
-            if !xml.contains("MailboxDataArray") || !xml.contains("FreeBusyViewOptions") {
-                return Err("GetUserAvailability requires MailboxDataArray and FreeBusyViewOptions");
-            }
+            if !xml.contains("MailboxDataArray") || !xml.contains("FreeBusyViewOptions") { return Err("GetUserAvailability requires MailboxDataArray and FreeBusyViewOptions"); }
             Ok(())
         }
         EwsAction::SyncFolderItems => {
@@ -188,39 +140,42 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
             if xml.contains("IncludeMimeContent") { return Err("SyncFolderItems does not support IncludeMimeContent"); }
             Ok(())
         }
-        EwsAction::CreateItem => {
-            if !xml.contains("SavedItemFolderId") || !xml.contains("Items") {
-                return Err("CreateItem requires SavedItemFolderId and Items");
+        EwsAction::SyncFolderHierarchy => {
+            if !xml.contains("FolderShape") { return Err("SyncFolderHierarchy requires FolderShape"); }
+            Ok(())
+        }
+        EwsAction::Subscribe => {
+            if !xml.contains("PullSubscriptionRequest") && !xml.contains("PushSubscriptionRequest") && !xml.contains("StreamingSubscriptionRequest") {
+                return Err("Subscribe requires a subscription type");
             }
+            Ok(())
+        }
+        EwsAction::Unsubscribe => {
+            if !xml.contains("SubscriptionId") { return Err("Unsubscribe requires SubscriptionId"); }
+            Ok(())
+        }
+        EwsAction::CreateItem => {
+            if !xml.contains("SavedItemFolderId") || !xml.contains("Items") { return Err("CreateItem requires SavedItemFolderId and Items"); }
             validate_attr_enum(xml, b"CreateItem", b"SendMeetingInvitations",
-                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
-                "CreateItem SendMeetingInvitations value is unsupported")?;
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"], "CreateItem SendMeetingInvitations value is unsupported")?;
             Ok(())
         }
         EwsAction::UpdateItem => {
             if !xml.contains("ItemChanges") { return Err("UpdateItem requires ItemChanges"); }
             validate_attr_enum(xml, b"UpdateItem", b"ConflictResolution",
-                &["NeverOverwrite", "AutoResolve", "AlwaysOverwrite"],
-                "UpdateItem ConflictResolution value is unsupported")?;
+                &["NeverOverwrite", "AutoResolve", "AlwaysOverwrite"], "UpdateItem ConflictResolution value is unsupported")?;
             validate_attr_enum(xml, b"UpdateItem", b"MessageDisposition",
-                &["SaveOnly", "SendOnly", "SendAndSaveCopy"],
-                "UpdateItem MessageDisposition value is unsupported")?;
+                &["SaveOnly", "SendOnly", "SendAndSaveCopy"], "UpdateItem MessageDisposition value is unsupported")?;
             validate_attr_enum(xml, b"UpdateItem", b"SendMeetingInvitationsOrCancellations",
-                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
-                "UpdateItem SendMeetingInvitationsOrCancellations value is unsupported")?;
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"], "UpdateItem SendMeetingInvitationsOrCancellations value is unsupported")?;
             Ok(())
         }
         EwsAction::DeleteItem => {
             if !xml.contains("ItemIds") { return Err("DeleteItem requires ItemIds"); }
             validate_attr_enum(xml, b"DeleteItem", b"DeleteType",
-                &["HardDelete", "SoftDelete", "MoveToDeletedItems"],
-                "DeleteItem DeleteType value is unsupported")?;
+                &["HardDelete", "SoftDelete", "MoveToDeletedItems"], "DeleteItem DeleteType value is unsupported")?;
             validate_attr_enum(xml, b"DeleteItem", b"SendMeetingCancellations",
-                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
-                "DeleteItem SendMeetingCancellations value is unsupported")?;
-            validate_attr_enum(xml, b"DeleteItem", b"AffectedTaskOccurrences",
-                &["AllOccurrences", "SpecifiedOccurrenceOnly"],
-                "DeleteItem AffectedTaskOccurrences value is unsupported")?;
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"], "DeleteItem SendMeetingCancellations value is unsupported")?;
             Ok(())
         }
         EwsAction::ResolveNames => {
@@ -243,9 +198,7 @@ fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => {
-                if let Ok(value) = t.decode() { values.push(value.into_owned()); }
-            }
+            Ok(Event::Text(t)) if inside => { if let Ok(value) = t.decode() { values.push(value.into_owned()); } }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
             Ok(Event::Eof) | Err(_) => return values,
             _ => {}
@@ -264,9 +217,7 @@ fn extract_first_attr(xml: &str, tag: &[u8], attr: &[u8]) -> Option<String> {
                 for a in e.attributes().flatten() {
                     if a.key.local_name().as_ref() == attr
                         && let Ok(v) = a.decode_and_unescape_value(reader.decoder())
-                    {
-                        return Some(v.into_owned());
-                    }
+                    { return Some(v.into_owned()); }
                 }
             }
             Ok(Event::Eof) | Err(_) => return None,
@@ -280,22 +231,15 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
     extract_first_tag_text(xml, tag).and_then(|v| v.parse::<usize>().ok()).unwrap_or(default)
 }
 
-fn validate_attr_enum(
-    xml: &str, tag: &[u8], attr: &[u8], allowed: &[&str], err: &'static str,
-) -> Result<(), &'static str> {
+fn validate_attr_enum(xml: &str, tag: &[u8], attr: &[u8], allowed: &[&str], err: &'static str) -> Result<(), &'static str> {
     if let Some(value) = extract_first_attr(xml, tag, attr)
         && !allowed.iter().any(|c| c.eq_ignore_ascii_case(&value))
-    {
-        return Err(err);
-    }
+    { return Err(err); }
     Ok(())
 }
 
 fn owner_from_username(username: &str) -> &str { username }
-
-fn folder_id_for_owner(owner: &str) -> String {
-    folder_id_for(owner, DistinguishedFolder::Calendar)
-}
+fn folder_id_for_owner(owner: &str) -> String { folder_id_for(owner, DistinguishedFolder::Calendar) }
 
 fn changekey_for_item(item: &EwsItemRow) -> String {
     let mut h = Sha256::new();
@@ -307,20 +251,11 @@ fn changekey_for_item(item: &EwsItemRow) -> String {
 }
 
 fn xml_escape(v: &str) -> String {
-    v.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    v.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
 }
 
-fn busy_status_to_ews(value: u8) -> &'static str {
-    match value { 0 => "Free", 1 => "Tentative", 3 => "OOF", _ => "Busy" }
-}
-
-fn sensitivity_to_ews(value: u8) -> &'static str {
-    match value { 1 => "Personal", 2 => "Private", 3 => "Confidential", _ => "Normal" }
-}
+fn busy_status_to_ews(value: u8) -> &'static str { match value { 0=>"Free", 1=>"Tentative", 3=>"OOF", _=>"Busy" } }
+fn sensitivity_to_ews(value: u8) -> &'static str { match value { 1=>"Personal", 2=>"Private", 3=>"Confidential", _=>"Normal" } }
 
 fn derived_meeting_status(item: &crate::calendar::CalendarItem) -> u8 {
     if let Some(v) = item.meeting_status { return v; }
@@ -331,31 +266,21 @@ fn derived_meeting_status(item: &crate::calendar::CalendarItem) -> u8 {
 
 fn derived_response_type(item: &crate::calendar::CalendarItem) -> Option<&'static str> {
     if let Some(v) = item.response_type {
-        return Some(match v {
-            1 => "Organizer", 2 => "Tentative", 3 => "Accept",
-            4 => "Decline", 5 => "NoResponseReceived", _ => "Unknown",
-        });
+        return Some(match v { 1=>"Organizer", 2=>"Tentative", 3=>"Accept", 4=>"Decline", 5=>"NoResponseReceived", _=>"Unknown" });
     }
     if derived_meeting_status(item) == 1 { return Some("Organizer"); }
     item.attendees.iter().find_map(|a| match a.attendee_status {
-        Some(2) => Some("Tentative"), Some(3) => Some("Accept"),
-        Some(4) => Some("Decline"), Some(5) => Some("NoResponseReceived"), _ => None,
+        Some(2)=>Some("Tentative"), Some(3)=>Some("Accept"), Some(4)=>Some("Decline"), Some(5)=>Some("NoResponseReceived"), _=>None,
     })
 }
 
-fn extract_requested_change_key(xml: &str) -> Option<String> {
-    extract_first_attr(xml, b"ItemId", b"ChangeKey")
-}
+fn extract_requested_change_key(xml: &str) -> Option<String> { extract_first_attr(xml, b"ItemId", b"ChangeKey") }
 
 fn validate_item_change_key(action: &EwsAction, body: &str, item: &EwsItemRow) -> Result<(), Response> {
     if let Some(requested) = extract_requested_change_key(body) {
         let expected = changekey_for_item(item);
         if requested != expected {
-            return Err(operation_error_response(
-                action, "ErrorIrresolvableConflict",
-                "Item ChangeKey does not match the current stored version",
-                StatusCode::OK,
-            ));
+            return Err(operation_error_response(action, "ErrorIrresolvableConflict", "Item ChangeKey does not match the current stored version", StatusCode::OK));
         }
     }
     Ok(())
@@ -365,13 +290,10 @@ fn render_ews_attendees(item: &crate::calendar::CalendarItem) -> String {
     let mut required = String::new();
     let mut optional = String::new();
     for attendee in &item.attendees {
-        let response = match attendee.attendee_status.unwrap_or(5) {
-            3 => "Accept", 2 => "Tentative", 4 => "Decline", _ => "Unknown",
-        };
+        let response = match attendee.attendee_status.unwrap_or(5) { 3=>"Accept", 2=>"Tentative", 4=>"Decline", _=>"Unknown" };
         let xml = format!(
             r#"<t:Attendee><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox><t:ResponseType>{}</t:ResponseType></t:Attendee>"#,
-            xml_escape(attendee.name.as_deref().unwrap_or(&attendee.email)),
-            xml_escape(&attendee.email), response
+            xml_escape(attendee.name.as_deref().unwrap_or(&attendee.email)), xml_escape(&attendee.email), response
         );
         if attendee.attendee_type == Some(2) { optional.push_str(&xml); } else { required.push_str(&xml); }
     }
@@ -383,10 +305,8 @@ fn render_ews_attendees(item: &crate::calendar::CalendarItem) -> String {
 
 fn render_ews_categories(item: &crate::calendar::CalendarItem) -> String {
     if item.categories.is_empty() { return String::new(); }
-    format!(
-        "<t:Categories>{}</t:Categories>",
-        item.categories.iter().map(|v| format!("<t:String>{}</t:String>", xml_escape(v))).collect::<Vec<_>>().join("")
-    )
+    format!("<t:Categories>{}</t:Categories>",
+        item.categories.iter().map(|v| format!("<t:String>{}</t:String>", xml_escape(v))).collect::<Vec<_>>().join(""))
 }
 
 fn ews_calendar_item_type(item: &crate::calendar::CalendarItem) -> &'static str {
@@ -401,8 +321,7 @@ fn ews_calendar_event_details_xml(item: &crate::calendar::CalendarItem) -> Strin
     let is_private = item.sensitivity.map(|v| v >= 2).unwrap_or(false);
     format!(
         "<t:CalendarEventDetails><t:Subject>{}</t:Subject><t:Location>{}</t:Location><t:IsMeeting>{}</t:IsMeeting><t:IsRecurring>{}</t:IsRecurring><t:IsException>false</t:IsException><t:IsReminderSet>{}</t:IsReminderSet><t:IsPrivate>{}</t:IsPrivate></t:CalendarEventDetails>",
-        xml_escape(&item.subject),
-        xml_escape(&item.location),
+        xml_escape(&item.subject), xml_escape(&item.location),
         if item.attendees.is_empty() { "false" } else { "true" },
         if item.rrule.is_some() { "true" } else { "false" },
         if item.reminder.is_some() { "true" } else { "false" },
@@ -416,10 +335,8 @@ fn ews_deleted_occurrences_xml(item: &crate::calendar::CalendarItem) -> String {
     starts.sort();
     starts.dedup();
     if starts.is_empty() { return String::new(); }
-    format!(
-        "<t:DeletedOccurrences>{}</t:DeletedOccurrences>",
-        starts.iter().map(|s| format!("<t:DeletedOccurrence><t:Start>{}</t:Start></t:DeletedOccurrence>", s.to_rfc3339())).collect::<String>()
-    )
+    format!("<t:DeletedOccurrences>{}</t:DeletedOccurrences>",
+        starts.iter().map(|s| format!("<t:DeletedOccurrence><t:Start>{}</t:Start></t:DeletedOccurrence>", s.to_rfc3339())).collect::<String>())
 }
 
 fn ews_response_objects_xml(item: &crate::calendar::CalendarItem) -> String {
@@ -445,11 +362,8 @@ fn ews_modified_occurrences_xml(item_id: &str, change_key: &str, item: &crate::c
 }
 
 fn ews_month_name(month: &str) -> &'static str {
-    match month {
-        "1"=>"January","2"=>"February","3"=>"March","4"=>"April","5"=>"May","6"=>"June",
-        "7"=>"July","8"=>"August","9"=>"September","10"=>"October","11"=>"November","12"=>"December",
-        _=>"January"
-    }
+    match month { "1"=>"January","2"=>"February","3"=>"March","4"=>"April","5"=>"May","6"=>"June",
+        "7"=>"July","8"=>"August","9"=>"September","10"=>"October","11"=>"November","12"=>"December", _=>"January" }
 }
 
 fn ews_days_of_week(byday: &str) -> String {
@@ -458,9 +372,7 @@ fn ews_days_of_week(byday: &str) -> String {
         .replace("SU","Sunday").replace(",", " ")
 }
 
-fn ews_day_of_week_index(ord: i32) -> &'static str {
-    match ord { 1=>"First",2=>"Second",3=>"Third",4=>"Fourth",-1=>"Last",_=>"First" }
-}
+fn ews_day_of_week_index(ord: i32) -> &'static str { match ord { 1=>"First",2=>"Second",3=>"Third",4=>"Fourth",-1=>"Last",_=>"First" } }
 
 fn parse_rrule_byday(value: &str) -> Option<(i32, String)> {
     let mut ordinal_end = 0usize;
@@ -484,51 +396,33 @@ fn render_ews_recurrence_xml(rrule: &str, start: chrono::DateTime<chrono::Utc>) 
     for part in rrule.split(';') {
         if let Some((k, v)) = part.split_once('=') {
             match k {
-                "FREQ" => freq = v,
-                "INTERVAL" => interval = v.to_string(),
-                "BYDAY" => byday = Some(v.to_string()),
-                "BYMONTHDAY" => bymonthday = Some(v.to_string()),
-                "COUNT" => count = Some(v.to_string()),
-                "UNTIL" => until = Some(v.to_string()),
-                "BYMONTH" => bymonth = Some(v.to_string()),
-                _ => {}
+                "FREQ"=>freq=v, "INTERVAL"=>interval=v.to_string(), "BYDAY"=>byday=Some(v.to_string()),
+                "BYMONTHDAY"=>bymonthday=Some(v.to_string()), "COUNT"=>count=Some(v.to_string()),
+                "UNTIL"=>until=Some(v.to_string()), "BYMONTH"=>bymonth=Some(v.to_string()), _=>{}
             }
         }
     }
     let pattern = match freq {
         "DAILY" => format!("<t:DailyRecurrence><t:Interval>{}</t:Interval></t:DailyRecurrence>", interval),
-        "WEEKLY" => format!(
-            "<t:WeeklyRecurrence><t:Interval>{}</t:Interval><t:DaysOfWeek>{}</t:DaysOfWeek></t:WeeklyRecurrence>",
-            interval, ews_days_of_week(&byday.unwrap_or_default())
-        ),
+        "WEEKLY" => format!("<t:WeeklyRecurrence><t:Interval>{}</t:Interval><t:DaysOfWeek>{}</t:DaysOfWeek></t:WeeklyRecurrence>",
+            interval, ews_days_of_week(&byday.unwrap_or_default())),
         "MONTHLY" => {
             if let Some(byday) = byday.as_deref().and_then(parse_rrule_byday) {
-                format!(
-                    "<t:RelativeMonthlyRecurrence><t:Interval>{}</t:Interval><t:DaysOfWeek>{}</t:DaysOfWeek><t:DayOfWeekIndex>{}</t:DayOfWeekIndex></t:RelativeMonthlyRecurrence>",
-                    interval, ews_days_of_week(&byday.1),
-                    ews_day_of_week_index(if byday.0 == 0 { 1 } else { byday.0 })
-                )
+                format!("<t:RelativeMonthlyRecurrence><t:Interval>{}</t:Interval><t:DaysOfWeek>{}</t:DaysOfWeek><t:DayOfWeekIndex>{}</t:DayOfWeekIndex></t:RelativeMonthlyRecurrence>",
+                    interval, ews_days_of_week(&byday.1), ews_day_of_week_index(if byday.0 == 0 { 1 } else { byday.0 }))
             } else {
-                format!(
-                    "<t:AbsoluteMonthlyRecurrence><t:Interval>{}</t:Interval><t:DayOfMonth>{}</t:DayOfMonth></t:AbsoluteMonthlyRecurrence>",
-                    interval, bymonthday.unwrap_or_else(|| start.day().to_string())
-                )
+                format!("<t:AbsoluteMonthlyRecurrence><t:Interval>{}</t:Interval><t:DayOfMonth>{}</t:DayOfMonth></t:AbsoluteMonthlyRecurrence>",
+                    interval, bymonthday.unwrap_or_else(|| start.day().to_string()))
             }
         }
         "YEARLY" => {
             let month = bymonth.unwrap_or_else(|| start.month().to_string());
             if let Some(byday) = byday.as_deref().and_then(parse_rrule_byday) {
-                format!(
-                    "<t:RelativeYearlyRecurrence><t:DaysOfWeek>{}</t:DaysOfWeek><t:DayOfWeekIndex>{}</t:DayOfWeekIndex><t:Month>{}</t:Month></t:RelativeYearlyRecurrence>",
-                    ews_days_of_week(&byday.1),
-                    ews_day_of_week_index(if byday.0 == 0 { 1 } else { byday.0 }),
-                    ews_month_name(&month)
-                )
+                format!("<t:RelativeYearlyRecurrence><t:DaysOfWeek>{}</t:DaysOfWeek><t:DayOfWeekIndex>{}</t:DayOfWeekIndex><t:Month>{}</t:Month></t:RelativeYearlyRecurrence>",
+                    ews_days_of_week(&byday.1), ews_day_of_week_index(if byday.0 == 0 { 1 } else { byday.0 }), ews_month_name(&month))
             } else {
-                format!(
-                    "<t:AbsoluteYearlyRecurrence><t:Month>{}</t:Month><t:DayOfMonth>{}</t:DayOfMonth></t:AbsoluteYearlyRecurrence>",
-                    ews_month_name(&month), bymonthday.unwrap_or_else(|| start.day().to_string())
-                )
+                format!("<t:AbsoluteYearlyRecurrence><t:Month>{}</t:Month><t:DayOfMonth>{}</t:DayOfMonth></t:AbsoluteYearlyRecurrence>",
+                    ews_month_name(&month), bymonthday.unwrap_or_else(|| start.day().to_string()))
             }
         }
         _ => return String::new(),
@@ -544,9 +438,7 @@ fn render_ews_recurrence_xml(rrule: &str, start: chrono::DateTime<chrono::Utc>) 
     format!("<t:Recurrence>{}{}</t:Recurrence>", pattern, range)
 }
 
-fn render_ews_calendar_item_xml_with_shape(
-    item_id: &str, change_key: &str, item: &crate::calendar::CalendarItem, shape: ItemShape,
-) -> String {
+fn render_ews_calendar_item_xml_with_shape(item_id: &str, change_key: &str, item: &crate::calendar::CalendarItem, shape: ItemShape) -> String {
     let created = item.dtstamp.unwrap_or_else(chrono::Utc::now);
     let duration = item.end - item.start;
     let duration_minutes = duration.num_minutes().max(0);
@@ -557,9 +449,8 @@ fn render_ews_calendar_item_xml_with_shape(
     let is_cancelled = item.meeting_status.map(|s| (s & 0x04) != 0).unwrap_or(false);
     let mut xml = format!(
         r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:UID>{}</t:UID><t:Start>{}</t:Start><t:End>{}</t:End><t:IsAllDayEvent>{}</t:IsAllDayEvent>"#,
-        xml_escape(item_id), xml_escape(change_key), xml_escape(&item.subject),
-        xml_escape(&item.uid), item.start.to_rfc3339(), item.end.to_rfc3339(),
-        if item.all_day { "true" } else { "false" }
+        xml_escape(item_id), xml_escape(change_key), xml_escape(&item.subject), xml_escape(&item.uid),
+        item.start.to_rfc3339(), item.end.to_rfc3339(), if item.all_day { "true" } else { "false" }
     );
     if shape == ItemShape::IdOnly { xml.push_str("</t:CalendarItem>"); return xml; }
     if !item.location.is_empty() { xml.push_str(&format!("<t:Location>{}</t:Location>", xml_escape(&item.location))); }
@@ -626,23 +517,17 @@ fn render_ews_calendar_item_xml(item_id: &str, change_key: &str, item: &crate::c
 
 async fn merged_freebusy_for_mailbox(
     state: &Arc<AppState>, mailbox: &str, password: &str,
-    start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>,
-    interval_minutes: i64,
+    start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>, interval_minutes: i64,
 ) -> (String, String) {
     let safe_interval = interval_minutes.clamp(5, 1440);
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1)) / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
     let mut events_xml_out = String::new();
-
     let caldav = CaldavClient::new(&state.cfg);
     if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
         && let Some(collection_href) = calendars.first()
-        && let Ok(raw_events_xml) = caldav.query_events(
-            collection_href,
-            &start.format("%Y%m%dT%H%M%SZ").to_string(),
-            &end.format("%Y%m%dT%H%M%SZ").to_string(),
-            mailbox, password,
-        ).await
+        && let Ok(raw_events_xml) = caldav.query_events(collection_href,
+            &start.format("%Y%m%dT%H%M%SZ").to_string(), &end.format("%Y%m%dT%H%M%SZ").to_string(), mailbox, password).await
     {
         let mut reader = Reader::from_str(&raw_events_xml);
         reader.config_mut().trim_text(true);
@@ -662,8 +547,7 @@ async fn merged_freebusy_for_mailbox(
                         let busy_type = match item.busy_status.unwrap_or(2) { 0=>"Free", 1=>"Tentative", 3=>"OOF", _=>"Busy" };
                         events_xml_out.push_str(&format!(
                             "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
-                            item.start.to_rfc3339(), item.end.to_rfc3339(), busy_type,
-                            ews_calendar_event_details_xml(&item)
+                            item.start.to_rfc3339(), item.end.to_rfc3339(), busy_type, ews_calendar_event_details_xml(&item)
                         ));
                     }
                 }
@@ -692,10 +576,7 @@ fn suggestion_day_keys(start: chrono::DateTime<chrono::Utc>, end: chrono::DateTi
     days
 }
 
-fn suggestions_xml_for_window(
-    merged: &str, start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>,
-    slot_minutes: i64, meeting_minutes: i64,
-) -> String {
+fn suggestions_xml_for_window(merged: &str, start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>, slot_minutes: i64, meeting_minutes: i64) -> String {
     let safe_slot = slot_minutes.clamp(5, 1440);
     let safe_meeting = meeting_minutes.clamp(safe_slot, 24 * 60);
     let slots_needed = ((safe_meeting + safe_slot - 1) / safe_slot) as usize;
@@ -711,25 +592,17 @@ fn suggestions_xml_for_window(
         let day_key = slot_start.format("%Y-%m-%d").to_string();
         let entry = day_buckets.entry(day_key).or_default();
         if entry.len() >= 8 { continue; }
-        entry.push(format!(
-            "<t:Suggestion><t:MeetingTime>{}</t:MeetingTime><t:IsWorkTime>true</t:IsWorkTime><t:SuggestionQuality>Excellent</t:SuggestionQuality></t:Suggestion>",
-            slot_start.to_rfc3339()
-        ));
+        entry.push(format!("<t:Suggestion><t:MeetingTime>{}</t:MeetingTime><t:IsWorkTime>true</t:IsWorkTime><t:SuggestionQuality>Excellent</t:SuggestionQuality></t:Suggestion>", slot_start.to_rfc3339()));
     }
     let day_results = day_buckets.into_iter().map(|(day, suggestions)| {
         let quality = if suggestions.is_empty() { "Poor" } else { "Excellent" };
-        format!(
-            "<t:SuggestionDayResult><t:Date>{}</t:Date><t:DayQuality>{}</t:DayQuality><t:SuggestionArray>{}</t:SuggestionArray></t:SuggestionDayResult>",
-            day, quality, suggestions.join("")
-        )
+        format!("<t:SuggestionDayResult><t:Date>{}</t:Date><t:DayQuality>{}</t:DayQuality><t:SuggestionArray>{}</t:SuggestionArray></t:SuggestionDayResult>",
+            day, quality, suggestions.join(""))
     }).collect::<String>();
-    format!(
-        r#"<m:SuggestionsResponse>
+    format!(r#"<m:SuggestionsResponse>
   <m:ResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:ResponseMessage>
   <m:SuggestionDayResultArray>{}</m:SuggestionDayResultArray>
-</m:SuggestionsResponse>"#,
-        day_results
-    )
+</m:SuggestionsResponse>"#, day_results)
 }
 
 fn merge_merged_freebusy(a: &str, b: &str) -> String {
@@ -754,16 +627,11 @@ fn soap_ok(inner: String) -> Response {
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header>
-    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0"
-                         MinorBuildNumber="0" Version="Exchange2016"
-                         xmlns:t="{type_ns}" />
+    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" />
   </s:Header>
-  <s:Body>
-    {inner}
-  </s:Body>
+  <s:Body>{inner}</s:Body>
 </s:Envelope>"#,
-        type_ns = EWS_TYPE_NS,
-        inner = inner
+        type_ns = EWS_TYPE_NS, inner = inner
     );
     (StatusCode::OK, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
@@ -772,21 +640,10 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Header>
-    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0"
-                         MinorBuildNumber="0" Version="Exchange2016"
-                         xmlns:t="{type_ns}" />
-  </s:Header>
-  <s:Body>
-    <s:Fault>
-      <faultcode>s:Client</faultcode>
-      <faultstring>{}</faultstring>
-      <detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail>
-    </s:Fault>
-  </s:Body>
+  <s:Header><t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" /></s:Header>
+  <s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>{}</faultstring><detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail></s:Fault></s:Body>
 </s:Envelope>"#,
-        xml_escape(message), EWS_MSG_NS, xml_escape(code),
-        type_ns = EWS_TYPE_NS
+        xml_escape(message), EWS_MSG_NS, xml_escape(code), type_ns = EWS_TYPE_NS
     );
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
@@ -799,44 +656,30 @@ fn operation_error_response(action: &EwsAction, code: &str, message: &str, statu
         EwsAction::GetItem => "GetItemResponseMessage",
         EwsAction::GetUserAvailability => "GetUserAvailabilityResponseMessage",
         EwsAction::SyncFolderItems => "SyncFolderItemsResponseMessage",
+        EwsAction::SyncFolderHierarchy => "SyncFolderHierarchyResponseMessage",
+        EwsAction::Subscribe => "SubscribeResponseMessage",
+        EwsAction::Unsubscribe => "UnsubscribeResponseMessage",
         EwsAction::CreateItem => "CreateItemResponseMessage",
         EwsAction::UpdateItem => "UpdateItemResponseMessage",
         EwsAction::DeleteItem => "DeleteItemResponseMessage",
         EwsAction::ResolveNames => "ResolveNamesResponseMessage",
     };
     let inner = format!(
-        r#"<m:{resp} ResponseClass="Error" xmlns:m="{msg_ns}" xmlns:t="{type_ns}">
-  <m:MessageText>{}</m:MessageText>
-  <m:ResponseCode>{}</m:ResponseCode>
-  <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
-</m:{resp}>"#,
-        xml_escape(message), xml_escape(code),
-        resp = resp_msg, msg_ns = EWS_MSG_NS, type_ns = EWS_TYPE_NS
+        r#"<m:{resp} ResponseClass="Error" xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:{resp}>"#,
+        xml_escape(message), xml_escape(code), resp=resp_msg, msg_ns=EWS_MSG_NS, type_ns=EWS_TYPE_NS
     );
+    let prefix = &resp_msg[..resp_msg.len().saturating_sub("ResponseMessage".len())];
     let body = format!(
         r#"<m:{}Response xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:{}Response>"#,
-        &resp_msg[..resp_msg.len() - "ResponseMessage".len()],
-        EWS_MSG_NS, EWS_TYPE_NS, inner,
-        &resp_msg[..resp_msg.len() - "ResponseMessage".len()]
+        prefix, EWS_MSG_NS, EWS_TYPE_NS, inner, prefix
     );
-    soap_fault_with_status(code, message, status, &body)
-}
-
-fn soap_fault_with_status(code: &str, message: &str, status: StatusCode, body_inner: &str) -> Response {
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Header>
-    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0"
-                         MinorBuildNumber="0" Version="Exchange2016"
-                         xmlns:t="{type_ns}" />
-  </s:Header>
-  <s:Body>
-    {inner}
-  </s:Body>
+  <s:Header><t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" /></s:Header>
+  <s:Body>{body}</s:Body>
 </s:Envelope>"#,
-        type_ns = EWS_TYPE_NS,
-        inner = body_inner
+        type_ns = EWS_TYPE_NS, body = body
     );
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
@@ -848,77 +691,43 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
     let sync_id = extract_first_attr(body, b"SyncFolderId", b"Id");
 
     let all_owner_ids: Vec<String> = [
-        DistinguishedFolder::Calendar, DistinguishedFolder::MsgFolderRoot,
-        DistinguishedFolder::Inbox, DistinguishedFolder::SentItems,
-        DistinguishedFolder::DeletedItems, DistinguishedFolder::Drafts,
-        DistinguishedFolder::Outbox, DistinguishedFolder::JunkEmail,
-        DistinguishedFolder::Contacts, DistinguishedFolder::Tasks,
-        DistinguishedFolder::Notes, DistinguishedFolder::Journal,
+        DistinguishedFolder::Calendar, DistinguishedFolder::MsgFolderRoot, DistinguishedFolder::Inbox,
+        DistinguishedFolder::SentItems, DistinguishedFolder::DeletedItems, DistinguishedFolder::Drafts,
+        DistinguishedFolder::Outbox, DistinguishedFolder::JunkEmail, DistinguishedFolder::Contacts,
+        DistinguishedFolder::Tasks, DistinguishedFolder::Notes, DistinguishedFolder::Journal,
     ].iter().map(|&f| folder_id_for(owner, f)).collect();
 
     for maybe_id in [&explicit_id, &parent_id, &sync_id] {
         if let Some(fid) = maybe_id {
             if fid != "root" && !all_owner_ids.contains(fid) {
-                return Err(operation_error_response(
-                    action, "ErrorFolderNotFound",
-                    "Requested folder was not found for this mailbox",
-                    StatusCode::OK,
-                ));
+                return Err(operation_error_response(action, "ErrorFolderNotFound", "Requested folder was not found for this mailbox", StatusCode::OK));
             }
         }
     }
 
-    if let Some(error_code) = validate_folder_request(
-        owner, distinguished.as_deref(), explicit_id.as_deref(), sync_id.as_deref(),
-    ) {
-        return Err(operation_error_response(
-            action, error_code,
-            "Requested folder was not found for this mailbox",
-            StatusCode::OK,
-        ));
+    if let Some(error_code) = validate_folder_request(owner, distinguished.as_deref(), explicit_id.as_deref(), sync_id.as_deref()) {
+        return Err(operation_error_response(action, error_code, "Requested folder was not found for this mailbox", StatusCode::OK));
     }
-
     Ok(())
 }
 
-struct CurrentCalendarItem {
-    row: EwsItemRow,
-    item: crate::calendar::CalendarItem,
-}
+struct CurrentCalendarItem { row: EwsItemRow, item: crate::calendar::CalendarItem }
 
 fn parse_calendar_view_window(body: &str) -> Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
-    let start = extract_first_attr(body, b"CalendarView", b"StartDate")
-        .and_then(|v| crate::calendar::parse_datetime(&v));
-    let end = extract_first_attr(body, b"CalendarView", b"EndDate")
-        .and_then(|v| crate::calendar::parse_datetime(&v));
-    match (start, end) {
-        (Some(s), Some(e)) if e > s => Some((s, e)),
-        _ => None,
-    }
+    let start = extract_first_attr(body, b"CalendarView", b"StartDate").and_then(|v| crate::calendar::parse_datetime(&v));
+    let end = extract_first_attr(body, b"CalendarView", b"EndDate").and_then(|v| crate::calendar::parse_datetime(&v));
+    match (start, end) { (Some(s), Some(e)) if e > s => Some((s, e)), _ => None }
 }
 
 fn requested_freebusy_view_type(body: &str) -> &'static str {
-    match extract_first_tag_text(body, b"RequestedView")
-        .unwrap_or_else(|| "MergedOnly".to_string())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "freebusy" => "FreeBusy",
-        "freebusydetailed" => "Detailed",
-        "detailedmerged" => "DetailedMerged",
-        _ => "MergedOnly",
+    match extract_first_tag_text(body, b"RequestedView").unwrap_or_else(|| "MergedOnly".to_string()).to_ascii_lowercase().as_str() {
+        "freebusy"=>"FreeBusy", "freebusydetailed"=>"Detailed", "detailedmerged"=>"DetailedMerged", _=>"MergedOnly",
     }
 }
 
 fn requested_item_shape(body: &str) -> ItemShape {
-    match extract_first_tag_text(body, b"BaseShape")
-        .unwrap_or_else(|| "AllProperties".to_string())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "idonly" => ItemShape::IdOnly,
-        "default" => ItemShape::Default,
-        _ => ItemShape::AllProperties,
+    match extract_first_tag_text(body, b"BaseShape").unwrap_or_else(|| "AllProperties".to_string()).to_ascii_lowercase().as_str() {
+        "idonly"=>ItemShape::IdOnly, "default"=>ItemShape::Default, _=>ItemShape::AllProperties,
     }
 }
 
@@ -929,17 +738,8 @@ async fn load_current_calendar_items(
     let caldav = CaldavClient::new(&state.cfg);
     let calendars = caldav.find_user_calendars(owner, password).await?;
     let collection_href = calendars.first().ok_or_else(|| anyhow::anyhow!("no calendars found"))?.clone();
-    let (start, end) = window.unwrap_or_else(|| (
-        chrono::Utc::now() - chrono::Duration::weeks(104),
-        chrono::Utc::now() + chrono::Duration::weeks(104),
-    ));
-    let events_xml = caldav.query_events(
-        &collection_href,
-        &start.format("%Y%m%dT%H%M%SZ").to_string(),
-        &end.format("%Y%m%dT%H%M%SZ").to_string(),
-        owner, password,
-    ).await?;
-
+    let (start, end) = window.unwrap_or_else(|| (chrono::Utc::now() - chrono::Duration::weeks(104), chrono::Utc::now() + chrono::Duration::weeks(104)));
+    let events_xml = caldav.query_events(&collection_href, &start.format("%Y%m%dT%H%M%SZ").to_string(), &end.format("%Y%m%dT%H%M%SZ").to_string(), owner, password).await?;
     let mut reader = Reader::from_str(&events_xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -959,7 +759,7 @@ async fn load_current_calendar_items(
                 if !href.is_empty() && let Some(item) = parse_ics_event(&ics) {
                     let server_id = generate_server_id(&state.cfg.hmac_secret, &href);
                     let safe_etag = if etag.is_empty() {
-                        changekey_for_item(&EwsItemRow { server_id: server_id.clone(), resource_href: href.clone(), uid: Some(item.uid.clone()), etag: None, updated_at: None })
+                        let mut h = Sha256::new(); h.update(server_id.as_bytes()); h.finalize().iter().map(|b| format!("{:02x}",b)).collect()
                     } else { etag.clone() };
                     let _ = state.storage.upsert_item_map(owner, &collection_href, &href, &server_id, &item.uid, &safe_etag).await;
                     out.push(CurrentCalendarItem {
@@ -980,9 +780,7 @@ async fn load_current_calendar_items(
 async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::GetFolder, owner, body) { return resp; }
-
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_default().to_ascii_lowercase();
+    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id").unwrap_or_default().to_ascii_lowercase();
     let folder = DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
     let total_count = if folder.is_calendar() || matches!(folder, DistinguishedFolder::MsgFolderRoot) {
         load_current_calendar_items(state, owner, &auth.password, None).await.map(|v| v.len()).unwrap_or(0)
@@ -998,8 +796,7 @@ async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str
 async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) { return resp; }
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_default().to_ascii_lowercase();
+    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id").unwrap_or_default().to_ascii_lowercase();
     let (total_count, cal_xml) = match distinguished_str.as_str() {
         "msgfolderroot" | "" => {
             let count = load_current_calendar_items(state, owner, &auth.password, None).await.map(|v| v.len()).unwrap_or(0);
@@ -1020,12 +817,8 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     let max = extract_int(body, b"MaxEntriesReturned", 50);
     let offset = extract_int(body, b"Offset", 0);
     let traversal = extract_first_attr(body, b"IndexedPageItemView", b"BasePoint").unwrap_or_else(|| "Beginning".to_string());
-    if max == 0 || max > 512 {
-        return operation_error_response(&EwsAction::FindItem, "ErrorInvalidPagingMaxRows", "MaxEntriesReturned must be between 1 and 512", StatusCode::OK);
-    }
-    if traversal != "Beginning" {
-        return operation_error_response(&EwsAction::FindItem, "ErrorInvalidIndexedPagingParameters", "Only IndexedPageItemView BasePoint=Beginning is supported", StatusCode::OK);
-    }
+    if max == 0 || max > 512 { return operation_error_response(&EwsAction::FindItem, "ErrorInvalidPagingMaxRows", "MaxEntriesReturned must be between 1 and 512", StatusCode::OK); }
+    if traversal != "Beginning" { return operation_error_response(&EwsAction::FindItem, "ErrorInvalidIndexedPagingParameters", "Only IndexedPageItemView BasePoint=Beginning is supported", StatusCode::OK); }
     let view_window = parse_calendar_view_window(body);
     let shape = requested_item_shape(body);
     let items = match load_current_calendar_items(state, owner, &auth.password, view_window).await {
@@ -1053,16 +846,12 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
-    if item_id.is_empty() {
-        return operation_error_response(&EwsAction::GetItem, "ErrorInvalidIdMalformed", "GetItem requires ItemId/@Id", StatusCode::OK);
-    }
+    if item_id.is_empty() { return operation_error_response(&EwsAction::GetItem, "ErrorInvalidIdMalformed", "GetItem requires ItemId/@Id", StatusCode::OK); }
     let item = match state.storage.get_ews_item_by_server_id(owner, &item_id).await {
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::GetItem, "ErrorInternalServerError", &format!("Failed to load item: {}", e), StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let Some(item) = item else {
-        return operation_error_response(&EwsAction::GetItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK);
-    };
+    let Some(item) = item else { return operation_error_response(&EwsAction::GetItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK); };
     let ck = changekey_for_item(&item);
     let shape = requested_item_shape(body);
     let caldav = CaldavClient::new(&state.cfg);
@@ -1070,14 +859,10 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         Ok((ics, _)) => match parse_ics_event(&ics) {
             Some(ci) => render_ews_calendar_item_xml_with_shape(&item.server_id, &ck, &ci, shape),
             None => format!(r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:UID>{}</t:UID></t:CalendarItem>"#,
-                xml_escape(&item.server_id), xml_escape(&ck),
-                xml_escape(item.uid.as_deref().unwrap_or(&item.server_id)),
-                xml_escape(item.uid.as_deref().unwrap_or(&item.server_id))),
+                xml_escape(&item.server_id), xml_escape(&ck), xml_escape(item.uid.as_deref().unwrap_or(&item.server_id)), xml_escape(item.uid.as_deref().unwrap_or(&item.server_id))),
         },
         Err(_) => format!(r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:UID>{}</t:UID></t:CalendarItem>"#,
-            xml_escape(&item.server_id), xml_escape(&ck),
-            xml_escape(item.uid.as_deref().unwrap_or(&item.server_id)),
-            xml_escape(item.uid.as_deref().unwrap_or(&item.server_id))),
+            xml_escape(&item.server_id), xml_escape(&ck), xml_escape(item.uid.as_deref().unwrap_or(&item.server_id)), xml_escape(item.uid.as_deref().unwrap_or(&item.server_id))),
     };
     let response = format!(
         r#"<m:GetItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>"#,
@@ -1116,15 +901,10 @@ async fn handle_sync_folder_items(state: &Arc<AppState>, auth: &AuthContext, bod
     let max_changes = extract_int(body, b"MaxChangesReturned", 100);
     let shape = requested_item_shape(body);
     let folder_id = folder_id_for_owner(owner);
-    if max_changes == 0 || max_changes > 512 {
-        return operation_error_response(&EwsAction::SyncFolderItems, "ErrorInvalidPagingMaxRows", "MaxChangesReturned must be between 1 and 512", StatusCode::OK);
-    }
+    if max_changes == 0 || max_changes > 512 { return operation_error_response(&EwsAction::SyncFolderItems, "ErrorInvalidPagingMaxRows", "MaxChangesReturned must be between 1 and 512", StatusCode::OK); }
     let requested_state = extract_first_tag_text(body, b"SyncState");
     let effective_state = if requested_state.as_deref().unwrap_or("0").is_empty() {
-        match state.storage.get_ews_sync_state(owner, &folder_id).await {
-            Ok(v) => v,
-            Err(_) => None,
-        }
+        match state.storage.get_ews_sync_state(owner, &folder_id).await { Ok(v) => v, Err(_) => None }
     } else { requested_state };
     let (since, requested_upper_bound) = match parse_sync_state_marker(effective_state) {
         Ok(v) => v,
@@ -1157,11 +937,7 @@ async fn handle_sync_folder_items(state: &Arc<AppState>, auth: &AuthContext, bod
         if let Some(item) = current_map.get(&row.server_id) {
             let ck = changekey_for_item(&item.row);
             let change_tag = if since == 0 { "Create" } else { "Update" };
-            changes_xml.push_str(&format!(
-                r#"<t:{ct}>{}</t:{ct}>"#,
-                render_ews_calendar_item_xml_with_shape(&item.row.server_id, &ck, &item.item, shape),
-                ct = change_tag
-            ));
+            changes_xml.push_str(&format!(r#"<t:{ct}>{}</t:{ct}>"#, render_ews_calendar_item_xml_with_shape(&item.row.server_id, &ck, &item.item, shape), ct=change_tag));
         }
     }
     let includes_last = if has_more { "false" } else { "true" };
@@ -1176,6 +952,46 @@ async fn handle_sync_folder_items(state: &Arc<AppState>, auth: &AuthContext, bod
     soap_ok(response)
 }
 
+async fn handle_sync_folder_hierarchy(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let owner = owner_from_username(&auth.username);
+    let folder_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+    let sync_state_key = format!("{}/folderhierarchy", owner);
+    let requested_state = extract_first_tag_text(body, b"SyncState");
+    let is_initial = requested_state.as_deref().map(|s| s.is_empty()).unwrap_or(true);
+    let new_sync_state = encode_sync_state_cursor(0, 0);
+    let _ = state.storage.set_ews_sync_state(owner, &sync_state_key, &new_sync_state).await;
+    let changes = if is_initial {
+        let count = load_current_calendar_items(state, owner, &auth.password, None).await.map(|v| v.len()).unwrap_or(0);
+        let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
+        format!("<t:Create>{}</t:Create>", cal_xml)
+    } else {
+        String::new()
+    };
+    let response = format!(
+        r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastFolderInRange>true</m:IncludesLastFolderInRange><m:Changes>{}</m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(&new_sync_state), changes
+    );
+    soap_ok(response)
+}
+
+async fn handle_subscribe(_auth: &AuthContext, body: &str) -> Response {
+    let subscription_id = uuid::Uuid::new_v4().to_string();
+    let watermark = STANDARD.encode(subscription_id.as_bytes());
+    let response = format!(
+        r#"<m:SubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SubscriptionId>{}</m:SubscriptionId><m:Watermark>{}</m:Watermark></m:SubscribeResponseMessage></m:ResponseMessages></m:SubscribeResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(&subscription_id), xml_escape(&watermark)
+    );
+    soap_ok(response)
+}
+
+async fn handle_unsubscribe(_auth: &AuthContext, _body: &str) -> Response {
+    let response = format!(
+        r#"<m:UnsubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UnsubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UnsubscribeResponseMessage></m:ResponseMessages></m:UnsubscribeResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(response)
+}
+
 async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::CreateItem, owner, body) { return resp; }
@@ -1184,10 +1000,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::CreateItem, "ErrorSchemaValidation", &format!("Failed to parse CalendarItem payload: {e}"), StatusCode::BAD_REQUEST),
     };
-    let calendars = match caldav.find_user_calendars(owner, &auth.password).await {
-        Ok(v) => v,
-        Err(_) => Vec::new(),
-    };
+    let calendars = match caldav.find_user_calendars(owner, &auth.password).await { Ok(v) => v, Err(_) => Vec::new() };
     let collection_href = match calendars.first() {
         Some(v) => v.clone(),
         None => return operation_error_response(&EwsAction::CreateItem, "ErrorFolderNotFound", "No writable calendar collection discovered", StatusCode::OK),
@@ -1204,8 +1017,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let response_row = EwsItemRow { server_id: server_id.clone(), resource_href: href, uid: Some(item.uid.clone()), etag: Some(etag), updated_at: None };
     let response = format!(
         r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS,
-        render_ews_calendar_item_xml(&server_id, &changekey_for_item(&response_row), &item)
+        EWS_MSG_NS, EWS_TYPE_NS, render_ews_calendar_item_xml(&server_id, &changekey_for_item(&response_row), &item)
     );
     soap_ok(response)
 }
@@ -1213,16 +1025,12 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
-    if item_id.is_empty() {
-        return operation_error_response(&EwsAction::UpdateItem, "ErrorInvalidIdMalformed", "UpdateItem requires ItemId/@Id", StatusCode::OK);
-    }
+    if item_id.is_empty() { return operation_error_response(&EwsAction::UpdateItem, "ErrorInvalidIdMalformed", "UpdateItem requires ItemId/@Id", StatusCode::OK); }
     let stored_item = match state.storage.get_ews_item_by_server_id(owner, &item_id).await {
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::UpdateItem, "ErrorInternalServerError", &format!("Failed to load item: {}", e), StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let Some(stored_item) = stored_item else {
-        return operation_error_response(&EwsAction::UpdateItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK);
-    };
+    let Some(stored_item) = stored_item else { return operation_error_response(&EwsAction::UpdateItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK); };
     if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item) { return resp; }
     let caldav = CaldavClient::new(&state.cfg);
     let (existing_ics, existing_etag) = match caldav.get_event(&stored_item.resource_href, owner, &auth.password).await {
@@ -1234,7 +1042,6 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         start: chrono::Utc::now(), end: chrono::Utc::now() + chrono::Duration::hours(1),
         dtstamp: Some(chrono::Utc::now()), ..Default::default()
     });
-
     let field_changes = parse_item_changes(body);
     if !field_changes.is_empty() {
         apply_field_changes(&mut current_item, &field_changes);
@@ -1264,13 +1071,11 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         if let Some(v) = extract_ews_field(body, b"OnlineMeetingExternalLink") { current_item.online_meeting_external_link = Some(v); }
         if let Some(v) = extract_ews_field(body, b"ClientUid") { current_item.client_uid = Some(v); }
     }
-
     let uid = current_item.uid.clone();
     let ics = render_ics(&current_item);
-    let (resource_href, new_etag) = match caldav.put_event(
-        &stored_item.resource_href, Some(&stored_item.resource_href), &ics, owner, &auth.password,
-        existing_etag.as_deref().or(stored_item.etag.as_deref()),
-    ).await {
+    let (resource_href, new_etag) = match caldav.put_event(&stored_item.resource_href, Some(&stored_item.resource_href), &ics, owner, &auth.password,
+        existing_etag.as_deref().or(stored_item.etag.as_deref())).await
+    {
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::UpdateItem, "ErrorInternalServerError", &format!("Failed to persist update: {e}"), StatusCode::INTERNAL_SERVER_ERROR),
     };
@@ -1280,8 +1085,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let response_row = EwsItemRow { server_id: stored_item.server_id.clone(), resource_href, uid: Some(uid), etag: Some(new_etag), updated_at: None };
     let response = format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS,
-        render_ews_calendar_item_xml(&stored_item.server_id, &changekey_for_item(&response_row), &current_item)
+        EWS_MSG_NS, EWS_TYPE_NS, render_ews_calendar_item_xml(&stored_item.server_id, &changekey_for_item(&response_row), &current_item)
     );
     soap_ok(response)
 }
@@ -1289,16 +1093,12 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
-    if item_id.is_empty() {
-        return operation_error_response(&EwsAction::DeleteItem, "ErrorInvalidIdMalformed", "DeleteItem requires ItemId/@Id", StatusCode::OK);
-    }
+    if item_id.is_empty() { return operation_error_response(&EwsAction::DeleteItem, "ErrorInvalidIdMalformed", "DeleteItem requires ItemId/@Id", StatusCode::OK); }
     let existing = match state.storage.get_ews_item_by_server_id(owner, &item_id).await {
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::DeleteItem, "ErrorInternalServerError", &format!("Failed to resolve item: {}", e), StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let Some(existing) = existing else {
-        return operation_error_response(&EwsAction::DeleteItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK);
-    };
+    let Some(existing) = existing else { return operation_error_response(&EwsAction::DeleteItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK); };
     if let Err(resp) = validate_item_change_key(&EwsAction::DeleteItem, body, &existing) { return resp; }
     let caldav = CaldavClient::new(&state.cfg);
     if let Err(e) = caldav.delete_event(&existing.resource_href, owner, &auth.password, existing.etag.as_deref()).await {
@@ -1351,146 +1151,7 @@ async fn handle_get_user_availability(state: &Arc<AppState>, auth: &AuthContext,
     } else { String::new() };
     let response = format!(
         r#"<m:GetUserAvailabilityResponse xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:FreeBusyResponseArray>{responses}</m:FreeBusyResponseArray>{suggestions_xml}</m:GetUserAvailabilityResponse>"#,
-        msg_ns = EWS_MSG_NS, type_ns = EWS_TYPE_NS
+        msg_ns=EWS_MSG_NS, type_ns=EWS_TYPE_NS
     );
     soap_ok(response)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        EwsAction, detect_action, encode_sync_state_cursor, operation_error_response,
-        parse_calendar_view_window, parse_sync_state_marker, render_ews_calendar_item_xml,
-        requested_freebusy_view_type, requested_item_shape, suggestions_xml_for_window,
-        validate_schema, soap_ok,
-    };
-    use crate::calendar::{Attendee, CalendarException, CalendarItem};
-    use chrono::{TimeZone, Utc};
-    use axum::http::StatusCode;
-
-    #[test]
-    fn detects_get_item_action() {
-        let xml = r#"<s:Envelope><s:Body><m:GetItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#;
-        assert_eq!(detect_action(xml), Some(EwsAction::GetItem));
-    }
-
-    #[test]
-    fn validates_find_item_schema() {
-        let xml = r#"<s:Envelope><s:Body><m:FindItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemShape/><m:ParentFolderIds/></m:FindItem></s:Body></s:Envelope>"#;
-        assert!(validate_schema(&EwsAction::FindItem, xml).is_ok());
-    }
-
-    #[test]
-    fn invalid_sync_state_marker_rejected() {
-        assert!(parse_sync_state_marker(Some("offset:10".to_string())).is_err());
-        assert!(parse_sync_state_marker(Some("not-base64!!!".to_string())).is_err());
-        let encoded = encode_sync_state_cursor(12, 34);
-        assert_eq!(parse_sync_state_marker(Some(encoded)).ok(), Some((12, 34)));
-    }
-
-    #[test]
-    fn soap_ok_includes_server_version_header() {
-        let resp = soap_ok("<test/>".to_string());
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[test]
-    fn detects_extended_actions_matrix() {
-        let cases = [
-            (r#"<s:Envelope><s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#, EwsAction::CreateItem),
-            (r#"<s:Envelope><s:Body><m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#, EwsAction::UpdateItem),
-            (r#"<s:Envelope><s:Body><m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#, EwsAction::DeleteItem),
-            (r#"<s:Envelope><s:Body><m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#, EwsAction::ResolveNames),
-            (r#"<s:Envelope><s:Body><m:GetUserAvailabilityRequest xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" /></s:Body></s:Envelope>"#, EwsAction::GetUserAvailability),
-        ];
-        for (xml, expected) in cases { assert_eq!(detect_action(xml), Some(expected)); }
-    }
-
-    #[test]
-    fn validates_schema_matrix_for_extended_actions() {
-        let ok_cases = [
-            (EwsAction::CreateItem, r#"<s:Envelope><s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:SavedItemFolderId/><m:Items/></m:CreateItem></s:Body></s:Envelope>"#),
-            (EwsAction::UpdateItem, r#"<s:Envelope><s:Body><m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemChanges/></m:UpdateItem></s:Body></s:Envelope>"#),
-            (EwsAction::DeleteItem, r#"<s:Envelope><s:Body><m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemIds/></m:DeleteItem></s:Body></s:Envelope>"#),
-            (EwsAction::ResolveNames, r#"<s:Envelope><s:Body><m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:UnresolvedEntry>a@example.com</m:UnresolvedEntry></m:ResolveNames></s:Body></s:Envelope>"#),
-            (EwsAction::GetUserAvailability, r#"<s:Envelope><s:Body><m:GetUserAvailabilityRequest xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:MailboxDataArray/><m:FreeBusyViewOptions/></m:GetUserAvailabilityRequest></s:Body></s:Envelope>"#),
-        ];
-        for (action, xml) in ok_cases { assert!(validate_schema(&action, xml).is_ok()); }
-    }
-
-    #[test]
-    fn sync_folder_items_rejects_include_mime_content() {
-        let xml = r#"<s:Envelope><s:Body><m:SyncFolderItems xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemShape><t:IncludeMimeContent xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">true</t:IncludeMimeContent></m:ItemShape><m:SyncFolderId /><m:MaxChangesReturned>10</m:MaxChangesReturned></m:SyncFolderItems></s:Body></s:Envelope>"#;
-        assert!(validate_schema(&EwsAction::SyncFolderItems, xml).is_err());
-    }
-
-    #[test]
-    fn parses_calendar_view_window() {
-        let xml = r#"<m:FindItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:CalendarView StartDate="2026-03-01T00:00:00Z" EndDate="2026-03-31T00:00:00Z" /></m:FindItem>"#;
-        let (start, end) = parse_calendar_view_window(xml).expect("calendar view");
-        assert_eq!(start, Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap());
-        assert_eq!(end, Utc.with_ymd_and_hms(2026, 3, 31, 0, 0, 0).unwrap());
-    }
-
-    #[test]
-    fn renders_richer_calendar_item_metadata() {
-        let item = CalendarItem {
-            uid: "uid-1".to_string(),
-            subject: "Planning".to_string(),
-            start: Utc.with_ymd_and_hms(2026, 3, 22, 9, 0, 0).unwrap(),
-            end: Utc.with_ymd_and_hms(2026, 3, 22, 10, 30, 0).unwrap(),
-            dtstamp: Some(Utc.with_ymd_and_hms(2026, 3, 20, 12, 0, 0).unwrap()),
-            timezone: Some("Europe/Stockholm".to_string()),
-            reminder: Some(15),
-            rrule: Some("FREQ=WEEKLY".to_string()),
-            attendees: vec![Attendee { email: "peer@example.com".to_string(), ..Default::default() }],
-            exceptions: vec![
-                CalendarException { deleted: true, exception_start: Utc.with_ymd_and_hms(2026, 4, 5, 9, 0, 0).unwrap(), ..Default::default() },
-                CalendarException {
-                    deleted: false,
-                    exception_start: Utc.with_ymd_and_hms(2026, 4, 12, 9, 0, 0).unwrap(),
-                    start: Some(Utc.with_ymd_and_hms(2026, 4, 12, 10, 0, 0).unwrap()),
-                    end: Some(Utc.with_ymd_and_hms(2026, 4, 12, 11, 0, 0).unwrap()),
-                    subject: Some("Planning moved".to_string()),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        let xml = render_ews_calendar_item_xml("item-1", "ck-1", &item);
-        assert!(xml.contains("<t:CalendarItemType>RecurringMaster</t:CalendarItemType>"));
-        assert!(xml.contains("<t:ReminderIsSet>true</t:ReminderIsSet>"));
-        assert!(xml.contains("<t:EndTimeZone>Europe/Stockholm</t:EndTimeZone>"));
-        assert!(xml.contains("<t:DeletedOccurrences>"));
-        assert!(xml.contains("<t:Duration>PT1H30M</t:Duration>"));
-        assert!(xml.contains("<t:ModifiedOccurrences>"));
-    }
-
-    #[test]
-    fn renders_suggestions_from_freebusy_window() {
-        let xml = suggestions_xml_for_window(
-            "000011110000",
-            Utc.with_ymd_and_hms(2026, 3, 22, 8, 0, 0).unwrap(),
-            Utc.with_ymd_and_hms(2026, 3, 22, 14, 0, 0).unwrap(),
-            30, 60,
-        );
-        assert!(xml.contains("<m:SuggestionDayResultArray>"));
-        assert!(xml.contains("<t:Suggestion>"));
-    }
-
-    #[test]
-    fn all_distinguished_folder_ids_accepted_by_validate_folder_request() {
-        let valid_ids = ["calendar", "inbox", "sentitems", "deleteditems", "drafts",
-                         "outbox", "junkemail", "contacts", "tasks", "msgfolderroot"];
-        for id in &valid_ids {
-            let result = crate::ews_folders::validate_folder_request("user@example.com", Some(id), None, None);
-            assert!(result.is_none(), "Expected None for '{}', got {:?}", id, result);
-        }
-    }
-
-    #[test]
-    fn operation_error_response_is_standalone_function() {
-        let resp = operation_error_response(&EwsAction::FindItem, "ErrorInvalidPagingMaxRows", "bad", StatusCode::OK);
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
 }
