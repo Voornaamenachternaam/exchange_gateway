@@ -1,4 +1,3 @@
-// src/caldav.rs
 use crate::config::Config;
 use anyhow::Result;
 use reqwest::Client;
@@ -24,7 +23,11 @@ impl CaldavClient {
         }
     }
 
-    pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
+    pub async fn find_user_calendars(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<Vec<String>> {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
 
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -47,9 +50,6 @@ impl CaldavClient {
 
         match resp {
             Ok(r) if r.status().is_success() => {
-                // Explicitly handle the body-read Result so transient network
-                // errors are surfaced in logs rather than silently becoming an
-                // empty parse.
                 let body = match r.text().await {
                     Ok(b) => b,
                     Err(e) => {
@@ -62,8 +62,6 @@ impl CaldavClient {
                         String::new()
                     }
                 };
-                // Pass home_url (not caldav_base) so the parser correctly
-                // excludes the home-set entry from the result list.
                 let hrefs = parse_calendar_collection_hrefs(&body, &home_url);
                 if !hrefs.is_empty() {
                     tracing::debug!(
@@ -95,9 +93,12 @@ impl CaldavClient {
             }
         }
 
-        // Fallback: Stalwart v0.15.5 well-known calendar collection path.
-        let default_url = format!("{}/cal/{}/default/", self.base.trim_end_matches('/'), username);
-        tracing::debug!("caldav: using fallback default calendar URL: {}", default_url);
+        let default_url =
+            format!("{}/cal/{}/default/", self.base.trim_end_matches('/'), username);
+        tracing::debug!(
+            "caldav: using fallback default calendar URL: {}",
+            default_url
+        );
         Ok(vec![default_url])
     }
 
@@ -134,7 +135,10 @@ impl CaldavClient {
             .send()
             .await?;
         if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow::anyhow!("failed to query events: {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "failed to query events: {}",
+                resp.status()
+            ));
         }
         Ok(resp.text().await?)
     }
@@ -153,7 +157,10 @@ impl CaldavClient {
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("failed to fetch event: {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "failed to fetch event: {}",
+                resp.status()
+            ));
         }
         let etag = resp
             .headers()
@@ -188,7 +195,10 @@ impl CaldavClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("failed to write event: {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "failed to write event: {}",
+                resp.status()
+            ));
         }
         let etag = resp
             .headers()
@@ -213,7 +223,10 @@ impl CaldavClient {
         }
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("failed to delete event: {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "failed to delete event: {}",
+                resp.status()
+            ));
         }
         Ok(())
     }
@@ -236,7 +249,9 @@ impl CaldavClient {
         }
         let collection = self.absolute_url(collection_href)?;
         let base = reqwest::Url::parse(&collection)?;
-        Ok(base.join(&format!("{}.ics", Uuid::new_v4()))?.to_string())
+        Ok(base
+            .join(&format!("{}.ics", Uuid::new_v4()))?
+            .to_string())
     }
 
     fn relative_href(&self, href: &str) -> String {
@@ -312,14 +327,22 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
             None
         }
     };
-    let home_path = home_url_parsed.as_ref()
+    let home_path = home_url_parsed
+        .as_ref()
         .map(|u| u.path().trim_end_matches('/').to_string())
         .unwrap_or_else(|| home_url.trim_end_matches('/').to_string());
 
-    multistatus.responses.into_iter()
-        .filter(|r| r.propstats.iter().any(|ps| ps.prop.resourcetype.calendar.is_some()))
+    multistatus
+        .responses
+        .into_iter()
+        .filter(|r| {
+            r.propstats
+                .iter()
+                .any(|ps| ps.prop.resourcetype.calendar.is_some())
+        })
         .map(|r| {
-            home_url_parsed.as_ref()
+            home_url_parsed
+                .as_ref()
                 .and_then(|u| u.join(&r.href).ok())
                 .map(|u| u.to_string())
                 .unwrap_or(r.href)
@@ -366,7 +389,6 @@ mod tests {
 
     #[test]
     fn home_set_excluded_when_it_carries_calendar_resourcetype() {
-        // Some servers mark the home-set as a calendar too — we must still exclude it.
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
   <D:response>
@@ -385,7 +407,11 @@ mod tests {
   </D:response>
 </D:multistatus>"#;
         let hrefs = parse_calendar_collection_hrefs(xml, HOME_URL);
-        assert_eq!(hrefs.len(), 1, "home-set must still be excluded even if marked as calendar");
+        assert_eq!(
+            hrefs.len(),
+            1,
+            "home-set must still be excluded even if marked as calendar"
+        );
         assert!(hrefs[0].contains("/default/"));
     }
 
