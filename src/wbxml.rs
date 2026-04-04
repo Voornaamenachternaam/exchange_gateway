@@ -57,10 +57,16 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
         }
     }
     for (name, &(cp, id)) in NAME_TO_TAG.iter() {
-        let local = if let Some(p) = name.rfind(':') { &name[p + 1..] } else { name };
+        let local = if let Some(p) = name.rfind(':') {
+            &name[p + 1..]
+        } else {
+            name
+        };
         if local == qualified_or_local {
             if let Some(ocp) = override_cp {
-                if cp == ocp { return Some((cp, id)); }
+                if cp == ocp {
+                    return Some((cp, id));
+                }
             } else {
                 return Some((cp, id));
             }
@@ -234,7 +240,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((5, 0x0A), "MoveResponse");
     m.insert((5, 0x0B), "MoveStatus");
 
-    // Code Page 6: GetItemEstimate (MS-ASWBXML §2.1.2.1.7)
+    // Code Page 6: GetItemEstimate
     m.insert((6, 0x05), "GetItemEstimate");
     m.insert((6, 0x06), "GIEVersion");
     m.insert((6, 0x07), "GIECollections");
@@ -263,7 +269,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((7, 0x16), "FolderSync");
     m.insert((7, 0x17), "Count");
 
-    // Code Page 8: MeetingResponse (MS-ASWBXML §2.1.2.1.9)
+    // Code Page 8: MeetingResponse
     m.insert((8, 0x05), "CalendarId");
     m.insert((8, 0x06), "MeetingCollectionId");
     m.insert((8, 0x07), "MeetingResponse");
@@ -794,7 +800,6 @@ impl Wbxml {
     }
 
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-        // header: version=1.3, public-id=1 (unknown), charset=UTF-8(106), str-table-len=0
         let mut buf: Vec<u8> = vec![0x03, 0x01, 0x6A, 0x00];
         let mut current_code_page = 0u8;
         let mut ns_stack: Vec<Option<u8>> = Vec::new();
@@ -811,17 +816,32 @@ impl Wbxml {
                     let effective_cp = ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x));
                     let name_raw = e.name().local_name();
                     let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, effective_cp, true)?;
+                    self.encode_open_tag(
+                        &mut buf,
+                        &mut current_code_page,
+                        name_str,
+                        effective_cp,
+                        true,
+                    )?;
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     let ns_cp = extract_xmlns_cp(e);
                     let effective_cp = ns_cp.or_else(|| ns_stack.last().copied().flatten());
                     let name_raw = e.name().local_name();
                     let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, effective_cp, false)?;
+                    self.encode_open_tag(
+                        &mut buf,
+                        &mut current_code_page,
+                        name_str,
+                        effective_cp,
+                        false,
+                    )?;
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
-                    let txt = e.decode().map_err(|e| anyhow!("XML decode error: {e}"))?.into_owned();
+                    let txt = e
+                        .decode()
+                        .map_err(|e| anyhow!("XML decode error: {e}"))?
+                        .into_owned();
                     if !txt.is_empty() {
                         buf.push(STR_I);
                         buf.extend_from_slice(txt.as_bytes());
@@ -860,7 +880,7 @@ impl Wbxml {
             buf.push(token);
             return Ok(());
         }
-        return Err(anyhow!("WBXML encode: unknown tag '{}'", name_str));
+        Err(anyhow!("WBXML encode: unknown tag '{}'", name_str))
     }
 }
 
@@ -883,7 +903,9 @@ fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
 }
 
 fn xml_escape_text(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]

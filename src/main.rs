@@ -1,138 +1,62 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-
 use axum::{
-    extract::{Query, State},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{get, post},
     Router,
 };
-use tokio::net::TcpListener;
-use tracing_subscriber::EnvFilter;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tracing::{info, warn};
 
-mod autodiscover;
 mod caldav;
 mod calendar;
 mod config;
-mod eas;
-mod error;
-mod ews;
-mod ews_folders;
-mod ews_update;
+mod handlers;
 mod models;
-mod storage;
 mod sync;
 mod timezone;
 mod wbxml;
 
 use crate::config::Config;
+use crate::handlers::{
+    autodiscover_handler, ews_handler, health_handler, options_handler, status_handler,
+    sync_handler,
+};
 use crate::models::AppState;
-use crate::storage::Storage;
-
-const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-
-async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> Response {
-    let host = &state.cfg.gateway_host;
-    let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
-    build_response(status, &hdrs, body_out)
-}
-
-async fn autodiscover_soap(State(state): State<Arc<AppState>>, body: String) -> Response {
-    let host = &state.cfg.gateway_host;
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_soap(host, &body);
-    build_response(status, &hdrs, body_out)
-}
-
-async fn autodiscover_json(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<autodiscover::AutodiscoverJsonParams>,
-) -> Response {
-    let host = &state.cfg.gateway_host;
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_json(
-        host,
-        params.protocol.as_deref(),
-        params.email.as_deref(),
-    );
-    build_response(status, &hdrs, body_out)
-}
-
-fn build_response(status: StatusCode, hdrs: &[(&'static str, &'static str)], body: String) -> Response {
-    let mut resp = (status, body).into_response();
-    for (k, v) in hdrs {
-        if let (Ok(name), Ok(value)) = (
-            header::HeaderName::from_bytes(k.as_bytes()),
-            header::HeaderValue::from_str(v),
-        ) {
-            resp.headers_mut().insert(name, value);
-        }
-    }
-    resp
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let config_path = std::env::var("GATEWAY_CONFIG")
-        .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
+    let cfg = Config::from_env_or_file()?;
+    info!("Exchange Gateway starting on {}", cfg.bind);
+    info!("CalDAV base: {}", cfg.caldav_base);
+    info!("Worker URL: {}", cfg.worker_url);
 
-    let config = match Config::load(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("CRITICAL: Failed to load config from {}: {}", config_path, e);
-            return Err(e);
-        }
-    };
-
-    tracing::info!(
-        "Exchange Gateway starting. bind={} gateway_host={}",
-        config.bind,
-        config.gateway_host
-    );
-
-    let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
-
-    let app_state = Arc::new(AppState {
-        cfg: config.clone(),
-        storage,
-    });
+    let state = Arc::new(AppState::new(cfg).await?);
 
     let app = Router::new()
-        .route("/health", get(health_check))
-        .route("/EWS/Exchange.asmx", post(ews::handle))
-        .route("/EWS/*path", post(ews::handle))
-        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
-        .route("/autodiscover/autodiscover.xml", post(autodiscover_xml))
-        .route("/Autodiscover/Autodiscover.xml", post(autodiscover_xml))
-        .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))
-        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
-        .route("/autodiscover/autodiscover.json", get(autodiscover_json))
-        .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
-        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .with_state(app_state);
+        .route("/", get(status_handler))
+        .route("/health", get(health_handler))
+        .route("/Microsoft-Server-ActiveSync", post(sync_handler).get(status_handler))
+        .route("/Microsoft-Server-ActiveSync/", post(sync_handler).get(status_handler))
+        .route("/EWS/Exchange.asmx", post(ews_handler))
+        .route("/EWS/Exchange.asmx/", post(ews_handler))
+        .route("/ews/Exchange.asmx", post(ews_handler))
+        .route("/ews/Exchange.asmx/", post(ews_handler))
+        .route("/autodiscover/autodiscover.xml", post(autodiscover_handler).get(autodiscover_handler))
+        .route("/autodiscover/autodiscover.json", get(autodiscover_handler))
+        .route("/autodiscover/autodiscover.svc", post(autodiscover_handler))
+        .route("/Autodiscover/Autodiscover.xml", post(autodiscover_handler).get(autodiscover_handler))
+        .route("/Autodiscover/Autodiscover.json", get(autodiscover_handler))
+        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_handler))
+        .fallback(options_handler)
+        .with_state(state);
 
-    let addr: SocketAddr = config.bind.parse()?;
-    let listener = TcpListener::bind(addr).await?;
-    tracing::info!("Listening on {}", addr);
+    let addr: SocketAddr = cfg.bind.parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!("Listening on http://{}", addr);
+
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-async fn health_check(State(state): State<Arc<AppState>>) -> Response {
-    let worker_ok = match state.storage.get_latest_change_seq().await {
-        Ok(_) => true,
-        Err(e) => {
-            tracing::warn!("Health check: Worker connectivity failed: {}", e);
-            false
-        }
-    };
-    if worker_ok {
-        (StatusCode::OK, "OK").into_response()
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "Worker unavailable").into_response()
-    }
 }
