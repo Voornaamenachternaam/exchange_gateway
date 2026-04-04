@@ -1,4 +1,3 @@
-
 DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS item_map;
 DROP TABLE IF EXISTS ews_sync_state;
@@ -81,10 +80,6 @@ CREATE TABLE ews_sync_state (
     UNIQUE(user_email, folder_id)
 );
 
--- device_info stores information sent by the client in Provision/Settings
--- requests (MS-ASPROV §3.1.5.1.1, MS-ASCMD §2.2.1.18).
--- The UNIQUE constraint is on device_id alone because device IDs are globally
--- unique UUIDs assigned by the client.
 CREATE TABLE device_info (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email    TEXT    NOT NULL,
