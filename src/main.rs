@@ -1,5 +1,3 @@
-// src/main.rs
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -18,10 +16,12 @@ mod caldav;
 mod calendar;
 mod config;
 mod eas;
+mod error;
 mod ews;
 mod ews_folders;
 mod ews_update;
 mod models;
+mod smtp;
 mod storage;
 mod sync;
 mod timezone;
@@ -29,9 +29,9 @@ mod wbxml;
 
 use crate::config::Config;
 use crate::models::AppState;
+use crate::smtp::SmtpClient;
 use crate::storage::Storage;
 
-/// Maximum permitted request body size (4 MiB).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 async fn autodiscover_xml(
@@ -40,8 +40,7 @@ async fn autodiscover_xml(
 ) -> Response {
     let host = &state.cfg.gateway_host;
     let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
-    let (status, hdrs, body_out) =
-        autodiscover::handle_autodiscover_xml(host, &body, &email);
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
     build_response(status, &hdrs, body_out)
 }
 
@@ -50,8 +49,7 @@ async fn autodiscover_soap(
     body: String,
 ) -> Response {
     let host = &state.cfg.gateway_host;
-    let (status, hdrs, body_out) =
-        autodiscover::handle_autodiscover_soap(host, &body);
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_soap(host, &body);
     build_response(status, &hdrs, body_out)
 }
 
@@ -87,6 +85,8 @@ fn build_response(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -97,10 +97,7 @@ async fn main() -> anyhow::Result<()> {
     let config = match Config::load(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "CRITICAL: Failed to load config from {}: {}",
-                config_path, e
-            );
+            eprintln!("CRITICAL: Failed to load config from {}: {}", config_path, e);
             return Err(e);
         }
     };
@@ -111,14 +108,27 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host
     );
 
-    let storage = Arc::new(Storage::new(
-        &config.worker_url,
-        &config.worker_secret,
-    )?);
+    let smtp_client = config
+        .smtp_url
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|url| match SmtpClient::from_url(url) {
+            Ok(c) => {
+                tracing::info!("SMTP forwarding enabled: {}", url);
+                Some(Arc::new(c))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialise SMTP client from '{}': {}", url, e);
+                None
+            }
+        });
+
+    let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
 
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
         storage,
+        smtp: smtp_client,
     });
 
     let app = Router::new()
@@ -145,9 +155,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Enhanced health check that verifies Cloudflare Worker connectivity
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
-    // Check Cloudflare Worker connectivity
     let worker_ok = match state.storage.get_latest_change_seq().await {
         Ok(_) => true,
         Err(e) => {
@@ -155,7 +163,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
             false
         }
     };
-    
+
     if worker_ok {
         (StatusCode::OK, "OK").into_response()
     } else {

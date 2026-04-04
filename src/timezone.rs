@@ -1,28 +1,7 @@
-// src/timezone.rs
-//
-// EAS TimeZone blob support — MS-ASDTYPE §2.7.6
-//
-// The ActiveSync Calendar Timezone element carries a 172-byte little-endian
-// binary structure encoded in base64:
-//
-//   Bias          (4 bytes, LONG)   — UTC offset in minutes (positive = west)
-//   StandardName  (64 bytes)        — 32 UTF-16LE WCHARs, NUL-padded
-//   StandardDate  (16 bytes)        — SYSTEMTIME struct
-//   StandardBias  (4 bytes, LONG)
-//   DaylightName  (64 bytes)        — 32 UTF-16LE WCHARs, NUL-padded
-//   DaylightDate  (16 bytes)        — SYSTEMTIME struct
-//   DaylightBias  (4 bytes, LONG)
-//                          total: 172 bytes
-//
-// We decode the Bias and name strings to map to an IANA timezone where
-// possible, falling back to a fixed-offset Etc/GMT±N representation.
-
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 const TZ_BLOB_LEN: usize = 172;
 
-/// Decode the UTC-offset bias (minutes west of UTC) from a base64-encoded
-/// EAS TimeZone blob.  Returns `None` if the blob cannot be decoded.
 pub fn decode_eas_timezone_bias(b64: &str) -> Option<i32> {
     let bytes = BASE64.decode(b64.trim()).ok()?;
     if bytes.len() < 4 {
@@ -31,7 +10,6 @@ pub fn decode_eas_timezone_bias(b64: &str) -> Option<i32> {
     Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-/// Read a 32-WCHAR (64-byte) UTF-16LE name from `bytes` at `offset`.
 fn read_wchar_name(bytes: &[u8], offset: usize) -> String {
     let end = offset + 64;
     if end > bytes.len() {
@@ -45,7 +23,6 @@ fn read_wchar_name(bytes: &[u8], offset: usize) -> String {
     String::from_utf16_lossy(&chars).to_string()
 }
 
-/// Write a name string as UTF-16LE WCHARs into a 64-byte slot in `blob`.
 fn write_wchar_name(blob: &mut [u8], offset: usize, name: &str) {
     let mut pos = offset;
     for ch in name.encode_utf16().take(32) {
@@ -59,15 +36,6 @@ fn write_wchar_name(blob: &mut [u8], offset: usize, name: &str) {
     }
 }
 
-/// Attempt to map a base64-encoded EAS TimeZone blob to an IANA timezone name.
-///
-/// Algorithm:
-/// 1. Match StandardName / DaylightName against a table of Windows TZ name
-///    substrings → IANA equivalents.
-/// 2. If no match, derive `Etc/GMT±N` from the Bias field (POSIX sign: GMT+N
-///    is N hours *west*).
-///
-/// Returns `None` only when the blob cannot be base64-decoded.
 pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     let bytes = BASE64.decode(b64.trim()).ok()?;
     if bytes.len() < TZ_BLOB_LEN {
@@ -77,13 +45,10 @@ pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     let std_name = read_wchar_name(&bytes, 4);
     let dst_name = read_wchar_name(&bytes, 88);
 
-    if let Some(iana) =
-        windows_name_to_iana(&std_name).or_else(|| windows_name_to_iana(&dst_name))
-    {
+    if let Some(iana) = windows_name_to_iana(&std_name).or_else(|| windows_name_to_iana(&dst_name)) {
         return Some(iana.to_string());
     }
 
-    // Fallback: POSIX-style Etc/GMT±N (hours, rounded)
     if bias == 0 {
         return Some("UTC".to_string());
     }
@@ -91,8 +56,6 @@ pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     Some(format!("Etc/GMT{:+}", hours))
 }
 
-/// Produce a base64-encoded 172-byte EAS TimeZone blob for a known IANA zone.
-/// Returns `None` if the zone is not in the built-in table.
 pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
     let (bias, std_name, dst_name, std_date, dst_date, std_bias, dst_bias) =
         iana_to_windows_params(iana)?;
@@ -107,13 +70,8 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
     Some(BASE64.encode(blob))
 }
 
-// ---------------------------------------------------------------------------
-// Internal lookup tables
-// ---------------------------------------------------------------------------
-
 fn windows_name_to_iana(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_lowercase();
-    // Ordered from most specific to least specific.
     const TABLE: &[(&str, &str)] = &[
         ("coordinated universal time", "UTC"),
         ("greenwich standard time", "UTC"),
@@ -148,7 +106,6 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
         ("newfoundland standard time", "America/St_Johns"),
         ("e. south america standard time", "America/Sao_Paulo"),
         ("sa eastern standard time", "America/Cayenne"),
-        // City fragments for non-standard blobs
         ("amsterdam", "Europe/Amsterdam"),
         ("berlin", "Europe/Berlin"),
         ("brussels", "Europe/Brussels"),
@@ -196,227 +153,42 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
     None
 }
 
-/// SYSTEMTIME bytes used for European DST rules (last Sunday in March/October).
-const EU_STD: [u8; 16] = [
-    0, 0, // wYear = 0 (relative)
-    10, 0, // wMonth = October
-    0, 0, // wDayOfWeek = Sunday
-    5, 0, // wDay = 5 (last occurrence)
-    3, 0, // wHour = 03:00
-    0, 0, 0, 0, 0, 0, // min, sec, ms
-];
-const EU_DST: [u8; 16] = [
-    0, 0, 3, 0, 0, 0, 5, 0, 2, 0, 0, 0, 0, 0, 0, 0,
-];
-/// US DST rules: 2nd Sunday in March / 1st Sunday in November.
-const US_DST: [u8; 16] = [
-    0, 0, 3, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0,
-];
-const US_STD: [u8; 16] = [
-    0, 0, 11, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0,
-];
+const EU_STD: [u8; 16] = [0, 0, 10, 0, 0, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0];
+const EU_DST: [u8; 16] = [0, 0, 3, 0, 0, 0, 5, 0, 2, 0, 0, 0, 0, 0, 0, 0];
+const US_DST: [u8; 16] = [0, 0, 3, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0];
+const US_STD: [u8; 16] = [0, 0, 11, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0];
 const NO_DST: [u8; 16] = [0u8; 16];
 
 type TzParams = (i32, &'static str, &'static str, [u8; 16], [u8; 16], i32, i32);
 
 fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
     Some(match iana {
-        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => {
-            (0, "Coordinated Universal Time", "", NO_DST, NO_DST, 0, 0)
-        }
-        "Europe/London" => (
-            0,
-            "GMT Standard Time",
-            "GMT Daylight Time",
-            EU_STD,
-            EU_DST,
-            0,
-            -60,
-        ),
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => (0, "Coordinated Universal Time", "", NO_DST, NO_DST, 0, 0),
+        "Europe/London" => (0, "GMT Standard Time", "GMT Daylight Time", EU_STD, EU_DST, 0, -60),
         "Europe/Amsterdam" | "Europe/Berlin" | "Europe/Paris" | "Europe/Rome"
         | "Europe/Madrid" | "Europe/Stockholm" | "Europe/Brussels"
         | "Europe/Copenhagen" | "Europe/Vienna" | "Europe/Warsaw"
-        | "Europe/Zagreb" | "Europe/Budapest" => (
-            -60,
-            "W. Europe Standard Time",
-            "W. Europe Daylight Time",
-            EU_STD,
-            EU_DST,
-            0,
-            -60,
-        ),
+        | "Europe/Zagreb" | "Europe/Budapest" => (-60, "W. Europe Standard Time", "W. Europe Daylight Time", EU_STD, EU_DST, 0, -60),
         "Europe/Helsinki" | "Europe/Tallinn" | "Europe/Riga" | "Europe/Vilnius"
-        | "Europe/Kyiv" | "Europe/Bucharest" | "Europe/Athens" | "Europe/Sofia" => (
-            -120,
-            "FLE Standard Time",
-            "FLE Daylight Time",
-            EU_STD,
-            EU_DST,
-            0,
-            -60,
-        ),
-        "Europe/Moscow" => (
-            -180,
-            "Russian Standard Time",
-            "Russian Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Europe/Istanbul" => (
-            -180,
-            "Turkey Standard Time",
-            "Turkey Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Asia/Dubai" => (
-            -240,
-            "Arabian Standard Time",
-            "Arabian Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Asia/Kolkata" | "Asia/Calcutta" => (
-            -330,
-            "India Standard Time",
-            "India Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Asia/Shanghai" | "Asia/Hong_Kong" => (
-            -480,
-            "China Standard Time",
-            "China Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Asia/Singapore" => (
-            -480,
-            "Singapore Standard Time",
-            "Singapore Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Asia/Tokyo" => (
-            -540,
-            "Tokyo Standard Time",
-            "Tokyo Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Asia/Seoul" => (
-            -540,
-            "Korea Standard Time",
-            "Korea Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "Australia/Sydney" => (
-            -600,
-            "AUS Eastern Standard Time",
-            "AUS Eastern Daylight Time",
-            NO_DST,
-            EU_DST,
-            0,
-            -60,
-        ),
-        "America/New_York" => (
-            300,
-            "Eastern Standard Time",
-            "Eastern Daylight Time",
-            US_STD,
-            US_DST,
-            0,
-            -60,
-        ),
-        "America/Chicago" => (
-            360,
-            "Central Standard Time",
-            "Central Daylight Time",
-            US_STD,
-            US_DST,
-            0,
-            -60,
-        ),
-        "America/Denver" => (
-            420,
-            "Mountain Standard Time",
-            "Mountain Daylight Time",
-            US_STD,
-            US_DST,
-            0,
-            -60,
-        ),
-        "America/Los_Angeles" => (
-            480,
-            "Pacific Standard Time",
-            "Pacific Daylight Time",
-            US_STD,
-            US_DST,
-            0,
-            -60,
-        ),
-        "America/Anchorage" => (
-            540,
-            "Alaskan Standard Time",
-            "Alaskan Daylight Time",
-            US_STD,
-            US_DST,
-            0,
-            -60,
-        ),
-        "Pacific/Honolulu" => (
-            600,
-            "Hawaiian Standard Time",
-            "Hawaiian Standard Time",
-            NO_DST,
-            NO_DST,
-            0,
-            0,
-        ),
-        "America/Halifax" => (
-            240,
-            "Atlantic Standard Time",
-            "Atlantic Daylight Time",
-            US_STD,
-            US_DST,
-            0,
-            -60,
-        ),
-        "America/St_Johns" => (
-            210,
-            "Newfoundland Standard Time",
-            "Newfoundland Daylight Time",
-            US_STD,
-            US_DST,
-            0,
-            -60,
-        ),
-        "America/Sao_Paulo" => (
-            180,
-            "E. South America Standard Time",
-            "E. South America Daylight Time",
-            NO_DST,
-            NO_DST,
-            0,
-            -60,
-        ),
+        | "Europe/Kyiv" | "Europe/Bucharest" | "Europe/Athens" | "Europe/Sofia" => (-120, "FLE Standard Time", "FLE Daylight Time", EU_STD, EU_DST, 0, -60),
+        "Europe/Moscow" => (-180, "Russian Standard Time", "Russian Standard Time", NO_DST, NO_DST, 0, 0),
+        "Europe/Istanbul" => (-180, "Turkey Standard Time", "Turkey Standard Time", NO_DST, NO_DST, 0, 0),
+        "Asia/Dubai" => (-240, "Arabian Standard Time", "Arabian Standard Time", NO_DST, NO_DST, 0, 0),
+        "Asia/Kolkata" | "Asia/Calcutta" => (-330, "India Standard Time", "India Standard Time", NO_DST, NO_DST, 0, 0),
+        "Asia/Shanghai" | "Asia/Hong_Kong" => (-480, "China Standard Time", "China Standard Time", NO_DST, NO_DST, 0, 0),
+        "Asia/Singapore" => (-480, "Singapore Standard Time", "Singapore Standard Time", NO_DST, NO_DST, 0, 0),
+        "Asia/Tokyo" => (-540, "Tokyo Standard Time", "Tokyo Standard Time", NO_DST, NO_DST, 0, 0),
+        "Asia/Seoul" => (-540, "Korea Standard Time", "Korea Standard Time", NO_DST, NO_DST, 0, 0),
+        "Australia/Sydney" => (-600, "AUS Eastern Standard Time", "AUS Eastern Daylight Time", NO_DST, EU_DST, 0, -60),
+        "America/New_York" => (300, "Eastern Standard Time", "Eastern Daylight Time", US_STD, US_DST, 0, -60),
+        "America/Chicago" => (360, "Central Standard Time", "Central Daylight Time", US_STD, US_DST, 0, -60),
+        "America/Denver" => (420, "Mountain Standard Time", "Mountain Daylight Time", US_STD, US_DST, 0, -60),
+        "America/Los_Angeles" => (480, "Pacific Standard Time", "Pacific Daylight Time", US_STD, US_DST, 0, -60),
+        "America/Anchorage" => (540, "Alaskan Standard Time", "Alaskan Daylight Time", US_STD, US_DST, 0, -60),
+        "Pacific/Honolulu" => (600, "Hawaiian Standard Time", "Hawaiian Standard Time", NO_DST, NO_DST, 0, 0),
+        "America/Halifax" => (240, "Atlantic Standard Time", "Atlantic Daylight Time", US_STD, US_DST, 0, -60),
+        "America/St_Johns" => (210, "Newfoundland Standard Time", "Newfoundland Daylight Time", US_STD, US_DST, 0, -60),
+        "America/Sao_Paulo" => (180, "E. South America Standard Time", "E. South America Daylight Time", NO_DST, NO_DST, 0, -60),
         _ => return None,
     })
 }
@@ -453,16 +225,12 @@ mod tests {
         blob[0..4].copy_from_slice(&480i32.to_le_bytes());
         write_wchar_name(&mut blob, 4, "Pacific Standard Time");
         let b64 = BASE64.encode(blob);
-        assert_eq!(
-            eas_timezone_blob_to_iana(&b64),
-            Some("America/Los_Angeles".to_string())
-        );
+        assert_eq!(eas_timezone_blob_to_iana(&b64), Some("America/Los_Angeles".to_string()));
     }
 
     #[test]
     fn blob_to_iana_fallback_etc_gmt() {
         let mut blob = [0u8; 172];
-        // bias=120 (2 hours west), no recognisable name
         blob[0..4].copy_from_slice(&120i32.to_le_bytes());
         let b64 = BASE64.encode(blob);
         let result = eas_timezone_blob_to_iana(&b64).unwrap();
@@ -476,7 +244,6 @@ mod tests {
         assert_eq!(bytes.len(), 172);
         let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         assert_eq!(bias, -60);
-        // Standard name must start with "W. Europe"
         let name = read_wchar_name(&bytes, 4);
         assert!(name.starts_with("W. Europe"), "got: {name}");
     }
