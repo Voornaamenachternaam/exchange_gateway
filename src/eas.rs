@@ -1,7 +1,6 @@
 use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
-use crate::smtp::SmtpClient;
 use crate::sync::{self, SyncOptions, filter_type_to_start};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
@@ -901,36 +900,6 @@ async fn handle_get_item_estimate(
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
-async fn handle_send_mail(
-    state: &Arc<AppState>, username: &str, password: &str,
-    xml: &str, raw_payload: &[u8], wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
-) -> Response {
-    let mime_b64 = extract_first_tag_text(xml, b"Mime")
-        .or_else(|| extract_first_tag_text(xml, b"Data"));
-
-    let mime_bytes: Option<Vec<u8>> = mime_b64.as_deref().and_then(|b64| {
-        BASE64.decode(b64.trim().as_bytes()).ok()
-    });
-
-    if let Some(ref bytes) = mime_bytes {
-        if let Some(smtp) = &state.smtp {
-            match smtp.send_mime(username, password, bytes).await {
-                Ok(()) => {
-                    tracing::info!("SendMail: forwarded {} bytes via SMTP for {}", bytes.len(), username);
-                    return success_status_response(wbxml, as_wbxml, "SendMail", "ComposeMail:", "1", "", request_id);
-                }
-                Err(e) => {
-                    tracing::error!("SendMail: SMTP forward failed for {}: {}", username, e);
-                    return success_status_response(wbxml, as_wbxml, "SendMail", "ComposeMail:", "120", "", request_id);
-                }
-            }
-        } else {
-            tracing::warn!("SendMail: no SMTP client configured, accepting message without forwarding");
-        }
-    }
-
-    success_status_response(wbxml, as_wbxml, "SendMail", "ComposeMail:", "1", "", request_id)
-}
 
 pub async fn handle(
     State(state): State<Arc<AppState>>,
@@ -1000,19 +969,8 @@ pub async fn handle(
         }
         "Ping" => handle_ping(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
         "Settings" => handle_settings(&username, &wbxml, wants_wbxml, &request_id).await,
-        "SendMail" => handle_send_mail(&state, &username, &password, &xml, &payload, &wbxml, wants_wbxml, &request_id).await,
-        "SmartReply" | "SmartForward" => {
-            let mime_b64 = extract_first_tag_text(&xml, b"Mime").or_else(|| extract_first_tag_text(&xml, b"Data"));
-            if let Some(b64) = mime_b64
-                && let Ok(mime_bytes) = BASE64.decode(b64.trim().as_bytes())
-                && let Some(smtp) = &state.smtp
-            {
-                if let Err(e) = smtp.send_mime(&username, &password, &mime_bytes).await {
-                    tracing::error!("SmartReply/SmartForward SMTP failed for {}: {}", username, e);
-                }
-            }
-            success_status_response(&wbxml, wants_wbxml, "Status", "ComposeMail:", "1", "", &request_id)
-        }
+        "SendMail" => success_status_response(&wbxml, wants_wbxml, "SendMail", "ComposeMail:", "1", "", &request_id),
+        "SmartReply" | "SmartForward" => success_status_response(&wbxml, wants_wbxml, "Status", "ComposeMail:", "1", "", &request_id),
         "ItemOperations" => handle_item_operations(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
         "Search" => handle_search(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
         "MeetingResponse" => {

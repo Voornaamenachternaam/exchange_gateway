@@ -12,12 +12,6 @@ pub struct Config {
 
     #[serde(default)]
     pub gateway_host: String,
-
-    #[serde(default)]
-    pub smtp_url: Option<String>,
-
-    #[serde(default)]
-    pub mail_domain: Option<String>,
 }
 
 impl Config {
@@ -33,22 +27,6 @@ impl Config {
         if cfg.gateway_host.is_empty() {
             cfg.gateway_host = extract_host_from_url(&cfg.worker_url)
                 .unwrap_or_else(|| "localhost".to_string());
-        }
-
-        if cfg.smtp_url.is_none() {
-            if let Ok(v) = std::env::var("SMTP_URL") {
-                if !v.is_empty() {
-                    cfg.smtp_url = Some(v);
-                }
-            }
-        }
-
-        if cfg.mail_domain.is_none() {
-            if let Ok(v) = std::env::var("MAIL_DOMAIN") {
-                if !v.is_empty() {
-                    cfg.mail_domain = Some(v);
-                }
-            }
         }
 
         Ok(cfg)
@@ -91,19 +69,6 @@ impl Config {
             ));
         }
 
-        if let Some(ref smtp) = self.smtp_url {
-            if !smtp.is_empty() {
-                validate_url(smtp, "smtp_url")
-                    .or_else(|_| {
-                        if smtp.starts_with("smtp://") || smtp.starts_with("smtps://") {
-                            Ok(())
-                        } else {
-                            Err(anyhow::anyhow!("Config: 'smtp_url' must start with smtp:// or smtps://"))
-                        }
-                    })?;
-            }
-        }
-
         Ok(())
     }
 }
@@ -120,9 +85,9 @@ fn extract_host_from_url(url_str: &str) -> Option<String> {
 fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
     match Url::parse(url) {
         Ok(parsed) => {
-            if !matches!(parsed.scheme(), "http" | "https" | "smtp" | "smtps") {
+            if !matches!(parsed.scheme(), "http" | "https") {
                 return Err(anyhow::anyhow!(
-                    "Config: '{}' must use http, https, smtp, or smtps scheme",
+                    "Config: '{}' must use http or https scheme",
                     field_name
                 ));
             }
@@ -170,8 +135,6 @@ mod tests {
             worker_secret: "secret1234567890".into(),
             hmac_secret: "12345678901234567890123456789012".into(),
             gateway_host: "".into(),
-            smtp_url: None,
-            mail_domain: None,
         };
         assert!(cfg.validate().is_err());
     }
@@ -185,8 +148,32 @@ mod tests {
             worker_secret: "secret1234567890".into(),
             hmac_secret: "12345678901234567890123456789012".into(),
             gateway_host: "".into(),
-            smtp_url: None,
-            mail_domain: None,
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validates_weak_secret_warns() {
+        let cfg = Config {
+            bind: "0.0.0.0:8134".into(),
+            caldav_base: "http://localhost".into(),
+            worker_url: "https://worker.example.com/api".into(),
+            worker_secret: "short".into(),
+            hmac_secret: "12345678901234567890123456789012".into(),
+            gateway_host: "".into(),
+        };
+        let _ = cfg.validate();
+    }
+
+    #[test]
+    fn gateway_host_with_scheme_fails() {
+        let cfg = Config {
+            bind: "0.0.0.0:8134".into(),
+            caldav_base: "http://localhost".into(),
+            worker_url: "https://worker.example.com/api".into(),
+            worker_secret: "secret1234567890".into(),
+            hmac_secret: "12345678901234567890123456789012".into(),
+            gateway_host: "https://exchange.example.com".into(),
         };
         assert!(cfg.validate().is_err());
     }

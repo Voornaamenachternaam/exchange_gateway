@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::{DefaultBodyLimit, Query, State},
+    extract::{Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -21,7 +21,6 @@ mod ews;
 mod ews_folders;
 mod ews_update;
 mod models;
-mod smtp;
 mod storage;
 mod sync;
 mod timezone;
@@ -29,25 +28,18 @@ mod wbxml;
 
 use crate::config::Config;
 use crate::models::AppState;
-use crate::smtp::SmtpClient;
 use crate::storage::Storage;
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-async fn autodiscover_xml(
-    State(state): State<Arc<AppState>>,
-    body: String,
-) -> Response {
+async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> Response {
     let host = &state.cfg.gateway_host;
     let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
     build_response(status, &hdrs, body_out)
 }
 
-async fn autodiscover_soap(
-    State(state): State<Arc<AppState>>,
-    body: String,
-) -> Response {
+async fn autodiscover_soap(State(state): State<Arc<AppState>>, body: String) -> Response {
     let host = &state.cfg.gateway_host;
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_soap(host, &body);
     build_response(status, &hdrs, body_out)
@@ -66,11 +58,7 @@ async fn autodiscover_json(
     build_response(status, &hdrs, body_out)
 }
 
-fn build_response(
-    status: StatusCode,
-    hdrs: &[(&'static str, &'static str)],
-    body: String,
-) -> Response {
+fn build_response(status: StatusCode, hdrs: &[(&'static str, &'static str)], body: String) -> Response {
     let mut resp = (status, body).into_response();
     for (k, v) in hdrs {
         if let (Ok(name), Ok(value)) = (
@@ -85,8 +73,6 @@ fn build_response(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -108,27 +94,11 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host
     );
 
-    let smtp_client = config
-        .smtp_url
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .and_then(|url| match SmtpClient::from_url(url) {
-            Ok(c) => {
-                tracing::info!("SMTP forwarding enabled: {}", url);
-                Some(Arc::new(c))
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialise SMTP client from '{}': {}", url, e);
-                None
-            }
-        });
-
     let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
 
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
         storage,
-        smtp: smtp_client,
     });
 
     let app = Router::new()
@@ -142,16 +112,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app_state);
 
     let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
-
     tracing::info!("Listening on {}", addr);
-
     axum::serve(listener, app).await?;
-
     Ok(())
 }
 
@@ -163,7 +130,6 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
             false
         }
     };
-
     if worker_ok {
         (StatusCode::OK, "OK").into_response()
     } else {
