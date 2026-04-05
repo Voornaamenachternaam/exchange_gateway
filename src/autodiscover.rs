@@ -142,14 +142,14 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
         <ServerDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}</ServerDN>
         <ServerVersion>15.20.0.0</ServerVersion>
         <MdbDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}/cn=Microsoft Private MDB</MdbDN>
-        <ASUrl>https:
-        <EwsUrl>https:
-        <EmwsUrl>https:
-        <EcpUrl>https:
-        <OABUrl>https:
-        <OOFUrl>https:
-        <UMUrl>https:
-        <EwsPartnerUrl>https:
+        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+        <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
+        <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
+        <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+        <OABUrl>https://{host}/EWS/Exchange.asmx</OABUrl>
+        <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
+        <UMUrl>https://{host}/EWS/Exchange.asmx</UMUrl>
+        <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
         <LoginName>{email}</LoginName>
         <DomainRequired>off</DomainRequired>
         <SPA>off</SPA>
