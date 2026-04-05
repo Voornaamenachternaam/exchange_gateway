@@ -1218,7 +1218,7 @@ pub async fn handle(
         }
         // Calendar-only gateway: mail compose commands are no-ops that satisfy clients.
         "SendMail" | "SmartReply" | "SmartForward" => {
-            success_status_response(&wbxml, wants_wbxml, "SendMail", "ComposeMail:", "1", "", &request_id)
+            success_status_response(&wbxml, wants_wbxml, &req.command, "ComposeMail:", "1", "", &request_id)
         }
         "MoveItems" => {
             bad_request_response(&request_id, "MoveItems is not supported for this calendar-only mailbox surface")
