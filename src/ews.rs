@@ -1404,41 +1404,28 @@ async fn handle_get_folder_info() -> Response {
     soap_ok(inner)
 }
 
-async fn handle_get_mail_tips() -> Response {
-    let inner = format!(
-        r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
-        <m:ResponseMessages>
-        <m:MailTipsResponseMessage ResponseClass="Success">
-        <m:ResponseCode>NoError</m:ResponseCode>
-        <m:MailTips>
-        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
-        </m:MailTips>
-        </m:MailTipsResponseMessage>
-        </m:ResponseMessages>
-        </m:GetMailTipsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
-    );
-    soap_ok(inner)
+suggestion// Remove the duplicate, unreachable functions at the end of src/ews.rs
+// Lines 1407-1441 in the provided context are the duplicates.
+
+// Update the validate_schema function to include the missing variants
+// Replace lines 119-121 with:
+        EwsAction::GetUserOofSettings | EwsAction::SetUserOofSettings | EwsAction::GetServiceConfiguration |
+        EwsAction::GetServerTimeZones | EwsAction::GetFolderInfo | EwsAction::GetMailTips |
+        EwsAction::FindPeople | EwsAction::GetConversationItems => Ok(()),
+    }
 }
 
-async fn handle_get_mail_tips_auth(auth: &AuthContext) -> Response {
-    let email = &auth.username;
-    let inner = format!(
-        r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
-        <m:ResponseMessages>
-        <m:MailTipsResponseMessage ResponseClass="Success">
-        <m:ResponseCode>NoError</m:ResponseCode>
-        <m:MailTips>
-        <t:RecipientAddress><t:EmailAddress>{}</t:EmailAddress></t:RecipientAddress>
-        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
-        </m:MailTips>
-        </m:MailTipsResponseMessage>
-        </m:ResponseMessages>
-        </m:GetMailTipsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(email)
-    );
-    soap_ok(inner)
-}
+// Ensure operation_error_response covers all variants
+// Replace lines 140-147 with:
+        EwsAction::GetUserOofSettings => "GetUserOofSettingsResponseMessage",
+        EwsAction::SetUserOofSettings => "SetUserOofSettingsResponseMessage",
+        EwsAction::GetServiceConfiguration => "GetServiceConfigurationResponseMessage",
+        EwsAction::GetServerTimeZones => "GetServerTimeZonesResponseMessage",
+        EwsAction::GetFolderInfo => "GetFolderInfoResponseMessage",
+        EwsAction::GetMailTips => "GetMailTipsResponseMessage",
+        EwsAction::FindPeople => "FindPeopleResponseMessage",
+        EwsAction::GetConversationItems => "GetConversationItemsResponseMessage",
+    };
 
 async fn handle_find_people(auth: &AuthContext, _body: &str) -> Response {
     let email = &auth.username;
