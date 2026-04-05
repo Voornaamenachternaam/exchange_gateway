@@ -168,13 +168,13 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
         <LoginName>{email}</LoginName>
         <ServerExclusiveConnect>off</ServerExclusiveConnect>
         <TTL>1</TTL>
-        <ASUrl>https:
-        <EwsUrl>https:
-        <EmwsUrl>https:
-        <EcpUrl>https:
-        <OABUrl>https:
-        <OOFUrl>https:
-        <EwsPartnerUrl>https:
+        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+        <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
+        <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
+        <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+        <OABUrl>https://{host}/EWS/Exchange.asmx</OABUrl>
+        <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
+        <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
       </Protocol>
       <Protocol>
         <Type>MobileSync</Type>
