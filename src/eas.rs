@@ -13,15 +13,18 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use dashmap::DashMap;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-static DEVICE_WINDOW: LazyLock<Mutex<HashMap<String, Vec<Instant>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-static PING_CACHE: LazyLock<Mutex<HashMap<String, PingCacheEntry>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static DEVICE_WINDOW: LazyLock<DashMap<String, Vec<Instant>>> =
+    LazyLock::new(|| DashMap::new());
+static PING_CACHE: LazyLock<DashMap<String, PingCacheEntry>> =
+    LazyLock::new(|| DashMap::new());
 
 #[derive(Clone, Debug)]
 struct PingFolder { id: String, class_name: String }
