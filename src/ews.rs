@@ -1466,20 +1466,7 @@ async fn handle_get_delegate(auth: &AuthContext) -> Response {
     soap_ok(inner)
 }
 
-    let inner = format!(
-        r#"<m:GetUserPhotoResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:GetUserPhotoResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:HasBeenIndexed>true</m:HasBeenIndexed>
-<m:PictureData/>
-</m:GetUserPhotoResponseMessage>
-</m:ResponseMessages>
-</m:GetUserPhotoResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
-    );
-    soap_ok(inner)
-}
+async fn handle_get_user_photo(_auth: &AuthContext, _body: &str) -> Response {
 
 async fn handle_mark_as_junk(auth: &AuthContext, _body: &str) -> Response {
     let inner = format!(
