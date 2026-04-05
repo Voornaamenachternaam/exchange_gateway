@@ -1411,7 +1411,17 @@ async fn handle_get_mail_tips() -> Response {
         <m:MailTipsResponseMessage ResponseClass="Success">
         <m:ResponseCode>NoError</m:ResponseCode>
         <m:MailTips>
-async fn handle_get_mail_tips(auth: &AuthContext) -> Response {
+        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
+        </m:MailTips>
+        </m:MailTipsResponseMessage>
+        </m:ResponseMessages>
+        </m:GetMailTipsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_mail_tips_auth(auth: &AuthContext) -> Response {
     let email = &auth.username;
     let inner = format!(
         r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
@@ -1426,15 +1436,6 @@ async fn handle_get_mail_tips(auth: &AuthContext) -> Response {
         </m:ResponseMessages>
         </m:GetMailTipsResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS, xml_escape(email)
-    );
-    soap_ok(inner)
-}
-        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
-        </m:MailTips>
-        </m:MailTipsResponseMessage>
-        </m:ResponseMessages>
-        </m:GetMailTipsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
     );
     soap_ok(inner)
 }
