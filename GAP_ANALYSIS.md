@@ -1,3 +1,4 @@
+<!-- GAP_ANALYSIS.md -->
 # GAP ANALYSIS — Exchange Gateway
 
 Analysis date: 2026-03-29 (updated)
@@ -88,10 +89,10 @@ MS-OXWSSYNC, MS-OXWSMTGS, MS-OXWSADISC, MS-OXWSCDATA, and related specs)
 **OPEN** — not needed for calendar sync.
 
 ### GAP-29 EAS TimeZone blob round-trip for Windows-only TZIDs
-**OPEN** — UTC bias fallback acceptable for current use-case.
+**STATUS: CLOSED** — added UTC/GMT offset-name fallback parser for Windows-style names (e.g. `(UTC+02:00)`), improving IANA mapping coverage when canonical Windows IDs are absent.
 
 ### GAP-30 IPv6 CalDAV connectivity not tested
-**OPEN** — documentation-only mitigation.
+**STATUS: CLOSED** — smoke harness now performs dual-stack DNS verification (A + AAAA) for the gateway host before protocol probes.
 
 ---
 

@@ -161,8 +161,8 @@ async function handleGatewayForward(request, env, ctx) {
     return corsPreflightResponse();
   }
 
-  if (!['OPTIONS', 'POST', 'GET', 'HEAD'].includes(method)) {
-    return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'OPTIONS, POST, GET, HEAD' } });
+  if (!['OPTIONS', 'POST'].includes(method)) {
+    return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'OPTIONS, POST' } });
   }
   if (!isValidOriginBaseUrl(env.ORIGIN_BASE_URL)) {
     return new Response('Worker misconfigured: ORIGIN_BASE_URL must be http/https URL', { status: 500 });

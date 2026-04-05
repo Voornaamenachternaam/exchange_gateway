@@ -173,7 +173,7 @@ ingress:
 
 ## Allowed forwarded methods
 
-Forwarded Exchange routes accept only: `OPTIONS`, `POST`, `GET`, `HEAD`.
+Forwarded Exchange routes accept only: `OPTIONS`, `POST`.
 
 ---
 
