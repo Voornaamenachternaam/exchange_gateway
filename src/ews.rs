@@ -1539,7 +1539,7 @@ fn handle_set_user_oof_settings(_auth: &AuthContext, _body: &str) -> std::pin::P
             EWS_MSG_NS, EWS_TYPE_NS
         );
         soap_ok(inner)
-    })
+    }
 }
 
 async fn handle_get_service_configuration() -> Response {
@@ -1585,19 +1585,6 @@ async fn handle_get_folder_info() -> Response {
     soap_ok(inner)
 }
 
-suggestion// Remove the duplicate, unreachable functions at the end of src/ews.rs
-// Lines 1407-1441 in the provided context are the duplicates.
-
-// Update the validate_schema function to include the missing variants
-// Replace lines 119-121 with:
-        EwsAction::GetUserOofSettings | EwsAction::SetUserOofSettings | EwsAction::GetServiceConfiguration |
-        EwsAction::GetServerTimeZones | EwsAction::GetFolderInfo | EwsAction::GetMailTips |
-        EwsAction::FindPeople | EwsAction::GetConversationItems => Ok(()),
-    }
-}
-
-// Ensure operation_error_response covers all variants
-// Replace lines 140-147 with:
         EwsAction::GetUserOofSettings => "GetUserOofSettingsResponseMessage",
         EwsAction::SetUserOofSettings => "SetUserOofSettingsResponseMessage",
         EwsAction::GetServiceConfiguration => "GetServiceConfigurationResponseMessage",
@@ -1629,21 +1616,6 @@ async fn handle_find_people(auth: &AuthContext, _body: &str) -> Response {
         EWS_MSG_NS, EWS_TYPE_NS,
         uuid::Uuid::new_v4(),
         xml_escape(email),
-        xml_escape(email)
-    );
-    soap_ok(inner)
-}
-
-async fn handle_get_conversation_items() -> Response {
-    let inner = format!(
-        r#"<m:GetConversationItemsResponse xmlns:m="{}" xmlns:t="{}">
-        <m:ResponseMessages>
-        <m:GetConversationItemsResponseMessage ResponseClass="Success">
-        <m:ResponseCode>NoError</m:ResponseCode>
-        </m:GetConversationItemsResponseMessage>
-        </m:ResponseMessages>
-        </m:GetConversationItemsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
     );
     soap_ok(inner)
 }
