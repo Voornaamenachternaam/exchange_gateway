@@ -41,6 +41,9 @@ enum EwsAction {
     SyncFolderHierarchy, Subscribe, Unsubscribe, CreateItem, UpdateItem, DeleteItem, ResolveNames,
     GetUserOofSettings, SetUserOofSettings,
     GetServiceConfiguration, GetServerTimeZones,
+    GetFolderInfo, GetMailTips, FindPeople, GetConversationItems,
+}
+
 fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
     if !xml.contains("Envelope") || !xml.contains("Body") { return Err("Missing SOAP Envelope or Body"); }
     if !xml.contains(EWS_MSG_NS) && !xml.contains("xmlns:m=") { return Err("Missing EWS messages namespace"); }
