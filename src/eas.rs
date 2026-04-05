@@ -493,9 +493,14 @@ fn success_status_response(
     root: &str, ns: &str, status: &str, extra_inner: &str, request_id: &str,
 ) -> Response {
     let xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="{ns}"><Status>{status}</Status>{extra_inner}</{root}>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="{ns}"><Status>{status}</Status>{extra_inner}</{root}>"#,
+        root = root,
+        ns = ns,
+        status = status,
+        extra_inner = extra_inner,
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
+}
 }
 
 // ── Provisioning ──────────────────────────────────────────────────────────────
