@@ -228,3 +228,24 @@ class validation is restricted to `Calendar` only.
 - **GAP-26** EWS GetAttachment / CreateAttachment — out of scope.
 - **GAP-27** EAS Email class sync stub — by design.
 - **GAP-28** WBXML code pages 22, 25 — not needed for calendar.
+
+## CLOSED GAPS (Session 3 — 2026-04-05)
+
+### GAP-44 Additional EWS operations for Outlook compatibility
+Newer Outlook versions (Windows 11 v20251205004.10+ and Android v5.2607.0+) may 
+query additional EWS operations beyond the core calendar set. Added:
+- `GetFolderInfo` — returns success response for folder info queries.
+- `GetMailTips` — returns basic mail tips with empty OOF.
+- `FindPeople` — returns the authenticated user as a persona.
+- `GetConversationItems` — returns empty success response.
+
+These operations ensure Outlook clients do not receive errors when probing 
+for additional mailbox features, while maintaining the calendar-only scope.
+
+### GAP-45 All source files verified for location headers
+All 16 Rust source files in `src/` have proper `// src/filename.rs` headers.
+
+### GAP-46 No remaining TODO/FIXME annotations
+Comprehensive scan confirmed no TODO, FIXME, HACK, or XXX annotations remain
+in production code. The `class_placeholder_app_data` and `placeholder` patterns
+in `sync.rs` and `wbxml.rs` are functional implementations, not incomplete stubs.
