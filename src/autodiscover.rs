@@ -215,8 +215,8 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>ExternalOABUrl</a:Name><a:Value>https:
               <a:UserSetting><a:Name>InternalOABUrl</a:Name><a:Value>https:
               <a:UserSetting><a:Name>MobileSyncServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>ExternalMobileSyncUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>InternalMobileSyncUrl</a:Name><a:Value>https:
+              <a:UserSetting><a:Name>ExternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalEwsVersion</a:Name><a:Value>Exchange2016</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalEwsVersion</a:Name><a:Value>Exchange2016</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>EwsSupportedSchemas</a:Name><a:Value>Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016</a:Value></a:UserSetting>
