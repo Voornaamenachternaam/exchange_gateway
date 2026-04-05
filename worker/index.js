@@ -37,7 +37,6 @@ export default {
     if (path === '/api/get_ews_sync_state') return handleGetEwsSyncState(url, request, env);
     if (path === '/api/set_ews_sync_state') return handleSetEwsSyncState(request, env);
     if (path === '/api/get_ews_item_by_id') return handleGetEwsItemById(url, request, env);
-    // GAP-34/GAP-42: Store device information from Provision/Settings requests.
     if (path === '/api/upsert_device_info') return handleUpsertDeviceInfo(request, env);
 
     if (path.startsWith('/api/')) {
@@ -121,6 +120,10 @@ async function handleGatewayForward(request, env, ctx) {
     return new Response('Worker misconfigured: ORIGIN_BASE_URL is required', { status: 500 });
   }
   const method = (request.method || 'GET').toUpperCase();
+  if (method === 'OPTIONS') {
+    return corsPreflightResponse();
+  }
+
   if (!['OPTIONS', 'POST', 'GET', 'HEAD'].includes(method)) {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'OPTIONS, POST, GET, HEAD' } });
   }
@@ -537,11 +540,6 @@ async function handleGetProvisionPolicy(url, request, env) {
   return Response.json((result.results || [])[0] || null);
 }
 
-// GAP-34/GAP-42: Store device information received in Provision (MS-ASPROV
-// §3.1.5.1.1) and Settings requests. All fields sent by the Rust gateway are
-// persisted; omitted fields are stored as NULL.
-// The UNIQUE constraint on device_info is on device_id alone (globally unique
-// UUID assigned by the client), so ON CONFLICT(device_id) is correct.
 async function handleUpsertDeviceInfo(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleUpsertDeviceInfo');
@@ -559,9 +557,7 @@ async function handleUpsertDeviceInfo(request, env) {
   if (!owner || !device_id) {
     return new Response('Missing owner/device_id', { status: 400 });
   }
-  // Store all device fields. Columns model, os, phone_number, imei, user_agent
-  // were added in schema v3 — they were previously missing from the table,
-  // causing those fields to be silently discarded.
+
   await env.EXCHANGE_DB
     .prepare(`
       INSERT INTO device_info
@@ -706,3 +702,4 @@ async function cleanupIdempotencyKeys(env) {
     console.error('Failed to clean up idempotency keys:', e);
   }
 }
+
