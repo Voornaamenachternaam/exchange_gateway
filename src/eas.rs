@@ -37,9 +37,16 @@ fn maybe_throttle(owner: &str, device_id: &str) -> bool {
         entry.heartbeat = heartbeat;
         entry.folders = folders.clone();
     } else {
-        if PING_CACHE.len() >= 10000 {
-            let keys: Vec<String> = PING_CACHE.iter().map(|r| r.key().clone()).take(1000).collect();
-            for k in keys { PING_CACHE.remove(&k); }
+    if let Ok(mut cache) = PING_CACHE.lock() {
+        if cache.len() >= 10_000 {
+            let evict_batch = 100;
+            let keys: Vec<String> = cache.iter().map(|r| r.key().clone()).take(evict_batch).collect();
+            for k in keys {
+                cache.remove(&k);
+            }
+        }
+        cache.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() });
+    }
         }
         PING_CACHE.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() });
     }
