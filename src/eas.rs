@@ -498,7 +498,16 @@ async fn handle_ping(
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>7</Status></Ping>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
-    if let Ok(mut cache) = PING_CACHE.lock() { cache.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() }); }
+    if let Ok(mut cache) = PING_CACHE.lock() {
+        if cache.len() >= 10000 {
+            let keys: Vec<String> = cache.keys().cloned().collect();
+            let to_remove = keys.len() - 9000;
+            for k in keys.iter().take(to_remove) {
+                cache.remove(k);
+            }
+        }
+        cache.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() });
+    }
     let deadline = Instant::now() + Duration::from_secs(heartbeat);
     loop {
         let mut changed_folders = Vec::new();
@@ -649,17 +658,21 @@ async fn load_calendar_events(
     Ok(out)
 }
 
-async fn handle_settings(username: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> Response {
+async fn handle_settings(username: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str, xml_body: &str) -> Response {
     let primary_email = username.to_string();
-    let email_entries = active_user_emails(username).into_iter().map(|email| {
-        format!("<EmailAddresses><SMTPAddress>{}</SMTPAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
-            sync::xml_escape(&email), sync::xml_escape(&primary_email))
-    }).collect::<String>();
-    let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Settings xmlns="Settings:">
-  <Status>1</Status>
-  <UserInformation>
+    let mut sections = String::new();
+
+    let has_user_info = xml_body.contains("<UserInformation>") || xml_body.contains("<UserInformation/>");
+    let has_oof = xml_body.contains("<Oof>") || xml_body.contains("<Oof/>");
+    let has_device_password = xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
+
+    if has_user_info || (!has_oof && !has_device_password) {
+        let email_entries = active_user_emails(username).into_iter().map(|email| {
+            format!("<EmailAddresses><SMTPAddress>{}</SMTPAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
+                sync::xml_escape(&email), sync::xml_escape(&primary_email))
+        }).collect::<String>();
+        sections.push_str(&format!(
+            r#"<UserInformation>
     <Status>1</Status>
     <Get>
       <Accounts>
@@ -670,9 +683,45 @@ async fn handle_settings(username: &str, wbxml: &Wbxml, as_wbxml: bool, request_
         </Account>
       </Accounts>
     </Get>
-  </UserInformation>
+  </UserInformation>"#,
+            sync::xml_escape(&primary_email), sync::xml_escape(username), email_entries
+        ));
+    }
+
+    if has_oof {
+        sections.push_str(
+            r#"<Oof>
+    <Status>1</Status>
+    <Get>
+      <OofState>0</OofState>
+    </Get>
+  </Oof>"#
+        );
+    }
+
+    if has_device_password {
+        sections.push_str(
+            r#"<DevicePassword>
+    <Status>1</Status>
+    <Get>
+      <DevicePasswordEnabled>0</DevicePasswordEnabled>
+      <MinPasswordLength>0</MinPasswordLength>
+      <MaxPasswordLength>0</MaxPasswordLength>
+      <MaxInactivityTimeDeviceLockInMinutes>0</MaxInactivityTimeDeviceLockInMinutes>
+      <MaxFailedPasswordAttempts>0</MaxFailedPasswordAttempts>
+      <PasswordExpirationInDays>0</PasswordExpirationInDays>
+    </Get>
+  </DevicePassword>"#
+        );
+    }
+
+    let response = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Settings xmlns="Settings:">
+  <Status>1</Status>
+  {}
 </Settings>"#,
-        sync::xml_escape(&primary_email), sync::xml_escape(username), email_entries
+        sections
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
@@ -968,7 +1017,7 @@ pub async fn handle(
             }
         }
         "Ping" => handle_ping(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
-        "Settings" => handle_settings(&username, &wbxml, wants_wbxml, &request_id).await,
+        "Settings" => handle_settings(&username, &wbxml, wants_wbxml, &request_id, &xml).await,
         "SendMail" => success_status_response(&wbxml, wants_wbxml, "SendMail", "ComposeMail:", "1", "", &request_id),
         "SmartReply" | "SmartForward" => success_status_response(&wbxml, wants_wbxml, "Status", "ComposeMail:", "1", "", &request_id),
         "ItemOperations" => handle_item_operations(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
