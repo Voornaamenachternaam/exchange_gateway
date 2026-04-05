@@ -1,4 +1,4 @@
-# examples/wrangler.toml
+# wrangler.toml
 # Complete Cloudflare Worker configuration for the exchange-gateway Worker.
 #
 # Deploy instructions:

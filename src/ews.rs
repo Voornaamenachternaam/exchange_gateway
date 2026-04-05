@@ -818,7 +818,7 @@ async fn load_current_calendar_items(
             },
             Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
                 if !href.is_empty() && let Some(item) = parse_ics_event(&ics) {
-                    let server_id = generate_server_id(&state.cfg.hmac_secret, &href);
+                    let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
                     let safe_etag = if etag.is_empty() {
                         let mut h = Sha256::new(); h.update(server_id.as_bytes()); h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
                     } else { etag.clone() };
@@ -1070,7 +1070,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::CreateItem, "ErrorInternalServerError", &format!("Failed to persist created item: {e}"), StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let server_id = generate_server_id(&state.cfg.hmac_secret, &href);
+    let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
     if let Err(e) = state.storage.upsert_item_map(owner, &collection_href, &href, &server_id, &item.uid, &etag).await {
         return operation_error_response(&EwsAction::CreateItem, "ErrorInternalServerError", &format!("Failed to persist created item: {}", e), StatusCode::INTERNAL_SERVER_ERROR);
     }

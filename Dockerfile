@@ -1,3 +1,4 @@
+# Dockerfile
 FROM rust:1.94.1-slim AS builder
 WORKDIR /app
 COPY Cargo.toml ./
