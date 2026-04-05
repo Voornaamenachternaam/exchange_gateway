@@ -392,7 +392,7 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
     if let Some(v) = exception.start { xml.push_str(&format!("<Calendar:StartTime>{}</Calendar:StartTime>", v.format("%Y-%m-%dT%H:%M:%SZ"))); }
     if let Some(v) = exception.end { xml.push_str(&format!("<Calendar:EndTime>{}</Calendar:EndTime>", v.format("%Y-%m-%dT%H:%M:%SZ"))); }
     if let Some(v) = exception.all_day { xml.push_str(if v { "<Calendar:AllDayEvent>1</Calendar:AllDayEvent>" } else { "<Calendar:AllDayEvent>0</Calendar:AllDayEvent>" }); }
-    if let Some(v) = &exception.location { xml.push_str(&format!("<Calendar:Location>{}</Calendar:Location>", xml_escape(v))); }
+    if let Some(v) = &exception.location { xml.push_str(&format!("<AirSyncBase:Location><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName></AirSyncBase:Location>", xml_escape(v))); }
     if let Some(v) = exception.busy_status { xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v)); }
     if let Some(v) = exception.sensitivity { xml.push_str(&format!("<Calendar:Sensitivity>{}</Calendar:Sensitivity>", v)); }
     if let Some(v) = exception.reminder { xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v)); }
@@ -440,7 +440,7 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     if let Some(v) = item.busy_status { xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v)); }
     if let Some(v) = item.sensitivity { xml.push_str(&format!("<Calendar:Sensitivity>{}</Calendar:Sensitivity>", v)); }
     if let Some(v) = item.reminder { xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v)); }
-    if !item.location.is_empty() { xml.push_str(&format!("<Calendar:Location>{}</Calendar:Location>", xml_escape(&item.location))); }
+    if !item.location.is_empty() { xml.push_str(&format!("<AirSyncBase:Location><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName></AirSyncBase:Location>", xml_escape(&item.location))); }
     if let Some(v) = &item.organizer_name { xml.push_str(&format!("<Calendar:OrganizerName>{}</Calendar:OrganizerName>", xml_escape(v))); }
     if let Some(v) = &item.organizer_email { xml.push_str(&format!("<Calendar:OrganizerEmail>{}</Calendar:OrganizerEmail>", xml_escape(v))); }
     if !item.attendees.is_empty() {

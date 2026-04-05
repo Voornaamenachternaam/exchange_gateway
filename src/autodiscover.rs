@@ -24,38 +24,42 @@ pub fn xml_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Content-Type", "application/xml; charset=utf-8"),
-        ("Cache-Control", "private, no-store"),
+        ("Cache-Control", "private, no-store, no-cache, max-age=0"),
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
         ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        ("X-XSS-Protection", "1; mode=block"),
     ]
 }
 
 fn no_cache_headers_json() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Content-Type", "application/json; charset=utf-8"),
-        ("Cache-Control", "private, no-store"),
+        ("Cache-Control", "private, no-store, no-cache, max-age=0"),
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
         ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        ("X-XSS-Protection", "1; mode=block"),
     ]
 }
 
 fn no_cache_headers_soap() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Content-Type", "application/soap+xml; charset=utf-8"),
-        ("Cache-Control", "private, no-store"),
+        ("Cache-Control", "private, no-store, no-cache, max-age=0"),
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
         ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        ("X-XSS-Protection", "1; mode=block"),
     ]
 }
 
@@ -180,7 +184,7 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
       <Protocol>
         <Type>MobileSync</Type>
         <Server>{host}</Server>
-        <n>Exchange Gateway</n>
+        <DisplayName>Exchange Gateway</DisplayName>
         <Url>https://{host}/Microsoft-Server-ActiveSync</Url>
         <LoginName>{email}</LoginName>
         <DomainRequired>off</DomainRequired>

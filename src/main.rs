@@ -17,6 +17,9 @@ use tower_http::{
     sensitive_headers::SetSensitiveRequestHeadersLayer,
     trace::TraceLayer,
     request_id::MakeRequestUuid,
+    timeout::RequestBodyTimeoutLayer,
+    limit::RequestBodyLimitLayer,
+    compression::CompressionLayer,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -40,6 +43,7 @@ use crate::models::AppState;
 use crate::storage::Storage;
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+const REQUEST_TIMEOUT_SECS: u64 = 60;
 
 async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> Response {
     let host = &state.cfg.gateway_host;
@@ -128,6 +132,9 @@ async fn main() -> anyhow::Result<()> {
                     header::HeaderName::from_static("x-gateway-secret"),
                 ]))
                 .layer(TraceLayer::new_for_http())
+                .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+                .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+                .layer(CompressionLayer::new())
         )
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app_state);

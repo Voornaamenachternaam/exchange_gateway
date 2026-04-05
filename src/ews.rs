@@ -42,6 +42,9 @@ enum EwsAction {
     GetUserOofSettings, SetUserOofSettings,
     GetServiceConfiguration, GetServerTimeZones,
     GetFolderInfo, GetMailTips, FindPeople, GetConversationItems,
+    ConvertId, GetRoomLists, GetRooms, GetDelegate, GetUserPhoto,
+    MarkAsJunk, GetAppManifests, GetAppMarketplaceUrl,
+    InstallApp, UninstallApp, GetClientAccessToken,
 }
 
 fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
@@ -121,7 +124,12 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
         }
         EwsAction::GetUserOofSettings | EwsAction::SetUserOofSettings | EwsAction::GetServiceConfiguration |
         EwsAction::GetServerTimeZones | EwsAction::GetFolderInfo | EwsAction::GetMailTips |
-        EwsAction::FindPeople | EwsAction::GetConversationItems => Ok(()),
+        EwsAction::FindPeople | EwsAction::GetConversationItems |
+        EwsAction::ConvertId | EwsAction::GetRoomLists | EwsAction::GetRooms |
+        EwsAction::GetDelegate | EwsAction::GetUserPhoto |
+        EwsAction::MarkAsJunk | EwsAction::GetAppManifests | EwsAction::GetAppMarketplaceUrl |
+        EwsAction::InstallApp | EwsAction::UninstallApp | EwsAction::GetClientAccessToken
+        => Ok(()),
     }
 }
 
@@ -148,6 +156,17 @@ fn operation_error_response(action: &EwsAction, code: &str, message: &str, statu
         EwsAction::GetMailTips => "GetMailTipsResponseMessage",
         EwsAction::FindPeople => "FindPeopleResponseMessage",
         EwsAction::GetConversationItems => "GetConversationItemsResponseMessage",
+        EwsAction::ConvertId => "ConvertIdResponseMessage",
+        EwsAction::GetRoomLists => "GetRoomListsResponse",
+        EwsAction::GetRooms => "GetRoomsResponse",
+        EwsAction::GetDelegate => "GetDelegateResponseMessage",
+        EwsAction::GetUserPhoto => "GetUserPhotoResponseMessage",
+        EwsAction::MarkAsJunk => "MarkAsJunkResponseMessage",
+        EwsAction::GetAppManifests => "GetAppManifestsResponseMessage",
+        EwsAction::GetAppMarketplaceUrl => "GetAppMarketplaceUrlResponseMessage",
+        EwsAction::InstallApp => "InstallAppResponseMessage",
+        EwsAction::UninstallApp => "UninstallAppResponseMessage",
+        EwsAction::GetClientAccessToken => "GetClientAccessTokenResponseMessage",
     };
     let inner = format!(
         r#"<m:{resp} ResponseClass="Error" xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:{resp}>"#,
@@ -199,6 +218,17 @@ pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body
         EwsAction::GetMailTips => handle_get_mail_tips(&auth, &body).await,
         EwsAction::FindPeople => handle_find_people(&auth, &body).await,
         EwsAction::GetConversationItems => handle_get_conversation_items().await,
+        EwsAction::ConvertId => handle_convert_id(&auth, &body).await,
+        EwsAction::GetRoomLists => handle_get_room_lists().await,
+        EwsAction::GetRooms => handle_get_rooms(&auth, &body).await,
+        EwsAction::GetDelegate => handle_get_delegate(&auth).await,
+        EwsAction::GetUserPhoto => handle_get_user_photo(&auth, &body).await,
+        EwsAction::MarkAsJunk => handle_mark_as_junk(&auth, &body).await,
+        EwsAction::GetAppManifests => handle_get_app_manifests().await,
+        EwsAction::GetAppMarketplaceUrl => handle_get_app_marketplace_url().await,
+        EwsAction::InstallApp => handle_install_app().await,
+        EwsAction::UninstallApp => handle_uninstall_app().await,
+        EwsAction::GetClientAccessToken => handle_get_client_access_token().await,
     }
 }
 
@@ -242,6 +272,17 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"GetMailTips" => EwsAction::GetMailTips,
                     b"FindPeople" => EwsAction::FindPeople,
                     b"GetConversationItems" => EwsAction::GetConversationItems,
+        b"ConvertId" => EwsAction::ConvertId,
+        b"GetRoomLists" => EwsAction::GetRoomLists,
+        b"GetRooms" => EwsAction::GetRooms,
+        b"GetDelegate" => EwsAction::GetDelegate,
+        b"GetUserPhoto" => EwsAction::GetUserPhoto,
+        b"MarkAsJunk" => EwsAction::MarkAsJunk,
+        b"GetAppManifests" => EwsAction::GetAppManifests,
+        b"GetAppMarketplaceUrl" => EwsAction::GetAppMarketplaceUrl,
+        b"InstallApp" => EwsAction::InstallApp,
+        b"UninstallApp" => EwsAction::UninstallApp,
+        b"GetClientAccessToken" => EwsAction::GetClientAccessToken,
                     _ => { buf.clear(); continue; }
                 });
             }
@@ -1349,6 +1390,180 @@ async fn handle_get_conversation_items() -> Response {
     </m:GetConversationItemsResponseMessage>
   </m:ResponseMessages>
 </m:GetConversationItemsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+async fn handle_convert_id(auth: &AuthContext, _body: &str) -> Response {
+    let email = &auth.username;
+    let inner = format!(
+        r#"<m:ConvertIdResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:ConvertIdResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:AlternateId Id="{}" Format="EwsId" Mailbox="{}"/>
+</m:ConvertIdResponseMessage>
+</m:ResponseMessages>
+</m:ConvertIdResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(&auth.username), xml_escape(&auth.username)
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_room_lists() -> Response {
+    let inner = format!(
+        r#"<m:GetRoomListsResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetRoomListsResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:RoomLists/>
+</m:GetRoomListsResponseMessage>
+</m:ResponseMessages>
+</m:GetRoomListsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_rooms(auth: &AuthContext, _body: &str) -> Response {
+    let email = &auth.username;
+    let inner = format!(
+        r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetRoomsResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:Rooms>
+<t:Room>
+<t:Id>
+<t:Name>{}</t:Name>
+<t:EmailAddress>{}</t:EmailAddress>
+<t:RoutingType>SMTP</t:RoutingType>
+<t:MailboxType>Mailbox</t:MailboxType>
+</t:Id>
+</t:Room>
+</m:Rooms>
+</m:GetRoomsResponseMessage>
+</m:ResponseMessages>
+</m:GetRoomsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(&auth.username), xml_escape(&auth.username)
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_delegate(auth: &AuthContext) -> Response {
+    let email = &auth.username;
+    let inner = format!(
+        r#"<m:GetDelegateResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:DelegateUserResponseMessageType ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:DeliverMeetingRequests>DelegatesAndMe</m:DeliverMeetingRequests>
+</m:DelegateUserResponseMessageType>
+</m:ResponseMessages>
+</m:GetDelegateResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+    let inner = format!(
+        r#"<m:GetUserPhotoResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetUserPhotoResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:HasBeenIndexed>true</m:HasBeenIndexed>
+<m:PictureData/>
+</m:GetUserPhotoResponseMessage>
+</m:ResponseMessages>
+</m:GetUserPhotoResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_mark_as_junk(auth: &AuthContext, _body: &str) -> Response {
+    let inner = format!(
+        r#"<m:MarkAsJunkResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:MarkAsJunkResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:MovedItemId/>
+</m:MarkAsJunkResponseMessage>
+</m:ResponseMessages>
+</m:MarkAsJunkResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_app_manifests() -> Response {
+    let inner = format!(
+        r#"<m:GetAppManifestsResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetAppManifestsResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:Apps/>
+</m:GetAppManifestsResponseMessage>
+</m:ResponseMessages>
+</m:GetAppManifestsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_app_marketplace_url() -> Response {
+    let inner = format!(
+        r#"<m:GetAppMarketplaceUrlResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetAppMarketplaceUrlResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:AppMarketplaceUrl/>
+</m:GetAppMarketplaceUrlResponseMessage>
+</m:ResponseMessages>
+</m:GetAppMarketplaceUrlResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_install_app() -> Response {
+    let inner = format!(
+        r#"<m:InstallAppResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:InstallAppResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+</m:InstallAppResponseMessage>
+</m:ResponseMessages>
+</m:InstallAppResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_uninstall_app() -> Response {
+    let inner = format!(
+        r#"<m:UninstallAppResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:UninstallAppResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+</m:UninstallAppResponseMessage>
+</m:ResponseMessages>
+</m:UninstallAppResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_client_access_token() -> Response {
+    let inner = format!(
+        r#"<m:GetClientAccessTokenResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetClientAccessTokenResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:Token/>
+</m:GetClientAccessTokenResponseMessage>
+</m:ResponseMessages>
+</m:GetClientAccessTokenResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS
     );
     soap_ok(inner)

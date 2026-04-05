@@ -591,9 +591,11 @@ async function handleUpsertDeviceInfo(request, env) {
     friendly_name = null,
     model = null,
     os = null,
+        os_version = null,
     phone_number = null,
     imei = null,
     user_agent = null,
+        protocol_version = '16.1',
   } = body;
   if (!owner || !device_id) {
     return new Response('Missing owner/device_id', { status: 400 });

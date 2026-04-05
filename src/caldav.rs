@@ -1,23 +1,39 @@
 // src/caldav.rs
 use crate::config::Config;
 use anyhow::Result;
-use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest_tracing::TracingMiddleware;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 use uuid::Uuid;
 
 pub struct CaldavClient {
     base: String,
-    client: Client,
+    client: ClientWithMiddleware,
 }
 
 impl CaldavClient {
     pub fn new(cfg: &Config) -> Self {
-        let client = Client::builder()
-            .http1_only()
-            .pool_max_idle_per_host(8)
-            .build()
-            .expect("reqwest client construction should be infallible for static config");
+        let retry_policy = ExponentialBackoff::builder()
+            .retry_bounds(Duration::from_millis(100), Duration::from_secs(5))
+            .build_with_max_retries(3);
+        
+        let client = ClientBuilder::new(
+            reqwest::Client::builder()
+                .http1_only()
+                .pool_max_idle_per_host(8)
+                .pool_idle_timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .expect("reqwest client construction should be infallible for static config"),
+        )
+        .with(TracingMiddleware::default())
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+        
         CaldavClient {
             base: cfg.caldav_base.clone(),
             client,

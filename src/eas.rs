@@ -104,7 +104,7 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
             required_tags: &["Collections", "Collection", "SyncKey", "CollectionId"],
         }),
         "moveitems" => Some(CommandGrammar { namespace: "Move:", required_tags: &["Move"] }),
-        // Calendar-only: accept but no-op mail compose commands so clients get a graceful Status 1
+        
         "sendmail" | "smartreply" | "smartforward" => {
             Some(CommandGrammar { namespace: "ComposeMail:", required_tags: &[] })
         }
@@ -699,7 +699,7 @@ async fn handle_ping(
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
 
-    // Evict oldest entries if the cache grows too large, then persist.
+    
     if PING_CACHE.len() >= 10_000 {
         let keys: Vec<String> = PING_CACHE.iter().map(|r| r.key().clone()).take(1_000).collect();
         for k in keys { PING_CACHE.remove(&k); }
@@ -1221,7 +1221,7 @@ pub async fn handle(
         "GetItemEstimate" => {
             handle_get_item_estimate(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
         }
-        // Calendar-only gateway: mail compose commands are no-ops that satisfy clients.
+        
         "SendMail" | "SmartReply" | "SmartForward" => {
             success_status_response(&wbxml, wants_wbxml, &req.command, "ComposeMail:", "1", "", &request_id)
         }

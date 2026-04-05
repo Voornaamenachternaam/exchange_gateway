@@ -1,13 +1,16 @@
 // src/storage.rs
 use anyhow::{anyhow, Result};
-use reqwest::Client;
+use reqwest::header::HeaderMap;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest_tracing::TracingMiddleware;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct Storage {
-    client: Client,
+    client: ClientWithMiddleware,
     base_url: String,
     secret: String,
 }
@@ -98,10 +101,21 @@ struct EwsSyncStateRow {
 
 impl Storage {
     pub fn new(worker_url: &str, worker_secret: &str) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .pool_idle_timeout(Duration::from_secs(15))
-            .build()?;
+        let retry_policy = ExponentialBackoff::builder()
+            .retry_bounds(Duration::from_millis(50), Duration::from_secs(3))
+            .build_with_max_retries(3);
+        
+        let client = ClientBuilder::new(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .pool_idle_timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(4)
+                .build()?,
+        )
+        .with(TracingMiddleware::default())
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+        
         Ok(Self {
             client,
             base_url: worker_url.trim_end_matches('/').to_string(),
