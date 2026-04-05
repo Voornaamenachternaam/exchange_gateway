@@ -38,6 +38,10 @@ export default {
       return corsPreflightResponse();
     }
 
+    if (isForwardedPath(path)) {
+      return handleGatewayForward(request, env, ctx);
+    }
+
     const methodValidation = validateApiMethod(path, request.method);
     if (!methodValidation.allowed) {
       return new Response('Method Not Allowed', { status: 405, headers: { Allow: methodValidation.allow } });
