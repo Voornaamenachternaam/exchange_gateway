@@ -1293,7 +1293,24 @@ async fn handle_get_mail_tips() -> Response {
         <m:MailTipsResponseMessage ResponseClass="Success">
         <m:ResponseCode>NoError</m:ResponseCode>
         <m:MailTips>
-        <t:RecipientAddress><t:EmailAddress>user@example.com</t:EmailAddress></t:RecipientAddress>
+async fn handle_get_mail_tips(auth: &AuthContext) -> Response {
+    let email = &auth.username;
+    let inner = format!(
+        r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:MailTipsResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        <m:MailTips>
+        <t:RecipientAddress><t:EmailAddress>{}</t:EmailAddress></t:RecipientAddress>
+        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
+        </m:MailTips>
+        </m:MailTipsResponseMessage>
+        </m:ResponseMessages>
+        </m:GetMailTipsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(email)
+    );
+    soap_ok(inner)
+}
         <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
         </m:MailTips>
         </m:MailTipsResponseMessage>
