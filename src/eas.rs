@@ -411,11 +411,15 @@ fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
 fn maybe_throttle(owner: &str, device_id: &str) -> bool {
     let key = format!("{}:{}", owner, device_id);
     let now = Instant::now();
+fn maybe_throttle(owner: &str, device_id: &str) -> bool {
+    let key = format!("{}:{}", owner, device_id);
+    let now = Instant::now();
     let mut entries = DEVICE_WINDOW.entry(key).or_insert_with(Vec::new);
-    entries.retain(|ts| now.duration_since(*ts) < WINDOW);
+    entries.retain(|ts| now.checked_duration_since(*ts).map_or(false, |d| d < WINDOW));
     if entries.len() >= MAX_REQUESTS_PER_WINDOW { return true; }
     entries.push(now);
     false
+}
 }
 
 // ── Response builders ─────────────────────────────────────────────────────────
