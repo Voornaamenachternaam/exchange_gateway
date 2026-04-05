@@ -76,7 +76,6 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
     const TABLE: &[(&str, &str)] = &[
         ("coordinated universal time", "UTC"),
         ("greenwich standard time", "UTC"),
-        ("utc", "UTC"),
         ("gmt standard time", "Europe/London"),
         ("w. europe standard time", "Europe/Berlin"),
         ("central europe standard time", "Europe/Budapest"),
