@@ -41,6 +41,7 @@ enum EwsAction {
     SyncFolderHierarchy, Subscribe, Unsubscribe, CreateItem, UpdateItem, DeleteItem, ResolveNames,
     GetUserOofSettings, SetUserOofSettings,
     GetServiceConfiguration, GetServerTimeZones,
+    GetFolderInfo, GetMailTips, FindPeople, GetConversationItems,
 }
 
 pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body: String) -> Response {
@@ -69,6 +70,10 @@ pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body
         EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&auth, &body).await,
         EwsAction::GetServiceConfiguration => handle_get_service_configuration().await,
         EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
+        EwsAction::GetFolderInfo => handle_get_folder_info().await,
+        EwsAction::GetMailTips => handle_get_mail_tips().await,
+        EwsAction::FindPeople => handle_find_people(EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,auth, &body).await,
+        EwsAction::GetConversationItems => handle_get_conversation_items().await,
     }
 }
 
@@ -108,6 +113,10 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"SetUserOofSettingsRequest" => EwsAction::SetUserOofSettings,
                     b"GetServiceConfiguration" => EwsAction::GetServiceConfiguration,
                     b"GetServerTimeZones" => EwsAction::GetServerTimeZones,
+            b"GetFolderInfo" => EwsAction::GetFolderInfo,
+            b"GetMailTips" => EwsAction::GetMailTips,
+            b"FindPeople" => EwsAction::FindPeople,
+            b"GetConversationItems" => EwsAction::GetConversationItems,
                     _ => { buf.clear(); continue; }
                 });
             }
@@ -1258,6 +1267,78 @@ async fn handle_get_server_time_zones() -> Response {
     </m:GetServerTimeZonesResponseMessage>
   </m:ResponseMessages>
 </m:GetServerTimeZonesResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_folder_info() -> Response {
+    let inner = format!(
+        r#"<m:GetFolderInfoResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:GetFolderInfoResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        </m:GetFolderInfoResponseMessage>
+        </m:ResponseMessages>
+        </m:GetFolderInfoResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_mail_tips() -> Response {
+    let inner = format!(
+        r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:MailTipsResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        <m:MailTips>
+        <t:RecipientAddress><t:EmailAddress>user@example.com</t:EmailAddress></t:RecipientAddress>
+        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
+        </m:MailTips>
+        </m:MailTipsResponseMessage>
+        </m:ResponseMessages>
+        </m:GetMailTipsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_find_people(auth: &AuthContext, _body: &str) -> Response {
+    let email = &auth.username;
+    let inner = format!(
+        r#"<m:FindPeopleResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:FindPeopleResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        <m:People>
+        <t:Persona>
+        <t:PersonaId Id="{}" ChangeKey="01"/>
+        <t:DisplayName>{}</t:DisplayName>
+        <t:EmailAddress><t:EmailAddress>{}</t:EmailAddress></t:EmailAddress>
+        </t:Persona>
+        </m:People>
+        <m:TotalPeopleInView>1</m:TotalPeopleInView>
+        </m:FindPeopleResponseMessage>
+        </m:ResponseMessages>
+        </m:FindPeopleResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS,
+        uuid::Uuid::new_v4(),
+        xml_escape(email),
+        xml_escape(email)
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_conversation_items() -> Response {
+    let inner = format!(
+        r#"<m:GetConversationItemsResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:GetConversationItemsResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        </m:GetConversationItemsResponseMessage>
+        </m:ResponseMessages>
+        </m:GetConversationItemsResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS
     );
     soap_ok(inner)
