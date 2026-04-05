@@ -16,8 +16,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
