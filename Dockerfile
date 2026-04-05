@@ -1,6 +1,3 @@
-# Dockerfile
-# Gap 8 (Security hardening): non-root runtime user, health check, clean dependency cache.
-
 FROM rust:1.94.1-slim AS builder
 WORKDIR /app
 COPY Cargo.toml ./
@@ -25,8 +22,6 @@ ENV RUST_LOG="info"
 ENV TZ="UTC"
 USER gateway
 EXPOSE 8134
-# Health check a lightweight, always-available endpoint, like a simple status or the root.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8134/health || exit 1
-# Or, create a dedicated /health endpoint that performs basic self-tests.
 CMD ["/usr/local/bin/exchange_gateway"]

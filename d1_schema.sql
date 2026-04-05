@@ -130,3 +130,4 @@ VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
 
 INSERT INTO schema_version (version, description)
 VALUES (3, 'v3: device_info expanded with model, os, phone_number, imei, user_agent columns');
+
