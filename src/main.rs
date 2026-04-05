@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host
     );
 
-    let storage = Arc::new(Storage::new(&config.worker_url, config.worker_secret())?)?;
+    let storage = Arc::new(Storage::new(&config.worker_url, config.worker_secret())?);
 
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
