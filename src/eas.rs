@@ -85,7 +85,6 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "search" => Some(CommandGrammar { namespace: "Search:", required_tags: &["Store"] }),
         "meetingresponse" => Some(CommandGrammar { namespace: "MeetingResponse:", required_tags: &["RequestId", "UserResponse"] }),
         "resolverecipients" => Some(CommandGrammar { namespace: "ResolveRecipients:", required_tags: &["To"] }),
-        "sendmail" | "smartreply" | "smartforward" => Some(CommandGrammar { namespace: "ComposeMail:", required_tags: &[] }),
         "validatecert" => Some(CommandGrammar { namespace: "ValidateCert:", required_tags: &["Certificates"] }),
         "getitemestimate" => Some(CommandGrammar { namespace: "GetItemEstimate:", required_tags: &["Collections", "Collection", "SyncKey", "CollectionId"] }),
         "moveitems" => Some(CommandGrammar { namespace: "Move:", required_tags: &["Move"] }),
@@ -106,7 +105,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let grammar = command_grammar(&lower_cmd).ok_or("Unsupported command")?;
 
     if xml.trim().is_empty() {
-        return if matches!(lower_cmd.as_str(), "sendmail" | "smartreply" | "smartforward") { Ok(()) } else { Err("Empty request body") };
+        return Err("Empty request body");
     }
 
     if extract_root_command(xml).map(|s| s.to_ascii_lowercase()) != Some(lower_cmd.clone()) {
@@ -124,8 +123,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     match lower_cmd.as_str() {
         "sync" => {
             if let Some(class) = extract_first_tag_text(xml, b"Class") {
-                const SUPPORTED: &[&str] = &["Calendar","Contacts","Email","Notes","Tasks","DocumentLibrary","SMS","RightsManagement"];
-                if !SUPPORTED.iter().any(|c| c.eq_ignore_ascii_case(&class)) { return Err("Unsupported Sync class"); }
+                if !class.eq_ignore_ascii_case("Calendar") { return Err("Only Calendar Sync class is supported"); }
             }
             if xml.contains("<Add>") && !xml.contains("<ClientId>") { return Err("Add requires ClientId"); }
             if xml.contains("AppointmentReplyTime") || xml.contains("ResponseType") { return Err("Response-only fields not permitted in Sync request"); }
@@ -1019,8 +1017,6 @@ pub async fn handle(
         }
         "Ping" => handle_ping(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
         "Settings" => handle_settings(&username, &wbxml, wants_wbxml, &request_id, &xml).await,
-        "SendMail" => success_status_response(&wbxml, wants_wbxml, "SendMail", "ComposeMail:", "1", "", &request_id),
-        "SmartReply" | "SmartForward" => success_status_response(&wbxml, wants_wbxml, "Status", "ComposeMail:", "1", "", &request_id),
         "ItemOperations" => handle_item_operations(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
         "Search" => handle_search(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
         "MeetingResponse" => {

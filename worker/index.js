@@ -188,7 +188,7 @@ async function handleGatewayForward(request, env, ctx) {
   const upstreamRequest = new Request(upstream.toString(), {
     method,
     headers: forwardedHeaders,
-    body: method === 'GET' || method === 'HEAD' ? undefined : request.body,
+    body: method === 'POST' ? request.body : undefined,
     redirect: 'manual'
   });
   try {
