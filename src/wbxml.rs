@@ -1,14 +1,3 @@
-// src/wbxml.rs
-//
-// WBXML codec for Exchange ActiveSync — MS-ASWBXML
-//
-// All 25 code pages defined in the spec are mapped here.  The most
-// important correctness fix is code page 8 (MeetingResponse) which was
-// previously off by two positions in every tag, silently breaking all
-// meeting accept/decline flows for WBXML clients.
-//
-// Reference: [MS-ASWBXML] §2.1.2  (Binder1.txt)
-
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
@@ -21,20 +10,70 @@ const STR_T: u8 = 0x83;
 const OPAQUE: u8 = 0xC3;
 
 lazy_static::lazy_static! {
-    /// Decoder map: (code_page, token) → tag name.
     static ref TAG_TO_NAME: HashMap<(u8, u8), &'static str> = build_tag_to_name();
-
-    /// Encoder map: tag name → (code_page, token).
     static ref NAME_TO_TAG: HashMap<&'static str, (u8, u8)> = {
         TAG_TO_NAME.iter().map(|(&k, &v)| (v, k)).collect()
     };
+}
+
+fn namespace_to_code_page(ns: &str) -> Option<u8> {
+    match ns {
+        "AirSync:" => Some(0),
+        "Contacts:" => Some(1),
+        "Email:" => Some(2),
+        "Calendar:" => Some(4),
+        "Move:" | "MoveItems:" => Some(5),
+        "GetItemEstimate:" => Some(6),
+        "FolderHierarchy:" => Some(7),
+        "MeetingResponse:" => Some(8),
+        "Tasks:" => Some(9),
+        "ResolveRecipients:" => Some(10),
+        "ValidateCert:" => Some(11),
+        "Contacts2:" => Some(12),
+        "Ping:" => Some(13),
+        "Provision:" => Some(14),
+        "Search:" => Some(15),
+        "GAL:" => Some(16),
+        "AirSyncBase:" => Some(17),
+        "Settings:" => Some(18),
+        "DocumentLibrary:" => Some(19),
+        "ItemOperations:" => Some(20),
+        "ComposeMail:" => Some(21),
+        "Email2:" => Some(22),
+        "Notes:" => Some(23),
+        "RightsManagement:" => Some(24),
+        _ => None,
+    }
+}
+
+fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<(u8, u8)> {
+    if let Some(&pair) = NAME_TO_TAG.get(qualified_or_local) {
+        if let Some(cp) = override_cp {
+            if pair.0 == cp {
+                return Some(pair);
+            }
+        } else {
+            return Some(pair);
+        }
+    }
+    for (name, &(cp, id)) in NAME_TO_TAG.iter() {
+        let local = if let Some(p) = name.rfind(':') { &name[p + 1..] } else { name };
+        if local == qualified_or_local {
+            if let Some(ocp) = override_cp {
+                if cp == ocp { return Some((cp, id)); }
+            } else {
+                return Some((cp, id));
+            }
+        }
+    }
+    None
 }
 
 #[rustfmt::skip]
 fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     let mut m: HashMap<(u8, u8), &'static str> = HashMap::new();
 
-    // ── Code Page 0: AirSync ─────────────────────────────────────────────
+
     m.insert((0, 0x05), "Sync");
     m.insert((0, 0x06), "Responses");
     m.insert((0, 0x07), "Add");
@@ -69,7 +108,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((0, 0x28), "MaxItems");
     m.insert((0, 0x29), "HeartbeatInterval");
 
-    // ── Code Page 1: Contacts ────────────────────────────────────────────
+
     m.insert((1, 0x05), "Contacts:Anniversary");
     m.insert((1, 0x06), "Contacts:AssistantName");
     m.insert((1, 0x07), "Contacts:AssistantPhoneNumber");
@@ -96,7 +135,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((1, 0x48), "Contacts:YomiFirstName");
     m.insert((1, 0x49), "Contacts:YomiLastName");
 
-    // ── Code Page 2: Email ───────────────────────────────────────────────
+
     m.insert((2, 0x05), "Email:Attachment");
     m.insert((2, 0x06), "Email:Attachments");
     m.insert((2, 0x07), "Email:AttName");
@@ -139,7 +178,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((2, 0x3E), "Email:CompleteTime");
     m.insert((2, 0x40), "Email:DisallowNewTimeProposal");
 
-    // ── Code Page 4: Calendar ────────────────────────────────────────────
+
     m.insert((4, 0x05), "Calendar:Timezone");
     m.insert((4, 0x06), "Calendar:AllDayEvent");
     m.insert((4, 0x07), "Calendar:Attendees");
@@ -186,7 +225,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((4, 0x3B), "Calendar:OnlineMeetingExternalLink");
     m.insert((4, 0x3C), "Calendar:ClientUid");
 
-    // ── Code Page 5: Move ────────────────────────────────────────────────
+
     m.insert((5, 0x05), "MoveItems");
     m.insert((5, 0x06), "Move");
     m.insert((5, 0x07), "SrcMsgId");
@@ -195,19 +234,19 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((5, 0x0A), "MoveResponse");
     m.insert((5, 0x0B), "MoveStatus");
 
-    // ── Code Page 6: GetItemEstimate ─────────────────────────────────────
+
     m.insert((6, 0x05), "GetItemEstimate");
-    m.insert((6, 0x06), "Version");
-    m.insert((6, 0x07), "EstimateCollections");
-    m.insert((6, 0x08), "EstimateCollection");
-    m.insert((6, 0x09), "EstimateClass");
-    m.insert((6, 0x0A), "EstimateCollectionId");
+    m.insert((6, 0x06), "GIEVersion");
+    m.insert((6, 0x07), "GIECollections");
+    m.insert((6, 0x08), "GIECollection");
+    m.insert((6, 0x09), "GIEClass");
+    m.insert((6, 0x0A), "GIECollectionId");
     m.insert((6, 0x0B), "DateTime");
     m.insert((6, 0x0C), "Estimate");
-    m.insert((6, 0x0D), "EstimateResponse");
-    m.insert((6, 0x0E), "EstimateStatus");
+    m.insert((6, 0x0D), "Response");
+    m.insert((6, 0x0E), "Status");
 
-    // ── Code Page 7: FolderHierarchy ─────────────────────────────────────
+
     m.insert((7, 0x07), "DisplayName");
     m.insert((7, 0x08), "ServerId");
     m.insert((7, 0x09), "ParentId");
@@ -224,12 +263,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((7, 0x16), "FolderSync");
     m.insert((7, 0x17), "Count");
 
-    // ── Code Page 8: MeetingResponse ─────────────────────────────────────
-    // CRITICAL: per MS-ASWBXML §2.1.2.1.9 the correct mapping is:
-    //   CalendarId=0x05, CollectionId=0x06, MeetingResponse=0x07,
-    //   RequestId=0x08, Request=0x09, Result=0x0A, Status=0x0B,
-    //   UserResponse=0x0C, InstanceId=0x0E
-    // The previous code was offset by two positions — completely wrong.
+
     m.insert((8, 0x05), "CalendarId");
     m.insert((8, 0x06), "MeetingCollectionId");
     m.insert((8, 0x07), "MeetingResponse");
@@ -243,7 +277,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((8, 0x11), "ProposedEndTime");
     m.insert((8, 0x12), "SendResponse");
 
-    // ── Code Page 9: Tasks ───────────────────────────────────────────────
+
     m.insert((9, 0x08), "Tasks:Complete");
     m.insert((9, 0x09), "Tasks:DateCompleted");
     m.insert((9, 0x0D), "Tasks:DueDate");
@@ -268,7 +302,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((9, 0x28), "Tasks:Categories");
     m.insert((9, 0x29), "Tasks:Category");
 
-    // ── Code Page 10: ResolveRecipients ──────────────────────────────────
+
     m.insert((10, 0x05), "ResolveRecipients");
     m.insert((10, 0x06), "Response");
     m.insert((10, 0x07), "Status");
@@ -295,7 +329,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((10, 0x1C), "Data");
     m.insert((10, 0x1D), "MaxPictures");
 
-    // ── Code Page 11: ValidateCert ───────────────────────────────────────
+
     m.insert((11, 0x05), "ValidateCert");
     m.insert((11, 0x06), "Certificates");
     m.insert((11, 0x07), "Certificate");
@@ -304,7 +338,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((11, 0x0A), "CertificateStatus");
     m.insert((11, 0x0B), "Status");
 
-    // ── Code Page 12: Contacts2 ──────────────────────────────────────────
+
     m.insert((12, 0x05), "Contacts2:CustomerId");
     m.insert((12, 0x06), "Contacts2:GovernmentId");
     m.insert((12, 0x07), "Contacts2:IMAddress");
@@ -316,7 +350,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((12, 0x0D), "Contacts2:MMS");
     m.insert((12, 0x0E), "Contacts2:NickName");
 
-    // ── Code Page 13: Ping ───────────────────────────────────────────────
+
     m.insert((13, 0x05), "Ping");
     m.insert((13, 0x07), "Status");
     m.insert((13, 0x08), "HeartbeatInterval");
@@ -326,7 +360,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((13, 0x0C), "Class");
     m.insert((13, 0x0D), "MaxFolders");
 
-    // ── Code Page 14: Provision ──────────────────────────────────────────
+
     m.insert((14, 0x05), "Provision");
     m.insert((14, 0x06), "Policies");
     m.insert((14, 0x07), "Policy");
@@ -381,7 +415,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((14, 0x39), "ApprovedApplicationList");
     m.insert((14, 0x3A), "Hash");
 
-    // ── Code Page 15: Search ─────────────────────────────────────────────
+
     m.insert((15, 0x05), "Search");
     m.insert((15, 0x07), "Store");
     m.insert((15, 0x08), "Name");
@@ -407,7 +441,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((15, 0x1D), "QueryId");
     m.insert((15, 0x1E), "MaxResults");
 
-    // ── Code Page 16: GAL ────────────────────────────────────────────────
+
     m.insert((16, 0x05), "GAL:DisplayName");
     m.insert((16, 0x06), "GAL:Phone");
     m.insert((16, 0x07), "GAL:Office");
@@ -423,7 +457,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((16, 0x11), "GAL:Status");
     m.insert((16, 0x12), "GAL:Data");
 
-    // ── Code Page 17: AirSyncBase ────────────────────────────────────────
+
     m.insert((17, 0x05), "AirSyncBase:BodyPreference");
     m.insert((17, 0x06), "AirSyncBase:Type");
     m.insert((17, 0x07), "AirSyncBase:TruncationSize");
@@ -465,7 +499,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((17, 0x2C), "AirSyncBase:LocationUri");
     m.insert((17, 0x2D), "AirSyncBase:InstanceId");
 
-    // ── Code Page 18: Settings ───────────────────────────────────────────
+
     m.insert((18, 0x05), "Settings");
     m.insert((18, 0x06), "Status");
     m.insert((18, 0x07), "Get");
@@ -505,7 +539,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((18, 0x29), "SendDisabled");
     m.insert((18, 0x2B), "RightsManagementInformation");
 
-    // ── Code Page 19: DocumentLibrary ────────────────────────────────────
+
     m.insert((19, 0x05), "DocumentLibrary:LinkId");
     m.insert((19, 0x06), "DocumentLibrary:DisplayName");
     m.insert((19, 0x07), "DocumentLibrary:IsFolder");
@@ -515,7 +549,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((19, 0x0B), "DocumentLibrary:ContentLength");
     m.insert((19, 0x0C), "DocumentLibrary:ContentType");
 
-    // ── Code Page 20: ItemOperations ─────────────────────────────────────
+
     m.insert((20, 0x05), "ItemOperations");
     m.insert((20, 0x06), "Fetch");
     m.insert((20, 0x07), "Store");
@@ -538,7 +572,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((20, 0x18), "ConversationId");
     m.insert((20, 0x19), "MoveAlways");
 
-    // ── Code Page 21: ComposeMail ────────────────────────────────────────
+
     m.insert((21, 0x05), "SendMail");
     m.insert((21, 0x06), "SmartForward");
     m.insert((21, 0x07), "SmartReply");
@@ -553,7 +587,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((21, 0x11), "ForwardeeName");
     m.insert((21, 0x12), "ForwardeeEmail");
 
-    // ── Code Page 22: Email2 ─────────────────────────────────────────────
+
     m.insert((22, 0x05), "Email2:UmCallerId");
     m.insert((22, 0x06), "Email2:UmUserNotes");
     m.insert((22, 0x07), "Email2:UmAttDuration");
@@ -570,7 +604,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((22, 0x12), "Email2:FirstDayOfWeek");
     m.insert((22, 0x13), "Email2:MeetingMessageType");
 
-    // ── Code Page 23: Notes ──────────────────────────────────────────────
+
     m.insert((23, 0x05), "Notes:Subject");
     m.insert((23, 0x06), "Notes:MessageClass");
     m.insert((23, 0x07), "Notes:LastModifiedDate");
@@ -578,7 +612,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((23, 0x09), "Notes:Category");
     m.insert((23, 0x0B), "Notes:Body");
 
-    // ── Code Page 24: Rights Management ─────────────────────────────────
+
     m.insert((24, 0x05), "RightsManagement:RightsManagementSupport");
     m.insert((24, 0x06), "RightsManagement:RightsManagementTemplates");
     m.insert((24, 0x07), "RightsManagement:RightsManagementTemplate");
@@ -651,15 +685,12 @@ impl Wbxml {
         if bytes.is_empty() {
             return Err(anyhow!("Empty WBXML payload"));
         }
-        // Pass-through plain XML
         if bytes[0] == b'<' {
             return Ok(String::from_utf8(bytes.to_vec())?);
         }
 
         let mut pos = 0usize;
-        let _version = *bytes
-            .get(pos)
-            .ok_or_else(|| anyhow!("Missing WBXML version"))?;
+        let _version = *bytes.get(pos).ok_or_else(|| anyhow!("Missing WBXML version"))?;
         pos += 1;
         let _public_id = Self::read_mb_uint(bytes, &mut pos)?;
         let _charset = Self::read_mb_uint(bytes, &mut pos)?;
@@ -738,15 +769,14 @@ impl Wbxml {
                                 output.push_str(&format!("</{name}>"));
                             }
                         } else {
-                            // Unknown tag — skip gracefully for forward compatibility
                             tracing::trace!(
                                 "WBXML decode: unknown tag cp={} id=0x{:02x}",
                                 current_code_page,
                                 tag_id
                             );
                             if has_content {
-                                // Push a placeholder so END tokens balance
-                                let placeholder = format!("_unknown_cp{current_code_page}_{tag_id:02x}");
+                                let placeholder =
+                                    format!("_unknown_cp{current_code_page}_{tag_id:02x}");
                                 output.push_str(&format!("<{placeholder}>"));
                                 xml_stack.push(placeholder);
                             }
@@ -756,7 +786,6 @@ impl Wbxml {
             }
         }
 
-        // Close any unclosed tags
         while let Some(tag) = xml_stack.pop() {
             output.push_str(&format!("</{tag}>"));
         }
@@ -765,36 +794,42 @@ impl Wbxml {
     }
 
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-        // WBXML header: version=1.3, public-id=1 (unknown), charset=UTF-8(106), str-table-len=0
+
         let mut buf: Vec<u8> = vec![0x03, 0x01, 0x6A, 0x00];
+        let mut current_code_page = 0u8;
+        let mut ns_stack: Vec<Option<u8>> = Vec::new();
 
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
-        let mut current_code_page = 0u8;
         let mut event_buf = Vec::new();
 
         loop {
             match reader.read_event_into(&mut event_buf) {
-                Ok(quick_xml::events::Event::Start(e)) => {
+                Ok(quick_xml::events::Event::Start(ref e)) => {
+                    let ns_cp = extract_xmlns_cp(e);
+                    ns_stack.push(ns_cp);
+                    let effective_cp = ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x));
                     let name_raw = e.name().local_name();
                     let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, true)?;
+                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, effective_cp, true)?;
                 }
-                Ok(quick_xml::events::Event::Empty(e)) => {
+                Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let ns_cp = extract_xmlns_cp(e);
+                    let effective_cp = ns_cp.or_else(|| ns_stack.last().copied().flatten());
                     let name_raw = e.name().local_name();
                     let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, false)?;
+                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, effective_cp, false)?;
                 }
-                Ok(quick_xml::events::Event::Text(e)) => {
-                    let txt = e
-                        .decode()
-                        .map_err(|e| anyhow!("XML decode error: {e}"))?
-                        .into_owned();
-                    buf.push(STR_I);
-                    buf.extend_from_slice(txt.as_bytes());
-                    buf.push(0x00);
+                Ok(quick_xml::events::Event::Text(ref e)) => {
+                    let txt = e.decode().map_err(|e| anyhow!("XML decode error: {e}"))?.into_owned();
+                    if !txt.is_empty() {
+                        buf.push(STR_I);
+                        buf.extend_from_slice(txt.as_bytes());
+                        buf.push(0x00);
+                    }
                 }
                 Ok(quick_xml::events::Event::End(_)) => {
+                    ns_stack.pop();
                     buf.push(END);
                 }
                 Ok(quick_xml::events::Event::Eof) => break,
@@ -812,10 +847,10 @@ impl Wbxml {
         buf: &mut Vec<u8>,
         current_cp: &mut u8,
         name_str: &str,
+        hint_cp: Option<u8>,
         has_content: bool,
     ) -> Result<()> {
-        // Try exact match first
-        if let Some(&(cp, tag_id)) = NAME_TO_TAG.get(name_str) {
+        if let Some((cp, tag_id)) = find_encode_tag(name_str, hint_cp) {
             if cp != *current_cp {
                 buf.push(SWITCH_PAGE);
                 buf.push(cp);
@@ -825,32 +860,30 @@ impl Wbxml {
             buf.push(token);
             return Ok(());
         }
-
-        // Try suffix match for namespace-qualified names like "Calendar:Subject"
-        for (known_name, &(cp, tag_id)) in NAME_TO_TAG.iter() {
-            if known_name.ends_with(name_str) {
-                if cp != *current_cp {
-                    buf.push(SWITCH_PAGE);
-                    buf.push(cp);
-                    *current_cp = cp;
-                }
-                let token = if has_content { tag_id | 0x40 } else { tag_id };
-                buf.push(token);
-                return Ok(());
-            }
-        }
-
-        // Unknown tag — log warning but do not abort; skip silently for
-        // forward compatibility (GAP-20 fix).
-        tracing::warn!("WBXML encode: unknown tag '{name_str}' — skipped");
-        Ok(())
+        return Err(anyhow!("WBXML encode: unknown tag '{}'", name_str));
     }
 }
 
+fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
+    for attr in e.attributes().flatten() {
+        let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+        if key == "xmlns" || key.starts_with("xmlns:") {
+            if let Ok(val) = attr.decode_and_unescape_value(quick_xml::encoding::Decoder::utf8()) {
+                if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                    return Some(cp);
+                }
+                let with_colon = format!("{}:", val);
+                if let Some(cp) = namespace_to_code_page(&with_colon) {
+                    return Some(cp);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn xml_escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -868,13 +901,17 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_folder_sync_and_provision() {
+    fn round_trip_folder_sync() {
         let codec = Wbxml::new();
         let folder = r#"<FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>1</SyncKey><Changes><Count>1</Count></Changes></FolderSync>"#;
         let wb_folder = codec.encode(folder).expect("encode folder");
         let folder_dec = codec.decode(&wb_folder).expect("decode folder");
         assert!(folder_dec.contains("<FolderSync>"), "decoded: {folder_dec}");
+    }
 
+    #[test]
+    fn round_trip_provision() {
+        let codec = Wbxml::new();
         let prov = r#"<Provision xmlns="Provision:"><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><PolicyKey>1</PolicyKey></Policy></Policies></Provision>"#;
         let wb_prov = codec.encode(prov).expect("encode provision");
         let prov_dec = codec.decode(&wb_prov).expect("decode provision");
@@ -883,7 +920,6 @@ mod tests {
 
     #[test]
     fn meeting_response_code_page_correct() {
-        // Verify the corrected code page 8 mapping
         let codec = Wbxml::new();
         let xml = r#"<MeetingResponse xmlns="MeetingResponse:"><Request><RequestId>abc</RequestId><UserResponse>1</UserResponse></Request></MeetingResponse>"#;
         let wb = codec.encode(xml).expect("encode");
@@ -940,4 +976,14 @@ mod tests {
         let dec = codec.decode(xml).expect("passthrough");
         assert!(dec.starts_with("<?xml"));
     }
+
+    #[test]
+    fn calendar_namespace_round_trip() {
+        let codec = Wbxml::new();
+        let xml = r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><Commands><Add><ClientId>c1</ClientId><ApplicationData><Calendar:Subject>Test</Calendar:Subject><Calendar:StartTime>2026-03-22T09:00:00Z</Calendar:StartTime><Calendar:EndTime>2026-03-22T10:00:00Z</Calendar:EndTime></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
+        let wb = codec.encode(xml).expect("encode");
+        let dec = codec.decode(&wb).expect("decode");
+        assert!(dec.contains("<Calendar:Subject>Test</Calendar:Subject>"), "decoded: {dec}");
+    }
 }
+

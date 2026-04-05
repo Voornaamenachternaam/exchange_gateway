@@ -1,28 +1,5 @@
-// src/ews_folders.rs
-//
-// EWS folder model — full distinguished-folder-id support.
-//
-// Gaps closed:
-//   Gap 4.2 — Folder and mailbox modeling remain simplified.
-//
-//   The previous implementation only accepted "calendar" and "msgfolderroot" as
-//   DistinguishedFolderId values, returning ErrorFolderNotFound for every other
-//   folder. Outlook (Windows 11 and Android 15) routinely requests several
-//   other distinguished folders during the bootstrapping sequence:
-//     inbox, sentitems, deleteditems, drafts, contacts, tasks, outbox, junkemail
-//
-//   This module provides a complete folder descriptor table and response
-//   renderers for all folders Outlook may request. Calendar items are served
-//   from the real CalDAV backend; all other folders return a minimal but
-//   valid empty-folder EWS response that satisfies Outlook's bootstrapping
-//   sequence without exposing unsupported functionality.
-//
-//   The module also exposes helpers used by ews.rs for folder-id validation
-//   and response rendering.
-
 use sha2::{Digest, Sha256};
 
-/// All Exchange distinguished folder IDs that Outlook may request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DistinguishedFolder {
     Calendar,
@@ -40,7 +17,6 @@ pub enum DistinguishedFolder {
 }
 
 impl DistinguishedFolder {
-    /// Parse a case-insensitive distinguished folder ID string.
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "calendar" => Some(Self::Calendar),
@@ -59,7 +35,6 @@ impl DistinguishedFolder {
         }
     }
 
-    /// Returns the EWS display name for this folder.
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Calendar => "Calendar",
@@ -77,8 +52,6 @@ impl DistinguishedFolder {
         }
     }
 
-    /// Returns the IPF class string for this folder.
-    /// Returns the IPF class string for this folder.
     pub fn folder_class(self) -> &'static str {
         match self {
             Self::Calendar => "IPF.Appointment",
@@ -91,7 +64,6 @@ impl DistinguishedFolder {
         }
     }
 
-    /// Returns the EWS element name for the folder response.
     pub fn element_name(self) -> &'static str {
         match self {
             Self::Calendar => "CalendarFolder",
@@ -101,20 +73,17 @@ impl DistinguishedFolder {
         }
     }
 
-    /// Returns the number of child folders for this folder.
     pub fn child_folder_count(self) -> usize {
         match self {
-            Self::MsgFolderRoot => 1, // just Calendar
+            Self::MsgFolderRoot => 1,
             _ => 0,
         }
     }
 
-    /// Returns true if this folder is the calendar (backed by CalDAV).
     pub fn is_calendar(self) -> bool {
         matches!(self, Self::Calendar)
     }
 
-    /// Returns the stable parent folder ID for this folder.
     pub fn parent_id(self) -> Option<&'static str> {
         match self {
             Self::MsgFolderRoot => None,
@@ -123,11 +92,6 @@ impl DistinguishedFolder {
     }
 }
 
-/// Stable, per-owner folder ID derived from owner + folder type.
-///
-/// The calendar folder ID is the content-addressed one used by the rest of
-/// the system. All other folders get a deterministic synthetic ID so that
-/// round-trips (get then update) work consistently.
 pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
     let suffix = match folder {
         DistinguishedFolder::Calendar => "/calendar",
@@ -162,11 +126,6 @@ pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
     )
 }
 
-/// Render an EWS folder XML element for the given folder.
-///
-/// `total_count` is the number of calendar items (only relevant for Calendar
-/// folder; all other folders return 0 to indicate they are outside the gateway
-/// scope).
 pub fn render_folder_xml(
     owner: &str,
     folder: DistinguishedFolder,
@@ -175,7 +134,7 @@ pub fn render_folder_xml(
     let fid = folder_id_for(owner, folder);
     let parent = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
     let prefix_len = fid.find('-').map(|i| i + 1).unwrap_or(4);
-    let change_key = &fid[prefix_len..]; // strip "CAL-" / "FLD-" / "ROOT-" prefix
+    let change_key = &fid[prefix_len..];
     let element = folder.element_name();
     let display = xml_escape(folder.display_name());
     let class = folder.folder_class();
@@ -192,7 +151,7 @@ pub fn render_folder_xml(
         )
     };
     format!(
-        r#"<t:{el}><t:FolderId Id="{fid}" ChangeKey="{ck}" />{parent_xml}<t:DisplayName>{display}</t:DisplayName><t:FolderClass>{class}</t:FolderClass><t:TotalCount>{count}</t:TotalCount><t:ChildFolderCount>{child_count}</t:ChildFolderCount></t:{el}>"#,
+        r#"<t:{el}><t:FolderId Id="{fid}" ChangeKey="{ck}" />{parent_xml}<t:DisplayName>{display}</t:DisplayName><t:FolderClass>{class}</t:FolderClass><t:TotalCount>{count}</t:TotalCount><t:ChildFolderCount>{child_count}</t:ChildFolderCount><t:UnreadCount>0</t:UnreadCount><t:EffectiveRights><t:CreateAssociated>false</t:CreateAssociated><t:CreateContents>true</t:CreateContents><t:CreateHierarchy>false</t:CreateHierarchy><t:Delete>true</t:Delete><t:Modify>true</t:Modify><t:Read>true</t:Read></t:EffectiveRights></t:{el}>"#,
         el = element,
         fid = fid,
         ck = change_key,
@@ -204,8 +163,6 @@ pub fn render_folder_xml(
     )
 }
 
-/// Returns a complete `<t:Folders>` block listing all first-level folders
-/// that Outlook expects to find under MsgFolderRoot.
 pub fn render_child_folders_xml(owner: &str) -> String {
     let folders = [DistinguishedFolder::Calendar];
     folders
@@ -214,8 +171,6 @@ pub fn render_child_folders_xml(owner: &str) -> String {
         .collect()
 }
 
-/// Validate a requested DistinguishedFolderId or explicit FolderId against
-/// the owner's folder namespace. Returns None if valid, Some(error_code) if not.
 pub fn validate_folder_request(
     owner: &str,
     distinguished_id: Option<&str>,
@@ -240,15 +195,12 @@ pub fn validate_folder_request(
     .map(|&f| folder_id_for(owner, f))
     .collect();
 
-    // Check explicit folder IDs — must belong to this owner.
     for id in [explicit_id, explicit_sync_id].into_iter().flatten() {
         if id != "root" && !all_owner_ids.iter().any(|oid| oid == id) {
             return Some("ErrorFolderNotFound");
         }
     }
 
-    // Check DistinguishedFolderId — any valid distinguished ID is accepted,
-    // but unsupported ones (e.g. "publicfoldersroot") are rejected.
     if let Some(did) = distinguished_id {
         if DistinguishedFolder::from_str(did).is_none() {
             return Some("ErrorFolderNotFound");
@@ -271,23 +223,11 @@ mod tests {
     #[test]
     fn all_distinguished_folders_parse() {
         let ids = [
-            "calendar",
-            "msgfolderroot",
-            "inbox",
-            "sentitems",
-            "deleteditems",
-            "drafts",
-            "outbox",
-            "junkemail",
-            "contacts",
-            "tasks",
-            "notes",
+            "calendar", "msgfolderroot", "inbox", "sentitems", "deleteditems",
+            "drafts", "outbox", "junkemail", "contacts", "tasks", "notes",
         ];
         for id in &ids {
-            assert!(
-                DistinguishedFolder::from_str(id).is_some(),
-                "Failed to parse: {id}"
-            );
+            assert!(DistinguishedFolder::from_str(id).is_some(), "Failed to parse: {id}");
         }
     }
 
@@ -330,8 +270,7 @@ mod tests {
 
     #[test]
     fn validate_unknown_distinguished_id_fails() {
-        let result =
-            validate_folder_request("user@example.com", Some("publicfoldersroot"), None, None);
+        let result = validate_folder_request("user@example.com", Some("publicfoldersroot"), None, None);
         assert_eq!(result, Some("ErrorFolderNotFound"));
     }
 
@@ -349,10 +288,7 @@ mod tests {
 
     #[test]
     fn msgfolderroot_has_one_child_folder() {
-        assert_eq!(
-            DistinguishedFolder::MsgFolderRoot.child_folder_count(),
-            1
-        );
+        assert_eq!(DistinguishedFolder::MsgFolderRoot.child_folder_count(), 1);
     }
 
     #[test]

@@ -1,5 +1,4 @@
-// src/storage.rs
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -148,8 +147,7 @@ impl Storage {
         if !resp.status().is_success() {
             return Err(anyhow!("worker GET {} returned {}", url, resp.status()));
         }
-        let v = resp.json::<T>().await?;
-        Ok(v)
+        Ok(resp.json::<T>().await?)
     }
 
     pub async fn set_sync_key(
@@ -159,12 +157,7 @@ impl Storage {
         sync_key: &str,
         token: Option<&str>,
     ) -> Result<()> {
-        let body = SetSyncKeyReq {
-            owner,
-            collection_id,
-            sync_key,
-            token,
-        };
+        let body = SetSyncKeyReq { owner, collection_id, sync_key, token };
         self.post_json("set_sync_key", &body).await
     }
 
@@ -191,14 +184,7 @@ impl Storage {
         uid: &str,
         etag: &str,
     ) -> Result<()> {
-        let body = UpsertItemReq {
-            owner,
-            caldav_href,
-            resource_href,
-            server_id,
-            uid,
-            etag,
-        };
+        let body = UpsertItemReq { owner, caldav_href, resource_href, server_id, uid, etag };
         self.post_json("upsert_item_map", &body).await
     }
 
@@ -236,13 +222,7 @@ impl Storage {
         }
         self.post_json(
             "put_client_sync_command",
-            &Req {
-                owner,
-                collection_id,
-                client_id,
-                server_id,
-                status,
-            },
+            &Req { owner, collection_id, client_id, server_id, status },
         )
         .await
     }
@@ -253,8 +233,7 @@ impl Storage {
             owner: &'a str,
             server_id: &'a str,
         }
-        self.post_json("delete_item_by_server_id", &Req { owner, server_id })
-            .await
+        self.post_json("delete_item_by_server_id", &Req { owner, server_id }).await
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
@@ -263,8 +242,7 @@ impl Storage {
             owner: &'a str,
             server_id: &'a str,
         }
-        self.post_json("add_delete_tombstone", &Req { owner, server_id })
-            .await
+        self.post_json("add_delete_tombstone", &Req { owner, server_id }).await
     }
 
     pub async fn list_changes_since(
@@ -284,7 +262,11 @@ impl Storage {
             .collect())
     }
 
-    pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
+    pub async fn list_deleted_since(
+        &self,
+        owner: &str,
+        since_unix_ts: i64,
+    ) -> Result<Vec<String>> {
         let path = format!(
             "list_deleted_since?owner={}&since={}",
             urlencoding::encode(owner),
@@ -357,12 +339,7 @@ impl Storage {
         policy_key: &str,
         policy_status: &str,
     ) -> Result<()> {
-        let body = SetProvisionReq {
-            owner,
-            device_id,
-            policy_key,
-            policy_status,
-        };
+        let body = SetProvisionReq { owner, device_id, policy_key, policy_status };
         self.post_json("set_provision_policy", &body).await
     }
 
@@ -378,6 +355,35 @@ impl Storage {
         );
         let row: Option<ProvisionRow> = self.get_json(&path).await?;
         Ok(row.map(|r| (r.policy_key, r.policy_status)))
+    }
+
+    pub async fn upsert_device_info(
+        &self,
+        owner: &str,
+        device_id: &str,
+        friendly_name: &str,
+        model: &str,
+        os: &str,
+        phone_number: &str,
+        imei: &str,
+        user_agent: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            device_id: &'a str,
+            friendly_name: &'a str,
+            model: &'a str,
+            os: &'a str,
+            phone_number: &'a str,
+            imei: &'a str,
+            user_agent: &'a str,
+        }
+        self.post_json(
+            "upsert_device_info",
+            &Req { owner, device_id, friendly_name, model, os, phone_number, imei, user_agent },
+        )
+        .await
     }
 
     pub async fn list_ews_items(
@@ -430,11 +436,7 @@ impl Storage {
             folder_id: &'a str,
             sync_state: &'a str,
         }
-        let req = Req {
-            owner,
-            folder_id,
-            sync_state,
-        };
-        self.post_json("set_ews_sync_state", &req).await
+        self.post_json("set_ews_sync_state", &Req { owner, folder_id, sync_state })
+            .await
     }
 }

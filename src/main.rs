@@ -1,10 +1,8 @@
-// src/main.rs
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::{DefaultBodyLimit, Query, State},
+    extract::{Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -18,6 +16,7 @@ mod caldav;
 mod calendar;
 mod config;
 mod eas;
+mod error;
 mod ews;
 mod ews_folders;
 mod ews_update;
@@ -31,27 +30,18 @@ use crate::config::Config;
 use crate::models::AppState;
 use crate::storage::Storage;
 
-/// Maximum permitted request body size (4 MiB).
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-async fn autodiscover_xml(
-    State(state): State<Arc<AppState>>,
-    body: String,
-) -> Response {
+async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> Response {
     let host = &state.cfg.gateway_host;
     let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
-    let (status, hdrs, body_out) =
-        autodiscover::handle_autodiscover_xml(host, &body, &email);
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
     build_response(status, &hdrs, body_out)
 }
 
-async fn autodiscover_soap(
-    State(state): State<Arc<AppState>>,
-    body: String,
-) -> Response {
+async fn autodiscover_soap(State(state): State<Arc<AppState>>, body: String) -> Response {
     let host = &state.cfg.gateway_host;
-    let (status, hdrs, body_out) =
-        autodiscover::handle_autodiscover_soap(host, &body);
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_soap(host, &body);
     build_response(status, &hdrs, body_out)
 }
 
@@ -68,11 +58,7 @@ async fn autodiscover_json(
     build_response(status, &hdrs, body_out)
 }
 
-fn build_response(
-    status: StatusCode,
-    hdrs: &[(&'static str, &'static str)],
-    body: String,
-) -> Response {
+fn build_response(status: StatusCode, hdrs: &[(&'static str, &'static str)], body: String) -> Response {
     let mut resp = (status, body).into_response();
     for (k, v) in hdrs {
         if let (Ok(name), Ok(value)) = (
@@ -97,10 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let config = match Config::load(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "CRITICAL: Failed to load config from {}: {}",
-                config_path, e
-            );
+            eprintln!("CRITICAL: Failed to load config from {}: {}", config_path, e);
             return Err(e);
         }
     };
@@ -111,10 +94,7 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host
     );
 
-    let storage = Arc::new(Storage::new(
-        &config.worker_url,
-        &config.worker_secret,
-    )?);
+    let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
 
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
@@ -132,22 +112,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app_state);
 
     let addr: SocketAddr = config.bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
-
     tracing::info!("Listening on {}", addr);
-
     axum::serve(listener, app).await?;
-
     Ok(())
 }
 
-// Enhanced health check that verifies Cloudflare Worker connectivity
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
-    // Check Cloudflare Worker connectivity
     let worker_ok = match state.storage.get_latest_change_seq().await {
         Ok(_) => true,
         Err(e) => {
@@ -155,7 +130,6 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
             false
         }
     };
-    
     if worker_ok {
         (StatusCode::OK, "OK").into_response()
     } else {
