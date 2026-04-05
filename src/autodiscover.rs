@@ -180,7 +180,7 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
         <Type>MobileSync</Type>
         <Server>{host}</Server>
         <n>Exchange Gateway</n>
-        <Url>https:
+        <Url>https://{host}/Microsoft-Server-ActiveSync</Url>
         <LoginName>{email}</LoginName>
         <DomainRequired>off</DomainRequired>
         <SSL>on</SSL>
