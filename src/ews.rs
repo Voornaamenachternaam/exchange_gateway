@@ -38,6 +38,8 @@ enum ItemShape { IdOnly, Default, AllProperties }
 enum EwsAction {
     GetFolder, FindFolder, FindItem, GetItem, GetUserAvailability, SyncFolderItems,
     SyncFolderHierarchy, Subscribe, Unsubscribe, CreateItem, UpdateItem, DeleteItem, ResolveNames,
+    GetUserOofSettings, SetUserOofSettings,
+    GetServiceConfiguration, GetServerTimeZones,
 }
 
 pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body: String) -> Response {
@@ -62,6 +64,10 @@ pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body
         EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
         EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
         EwsAction::ResolveNames => handle_resolve_names(&auth, &body).await,
+        EwsAction::GetUserOofSettings => handle_get_user_oof_settings(&auth, &body).await,
+        EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&auth, &body).await,
+        EwsAction::GetServiceConfiguration => handle_get_service_configuration().await,
+        EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
     }
 }
 
@@ -97,6 +103,10 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"UpdateItem" => EwsAction::UpdateItem,
                     b"DeleteItem" => EwsAction::DeleteItem,
                     b"ResolveNames" => EwsAction::ResolveNames,
+                    b"GetUserOofSettingsRequest" => EwsAction::GetUserOofSettings,
+                    b"SetUserOofSettingsRequest" => EwsAction::SetUserOofSettings,
+                    b"GetServiceConfiguration" => EwsAction::GetServiceConfiguration,
+                    b"GetServerTimeZones" => EwsAction::GetServerTimeZones,
                     _ => { buf.clear(); continue; }
                 });
             }
@@ -182,6 +192,10 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
             if !xml.contains("UnresolvedEntry") { return Err("ResolveNames requires UnresolvedEntry"); }
             Ok(())
         }
+        EwsAction::GetUserOofSettings => Ok(()),
+        EwsAction::SetUserOofSettings => Ok(()),
+        EwsAction::GetServiceConfiguration => Ok(()),
+        EwsAction::GetServerTimeZones => Ok(()),
     }
 }
 
@@ -452,7 +466,11 @@ fn render_ews_calendar_item_xml_with_shape(item_id: &str, change_key: &str, item
         xml_escape(item_id), xml_escape(change_key), xml_escape(&item.subject), xml_escape(&item.uid),
         item.start.to_rfc3339(), item.end.to_rfc3339(), if item.all_day { "true" } else { "false" }
     );
-    if shape == ItemShape::IdOnly { xml.push_str("</t:CalendarItem>"); return xml; }
+    if shape == ItemShape::IdOnly {
+        xml.push_str("<t:IsDraft>false</t:IsDraft>");
+        xml.push_str("<t:EffectiveRights><t:CreateAssociated>false</t:CreateAssociated><t:CreateContents>true</t:CreateContents><t:CreateHierarchy>false</t:CreateHierarchy><t:Delete>true</t:Delete><t:Modify>true</t:Modify><t:Read>true</t:Read></t:EffectiveRights>");
+        xml.push_str("</t:CalendarItem>"); return xml;
+    }
     if !item.location.is_empty() { xml.push_str(&format!("<t:Location>{}</t:Location>", xml_escape(&item.location))); }
     if !item.description.is_empty() {
         xml.push_str(&format!(r#"<t:Body BodyType="Text">{}</t:Body>"#, xml_escape(&item.description)));
@@ -498,6 +516,14 @@ fn render_ews_calendar_item_xml_with_shape(item_id: &str, change_key: &str, item
     xml.push_str("<t:AdjacentMeetingCount>0</t:AdjacentMeetingCount><t:ConflictingMeetingCount>0</t:ConflictingMeetingCount>");
     if shape == ItemShape::Default {
         xml.push_str(&ews_response_objects_xml(item));
+        xml.push_str("<t:IsDraft>false</t:IsDraft>");
+        xml.push_str("<t:DisplayTo>");
+        xml.push_str(&xml_escape(&item.attendees.iter().map(|a| a.name.as_deref().unwrap_or(&a.email)).collect::<Vec<_>>().join("; ")));
+        xml.push_str("</t:DisplayTo>");
+        xml.push_str(&format!("<t:LastModifiedName>{}</t:LastModifiedName>", xml_escape(item.organizer_name.as_deref().unwrap_or("Unknown"))));
+        xml.push_str(&format!("<t:LastModifiedTime>{}</t:LastModifiedTime>", item.dtstamp.unwrap_or_else(chrono::Utc::now).to_rfc3339()));
+        xml.push_str(&format!("<t:Size>{}</t:Size>", item.subject.len() + item.description.len() + item.location.len() + 512));
+        xml.push_str("<t:EffectiveRights><t:CreateAssociated>false</t:CreateAssociated><t:CreateContents>true</t:CreateContents><t:CreateHierarchy>false</t:CreateHierarchy><t:Delete>true</t:Delete><t:Modify>true</t:Modify><t:Read>true</t:Read></t:EffectiveRights>");
         xml.push_str("</t:CalendarItem>");
         return xml;
     }
@@ -507,6 +533,14 @@ fn render_ews_calendar_item_xml_with_shape(item_id: &str, change_key: &str, item
     xml.push_str(&ews_modified_occurrences_xml(item_id, change_key, item));
     if let Some(rrule) = &item.rrule { xml.push_str(&render_ews_recurrence_xml(rrule, item.start)); }
     xml.push_str(&ews_response_objects_xml(item));
+    xml.push_str("<t:IsDraft>false</t:IsDraft>");
+    xml.push_str("<t:DisplayTo>");
+    xml.push_str(&xml_escape(&item.attendees.iter().map(|a| a.name.as_deref().unwrap_or(&a.email)).collect::<Vec<_>>().join("; ")));
+    xml.push_str("</t:DisplayTo>");
+    xml.push_str(&format!("<t:LastModifiedName>{}</t:LastModifiedName>", xml_escape(item.organizer_name.as_deref().unwrap_or("Unknown"))));
+    xml.push_str(&format!("<t:LastModifiedTime>{}</t:LastModifiedTime>", item.dtstamp.unwrap_or_else(chrono::Utc::now).to_rfc3339()));
+    xml.push_str(&format!("<t:Size>{}</t:Size>", item.subject.len() + item.description.len() + item.location.len() + 512));
+    xml.push_str("<t:EffectiveRights><t:CreateAssociated>false</t:CreateAssociated><t:CreateContents>true</t:CreateContents><t:CreateHierarchy>false</t:CreateHierarchy><t:Delete>true</t:Delete><t:Modify>true</t:Modify><t:Read>true</t:Read></t:EffectiveRights>");
     xml.push_str("</t:CalendarItem>");
     xml
 }
@@ -663,6 +697,10 @@ fn operation_error_response(action: &EwsAction, code: &str, message: &str, statu
         EwsAction::UpdateItem => "UpdateItemResponseMessage",
         EwsAction::DeleteItem => "DeleteItemResponseMessage",
         EwsAction::ResolveNames => "ResolveNamesResponseMessage",
+        EwsAction::GetUserOofSettings => "GetUserOofSettingsResponseMessage",
+        EwsAction::SetUserOofSettings => "SetUserOofSettingsResponseMessage",
+        EwsAction::GetServiceConfiguration => "GetServiceConfigurationResponseMessage",
+        EwsAction::GetServerTimeZones => "GetServerTimeZonesResponseMessage",
     };
     let inner = format!(
         r#"<m:{resp} ResponseClass="Error" xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:{resp}>"#,
@@ -1154,4 +1192,72 @@ async fn handle_get_user_availability(state: &Arc<AppState>, auth: &AuthContext,
         msg_ns=EWS_MSG_NS, type_ns=EWS_TYPE_NS
     );
     soap_ok(response)
+}
+
+fn handle_get_user_oof_settings(auth: &AuthContext, _body: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + '_>> {
+    Box::pin(async move {
+        let inner = format!(
+            r#"<m:GetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessage ResponseClass="Success">
+    <m:ResponseCode>NoError</m:ResponseCode>
+  </m:ResponseMessage>
+  <m:OofSettings>
+    <t:OofState>Disabled</t:OofState>
+    <t:ExternalAudience>All</t:ExternalAudience>
+    <t:Duration>
+      <t:StartTime>2000-01-01T00:00:00Z</t:StartTime>
+      <t:EndTime>2000-01-01T00:00:00Z</t:EndTime>
+    </t:Duration>
+    <t:InternalReply/>
+    <t:ExternalReply/>
+  </m:OofSettings>
+  <m:AllowExternalOof>true</m:AllowExternalOof>
+</m:GetUserOofSettingsResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS
+        );
+        soap_ok(inner)
+    })
+}
+
+fn handle_set_user_oof_settings(_auth: &AuthContext, _body: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + '_>> {
+    Box::pin(async move {
+        let inner = format!(
+            r#"<m:SetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessage ResponseClass="Success">
+    <m:ResponseCode>NoError</m:ResponseCode>
+  </m:ResponseMessage>
+</m:SetUserOofSettingsResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS
+        );
+        soap_ok(inner)
+    })
+}
+
+async fn handle_get_service_configuration() -> Response {
+    let inner = format!(
+        r#"<m:GetServiceConfigurationResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:GetServiceConfigurationResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+    </m:GetServiceConfigurationResponseMessage>
+  </m:ResponseMessages>
+</m:GetServiceConfigurationResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_server_time_zones() -> Response {
+    let inner = format!(
+        r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:GetServerTimeZonesResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:TimeZoneDefinitions/>
+    </m:GetServerTimeZonesResponseMessage>
+  </m:ResponseMessages>
+</m:GetServerTimeZonesResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
 }
