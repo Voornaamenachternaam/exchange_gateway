@@ -113,10 +113,24 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"SetUserOofSettingsRequest" => EwsAction::SetUserOofSettings,
                     b"GetServiceConfiguration" => EwsAction::GetServiceConfiguration,
                     b"GetServerTimeZones" => EwsAction::GetServerTimeZones,
-            b"GetFolderInfo" => EwsAction::GetFolderInfo,
-            b"GetMailTips" => EwsAction::GetMailTips,
-            b"FindPeople" => EwsAction::FindPeople,
-            b"GetConversationItems" => EwsAction::GetConversationItems,
+async fn handle_get_mail_tips(auth: &AuthContext) -> Response {
+    let email = &auth.username;
+    let inner = format!(
+        r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:MailTipsResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        <m:MailTips>
+        <t:RecipientAddress><t:EmailAddress>{}</t:EmailAddress></t:RecipientAddress>
+        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
+        </m:MailTips>
+        </m:MailTipsResponseMessage>
+        </m:ResponseMessages>
+        </m:GetMailTipsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(email)
+    );
+    soap_ok(inner)
+}
                     _ => { buf.clear(); continue; }
                 });
             }
