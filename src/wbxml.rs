@@ -1,6 +1,7 @@
 // src/wbxml.rs
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
@@ -10,12 +11,10 @@ const LITERAL: u8 = 0x04;
 const STR_T: u8 = 0x83;
 const OPAQUE: u8 = 0xC3;
 
-lazy_static::lazy_static! {
-    static ref TAG_TO_NAME: HashMap<(u8, u8), &'static str> = build_tag_to_name();
-    static ref NAME_TO_TAG: HashMap<&'static str, (u8, u8)> = {
-        TAG_TO_NAME.iter().map(|(&k, &v)| (v, k)).collect()
-    };
-}
+static TAG_TO_NAME: LazyLock<HashMap<(u8, u8), &'static str>> = LazyLock::new(build_tag_to_name);
+static NAME_TO_TAG: LazyLock<HashMap<&'static str, (u8, u8)>> = LazyLock::new(|| {
+    TAG_TO_NAME.iter().map(|(&k, &v)| (v, k)).collect()
+});
 
 fn namespace_to_code_page(ns: &str) -> Option<u8> {
     match ns {

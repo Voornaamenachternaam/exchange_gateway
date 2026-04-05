@@ -1,6 +1,8 @@
 // src/config.rs
+use secrecy::{ExposeSecret, Secret, SecretString};
 use serde::Deserialize;
 use std::fs;
+use zeroize::Zeroizing;
 use url::Url;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -8,16 +10,27 @@ pub struct Config {
     pub bind: String,
     pub caldav_base: String,
     pub worker_url: String,
-    pub worker_secret: String,
-    pub hmac_secret: String,
+    #[serde(deserialize_with = "deserialize_secret")]
+    pub worker_secret: SecretString,
+    #[serde(deserialize_with = "deserialize_secret")]
+    pub hmac_secret: SecretString,
 
     #[serde(default)]
     pub gateway_host: String,
 }
 
+fn deserialize_secret<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = String::deserialize(deserializer)?;
+    Ok(Secret::new(s))
+}
+
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let content = fs::read_to_string(path)
+        let content: Zeroizing<String> = fs::read_to_string(path)
+            .map(Zeroizing::new)
             .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
 
         let mut cfg: Config = toml::from_str(&content)
@@ -31,6 +44,14 @@ impl Config {
         }
 
         Ok(cfg)
+    }
+
+    pub fn worker_secret(&self) -> &str {
+        self.worker_secret.expose_secret()
+    }
+
+    pub fn hmac_secret(&self) -> &str {
+        self.hmac_secret.expose_secret()
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -50,17 +71,17 @@ impl Config {
         }
         validate_url(&self.worker_url, "worker_url")?;
 
-        if self.worker_secret.is_empty() {
+        if self.worker_secret.expose_secret().is_empty() {
             return Err(anyhow::anyhow!("Config: 'worker_secret' is required"));
         }
-        if self.worker_secret.len() < 16 {
+        if self.worker_secret.expose_secret().len() < 16 {
             tracing::warn!("Config: worker_secret is shorter than 16 characters — this is insecure");
         }
 
-        if self.hmac_secret.is_empty() {
+        if self.hmac_secret.expose_secret().is_empty() {
             return Err(anyhow::anyhow!("Config: 'hmac_secret' is required"));
         }
-        if self.hmac_secret.len() < 32 {
+        if self.hmac_secret.expose_secret().len() < 32 {
             tracing::warn!("Config: hmac_secret is shorter than 32 characters — this is insecure");
         }
 
@@ -106,6 +127,17 @@ fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    fn make_config(bind: &str, caldav_base: &str, worker_url: &str, worker_secret: &str, hmac_secret: &str, gateway_host: &str) -> Config {
+        Config {
+            bind: bind.into(),
+            caldav_base: caldav_base.into(),
+            worker_url: worker_url.into(),
+            worker_secret: Secret::new(worker_secret.to_string()),
+            hmac_secret: Secret::new(hmac_secret.to_string()),
+            gateway_host: gateway_host.into(),
+        }
+    }
+
     #[test]
     fn extracts_host_from_https_url() {
         assert_eq!(
@@ -129,53 +161,25 @@ mod tests {
 
     #[test]
     fn validates_empty_bind_fails() {
-        let cfg = Config {
-            bind: "".into(),
-            caldav_base: "http://localhost".into(),
-            worker_url: "https://worker.example.com/api".into(),
-            worker_secret: "secret1234567890".into(),
-            hmac_secret: "12345678901234567890123456789012".into(),
-            gateway_host: "".into(),
-        };
+        let cfg = make_config("", "http://localhost", "https://worker.example.com/api", "secret1234567890", "12345678901234567890123456789012", "");
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn validates_missing_scheme_fails() {
-        let cfg = Config {
-            bind: "0.0.0.0:8134".into(),
-            caldav_base: "not-a-url".into(),
-            worker_url: "https://worker.example.com/api".into(),
-            worker_secret: "secret1234567890".into(),
-            hmac_secret: "12345678901234567890123456789012".into(),
-            gateway_host: "".into(),
-        };
+        let cfg = make_config("0.0.0.0:8134", "not-a-url", "https://worker.example.com/api", "secret1234567890", "12345678901234567890123456789012", "");
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn validates_weak_secret_warns() {
-        let cfg = Config {
-            bind: "0.0.0.0:8134".into(),
-            caldav_base: "http://localhost".into(),
-            worker_url: "https://worker.example.com/api".into(),
-            worker_secret: "short".into(),
-            hmac_secret: "12345678901234567890123456789012".into(),
-            gateway_host: "".into(),
-        };
+        let cfg = make_config("0.0.0.0:8134", "http://localhost", "https://worker.example.com/api", "short", "12345678901234567890123456789012", "");
         let _ = cfg.validate();
     }
 
     #[test]
     fn gateway_host_with_scheme_fails() {
-        let cfg = Config {
-            bind: "0.0.0.0:8134".into(),
-            caldav_base: "http://localhost".into(),
-            worker_url: "https://worker.example.com/api".into(),
-            worker_secret: "secret1234567890".into(),
-            hmac_secret: "12345678901234567890123456789012".into(),
-            gateway_host: "https://exchange.example.com".into(),
-        };
+        let cfg = make_config("0.0.0.0:8134", "http://localhost", "https://worker.example.com/api", "secret1234567890", "12345678901234567890123456789012", "https://exchange.example.com");
         assert!(cfg.validate().is_err());
     }
 }

@@ -13,18 +13,16 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use lazy_static::lazy_static;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::LazyLock;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-lazy_static! {
-    static ref DEVICE_WINDOW: Mutex<HashMap<String, Vec<Instant>>> = Mutex::new(HashMap::new());
-    static ref PING_CACHE: Mutex<HashMap<String, PingCacheEntry>> = Mutex::new(HashMap::new());
-}
+static DEVICE_WINDOW: LazyLock<Mutex<HashMap<String, Vec<Instant>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static PING_CACHE: LazyLock<Mutex<HashMap<String, PingCacheEntry>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Debug)]
 struct PingFolder { id: String, class_name: String }
@@ -644,7 +642,7 @@ async fn load_calendar_events(
             },
             Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
                 if !href.is_empty() && let Some(item) = parse_ics_event(&ics) {
-                    let server_id = sync::generate_server_id(&state.cfg.hmac_secret, &href);
+                    let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
                     out.push((server_id, href.clone(), item));
                 }
                 href.clear(); ics.clear();

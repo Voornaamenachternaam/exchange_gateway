@@ -1,6 +1,7 @@
 // src/main.rs
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{Query, State},
@@ -10,6 +11,13 @@ use axum::{
     Router,
 };
 use tokio::net::TcpListener;
+use tower::ServiceBuilder;
+use tower_http::{
+    cors::{Any, CorsLayer},
+    sensitive_headers::SetSensitiveRequestHeadersLayer,
+    trace::TraceLayer,
+    request_id::MakeRequestUuid,
+};
 use tracing_subscriber::EnvFilter;
 
 mod autodiscover;
@@ -95,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host
     );
 
-    let storage = Arc::new(Storage::new(&config.worker_url, &config.worker_secret)?);
+    let storage = Arc::new(Storage::new(&config.worker_url, config.worker_secret())?)?;
 
     let app_state = Arc::new(AppState {
         cfg: config.clone(),
@@ -113,6 +121,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(SetSensitiveRequestHeadersLayer::new(std::iter::once(
+                    header::AUTHORIZATION,
+                )))
+        )
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app_state);
 

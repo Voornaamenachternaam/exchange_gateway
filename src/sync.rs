@@ -113,7 +113,7 @@ pub async fn apply_client_sync_mutations(
                 let ics = render_ics(&item);
                 match caldav.put_event(&collection_href, None, &ics, username, password, None).await {
                     Ok((resource_href, etag)) => {
-                        let server_id = generate_server_id(&state.cfg.hmac_secret, &resource_href);
+                        let server_id = generate_server_id(state.cfg.hmac_secret(), &resource_href);
                         state.storage.upsert_item_map(owner, &collection_href, &resource_href, &server_id, &item.uid, &etag).await?;
                         if let Some(client_id) = client_id.as_deref() {
                             state.storage.put_client_sync_command(owner, collection_id, client_id, Some(&server_id), "1").await?;
@@ -625,7 +625,7 @@ pub async fn perform_sync(
 
     for ev in &events {
         if ev.href.is_empty() { continue; }
-        let server_id = generate_server_id(&state.cfg.hmac_secret, &ev.href);
+        let server_id = generate_server_id(state.cfg.hmac_secret(), &ev.href);
         seen_ids.insert(server_id.clone());
         let etag = ev.etag.trim_matches('"').to_string();
         let Some(item) = parse_ics_event(&ev.ics) else {
