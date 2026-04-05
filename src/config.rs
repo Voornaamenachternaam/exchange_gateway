@@ -10,9 +10,7 @@ pub struct Config {
     pub bind: String,
     pub caldav_base: String,
     pub worker_url: String,
-    #[serde(deserialize_with = "deserialize_secret")]
     pub worker_secret: SecretString,
-    #[serde(deserialize_with = "deserialize_secret")]
     pub hmac_secret: SecretString,
 
     #[serde(default)]
