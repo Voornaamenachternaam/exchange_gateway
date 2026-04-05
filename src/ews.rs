@@ -71,7 +71,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body
         EwsAction::GetServiceConfiguration => handle_get_service_configuration().await,
         EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
-        EwsAction::GetMailTips => handle_get_mail_tips().await,
+        EwsAction::GetMailTips => handle_get_mail_tips(&auth).await,
         EwsAction::FindPeople => handle_find_people(EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,auth, &body).await,
         EwsAction::GetConversationItems => handle_get_conversation_items().await,
     }
