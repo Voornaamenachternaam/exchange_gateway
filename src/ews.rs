@@ -277,7 +277,86 @@ pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body
         EwsAction::GetServiceConfiguration => handle_get_service_configuration().await,
         EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
-        EwsAction::GetMailTips => handle_get_mail_tips(&auth).await,
+fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
+    if !xml.contains("Envelope") || !xml.contains("Body") { return Err("Missing SOAP Envelope or Body"); }
+    if !xml.contains(EWS_MSG_NS) && !xml.contains("xmlns:m=") { return Err("Missing EWS messages namespace"); }
+    match action {
+        EwsAction::GetFolder => {
+            if !xml.contains("FolderShape") || !xml.contains("FolderIds") { return Err("GetFolder requires FolderShape and FolderIds"); }
+            Ok(())
+        }
+        EwsAction::FindFolder => {
+            if !xml.contains("FolderShape") || !xml.contains("ParentFolderIds") { return Err("FindFolder requires FolderShape and ParentFolderIds"); }
+            Ok(())
+        }
+        EwsAction::FindItem => {
+            if !xml.contains("ParentFolderIds") || !xml.contains("ItemShape") { return Err("FindItem requires ParentFolderIds and ItemShape"); }
+            if xml.contains("IncludeMimeContent") { return Err("FindItem does not support IncludeMimeContent"); }
+            let max = extract_int(xml, b"MaxEntriesReturned", 50);
+            if max == 0 { return Err("FindItem MaxEntriesReturned must be greater than zero"); }
+            Ok(())
+        }
+        EwsAction::GetItem => {
+            if !xml.contains("ItemShape") || !xml.contains("ItemIds") { return Err("GetItem requires ItemShape and ItemIds"); }
+            Ok(())
+        }
+        EwsAction::GetUserAvailability => {
+            if !xml.contains("MailboxDataArray") || !xml.contains("FreeBusyViewOptions") { return Err("GetUserAvailability requires MailboxDataArray and FreeBusyViewOptions"); }
+            Ok(())
+        }
+        EwsAction::SyncFolderItems => {
+            if !xml.contains("SyncFolderId") { return Err("SyncFolderItems requires SyncFolderId"); }
+            if !xml.contains("MaxChangesReturned") { return Err("SyncFolderItems requires MaxChangesReturned"); }
+            if xml.contains("IncludeMimeContent") { return Err("SyncFolderItems does not support IncludeMimeContent"); }
+            Ok(())
+        }
+        EwsAction::SyncFolderHierarchy => {
+            if !xml.contains("FolderShape") { return Err("SyncFolderHierarchy requires FolderShape"); }
+            Ok(())
+        }
+        EwsAction::Subscribe => {
+            if !xml.contains("PullSubscriptionRequest") && !xml.contains("PushSubscriptionRequest") && !xml.contains("StreamingSubscriptionRequest") {
+                return Err("Subscribe requires a subscription type");
+            }
+            Ok(())
+        }
+        EwsAction::Unsubscribe => {
+            if !xml.contains("SubscriptionId") { return Err("Unsubscribe requires SubscriptionId"); }
+            Ok(())
+        }
+        EwsAction::CreateItem => {
+            if !xml.contains("SavedItemFolderId") || !xml.contains("Items") { return Err("CreateItem requires SavedItemFolderId and Items"); }
+            validate_attr_enum(xml, b"CreateItem", b"SendMeetingInvitations",
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"], "CreateItem SendMeetingInvitations value is unsupported")?;
+            Ok(())
+        }
+        EwsAction::UpdateItem => {
+            if !xml.contains("ItemChanges") { return Err("UpdateItem requires ItemChanges"); }
+            validate_attr_enum(xml, b"UpdateItem", b"ConflictResolution",
+                &["NeverOverwrite", "AutoResolve", "AlwaysOverwrite"], "UpdateItem ConflictResolution value is unsupported")?;
+            validate_attr_enum(xml, b"UpdateItem", b"MessageDisposition",
+                &["SaveOnly", "SendOnly", "SendAndSaveCopy"], "UpdateItem MessageDisposition value is unsupported")?;
+            validate_attr_enum(xml, b"UpdateItem", b"SendMeetingInvitationsOrCancellations",
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"], "UpdateItem SendMeetingInvitationsOrCancellations value is unsupported")?;
+            Ok(())
+        }
+        EwsAction::DeleteItem => {
+            if !xml.contains("ItemIds") { return Err("DeleteItem requires ItemIds"); }
+            validate_attr_enum(xml, b"DeleteItem", b"DeleteType",
+                &["HardDelete", "SoftDelete", "MoveToDeletedItems"], "DeleteItem DeleteType value is unsupported")?;
+            validate_attr_enum(xml, b"DeleteItem", b"SendMeetingCancellations",
+                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"], "DeleteItem SendMeetingCancellations value is unsupported")?;
+            Ok(())
+        }
+        EwsAction::ResolveNames => {
+            if !xml.contains("UnresolvedEntry") { return Err("ResolveNames requires UnresolvedEntry"); }
+            Ok(())
+        }
+        EwsAction::GetUserOofSettings | EwsAction::SetUserOofSettings | EwsAction::GetServiceConfiguration |
+        EwsAction::GetServerTimeZones | EwsAction::GetFolderInfo | EwsAction::GetMailTips |
+        EwsAction::FindPeople | EwsAction::GetConversationItems => Ok(()),
+    }
+}
         EwsAction::FindPeople => handle_find_people(&auth, &body).await,
         EwsAction::GetConversationItems => handle_get_conversation_items().await,
     }
