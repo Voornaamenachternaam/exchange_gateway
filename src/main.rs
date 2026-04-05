@@ -123,9 +123,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         .layer(
             ServiceBuilder::new()
-                .layer(SetSensitiveRequestHeadersLayer::new(std::iter::once(
+                .layer(SetSensitiveRequestHeadersLayer::new([
                     header::AUTHORIZATION,
-                )))
+                    header::HeaderName::from_static("x-gateway-secret"),
+                ]))
                 .layer(TraceLayer::new_for_http())
         )
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
