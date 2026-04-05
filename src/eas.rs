@@ -21,10 +21,32 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-static DEVICE_WINDOW: LazyLock<DashMap<String, Vec<Instant>>> =
-    LazyLock::new(|| DashMap::new());
-static PING_CACHE: LazyLock<DashMap<String, PingCacheEntry>> =
-    LazyLock::new(|| DashMap::new());
+fn maybe_throttle(owner: &str, device_id: &str) -> bool {
+    let key = format!("{}:{}", owner, device_id);
+    let now = Instant::now();
+    let mut entries = DEVICE_WINDOW.entry(key).or_insert_with(Vec::new);
+    entries.retain(|ts| now.duration_since(*ts) < WINDOW);
+    if entries.len() >= MAX_REQUESTS_PER_WINDOW { return true; }
+    entries.push(now);
+static DEVICE_WINDOW: LazyLock<DashMap<String, Vec<Instant>>> = LazyLock::new(DashMap::new);
+static PING_CACHE: LazyLock<DashMap<String, PingCacheEntry>> = LazyLock::new(DashMap::new);
+
+fn maybe_throttle(owner: &str, device_id: &str) -> bool {
+    let key = format!("{}:{}", owner, device_id);
+    let now = Instant::now();
+    let mut entries = DEVICE_WINDOW.entry(key).or_insert_with(Vec::new);
+    entries.retain(|ts| now.duration_since(*ts) < WINDOW);
+    if entries.len() >= MAX_REQUESTS_PER_WINDOW { return true; }
+    entries.push(now);
+    false
+}
+
+// Inside handle_ping, replace the cache update logic with:
+if PING_CACHE.len() >= 10_000 {
+    let keys: Vec<String> = PING_CACHE.iter().map(|r| r.key().clone()).take(100).collect();
+    for k in keys { PING_CACHE.remove(&k); }
+}
+PING_CACHE.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() });
 
 #[derive(Clone, Debug)]
 struct PingFolder { id: String, class_name: String }
