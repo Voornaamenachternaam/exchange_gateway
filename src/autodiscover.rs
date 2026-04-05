@@ -185,7 +185,7 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
         <DomainRequired>off</DomainRequired>
         <SSL>on</SSL>
         <AuthPackage>Basic</AuthPackage>
-        <ASUrl>https:
+        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
       </Protocol>
     </Account>
   </Response>
