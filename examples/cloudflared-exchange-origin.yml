@@ -1,3 +1,4 @@
+# examples/cloudflared-exchange-origin.yml
 ingress:
   - hostname: exchange-origin.example.com
     service: http://exchange_gateway:8134

@@ -1,3 +1,4 @@
+// src/sync.rs
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     parse_eas_sync_mutations, parse_ics_event, render_ics, Attendee, CalendarException,

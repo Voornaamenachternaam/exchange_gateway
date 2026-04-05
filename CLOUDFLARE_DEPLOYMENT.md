@@ -1,3 +1,4 @@
+<!-- CLOUDFLARE_DEPLOYMENT.md -->
 # Cloudflare deployment profile (free-tier compatible)
 
 ## Worker

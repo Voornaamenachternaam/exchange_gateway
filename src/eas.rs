@@ -1,3 +1,4 @@
+// src/eas.rs
 use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;

@@ -1,9 +1,33 @@
+// worker/index.js
 const FORWARDED_PATH_PREFIXES = ['/ews', '/microsoft-server-activesync'];
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const HOP_BY_HOP_HEADERS = [
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailer', 'transfer-encoding', 'upgrade'
 ];
+
+const API_METHODS = {
+  '/api/set_sync_key': 'POST',
+  '/api/get_sync_key': 'GET',
+  '/api/get_client_sync_command': 'GET',
+  '/api/upsert_item_map': 'POST',
+  '/api/put_client_sync_command': 'POST',
+  '/api/delete_item_by_server_id': 'POST',
+  '/api/add_delete_tombstone': 'POST',
+  '/api/list_changes_since': 'GET',
+  '/api/list_deleted_since': 'GET',
+  '/api/get_latest_change_seq': 'GET',
+  '/api/list_changes_since_seq': 'GET',
+  '/api/list_deleted_since_seq': 'GET',
+  '/api/list_journal_since_seq': 'GET',
+  '/api/set_provision_policy': 'POST',
+  '/api/get_provision_policy': 'GET',
+  '/api/list_ews_items': 'GET',
+  '/api/get_ews_sync_state': 'GET',
+  '/api/set_ews_sync_state': 'POST',
+  '/api/get_ews_item_by_id': 'GET',
+  '/api/upsert_device_info': 'POST'
+};
 
 export default {
   async fetch(request, env, ctx) {
@@ -12,6 +36,11 @@ export default {
 
     if (request.method === 'OPTIONS') {
       return corsPreflightResponse();
+    }
+
+    const methodValidation = validateApiMethod(path, request.method);
+    if (!methodValidation.allowed) {
+      return new Response('Method Not Allowed', { status: 405, headers: { Allow: methodValidation.allow } });
     }
 
     if (isForwardedPath(path)) {
@@ -64,6 +93,14 @@ export default {
 
 function isForwardedPath(path) {
   return FORWARDED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
+function validateApiMethod(path, methodRaw) {
+  const expected = API_METHODS[path];
+  if (!expected) return { allowed: true, allow: 'GET, POST, OPTIONS' };
+  const method = (methodRaw || 'GET').toUpperCase();
+  if (method === expected || method === 'OPTIONS') return { allowed: true, allow: `${expected}, OPTIONS` };
+  return { allowed: false, allow: `${expected}, OPTIONS` };
 }
 
 function isAuthorized(request, env) {

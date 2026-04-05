@@ -1,3 +1,4 @@
+# tests/outlook_cloudflare_smoke.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -12,6 +13,21 @@ auth=(-u "${GATEWAY_USER}:${GATEWAY_PASS}")
 base="${GATEWAY_BASE_URL%/}"
 created_item_id=""
 created_change_key=""
+
+check_dns_dual_stack() {
+  local host="$1"
+  local a_record=""
+  local aaaa_record=""
+  if command -v getent >/dev/null 2>&1; then
+    a_record="$(getent ahostsv4 "$host" | awk 'NR==1{print $1}')"
+    aaaa_record="$(getent ahostsv6 "$host" | awk 'NR==1{print $1}')"
+  fi
+  if [[ -z "$a_record" || -z "$aaaa_record" ]]; then
+    log "Warning: could not verify both A and AAAA via local resolver for ${host}."
+  else
+    log "Dual-stack DNS verified for ${host}: A=${a_record} AAAA=${aaaa_record}"
+  fi
+}
 
 log() {
   printf '[smoke] %s\n' "$*"
@@ -56,6 +72,11 @@ request_xml() {
     --data "$data" \
     "$url" >"$outfile"
 }
+
+
+if [[ "${base}" =~ ^https?://([^/:]+) ]]; then
+  check_dns_dual_stack "${BASH_REMATCH[1]}"
+fi
 
 log "Checking ActiveSync OPTIONS"
 curl -fsSI "${auth[@]}" "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/options.txt"
