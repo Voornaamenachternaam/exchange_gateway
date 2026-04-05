@@ -21,32 +21,17 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-fn maybe_throttle(owner: &str, device_id: &str) -> bool {
-    let key = format!("{}:{}", owner, device_id);
-    let now = Instant::now();
-    let mut entries = DEVICE_WINDOW.entry(key).or_insert_with(Vec::new);
-    entries.retain(|ts| now.duration_since(*ts) < WINDOW);
-    if entries.len() >= MAX_REQUESTS_PER_WINDOW { return true; }
-    entries.push(now);
+// ── Rate-limiting & Ping state ────────────────────────────────────────────────
+
 static DEVICE_WINDOW: LazyLock<DashMap<String, Vec<Instant>>> = LazyLock::new(DashMap::new);
 static PING_CACHE: LazyLock<DashMap<String, PingCacheEntry>> = LazyLock::new(DashMap::new);
 
-fn maybe_throttle(owner: &str, device_id: &str) -> bool {
-    let key = format!("{}:{}", owner, device_id);
-    let now = Instant::now();
-    let mut entries = DEVICE_WINDOW.entry(key).or_insert_with(Vec::new);
-    entries.retain(|ts| now.duration_since(*ts) < WINDOW);
-    if entries.len() >= MAX_REQUESTS_PER_WINDOW { return true; }
-    entries.push(now);
-    false
-}
+const MAX_REQUESTS_PER_WINDOW: usize = 60;
+const WINDOW: Duration = Duration::from_secs(60);
+const RETRY_AFTER_SECONDS: u64 = 30;
+const MAX_FREEBUSY_DAYS: i64 = 30;
 
-// Inside handle_ping, replace the cache update logic with:
-if PING_CACHE.len() >= 10_000 {
-    let keys: Vec<String> = PING_CACHE.iter().map(|r| r.key().clone()).take(100).collect();
-    for k in keys { PING_CACHE.remove(&k); }
-}
-PING_CACHE.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() });
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 struct PingFolder { id: String, class_name: String }
@@ -72,11 +57,6 @@ struct SearchRequest {
     ends: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-const MAX_REQUESTS_PER_WINDOW: usize = 60;
-const WINDOW: Duration = Duration::from_secs(60);
-const RETRY_AFTER_SECONDS: u64 = 30;
-const MAX_FREEBUSY_DAYS: i64 = 30;
-
 #[derive(Clone, Debug, Default)]
 struct EasRequest {
     command: String,
@@ -96,40 +76,46 @@ struct CommandGrammar {
     required_tags: &'static [&'static str],
 }
 
+// ── Grammar / validation ──────────────────────────────────────────────────────
+
 fn command_grammar(command: &str) -> Option<CommandGrammar> {
     match command.to_ascii_lowercase().as_str() {
-        "sync" => Some(CommandGrammar { namespace: "AirSync:", required_tags: &["Collections", "Collection", "CollectionId", "SyncKey"] }),
+        "sync" => Some(CommandGrammar {
+            namespace: "AirSync:",
+            required_tags: &["Collections", "Collection", "CollectionId", "SyncKey"],
+        }),
         "foldersync" => Some(CommandGrammar { namespace: "FolderHierarchy:", required_tags: &["SyncKey"] }),
         "provision" => Some(CommandGrammar { namespace: "Provision:", required_tags: &[] }),
         "settings" => Some(CommandGrammar { namespace: "Settings:", required_tags: &["UserInformation"] }),
-        "ping" => Some(CommandGrammar { namespace: "Ping:", required_tags: &["HeartbeatInterval", "Folders"] }),
+        "ping" => Some(CommandGrammar {
+            namespace: "Ping:",
+            required_tags: &["HeartbeatInterval", "Folders"],
+        }),
         "itemoperations" => Some(CommandGrammar { namespace: "ItemOperations:", required_tags: &["Fetch"] }),
         "search" => Some(CommandGrammar { namespace: "Search:", required_tags: &["Store"] }),
-        "meetingresponse" => Some(CommandGrammar { namespace: "MeetingResponse:", required_tags: &["RequestId", "UserResponse"] }),
+        "meetingresponse" => Some(CommandGrammar {
+            namespace: "MeetingResponse:",
+            required_tags: &["RequestId", "UserResponse"],
+        }),
         "resolverecipients" => Some(CommandGrammar { namespace: "ResolveRecipients:", required_tags: &["To"] }),
         "validatecert" => Some(CommandGrammar { namespace: "ValidateCert:", required_tags: &["Certificates"] }),
-        "getitemestimate" => Some(CommandGrammar { namespace: "GetItemEstimate:", required_tags: &["Collections", "Collection", "SyncKey", "CollectionId"] }),
+        "getitemestimate" => Some(CommandGrammar {
+            namespace: "GetItemEstimate:",
+            required_tags: &["Collections", "Collection", "SyncKey", "CollectionId"],
+        }),
         "moveitems" => Some(CommandGrammar { namespace: "Move:", required_tags: &["Move"] }),
+        // Calendar-only: accept but no-op mail compose commands so clients get a graceful Status 1
+        "sendmail" | "smartreply" | "smartforward" => {
+            Some(CommandGrammar { namespace: "ComposeMail:", required_tags: &[] })
+        }
         _ => None,
     }
-}
-
-fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
-    query.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone())
-}
-
-fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
-    query.iter().find(|(k, _)| k.eq_ignore_ascii_case("Cmd")).map(|(_, v)| v.clone())
 }
 
 fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let lower_cmd = command.to_ascii_lowercase();
     let grammar = command_grammar(&lower_cmd).ok_or("Unsupported command")?;
-
-    if xml.trim().is_empty() {
-        return Err("Empty request body");
-    }
-
+    if xml.trim().is_empty() { return Err("Empty request body"); }
     if extract_root_command(xml).map(|s| s.to_ascii_lowercase()) != Some(lower_cmd.clone()) {
         return Err("Root element does not match command");
     }
@@ -141,25 +127,36 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
             return Err("Missing required tag");
         }
     }
-
     match lower_cmd.as_str() {
         "sync" => {
             if let Some(class) = extract_first_tag_text(xml, b"Class") {
-                if !class.eq_ignore_ascii_case("Calendar") { return Err("Only Calendar Sync class is supported"); }
+                if !class.eq_ignore_ascii_case("Calendar") {
+                    return Err("Only Calendar Sync class is supported");
+                }
             }
-            if xml.contains("<Add>") && !xml.contains("<ClientId>") { return Err("Add requires ClientId"); }
-            if xml.contains("AppointmentReplyTime") || xml.contains("ResponseType") { return Err("Response-only fields not permitted in Sync request"); }
+            if xml.contains("<Add>") && !xml.contains("<ClientId>") {
+                return Err("Add requires ClientId");
+            }
+            if xml.contains("AppointmentReplyTime") || xml.contains("ResponseType") {
+                return Err("Response-only fields not permitted in Sync request");
+            }
             if let Some(all_day) = extract_first_tag_text(xml, b"AllDayEvent") {
-                if all_day.trim() == "1" && extract_first_tag_text(xml, b"Timezone").is_some() { return Err("AllDayEvent=1 must not include Timezone"); }
+                if all_day.trim() == "1" && extract_first_tag_text(xml, b"Timezone").is_some() {
+                    return Err("AllDayEvent=1 must not include Timezone");
+                }
             }
         }
         "meetingresponse" => {
-            if extract_first_tag_text(xml, b"UserResponse").is_none() { return Err("MeetingResponse requires UserResponse"); }
+            if extract_first_tag_text(xml, b"UserResponse").is_none() {
+                return Err("MeetingResponse requires UserResponse");
+            }
         }
         _ => {}
     }
     Ok(())
 }
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
 
 fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     if let Some(v) = headers.get(header::AUTHORIZATION)
@@ -179,6 +176,8 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     }
     None
 }
+
+// ── XML helpers ───────────────────────────────────────────────────────────────
 
 fn extract_root_command(xml: &str) -> Option<String> {
     if xml.trim().is_empty() { return None; }
@@ -233,6 +232,18 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
     values
 }
 
+// ── Query-string helpers ──────────────────────────────────────────────────────
+
+fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
+    query.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.clone())
+}
+
+fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
+    query.iter().find(|(k, _)| k.eq_ignore_ascii_case("Cmd")).map(|(_, v)| v.clone())
+}
+
+// ── Ping-folder parser ────────────────────────────────────────────────────────
+
 fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -243,15 +254,23 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     let mut folders = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Folder" => { in_folder = true; current_id = None; current_class = None; }
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Folder" => {
+                in_folder = true; current_id = None; current_class = None;
+            }
             Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == b"Id" => {
-                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) { current_id = t.decode().ok().map(|v| v.into_owned()); }
+                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                    current_id = t.decode().ok().map(|v| v.into_owned());
+                }
             }
             Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == b"Class" => {
-                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) { current_class = t.decode().ok().map(|v| v.into_owned()); }
+                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                    current_class = t.decode().ok().map(|v| v.into_owned());
+                }
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Folder" => {
-                if let (Some(id), Some(class_name)) = (current_id.take(), current_class.take()) { folders.push(PingFolder { id, class_name }); }
+                if let (Some(id), Some(class_name)) = (current_id.take(), current_class.take()) {
+                    folders.push(PingFolder { id, class_name });
+                }
                 in_folder = false;
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -262,6 +281,8 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     folders
 }
 
+// ── ItemOperations parser ─────────────────────────────────────────────────────
+
 fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -271,8 +292,12 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
     let mut current_tag: Option<Vec<u8>> = None;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Fetch" => { current = Some(ItemOperationsFetch::default()); current_tag = None; }
-            Ok(Event::Start(e)) if current.is_some() => { current_tag = Some(e.name().local_name().as_ref().to_vec()); }
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Fetch" => {
+                current = Some(ItemOperationsFetch::default()); current_tag = None;
+            }
+            Ok(Event::Start(e)) if current.is_some() => {
+                current_tag = Some(e.name().local_name().as_ref().to_vec());
+            }
             Ok(Event::Text(t)) if current.is_some() => {
                 let text = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
                 if let Some(fetch) = current.as_mut() {
@@ -298,6 +323,8 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
     fetches
 }
 
+// ── Search parser ─────────────────────────────────────────────────────────────
+
 fn parse_search_request(xml: &str) -> SearchRequest {
     let range = extract_first_tag_text(xml, b"Range").unwrap_or_else(|| "0-9".to_string());
     let (range_start, range_end) = range.split_once('-')
@@ -312,6 +339,8 @@ fn parse_search_request(xml: &str) -> SearchRequest {
     }
 }
 
+// ── Misc helpers ──────────────────────────────────────────────────────────────
+
 fn active_user_emails(username: &str) -> Vec<String> {
     let mut emails = vec![username.to_string()];
     if !username.contains('@') { emails.push(format!("{username}@example.com")); }
@@ -321,13 +350,75 @@ fn active_user_emails(username: &str) -> Vec<String> {
 fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> bool {
     let Some(query) = query.map(str::trim).filter(|v| !v.is_empty()) else { return true; };
     let q = query.to_ascii_lowercase();
-    [item.subject.as_str(), item.description.as_str(), item.location.as_str(), item.uid.as_str(),
-     item.organizer_name.as_deref().unwrap_or_default(), item.organizer_email.as_deref().unwrap_or_default()]
+    [
+        item.subject.as_str(), item.description.as_str(), item.location.as_str(), item.uid.as_str(),
+        item.organizer_name.as_deref().unwrap_or_default(),
+        item.organizer_email.as_deref().unwrap_or_default(),
+    ]
         .iter().any(|v| v.to_ascii_lowercase().contains(&q))
         || item.attendees.iter().any(|a| a.email.to_ascii_lowercase().contains(&q))
 }
 
 fn make_request_id() -> String { Uuid::new_v4().to_string() }
+
+fn parse_device_information(xml: &str) -> (
+    Option<String>, Option<String>, Option<String>,
+    Option<String>, Option<String>, Option<String>,
+) {
+    (
+        extract_first_tag_text(xml, b"FriendlyName"),
+        extract_first_tag_text(xml, b"Model"),
+        extract_first_tag_text(xml, b"OS"),
+        extract_first_tag_text(xml, b"PhoneNumber"),
+        extract_first_tag_text(xml, b"IMEI"),
+        extract_first_tag_text(xml, b"UserAgent"),
+    )
+}
+
+fn parse_request(query: &HashMap<String, String>, xml: &str) -> EasRequest {
+    let window_size = extract_first_tag_text(xml, b"WindowSize")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| if v == 0 { 100 } else if v > 512 { 512 } else { v });
+    let get_changes = extract_first_tag_text(xml, b"GetChanges")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(true);
+    let filter_type = extract_first_tag_text(xml, b"FilterType")
+        .and_then(|v| v.parse::<u8>().ok());
+    EasRequest {
+        command: extract_root_command(xml).or_else(|| command_from_query(query)).unwrap_or_default(),
+        sync_key: extract_first_tag_text(xml, b"SyncKey"),
+        class: extract_first_tag_text(xml, b"Class"),
+        collection_id: extract_first_tag_text(xml, b"CollectionId"),
+        device_id: value_from_query(query, "DeviceId"),
+        policy_key: extract_first_tag_text(xml, b"PolicyKey"),
+        window_size, get_changes, filter_type,
+    }
+}
+
+fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String {
+    format!("{visible_collection_id}::{device_id}")
+}
+
+fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
+    match headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).map(|v| v.to_ascii_lowercase()) {
+        Some(v) => v == "https",
+        None => true,
+    }
+}
+
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+
+fn maybe_throttle(owner: &str, device_id: &str) -> bool {
+    let key = format!("{}:{}", owner, device_id);
+    let now = Instant::now();
+    let mut entries = DEVICE_WINDOW.entry(key).or_insert_with(Vec::new);
+    entries.retain(|ts| now.duration_since(*ts) < WINDOW);
+    if entries.len() >= MAX_REQUESTS_PER_WINDOW { return true; }
+    entries.push(now);
+    false
+}
+
+// ── Response builders ─────────────────────────────────────────────────────────
 
 fn inject_common_headers(resp: &mut Response, request_id: &str) {
     let h = resp.headers_mut();
@@ -339,7 +430,11 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
 }
 
 fn unauth_response(request_id: &str) -> Response {
-    let mut r = (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE.as_str(), "Basic realm=\"Microsoft-Server-ActiveSync\"")], "Unauthorized").into_response();
+    let mut r = (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE.as_str(), "Basic realm=\"Microsoft-Server-ActiveSync\"")],
+        "Unauthorized",
+    ).into_response();
     inject_common_headers(&mut r, request_id);
     r
 }
@@ -362,8 +457,11 @@ fn throttled_response(request_id: &str) -> Response {
 }
 
 fn bad_request_response(request_id: &str, msg: &str) -> Response {
-    let mut r = (StatusCode::BAD_REQUEST, [(header::CONTENT_TYPE.as_str(), "application/xml; charset=utf-8")],
-        format!(r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">4</Status><!-- {} -->"#, msg)).into_response();
+    let mut r = (
+        StatusCode::BAD_REQUEST,
+        [(header::CONTENT_TYPE.as_str(), "application/xml; charset=utf-8")],
+        format!(r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">4</Status><!-- {} -->"#, msg),
+    ).into_response();
     inject_common_headers(&mut r, request_id);
     r
 }
@@ -372,7 +470,8 @@ fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str, request_id: &
     let mut r = if as_wbxml {
         match wbxml.encode(xml) {
             Ok(b) => (StatusCode::OK, [(header::CONTENT_TYPE.as_str(), "application/vnd.ms-sync.wbxml")], b).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, [(header::CONTENT_TYPE.as_str(), "text/plain; charset=utf-8")], format!("WBXML Encode Err: {}", e)).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, [(header::CONTENT_TYPE.as_str(), "text/plain; charset=utf-8")],
+                format!("WBXML Encode Err: {}", e)).into_response(),
         }
     } else {
         (StatusCode::OK, [(header::CONTENT_TYPE.as_str(), "application/xml; charset=utf-8")], xml.to_string()).into_response()
@@ -382,65 +481,24 @@ fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str, request_id: &
 }
 
 fn unsupported_command_response(cmd: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> Response {
-    let body = format!(r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">5</Status><!-- Unsupported command: {} -->"#, cmd);
+    let body = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">5</Status><!-- Unsupported command: {} -->"#,
+        cmd
+    );
     xml_or_wbxml_response(wbxml, as_wbxml, &body, request_id)
 }
 
-fn success_status_response(wbxml: &Wbxml, as_wbxml: bool, root: &str, ns: &str, status: &str, extra_inner: &str, request_id: &str) -> Response {
-    let xml = format!(r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="{ns}"><Status>{status}</Status>{extra}</{root}>"#,
-        root=root, ns=ns, status=status, extra=extra_inner);
+fn success_status_response(
+    wbxml: &Wbxml, as_wbxml: bool,
+    root: &str, ns: &str, status: &str, extra_inner: &str, request_id: &str,
+) -> Response {
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="{ns}"><Status>{status}</Status>{extra_inner}</{root}>"#
+    );
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
-fn maybe_throttle(owner: &str, device_id: &str) -> bool {
-    let key = format!("{}:{}", owner, device_id);
-    let now = Instant::now();
-    let mut map = match DEVICE_WINDOW.lock() { Ok(m) => m, Err(_) => return false };
-    let entries = map.entry(key).or_insert_with(Vec::new);
-    entries.retain(|ts| now.duration_since(*ts) < WINDOW);
-    if entries.len() >= MAX_REQUESTS_PER_WINDOW { return true; }
-    entries.push(now);
-    false
-}
-
-fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
-    match headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).map(|v| v.to_ascii_lowercase()) {
-        Some(v) => v == "https",
-        None => true,
-    }
-}
-
-fn parse_request(query: &HashMap<String, String>, xml: &str) -> EasRequest {
-    let window_size = extract_first_tag_text(xml, b"WindowSize")
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| if v == 0 { 100 } else if v > 512 { 512 } else { v });
-    let get_changes = extract_first_tag_text(xml, b"GetChanges").map(|v| v.trim() != "0").unwrap_or(true);
-    let filter_type = extract_first_tag_text(xml, b"FilterType").and_then(|v| v.parse::<u8>().ok());
-    EasRequest {
-        command: extract_root_command(xml).or_else(|| command_from_query(query)).unwrap_or_default(),
-        sync_key: extract_first_tag_text(xml, b"SyncKey"),
-        class: extract_first_tag_text(xml, b"Class"),
-        collection_id: extract_first_tag_text(xml, b"CollectionId"),
-        device_id: value_from_query(query, "DeviceId"),
-        policy_key: extract_first_tag_text(xml, b"PolicyKey"),
-        window_size, get_changes, filter_type,
-    }
-}
-
-fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String {
-    format!("{visible_collection_id}::{device_id}")
-}
-
-fn parse_device_information(xml: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) {
-    (
-        extract_first_tag_text(xml, b"FriendlyName"),
-        extract_first_tag_text(xml, b"Model"),
-        extract_first_tag_text(xml, b"OS"),
-        extract_first_tag_text(xml, b"PhoneNumber"),
-        extract_first_tag_text(xml, b"IMEI"),
-        extract_first_tag_text(xml, b"UserAgent"),
-    )
-}
+// ── Provisioning ──────────────────────────────────────────────────────────────
 
 fn eas_provision_doc_xml() -> &'static str {
     r#"<EASProvisionDoc>
@@ -487,358 +545,7 @@ fn eas_provision_doc_xml() -> &'static str {
 </EASProvisionDoc>"#
 }
 
-async fn handle_ping(
-    state: &Arc<AppState>, owner: &str, req: &EasRequest, xml: &str,
-    wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
-) -> Response {
-    const MIN_HEARTBEAT_SECS: u64 = 60;
-    const MAX_HEARTBEAT_SECS: u64 = 3540;
-    const MAX_PING_FOLDERS: usize = 200;
-    let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
-    let cache_key = format!("{}:{}", owner, device_id);
-    let cached = PING_CACHE.lock().ok().and_then(|c| c.get(&cache_key).cloned());
-    let heartbeat = extract_first_tag_text(xml, b"HeartbeatInterval")
-        .and_then(|v| v.parse::<u64>().ok())
-        .or_else(|| cached.as_ref().map(|e| e.heartbeat));
-    let folders = { let parsed = parse_ping_folders(xml); if parsed.is_empty() { cached.map(|e| e.folders).unwrap_or_default() } else { parsed } };
-    if heartbeat.is_none() || folders.is_empty() {
-        let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>3</Status></Ping>"#;
-        return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
-    }
-    let heartbeat = heartbeat.unwrap_or(MIN_HEARTBEAT_SECS);
-    if !(MIN_HEARTBEAT_SECS..=MAX_HEARTBEAT_SECS).contains(&heartbeat) {
-        let corrected = heartbeat.clamp(MIN_HEARTBEAT_SECS, MAX_HEARTBEAT_SECS);
-        let xml = format!(r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>5</Status><HeartbeatInterval>{}</HeartbeatInterval></Ping>"#, corrected);
-        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
-    }
-    if folders.len() > MAX_PING_FOLDERS {
-        let xml = format!(r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>6</Status><MaxFolders>{}</MaxFolders></Ping>"#, MAX_PING_FOLDERS);
-        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
-    }
-    if folders.iter().any(|f| !f.id.eq("1") || !f.class_name.eq_ignore_ascii_case("Calendar")) {
-        let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>7</Status></Ping>"#;
-        return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
-    }
-    if let Ok(mut cache) = PING_CACHE.lock() {
-        if cache.len() >= 10000 {
-            let keys: Vec<String> = cache.keys().cloned().collect();
-            let to_remove = keys.len() - 9000;
-            for k in keys.iter().take(to_remove) {
-                cache.remove(k);
-            }
-        }
-        cache.insert(cache_key, PingCacheEntry { heartbeat, folders: folders.clone() });
-    }
-    let deadline = Instant::now() + Duration::from_secs(heartbeat);
-    loop {
-        let mut changed_folders = Vec::new();
-        for folder in &folders {
-            if folder.id != "1" { continue; }
-            let collection_id = scoped_collection_id(&folder.id, device_id);
-            let since = state.storage.get_sync_key(owner, &collection_id).await
-                .ok().flatten().and_then(|(_, token)| token)
-                .and_then(|t| t.strip_prefix("seq:").map(|v| v.to_string()))
-                .and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-            let changed = state.storage.list_changes_since_seq(owner, since).await.unwrap_or_default();
-            let deleted = state.storage.list_deleted_since_seq(owner, since).await.unwrap_or_default();
-            if !changed.is_empty() || !deleted.is_empty() { changed_folders.push(folder.id.as_str()); }
-        }
-        if !changed_folders.is_empty() {
-            let xml = format!(r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
-                changed_folders.iter().map(|id| format!("<Folder>{}</Folder>", id)).collect::<Vec<_>>().join(""));
-            return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
-        }
-        if Instant::now() >= deadline {
-            let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
-            return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        tokio::time::sleep(remaining.min(Duration::from_secs(15))).await;
-    }
-}
-
-async fn merged_freebusy_for_mailbox(
-    state: &Arc<AppState>, mailbox: &str, password: &str,
-    start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>, slot_minutes: i64,
-) -> String {
-    let safe_interval = slot_minutes.clamp(5, 1440);
-    let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1)) / (safe_interval * 60)) as usize;
-    let mut merged = vec!['0'; slot_count];
-    let caldav = CaldavClient::new(&state.cfg);
-    if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
-        && let Some(collection_href) = calendars.first()
-        && let Ok(events_xml) = caldav.query_events(collection_href,
-            &start.format("%Y%m%dT%H%M%SZ").to_string(), &end.format("%Y%m%dT%H%M%SZ").to_string(), mailbox, password).await
-    {
-        let mut reader = Reader::from_str(&events_xml);
-        reader.config_mut().trim_text(true);
-        let mut buf = Vec::new();
-        let mut in_cal_data = false;
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => { in_cal_data = true; }
-                Ok(Event::Text(t)) if in_cal_data => {
-                    if let Ok(ics) = t.decode()
-                        && let Some(item) = parse_ics_event(&ics)
-                    {
-                        let sd = match item.busy_status.unwrap_or(2) { 0=>'0', 1=>'1', 3=>'3', _=>'2' };
-                        for (i, slot) in merged.iter_mut().enumerate() {
-                            let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
-                            let se = ss + chrono::Duration::minutes(safe_interval);
-                            if item.start < se && item.end > ss && sd > *slot { *slot = sd; }
-                        }
-                    }
-                }
-                Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => { in_cal_data = false; }
-                Ok(Event::Eof) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-    } else {
-        merged.fill('4');
-    }
-    merged.into_iter().collect()
-}
-
-async fn handle_resolve_recipients(
-    state: &Arc<AppState>, username: &str, password: &str,
-    xml: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
-) -> Response {
-    let recipients = {
-        let parsed = extract_all_tag_text(xml, b"To").into_iter().filter(|v| !v.is_empty()).collect::<Vec<_>>();
-        if parsed.is_empty() { vec![username.to_string()] } else { parsed }
-    };
-    let availability_requested = xml.contains("<Availability>");
-    let availability_window = if availability_requested {
-        let Some(start) = extract_first_tag_text(xml, b"StartTime").and_then(|v| parse_datetime(&v)) else {
-            return bad_request_response(request_id, "ResolveRecipients Availability requires StartTime");
-        };
-        let end = {
-            let pe = extract_first_tag_text(xml, b"EndTime").and_then(|v| parse_datetime(&v))
-                .unwrap_or_else(|| start + chrono::Duration::days(7));
-            let max_end = start + chrono::Duration::days(MAX_FREEBUSY_DAYS);
-            let clamped = if pe > max_end { max_end } else { pe };
-            if clamped <= start { start + chrono::Duration::days(7) } else { clamped }
-        };
-        Some((start, end))
-    } else { None };
-    let mut recipient_xml = String::new();
-    for recipient in &recipients {
-        let avail_xml = if let Some((start, end)) = availability_window {
-            let merged = merged_freebusy_for_mailbox(state, recipient, password, start, end, 30).await;
-            format!("<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>", merged)
-        } else { String::new() };
-        recipient_xml.push_str(&format!(
-            "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
-            sync::xml_escape(recipient), sync::xml_escape(recipient), avail_xml
-        ));
-    }
-    let primary = recipients.first().cloned().unwrap_or_else(|| username.to_string());
-    let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
-        sync::xml_escape(&primary), recipients.len(), recipient_xml
-    );
-    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
-}
-
-async fn load_calendar_events(
-    state: &Arc<AppState>, username: &str, password: &str,
-    start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>,
-) -> anyhow::Result<Vec<(String, String, crate::calendar::CalendarItem)>> {
-    let caldav = CaldavClient::new(&state.cfg);
-    let calendars = caldav.find_user_calendars(username, password).await?;
-    let collection_href = calendars.first().ok_or_else(|| anyhow::anyhow!("no calendars found"))?.clone();
-    let events_xml = caldav.query_events(&collection_href,
-        &start.format("%Y%m%dT%H%M%SZ").to_string(), &end.format("%Y%m%dT%H%M%SZ").to_string(), username, password).await?;
-    let mut reader = Reader::from_str(&events_xml);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut href = String::new();
-    let mut ics = String::new();
-    let mut out = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
-                b"href" => { if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) { href = t.decode().unwrap_or_default().to_string(); } }
-                b"calendar-data" => { if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) { ics = t.decode().unwrap_or_default().to_string(); } }
-                _ => {}
-            },
-            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
-                if !href.is_empty() && let Some(item) = parse_ics_event(&ics) {
-                    let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
-                    out.push((server_id, href.clone(), item));
-                }
-                href.clear(); ics.clear();
-            }
-            Ok(Event::Eof) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    Ok(out)
-}
-
-async fn handle_settings(username: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str, xml_body: &str) -> Response {
-    let primary_email = username.to_string();
-    let mut sections = String::new();
-
-    let has_user_info = xml_body.contains("<UserInformation>") || xml_body.contains("<UserInformation/>");
-    let has_oof = xml_body.contains("<Oof>") || xml_body.contains("<Oof/>");
-    let has_device_password = xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
-
-    if has_user_info || (!has_oof && !has_device_password) {
-        let email_entries = active_user_emails(username).into_iter().map(|email| {
-            format!("<EmailAddresses><SMTPAddress>{}</SMTPAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
-                sync::xml_escape(&email), sync::xml_escape(&primary_email))
-        }).collect::<String>();
-        sections.push_str(&format!(
-            r#"<UserInformation>
-    <Status>1</Status>
-    <Get>
-      <Accounts>
-        <Account>
-          <AccountId>{}</AccountId>
-          <AccountName>{}</AccountName>
-          {}
-        </Account>
-      </Accounts>
-    </Get>
-  </UserInformation>"#,
-            sync::xml_escape(&primary_email), sync::xml_escape(username), email_entries
-        ));
-    }
-
-    if has_oof {
-        sections.push_str(
-            r#"<Oof>
-    <Status>1</Status>
-    <Get>
-      <OofState>0</OofState>
-    </Get>
-  </Oof>"#
-        );
-    }
-
-    if has_device_password {
-        sections.push_str(
-            r#"<DevicePassword>
-    <Status>1</Status>
-    <Get>
-      <DevicePasswordEnabled>0</DevicePasswordEnabled>
-      <MinPasswordLength>0</MinPasswordLength>
-      <MaxPasswordLength>0</MaxPasswordLength>
-      <MaxInactivityTimeDeviceLockInMinutes>0</MaxInactivityTimeDeviceLockInMinutes>
-      <MaxFailedPasswordAttempts>0</MaxFailedPasswordAttempts>
-      <PasswordExpirationInDays>0</PasswordExpirationInDays>
-    </Get>
-  </DevicePassword>"#
-        );
-    }
-
-    let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Settings xmlns="Settings:">
-  <Status>1</Status>
-  {}
-</Settings>"#,
-        sections
-    );
-    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
-}
-
-async fn handle_item_operations(
-    state: &Arc<AppState>, username: &str, password: &str,
-    xml: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
-) -> Response {
-    let fetches = parse_item_operations_fetches(xml);
-    if fetches.is_empty() { return bad_request_response(request_id, "ItemOperations requires at least one Fetch"); }
-    let caldav = CaldavClient::new(&state.cfg);
-    let mut responses = String::new();
-    for fetch in fetches {
-        let store = if fetch.store.is_empty() { "Mailbox".to_string() } else { fetch.store };
-        let collection_id = fetch.collection_id.unwrap_or_else(|| "1".to_string());
-        let Some(server_id) = fetch.server_id.or(fetch.long_id) else {
-            responses.push_str(&format!("<Fetch><Store>{}</Store><Status>6</Status></Fetch>", sync::xml_escape(&store)));
-            continue;
-        };
-        let lookup = match state.storage.get_ews_item_by_server_id(username, &server_id).await {
-            Ok(Some(row)) => row,
-            _ => {
-                responses.push_str(&format!("<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
-                    sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id)));
-                continue;
-            }
-        };
-        let Ok((ics, _etag)) = caldav.get_event(&lookup.resource_href, username, password).await else {
-            responses.push_str(&format!("<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
-                sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id)));
-            continue;
-        };
-        let Some(item) = parse_ics_event(&ics) else {
-            responses.push_str(&format!("<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
-                sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id)));
-            continue;
-        };
-        responses.push_str(&format!(
-            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
-            sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id), sync::render_calendar_app_data(&item)
-        ));
-    }
-    let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status><Response>{}</Response></ItemOperations>"#,
-        responses
-    );
-    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
-}
-
-async fn handle_search(
-    state: &Arc<AppState>, username: &str, password: &str,
-    xml: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
-) -> Response {
-    let req = parse_search_request(xml);
-    if !req.store_name.eq_ignore_ascii_case("Mailbox") {
-        let r = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>11</Status></Store></Response></Search>"#;
-        return xml_or_wbxml_response(wbxml, as_wbxml, r, request_id);
-    }
-    let start = req.starts.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52));
-    let end = req.ends.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::weeks(52));
-    let Ok(events) = load_calendar_events(state, username, password, start, end).await else {
-        let r = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>6</Status></Store></Response></Search>"#;
-        return xml_or_wbxml_response(wbxml, as_wbxml, r, request_id);
-    };
-    let mut matches = events.into_iter()
-        .filter(|(_, _, item)| matches_search(item, req.query_text.as_deref()))
-        .collect::<Vec<_>>();
-    matches.sort_by_key(|(_, _, item)| item.start);
-    let total = matches.len();
-    let start_idx = req.range_start.min(total);
-    let end_idx = req.range_end.min(total.saturating_sub(1));
-    let window = if total == 0 || start_idx > end_idx { &[][..] } else { &matches[start_idx..=end_idx] };
-    let results_xml = window.iter().map(|(sid, _, item)| {
-        format!("<Result><Class>Calendar</Class><CollectionId>1</CollectionId><LongId>{}</LongId><Properties>{}</Properties></Result>",
-            sync::xml_escape(sid), sync::render_calendar_app_data(item))
-    }).collect::<String>();
-    let range_xml = if total == 0 { "0-0/0".to_string() } else {
-        format!("{start_idx}-{}/{}", start_idx + window.len().saturating_sub(1), total)
-    };
-    let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Search xmlns="Search:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
-  <Status>1</Status>
-  <Response>
-    <Store>
-      <Status>1</Status>
-      <Range>{}</Range>
-      <Total>{}</Total>
-      {}
-    </Store>
-  </Response>
-</Search>"#,
-        sync::xml_escape(&range_xml), total, results_xml
-    );
-    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
-}
+// ── Command handlers ──────────────────────────────────────────────────────────
 
 async fn handle_provision(
     state: &Arc<AppState>, owner: &str, req: &EasRequest, xml: &str,
@@ -847,12 +554,15 @@ async fn handle_provision(
     let device_id = req.device_id.clone().unwrap_or_else(|| "unknown-device".to_string());
     let incoming_key = req.policy_key.clone().unwrap_or_else(|| "0".to_string());
     let (friendly_name, model, os, phone_number, imei, user_agent) = parse_device_information(xml);
-    if [friendly_name.as_ref(), model.as_ref(), os.as_ref(), phone_number.as_ref(), imei.as_ref(), user_agent.as_ref()].iter().any(|v| v.is_some()) {
-        if let Err(e) = state.storage.upsert_device_info(owner, &device_id,
+    if [friendly_name.as_ref(), model.as_ref(), os.as_ref(), phone_number.as_ref(), imei.as_ref(), user_agent.as_ref()]
+        .iter().any(|v| v.is_some())
+    {
+        if let Err(e) = state.storage.upsert_device_info(
+            owner, &device_id,
             friendly_name.as_deref().unwrap_or(""), model.as_deref().unwrap_or(""),
             os.as_deref().unwrap_or(""), phone_number.as_deref().unwrap_or(""),
-            imei.as_deref().unwrap_or(""), user_agent.as_deref().unwrap_or("")).await
-        {
+            imei.as_deref().unwrap_or(""), user_agent.as_deref().unwrap_or(""),
+        ).await {
             tracing::warn!("Failed to upsert device info for {}: {}", device_id, e);
         }
     }
@@ -909,7 +619,10 @@ async fn handle_folder_sync(
     state: &Arc<AppState>, owner: &str, req: &EasRequest,
     wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
 ) -> Response {
-    let collection_id = scoped_collection_id("folderhierarchy", req.device_id.as_deref().unwrap_or("unknown-device"));
+    let collection_id = scoped_collection_id(
+        "folderhierarchy",
+        req.device_id.as_deref().unwrap_or("unknown-device"),
+    );
     let incoming = req.sync_key.as_deref().unwrap_or("0");
     let stored = state.storage.get_sync_key(owner, &collection_id).await.ok().flatten();
     if incoming != "0" {
@@ -936,12 +649,163 @@ async fn handle_folder_sync(
     xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
 }
 
+async fn handle_ping(
+    state: &Arc<AppState>, owner: &str, req: &EasRequest, xml: &str,
+    wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
+) -> Response {
+    const MIN_HEARTBEAT_SECS: u64 = 60;
+    const MAX_HEARTBEAT_SECS: u64 = 3540;
+    const MAX_PING_FOLDERS: usize = 200;
+    let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
+    let cache_key = format!("{}:{}", owner, device_id);
+
+    let cached = PING_CACHE.get(&cache_key).map(|e| e.value().clone());
+
+    let heartbeat = extract_first_tag_text(xml, b"HeartbeatInterval")
+        .and_then(|v| v.parse::<u64>().ok())
+        .or_else(|| cached.as_ref().map(|e| e.heartbeat));
+    let folders = {
+        let parsed = parse_ping_folders(xml);
+        if parsed.is_empty() { cached.map(|e| e.folders).unwrap_or_default() } else { parsed }
+    };
+
+    if heartbeat.is_none() || folders.is_empty() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>3</Status></Ping>"#;
+        return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+    }
+    let heartbeat = heartbeat.unwrap_or(MIN_HEARTBEAT_SECS);
+    if !(MIN_HEARTBEAT_SECS..=MAX_HEARTBEAT_SECS).contains(&heartbeat) {
+        let corrected = heartbeat.clamp(MIN_HEARTBEAT_SECS, MAX_HEARTBEAT_SECS);
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>5</Status><HeartbeatInterval>{}</HeartbeatInterval></Ping>"#,
+            corrected
+        );
+        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+    }
+    if folders.len() > MAX_PING_FOLDERS {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>6</Status><MaxFolders>{}</MaxFolders></Ping>"#,
+            MAX_PING_FOLDERS
+        );
+        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+    }
+    if folders.iter().any(|f| !f.id.eq("1") || !f.class_name.eq_ignore_ascii_case("Calendar")) {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>7</Status></Ping>"#;
+        return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+    }
+
+    // Evict oldest entries if the cache grows too large, then persist.
+    if PING_CACHE.len() >= 10_000 {
+        let keys: Vec<String> = PING_CACHE.iter().map(|r| r.key().clone()).take(1_000).collect();
+        for k in keys { PING_CACHE.remove(&k); }
+    }
+    PING_CACHE.insert(cache_key.clone(), PingCacheEntry { heartbeat, folders: folders.clone() });
+
+    let deadline = Instant::now() + Duration::from_secs(heartbeat);
+    loop {
+        let mut changed_folders = Vec::new();
+        for folder in &folders {
+            if folder.id != "1" { continue; }
+            let collection_id = scoped_collection_id(&folder.id, device_id);
+            let since = state.storage.get_sync_key(owner, &collection_id).await
+                .ok().flatten()
+                .and_then(|(_, token)| token)
+                .and_then(|t| t.strip_prefix("seq:").map(|v| v.to_string()))
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            let changed = state.storage.list_changes_since_seq(owner, since).await.unwrap_or_default();
+            let deleted = state.storage.list_deleted_since_seq(owner, since).await.unwrap_or_default();
+            if !changed.is_empty() || !deleted.is_empty() { changed_folders.push(folder.id.as_str()); }
+        }
+        if !changed_folders.is_empty() {
+            let xml = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
+                changed_folders.iter().map(|id| format!("<Folder>{}</Folder>", id)).collect::<Vec<_>>().join("")
+            );
+            return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+        }
+        if Instant::now() >= deadline {
+            let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
+            return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::time::sleep(remaining.min(Duration::from_secs(15))).await;
+    }
+}
+
+async fn handle_settings(
+    username: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str, xml_body: &str,
+) -> Response {
+    let primary_email = username.to_string();
+    let mut sections = String::new();
+    let has_user_info = xml_body.contains("<UserInformation>") || xml_body.contains("<UserInformation/>");
+    let has_oof = xml_body.contains("<Oof>") || xml_body.contains("<Oof/>");
+    let has_device_password = xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
+
+    if has_user_info || (!has_oof && !has_device_password) {
+        let email_entries = active_user_emails(username).into_iter().map(|email| {
+            format!(
+                "<EmailAddresses><SMTPAddress>{}</SMTPAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
+                sync::xml_escape(&email), sync::xml_escape(&primary_email)
+            )
+        }).collect::<String>();
+        sections.push_str(&format!(
+            r#"<UserInformation>
+    <Status>1</Status>
+    <Get>
+      <Accounts>
+        <Account>
+          <AccountId>{}</AccountId>
+          <AccountName>{}</AccountName>
+          {}
+        </Account>
+      </Accounts>
+    </Get>
+  </UserInformation>"#,
+            sync::xml_escape(&primary_email), sync::xml_escape(username), email_entries
+        ));
+    }
+    if has_oof {
+        sections.push_str(r#"<Oof>
+    <Status>1</Status>
+    <Get>
+      <OofState>0</OofState>
+    </Get>
+  </Oof>"#);
+    }
+    if has_device_password {
+        sections.push_str(r#"<DevicePassword>
+    <Status>1</Status>
+    <Get>
+      <DevicePasswordEnabled>0</DevicePasswordEnabled>
+      <MinPasswordLength>0</MinPasswordLength>
+      <MaxPasswordLength>0</MaxPasswordLength>
+      <MaxInactivityTimeDeviceLockInMinutes>0</MaxInactivityTimeDeviceLockInMinutes>
+      <MaxFailedPasswordAttempts>0</MaxFailedPasswordAttempts>
+      <PasswordExpirationInDays>0</PasswordExpirationInDays>
+    </Get>
+  </DevicePassword>"#);
+    }
+    let response = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Settings xmlns="Settings:">
+  <Status>1</Status>
+  {}
+</Settings>"#,
+        sections
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+}
+
 async fn handle_get_item_estimate(
     state: &Arc<AppState>, owner: &str, req: &EasRequest,
     wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
 ) -> Response {
     let visible_collection_id = req.collection_id.as_deref().unwrap_or("1");
-    let collection_id = scoped_collection_id(visible_collection_id, req.device_id.as_deref().unwrap_or("unknown-device"));
+    let collection_id = scoped_collection_id(
+        visible_collection_id,
+        req.device_id.as_deref().unwrap_or("unknown-device"),
+    );
     let incoming = req.sync_key.as_deref().unwrap_or("0");
     let stored = state.storage.get_sync_key(owner, &collection_id).await.ok().flatten();
     if incoming != "0" {
@@ -957,8 +821,11 @@ async fn handle_get_item_estimate(
         }
     }
     let since = if incoming == "0" { 0 } else {
-        stored.as_ref().and_then(|(_, token)| token.as_deref())
-            .and_then(|t| t.strip_prefix("seq:")).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0)
+        stored.as_ref()
+            .and_then(|(_, token)| token.as_deref())
+            .and_then(|t| t.strip_prefix("seq:"))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
     };
     let changed = state.storage.list_changes_since_seq(owner, since).await.unwrap_or_default();
     let deleted = state.storage.list_deleted_since_seq(owner, since).await.unwrap_or_default();
@@ -970,6 +837,264 @@ async fn handle_get_item_estimate(
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
+async fn handle_item_operations(
+    state: &Arc<AppState>, username: &str, password: &str,
+    xml: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
+) -> Response {
+    let fetches = parse_item_operations_fetches(xml);
+    if fetches.is_empty() {
+        return bad_request_response(request_id, "ItemOperations requires at least one Fetch");
+    }
+    let caldav = CaldavClient::new(&state.cfg);
+    let mut responses = String::new();
+    for fetch in fetches {
+        let store = if fetch.store.is_empty() { "Mailbox".to_string() } else { fetch.store };
+        let collection_id = fetch.collection_id.unwrap_or_else(|| "1".to_string());
+        let Some(server_id) = fetch.server_id.or(fetch.long_id) else {
+            responses.push_str(&format!(
+                "<Fetch><Store>{}</Store><Status>6</Status></Fetch>",
+                sync::xml_escape(&store)
+            ));
+            continue;
+        };
+        let lookup = match state.storage.get_ews_item_by_server_id(username, &server_id).await {
+            Ok(Some(row)) => row,
+            _ => {
+                responses.push_str(&format!(
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                    sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id)
+                ));
+                continue;
+            }
+        };
+        let Ok((ics, _etag)) = caldav.get_event(&lookup.resource_href, username, password).await else {
+            responses.push_str(&format!(
+                "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id)
+            ));
+            continue;
+        };
+        let Some(item) = parse_ics_event(&ics) else {
+            responses.push_str(&format!(
+                "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
+                sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id)
+            ));
+            continue;
+        };
+        responses.push_str(&format!(
+            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
+            sync::xml_escape(&store), sync::xml_escape(&collection_id), sync::xml_escape(&server_id),
+            sync::render_calendar_app_data(&item)
+        ));
+    }
+    let response = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status><Response>{}</Response></ItemOperations>"#,
+        responses
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+}
+
+async fn merged_freebusy_for_mailbox(
+    state: &Arc<AppState>, mailbox: &str, password: &str,
+    start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>, slot_minutes: i64,
+) -> String {
+    let safe_interval = slot_minutes.clamp(5, 1440);
+    let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1)) / (safe_interval * 60)) as usize;
+    let mut merged = vec!['0'; slot_count];
+    let caldav = CaldavClient::new(&state.cfg);
+    if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
+        && let Some(collection_href) = calendars.first()
+        && let Ok(events_xml) = caldav.query_events(
+            collection_href,
+            &start.format("%Y%m%dT%H%M%SZ").to_string(),
+            &end.format("%Y%m%dT%H%M%SZ").to_string(),
+            mailbox, password,
+        ).await
+    {
+        let mut reader = Reader::from_str(&events_xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        let mut in_cal_data = false;
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    in_cal_data = true;
+                }
+                Ok(Event::Text(t)) if in_cal_data => {
+                    if let Ok(ics) = t.decode()
+                        && let Some(item) = parse_ics_event(&ics)
+                    {
+                        let sd = match item.busy_status.unwrap_or(2) { 0 => '0', 1 => '1', 3 => '3', _ => '2' };
+                        for (i, slot) in merged.iter_mut().enumerate() {
+                            let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
+                            let se = ss + chrono::Duration::minutes(safe_interval);
+                            if item.start < se && item.end > ss && sd > *slot { *slot = sd; }
+                        }
+                    }
+                }
+                Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    in_cal_data = false;
+                }
+                Ok(Event::Eof) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+    } else {
+        merged.fill('4');
+    }
+    merged.into_iter().collect()
+}
+
+async fn handle_resolve_recipients(
+    state: &Arc<AppState>, username: &str, password: &str,
+    xml: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
+) -> Response {
+    let recipients = {
+        let parsed = extract_all_tag_text(xml, b"To").into_iter().filter(|v| !v.is_empty()).collect::<Vec<_>>();
+        if parsed.is_empty() { vec![username.to_string()] } else { parsed }
+    };
+    let availability_requested = xml.contains("<Availability>");
+    let availability_window = if availability_requested {
+        let Some(start) = extract_first_tag_text(xml, b"StartTime").and_then(|v| parse_datetime(&v)) else {
+            return bad_request_response(request_id, "ResolveRecipients Availability requires StartTime");
+        };
+        let end = {
+            let pe = extract_first_tag_text(xml, b"EndTime").and_then(|v| parse_datetime(&v))
+                .unwrap_or_else(|| start + chrono::Duration::days(7));
+            let max_end = start + chrono::Duration::days(MAX_FREEBUSY_DAYS);
+            let clamped = if pe > max_end { max_end } else { pe };
+            if clamped <= start { start + chrono::Duration::days(7) } else { clamped }
+        };
+        Some((start, end))
+    } else { None };
+
+    let mut recipient_xml = String::new();
+    for recipient in &recipients {
+        let avail_xml = if let Some((start, end)) = availability_window {
+            let merged = merged_freebusy_for_mailbox(state, recipient, password, start, end, 30).await;
+            format!(
+                "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
+                merged
+            )
+        } else { String::new() };
+        recipient_xml.push_str(&format!(
+            "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
+            sync::xml_escape(recipient), sync::xml_escape(recipient), avail_xml
+        ));
+    }
+    let primary = recipients.first().cloned().unwrap_or_else(|| username.to_string());
+    let response = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
+        sync::xml_escape(&primary), recipients.len(), recipient_xml
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+}
+
+async fn load_calendar_events(
+    state: &Arc<AppState>, username: &str, password: &str,
+    start: chrono::DateTime<chrono::Utc>, end: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<Vec<(String, String, crate::calendar::CalendarItem)>> {
+    let caldav = CaldavClient::new(&state.cfg);
+    let calendars = caldav.find_user_calendars(username, password).await?;
+    let collection_href = calendars.first()
+        .ok_or_else(|| anyhow::anyhow!("no calendars found"))?
+        .clone();
+    let events_xml = caldav.query_events(
+        &collection_href,
+        &start.format("%Y%m%dT%H%M%SZ").to_string(),
+        &end.format("%Y%m%dT%H%M%SZ").to_string(),
+        username, password,
+    ).await?;
+    let mut reader = Reader::from_str(&events_xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut href = String::new();
+    let mut ics = String::new();
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
+                b"href" => {
+                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                        href = t.decode().unwrap_or_default().to_string();
+                    }
+                }
+                b"calendar-data" => {
+                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                        ics = t.decode().unwrap_or_default().to_string();
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
+                if !href.is_empty() && let Some(item) = parse_ics_event(&ics) {
+                    let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
+                    out.push((server_id, href.clone(), item));
+                }
+                href.clear(); ics.clear();
+            }
+            Ok(Event::Eof) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(out)
+}
+
+async fn handle_search(
+    state: &Arc<AppState>, username: &str, password: &str,
+    xml: &str, wbxml: &Wbxml, as_wbxml: bool, request_id: &str,
+) -> Response {
+    let req = parse_search_request(xml);
+    if !req.store_name.eq_ignore_ascii_case("Mailbox") {
+        let r = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>11</Status></Store></Response></Search>"#;
+        return xml_or_wbxml_response(wbxml, as_wbxml, r, request_id);
+    }
+    let start = req.starts.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52));
+    let end = req.ends.unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::weeks(52));
+    let Ok(events) = load_calendar_events(state, username, password, start, end).await else {
+        let r = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>6</Status></Store></Response></Search>"#;
+        return xml_or_wbxml_response(wbxml, as_wbxml, r, request_id);
+    };
+    let mut matches: Vec<_> = events.into_iter()
+        .filter(|(_, _, item)| matches_search(item, req.query_text.as_deref()))
+        .collect();
+    matches.sort_by_key(|(_, _, item)| item.start);
+    let total = matches.len();
+    let start_idx = req.range_start.min(total);
+    let end_idx = req.range_end.min(total.saturating_sub(1));
+    let window = if total == 0 || start_idx > end_idx { &[][..] } else { &matches[start_idx..=end_idx] };
+    let results_xml = window.iter().map(|(sid, _, item)| {
+        format!(
+            "<Result><Class>Calendar</Class><CollectionId>1</CollectionId><LongId>{}</LongId><Properties>{}</Properties></Result>",
+            sync::xml_escape(sid), sync::render_calendar_app_data(item)
+        )
+    }).collect::<String>();
+    let range_xml = if total == 0 {
+        "0-0/0".to_string()
+    } else {
+        format!("{start_idx}-{}/{}", start_idx + window.len().saturating_sub(1), total)
+    };
+    let response = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Search xmlns="Search:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+  <Status>1</Status>
+  <Response>
+    <Store>
+      <Status>1</Status>
+      <Range>{}</Range>
+      <Total>{}</Total>
+      {}
+    </Store>
+  </Response>
+</Search>"#,
+        sync::xml_escape(&range_xml), total, results_xml
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+}
+
+// ── Main handler ──────────────────────────────────────────────────────────────
 
 pub async fn handle(
     State(state): State<Arc<AppState>>,
@@ -983,7 +1108,9 @@ pub async fn handle(
         return bad_request_response(&request_id, "x-forwarded-proto must be https");
     }
     if method == Method::OPTIONS { return options_response(&request_id); }
-    let Some((username, password)) = parse_basic_auth(&headers) else { return unauth_response(&request_id); };
+    let Some((username, password)) = parse_basic_auth(&headers) else {
+        return unauth_response(&request_id);
+    };
     let wbxml = Wbxml::new();
     let payload = body.to_vec();
     let wants_wbxml = headers.get(header::CONTENT_TYPE)
@@ -997,8 +1124,12 @@ pub async fn handle(
         }
     };
     let req = parse_request(&query, &xml);
-    if req.command.is_empty() { return bad_request_response(&request_id, "Cannot determine EAS command"); }
-    if let Err(e) = validate_payload(&req.command, &xml) { return bad_request_response(&request_id, e); }
+    if req.command.is_empty() {
+        return bad_request_response(&request_id, "Cannot determine EAS command");
+    }
+    if let Err(e) = validate_payload(&req.command, &xml) {
+        return bad_request_response(&request_id, e);
+    }
     let device_id = req.device_id.clone().unwrap_or_else(|| "unknown-device".to_string());
     if maybe_throttle(&username, &device_id) { return throttled_response(&request_id); }
 
@@ -1007,14 +1138,19 @@ pub async fn handle(
         "Provision" => handle_provision(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
         "Sync" => {
             let collection_id = req.collection_id.as_deref().unwrap_or("1");
-            let state_collection_id = scoped_collection_id(collection_id, req.device_id.as_deref().unwrap_or("unknown-device"));
+            let state_collection_id = scoped_collection_id(
+                collection_id,
+                req.device_id.as_deref().unwrap_or("unknown-device"),
+            );
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
             let mut mutation_responses = String::new();
             if xml.contains("<Add") || xml.contains("<Change") || xml.contains("<Delete")
                 || xml.contains(":Add") || xml.contains(":Change") || xml.contains(":Delete")
             {
-                match sync::apply_client_sync_mutations(state.clone(), &username, &state_collection_id, &username, &password, &xml).await {
+                match sync::apply_client_sync_mutations(
+                    state.clone(), &username, &state_collection_id, &username, &password, &xml,
+                ).await {
                     Ok(results) => { mutation_responses = sync::render_client_mutation_responses(&results); }
                     Err(e) => {
                         tracing::error!("request_id={} failed applying Sync mutations: {}", request_id, e);
@@ -1026,9 +1162,14 @@ pub async fn handle(
             let opts = SyncOptions {
                 window_size: req.window_size.unwrap_or(100),
                 get_changes: req.get_changes,
-                filter_start: req.filter_type.map(filter_type_to_start).unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
+                filter_start: req.filter_type
+                    .map(filter_type_to_start)
+                    .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
             };
-            match sync::perform_sync(state, &username, collection_id, &state_collection_id, incoming_key, class, opts, &username, &password, &mutation_responses).await {
+            match sync::perform_sync(
+                state, &username, collection_id, &state_collection_id,
+                incoming_key, class, opts, &username, &password, &mutation_responses,
+            ).await {
                 Ok(resp_xml) => xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id),
                 Err(e) => {
                     tracing::error!("request_id={} Sync Error: {}", request_id, e);
@@ -1039,12 +1180,20 @@ pub async fn handle(
         }
         "Ping" => handle_ping(&state, &username, &req, &xml, &wbxml, wants_wbxml, &request_id).await,
         "Settings" => handle_settings(&username, &wbxml, wants_wbxml, &request_id, &xml).await,
-        "ItemOperations" => handle_item_operations(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
-        "Search" => handle_search(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
+        "ItemOperations" => {
+            handle_item_operations(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await
+        }
+        "Search" => {
+            handle_search(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await
+        }
         "MeetingResponse" => {
             if let Some(req_id) = extract_first_tag_text(&xml, b"RequestId") {
-                let user_response = extract_first_tag_text(&xml, b"UserResponse").and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
-                if let Err(e) = sync::apply_meeting_response(state.clone(), &username, &username, &password, &req_id, user_response).await {
+                let user_response = extract_first_tag_text(&xml, b"UserResponse")
+                    .and_then(|v| v.parse::<u8>().ok())
+                    .unwrap_or(0);
+                if let Err(e) = sync::apply_meeting_response(
+                    state.clone(), &username, &username, &password, &req_id, user_response,
+                ).await {
                     tracing::error!("request_id={} failed applying MeetingResponse: {}", request_id, e);
                     let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"><Result><Status>6</Status></Result></MeetingResponse>"#;
                     return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
@@ -1058,10 +1207,22 @@ pub async fn handle(
                 bad_request_response(&request_id, "MeetingResponse requires RequestId")
             }
         }
-        "ResolveRecipients" => handle_resolve_recipients(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await,
-        "ValidateCert" => success_status_response(&wbxml, wants_wbxml, "ValidateCert", "ValidateCert:", "1", "", &request_id),
-        "GetItemEstimate" => handle_get_item_estimate(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await,
-        "MoveItems" => bad_request_response(&request_id, "MoveItems is not supported for this calendar-only mailbox surface"),
+        "ResolveRecipients" => {
+            handle_resolve_recipients(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id).await
+        }
+        "ValidateCert" => {
+            success_status_response(&wbxml, wants_wbxml, "ValidateCert", "ValidateCert:", "1", "", &request_id)
+        }
+        "GetItemEstimate" => {
+            handle_get_item_estimate(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
+        }
+        // Calendar-only gateway: mail compose commands are no-ops that satisfy clients.
+        "SendMail" | "SmartReply" | "SmartForward" => {
+            success_status_response(&wbxml, wants_wbxml, "SendMail", "ComposeMail:", "1", "", &request_id)
+        }
+        "MoveItems" => {
+            bad_request_response(&request_id, "MoveItems is not supported for this calendar-only mailbox surface")
+        }
         _ => unsupported_command_response(&req.command, &wbxml, wants_wbxml, &request_id),
     }
 }
