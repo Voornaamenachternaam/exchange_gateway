@@ -1,3 +1,4 @@
+<!-- CLOUDFLARE_DEPLOYMENT.md -->
 # Cloudflare deployment profile (free-tier compatible)
 
 ## Worker
@@ -172,7 +173,7 @@ ingress:
 
 ## Allowed forwarded methods
 
-Forwarded Exchange routes accept only: `OPTIONS`, `POST`, `GET`, `HEAD`.
+Forwarded Exchange routes accept only: `OPTIONS`, `POST`.
 
 ---
 

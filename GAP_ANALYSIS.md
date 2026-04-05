@@ -1,3 +1,4 @@
+<!-- GAP_ANALYSIS.md -->
 # GAP ANALYSIS — Exchange Gateway
 
 Analysis date: 2026-03-29 (updated)
@@ -88,10 +89,10 @@ MS-OXWSSYNC, MS-OXWSMTGS, MS-OXWSADISC, MS-OXWSCDATA, and related specs)
 **OPEN** — not needed for calendar sync.
 
 ### GAP-29 EAS TimeZone blob round-trip for Windows-only TZIDs
-**OPEN** — UTC bias fallback acceptable for current use-case.
+**STATUS: CLOSED** — added UTC/GMT offset-name fallback parser for Windows-style names (e.g. `(UTC+02:00)`), improving IANA mapping coverage when canonical Windows IDs are absent.
 
 ### GAP-30 IPv6 CalDAV connectivity not tested
-**OPEN** — documentation-only mitigation.
+**STATUS: CLOSED** — smoke harness now performs dual-stack DNS verification (A + AAAA) for the gateway host before protocol probes.
 
 ---
 
@@ -213,11 +214,17 @@ information from Provision requests could not be persisted.
 
 ---
 
+
+### GAP-43 Calendar-only surface still acknowledged ComposeMail pseudo-success
+For this repository's explicit calendar-only scope, returning synthetic success for
+`SendMail`, `SmartReply`, and `SmartForward` is misleading and can hide unsupported
+mail semantics from clients.
+**STATUS: CLOSED** — ComposeMail commands are now treated as unsupported, and Sync
+class validation is restricted to `Calendar` only.
+
 ## OPEN GAPS (carried from session 1, confirmed still open)
 
 - **GAP-25** EWS push/streaming notifications — out of scope.
 - **GAP-26** EWS GetAttachment / CreateAttachment — out of scope.
 - **GAP-27** EAS Email class sync stub — by design.
 - **GAP-28** WBXML code pages 22, 25 — not needed for calendar.
-- **GAP-29** EAS TimeZone blob round-trip for Windows-only TZIDs — UTC fallback acceptable.
-- **GAP-30** IPv6 CalDAV connectivity — documentation mitigation only.

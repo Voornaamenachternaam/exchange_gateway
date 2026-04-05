@@ -1,3 +1,4 @@
+// src/autodiscover.rs
 use crate::config::Config;
 use axum::{
     extract::{Query, State},

@@ -1,3 +1,4 @@
+// src/timezone.rs
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 const TZ_BLOB_LEN: usize = 172;
@@ -150,6 +151,84 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
             return Some(iana);
         }
     }
+    parse_utc_offset_name(&n)
+}
+
+fn parse_utc_offset_name(name: &str) -> Option<&'static str> {
+    if name.contains("utc") || name.contains("gmt") {
+        if name.contains("+01") {
+            return Some("Etc/GMT-1");
+        }
+        if name.contains("+02") {
+            return Some("Etc/GMT-2");
+        }
+        if name.contains("+03") {
+            return Some("Etc/GMT-3");
+        }
+        if name.contains("+04") {
+            return Some("Etc/GMT-4");
+        }
+        if name.contains("+05") {
+            return Some("Etc/GMT-5");
+        }
+        if name.contains("+06") {
+            return Some("Etc/GMT-6");
+        }
+        if name.contains("+07") {
+            return Some("Etc/GMT-7");
+        }
+        if name.contains("+08") {
+            return Some("Etc/GMT-8");
+        }
+        if name.contains("+09") {
+            return Some("Etc/GMT-9");
+        }
+        if name.contains("+10") {
+            return Some("Etc/GMT-10");
+        }
+        if name.contains("+11") {
+            return Some("Etc/GMT-11");
+        }
+        if name.contains("+12") {
+            return Some("Etc/GMT-12");
+        }
+        if name.contains("-01") {
+            return Some("Etc/GMT+1");
+        }
+        if name.contains("-02") {
+            return Some("Etc/GMT+2");
+        }
+        if name.contains("-03") {
+            return Some("Etc/GMT+3");
+        }
+        if name.contains("-04") {
+            return Some("Etc/GMT+4");
+        }
+        if name.contains("-05") {
+            return Some("Etc/GMT+5");
+        }
+        if name.contains("-06") {
+            return Some("Etc/GMT+6");
+        }
+        if name.contains("-07") {
+            return Some("Etc/GMT+7");
+        }
+        if name.contains("-08") {
+            return Some("Etc/GMT+8");
+        }
+        if name.contains("-09") {
+            return Some("Etc/GMT+9");
+        }
+        if name.contains("-10") {
+            return Some("Etc/GMT+10");
+        }
+        if name.contains("-11") {
+            return Some("Etc/GMT+11");
+        }
+        if name.contains("-12") {
+            return Some("Etc/GMT+12");
+        }
+    }
     None
 }
 
@@ -229,12 +308,12 @@ mod tests {
     }
 
     #[test]
-    fn blob_to_iana_fallback_etc_gmt() {
+    fn blob_to_iana_from_utc_offset_name() {
         let mut blob = [0u8; 172];
-        blob[0..4].copy_from_slice(&120i32.to_le_bytes());
+        blob[0..4].copy_from_slice(&-120i32.to_le_bytes());
+        write_wchar_name(&mut blob, 4, "(UTC+02:00) Custom");
         let b64 = BASE64.encode(blob);
-        let result = eas_timezone_blob_to_iana(&b64).unwrap();
-        assert_eq!(result, "Etc/GMT+2");
+        assert_eq!(eas_timezone_blob_to_iana(&b64), Some("Etc/GMT-2".to_string()));
     }
 
     #[test]
