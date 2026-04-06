@@ -1,13 +1,4 @@
--- d1_schema_v4.sql
--- Enhanced schema for protocol 16.1 compatibility
-
--- Migration from v3 to v4:
--- Run these ALTER statements if upgrading from v3:
--- ALTER TABLE sync_state ADD COLUMN protocol_version TEXT DEFAULT '16.1';
--- ALTER TABLE item_map ADD COLUMN instance_id TEXT;
--- ALTER TABLE device_info ADD COLUMN os_version TEXT;
--- ALTER TABLE device_info ADD COLUMN protocol_version TEXT DEFAULT '16.1';
--- ALTER TABLE provision_state ADD COLUMN policy_type TEXT DEFAULT 'MS-EAS-Provisioning-WBXML';
+// d1_schema.sql
 
 DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS item_map;
