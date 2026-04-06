@@ -83,8 +83,7 @@ CREATE TABLE ews_sync_state (
 
 -- device_info stores information sent by the client in Provision/Settings
 -- requests (MS-ASPROV §3.1.5.1.1, MS-ASCMD §2.2.1.18).
--- The UNIQUE constraint is on device_id alone because device IDs are globally
--- unique UUIDs assigned by the client.
+-- The UNIQUE constraint is on (user_email, device_id) to prevent cross-user overwrites.
 CREATE TABLE device_info (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email    TEXT    NOT NULL,
@@ -96,7 +95,7 @@ CREATE TABLE device_info (
     imei          TEXT,
     user_agent    TEXT,
     last_seen     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(device_id)
+    UNIQUE(user_email, device_id)
 );
 
 CREATE TABLE api_idempotency (

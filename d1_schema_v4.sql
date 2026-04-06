@@ -112,7 +112,7 @@ CREATE TABLE device_info (
     user_agent TEXT,
     protocol_version TEXT DEFAULT '16.1',
     last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(device_id)
+    UNIQUE(user_email, device_id)
 );
 
 CREATE TABLE api_idempotency (

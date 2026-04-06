@@ -1336,7 +1336,6 @@ async fn handle_get_folder_info() -> Response {
 }
 
 async fn handle_get_mail_tips(auth: &AuthContext, _body: &str) -> Response {
-    let email = &auth.username;
     let inner = format!(
         r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
@@ -1355,7 +1354,6 @@ async fn handle_get_mail_tips(auth: &AuthContext, _body: &str) -> Response {
 }
 
 async fn handle_find_people(auth: &AuthContext, _body: &str) -> Response {
-    let email = &auth.username;
     let inner = format!(
         r#"<m:FindPeopleResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
@@ -1395,7 +1393,6 @@ async fn handle_get_conversation_items() -> Response {
     soap_ok(inner)
 }
 async fn handle_convert_id(auth: &AuthContext, _body: &str) -> Response {
-    let email = &auth.username;
     let inner = format!(
         r#"<m:ConvertIdResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
@@ -1425,33 +1422,22 @@ async fn handle_get_room_lists() -> Response {
     soap_ok(inner)
 }
 
-async fn handle_get_rooms(auth: &AuthContext, _body: &str) -> Response {
-    let email = &auth.username;
-    let inner = format!(
-        r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}">
+async fn handle_get_rooms(_auth: &AuthContext, _body: &str) -> Response {
+let inner = format!(
+r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
 <m:GetRoomsResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
-<m:Rooms>
-<t:Room>
-<t:Id>
-<t:Name>{}</t:Name>
-<t:EmailAddress>{}</t:EmailAddress>
-<t:RoutingType>SMTP</t:RoutingType>
-<t:MailboxType>Mailbox</t:MailboxType>
-</t:Id>
-</t:Room>
-</m:Rooms>
+<m:Rooms/>
 </m:GetRoomsResponseMessage>
 </m:ResponseMessages>
 </m:GetRoomsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(&auth.username), xml_escape(&auth.username)
-    );
-    soap_ok(inner)
+EWS_MSG_NS, EWS_TYPE_NS
+);
+soap_ok(inner)
 }
 
 async fn handle_get_delegate(auth: &AuthContext) -> Response {
-    let email = &auth.username;
     let inner = format!(
         r#"<m:GetDelegateResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
