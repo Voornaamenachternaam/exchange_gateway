@@ -11,10 +11,10 @@ const LITERAL: u8 = 0x04;
 const STR_T: u8 = 0x83;
 const OPAQUE: u8 = 0xC3;
 
-static TAG_TO_NAME: LazyLock<HashMap<(u8, u8), &'static str>> = LazyLock::new(build_tag_to_name);
-static NAME_TO_TAG: LazyLock<HashMap<&'static str, (u8, u8)>> = LazyLock::new(|| {
-    TAG_TO_NAME.iter().map(|(&k, &v)| (v, k)).collect()
-});
+static TAG_TO_NAME: LazyLock<HashMap<(u8, u8), &'static str>> =
+    LazyLock::new(build_tag_to_name);
+static NAME_TO_TAG: LazyLock<HashMap<&'static str, (u8, u8)>> =
+    LazyLock::new(|| TAG_TO_NAME.iter().map(|(&k, &v)| (v, k)).collect());
 
 fn namespace_to_code_page(ns: &str) -> Option<u8> {
     match ns {
@@ -57,10 +57,16 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
         }
     }
     for (name, &(cp, id)) in NAME_TO_TAG.iter() {
-        let local = if let Some(p) = name.rfind(':') { &name[p + 1..] } else { name };
+        let local = if let Some(p) = name.rfind(':') {
+            &name[p + 1..]
+        } else {
+            name
+        };
         if local == qualified_or_local {
             if let Some(ocp) = override_cp {
-                if cp == ocp { return Some((cp, id)); }
+                if cp == ocp {
+                    return Some((cp, id));
+                }
             } else {
                 return Some((cp, id));
             }
@@ -73,7 +79,7 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
 fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     let mut m: HashMap<(u8, u8), &'static str> = HashMap::new();
 
-
+    // Code page 0: AirSync
     m.insert((0, 0x05), "Sync");
     m.insert((0, 0x06), "Responses");
     m.insert((0, 0x07), "Add");
@@ -108,7 +114,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((0, 0x28), "MaxItems");
     m.insert((0, 0x29), "HeartbeatInterval");
 
-
+    // Code page 1: Contacts
     m.insert((1, 0x05), "Contacts:Anniversary");
     m.insert((1, 0x06), "Contacts:AssistantName");
     m.insert((1, 0x07), "Contacts:AssistantPhoneNumber");
@@ -135,7 +141,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((1, 0x48), "Contacts:YomiFirstName");
     m.insert((1, 0x49), "Contacts:YomiLastName");
 
-
+    // Code page 2: Email
     m.insert((2, 0x05), "Email:Attachment");
     m.insert((2, 0x06), "Email:Attachments");
     m.insert((2, 0x07), "Email:AttName");
@@ -178,22 +184,28 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((2, 0x3E), "Email:CompleteTime");
     m.insert((2, 0x40), "Email:DisallowNewTimeProposal");
 
-
+    // Code page 4: Calendar
+    // Per MS-ASCAL WBXML code page 4 table
     m.insert((4, 0x05), "Calendar:Timezone");
     m.insert((4, 0x06), "Calendar:AllDayEvent");
     m.insert((4, 0x07), "Calendar:Attendees");
     m.insert((4, 0x08), "Calendar:Attendee");
     m.insert((4, 0x09), "Calendar:Email");
     m.insert((4, 0x0A), "Calendar:Name");
+    // 0x0B: Body (deprecated in 12.0+, use AirSyncBase:Body)
+    m.insert((4, 0x0B), "Calendar:Body");
+    // 0x0C: BodyTruncated (2.5 only)
     m.insert((4, 0x0D), "Calendar:BusyStatus");
     m.insert((4, 0x0E), "Calendar:Categories");
     m.insert((4, 0x0F), "Calendar:Category");
+    // 0x10: Reserved
     m.insert((4, 0x11), "Calendar:DtStamp");
     m.insert((4, 0x12), "Calendar:EndTime");
     m.insert((4, 0x13), "Calendar:Exception");
     m.insert((4, 0x14), "Calendar:Exceptions");
     m.insert((4, 0x15), "Calendar:Deleted");
     m.insert((4, 0x16), "Calendar:ExceptionStartTime");
+    // 0x17: Location (deprecated 16.0+, use AirSyncBase:Location)
     m.insert((4, 0x17), "Calendar:Location");
     m.insert((4, 0x18), "Calendar:MeetingStatus");
     m.insert((4, 0x19), "Calendar:OrganizerEmail");
@@ -214,6 +226,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((4, 0x28), "Calendar:UID");
     m.insert((4, 0x29), "Calendar:AttendeeStatus");
     m.insert((4, 0x2A), "Calendar:AttendeeType");
+    // 0x2B-0x32: Reserved
     m.insert((4, 0x33), "Calendar:DisallowNewTimeProposal");
     m.insert((4, 0x34), "Calendar:ResponseRequested");
     m.insert((4, 0x35), "Calendar:AppointmentReplyTime");
@@ -225,7 +238,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((4, 0x3B), "Calendar:OnlineMeetingExternalLink");
     m.insert((4, 0x3C), "Calendar:ClientUid");
 
-
+    // Code page 5: MoveItems
     m.insert((5, 0x05), "MoveItems");
     m.insert((5, 0x06), "Move");
     m.insert((5, 0x07), "SrcMsgId");
@@ -234,7 +247,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((5, 0x0A), "MoveResponse");
     m.insert((5, 0x0B), "MoveStatus");
 
-
+    // Code page 6: GetItemEstimate
     m.insert((6, 0x05), "GetItemEstimate");
     m.insert((6, 0x06), "GIEVersion");
     m.insert((6, 0x07), "GIECollections");
@@ -246,7 +259,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((6, 0x0D), "Response");
     m.insert((6, 0x0E), "Status");
 
-
+    // Code page 7: FolderHierarchy
     m.insert((7, 0x07), "DisplayName");
     m.insert((7, 0x08), "ServerId");
     m.insert((7, 0x09), "ParentId");
@@ -263,7 +276,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((7, 0x16), "FolderSync");
     m.insert((7, 0x17), "Count");
 
-
+    // Code page 8: MeetingResponse
     m.insert((8, 0x05), "CalendarId");
     m.insert((8, 0x06), "MeetingCollectionId");
     m.insert((8, 0x07), "MeetingResponse");
@@ -273,11 +286,12 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((8, 0x0B), "Status");
     m.insert((8, 0x0C), "UserResponse");
     m.insert((8, 0x0E), "InstanceId");
+    m.insert((8, 0x0F), "LongId");
     m.insert((8, 0x10), "ProposedStartTime");
     m.insert((8, 0x11), "ProposedEndTime");
     m.insert((8, 0x12), "SendResponse");
 
-
+    // Code page 9: Tasks
     m.insert((9, 0x08), "Tasks:Complete");
     m.insert((9, 0x09), "Tasks:DateCompleted");
     m.insert((9, 0x0D), "Tasks:DueDate");
@@ -302,7 +316,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((9, 0x28), "Tasks:Categories");
     m.insert((9, 0x29), "Tasks:Category");
 
-
+    // Code page 10: ResolveRecipients
     m.insert((10, 0x05), "ResolveRecipients");
     m.insert((10, 0x06), "Response");
     m.insert((10, 0x07), "Status");
@@ -329,7 +343,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((10, 0x1C), "Data");
     m.insert((10, 0x1D), "MaxPictures");
 
-
+    // Code page 11: ValidateCert
     m.insert((11, 0x05), "ValidateCert");
     m.insert((11, 0x06), "Certificates");
     m.insert((11, 0x07), "Certificate");
@@ -338,7 +352,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((11, 0x0A), "CertificateStatus");
     m.insert((11, 0x0B), "Status");
 
-
+    // Code page 12: Contacts2
     m.insert((12, 0x05), "Contacts2:CustomerId");
     m.insert((12, 0x06), "Contacts2:GovernmentId");
     m.insert((12, 0x07), "Contacts2:IMAddress");
@@ -350,7 +364,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((12, 0x0D), "Contacts2:MMS");
     m.insert((12, 0x0E), "Contacts2:NickName");
 
-
+    // Code page 13: Ping
     m.insert((13, 0x05), "Ping");
     m.insert((13, 0x07), "Status");
     m.insert((13, 0x08), "HeartbeatInterval");
@@ -360,7 +374,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((13, 0x0C), "Class");
     m.insert((13, 0x0D), "MaxFolders");
 
-
+    // Code page 14: Provision
     m.insert((14, 0x05), "Provision");
     m.insert((14, 0x06), "Policies");
     m.insert((14, 0x07), "Policy");
@@ -415,7 +429,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((14, 0x39), "ApprovedApplicationList");
     m.insert((14, 0x3A), "Hash");
 
-
+    // Code page 15: Search
     m.insert((15, 0x05), "Search");
     m.insert((15, 0x07), "Store");
     m.insert((15, 0x08), "Name");
@@ -441,7 +455,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((15, 0x1D), "QueryId");
     m.insert((15, 0x1E), "MaxResults");
 
-
+    // Code page 16: GAL
     m.insert((16, 0x05), "GAL:DisplayName");
     m.insert((16, 0x06), "GAL:Phone");
     m.insert((16, 0x07), "GAL:Office");
@@ -457,7 +471,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((16, 0x11), "GAL:Status");
     m.insert((16, 0x12), "GAL:Data");
 
-
+    // Code page 17: AirSyncBase
     m.insert((17, 0x05), "AirSyncBase:BodyPreference");
     m.insert((17, 0x06), "AirSyncBase:Type");
     m.insert((17, 0x07), "AirSyncBase:TruncationSize");
@@ -499,7 +513,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((17, 0x2C), "AirSyncBase:LocationUri");
     m.insert((17, 0x2D), "AirSyncBase:InstanceId");
 
-
+    // Code page 18: Settings
     m.insert((18, 0x05), "Settings");
     m.insert((18, 0x06), "Status");
     m.insert((18, 0x07), "Get");
@@ -539,7 +553,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((18, 0x29), "SendDisabled");
     m.insert((18, 0x2B), "RightsManagementInformation");
 
-
+    // Code page 19: DocumentLibrary
     m.insert((19, 0x05), "DocumentLibrary:LinkId");
     m.insert((19, 0x06), "DocumentLibrary:DisplayName");
     m.insert((19, 0x07), "DocumentLibrary:IsFolder");
@@ -549,7 +563,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((19, 0x0B), "DocumentLibrary:ContentLength");
     m.insert((19, 0x0C), "DocumentLibrary:ContentType");
 
-
+    // Code page 20: ItemOperations
     m.insert((20, 0x05), "ItemOperations");
     m.insert((20, 0x06), "Fetch");
     m.insert((20, 0x07), "Store");
@@ -572,7 +586,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((20, 0x18), "ConversationId");
     m.insert((20, 0x19), "MoveAlways");
 
-
+    // Code page 21: ComposeMail
     m.insert((21, 0x05), "SendMail");
     m.insert((21, 0x06), "SmartForward");
     m.insert((21, 0x07), "SmartReply");
@@ -587,7 +601,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((21, 0x11), "ForwardeeName");
     m.insert((21, 0x12), "ForwardeeEmail");
 
-
+    // Code page 22: Email2
     m.insert((22, 0x05), "Email2:UmCallerId");
     m.insert((22, 0x06), "Email2:UmUserNotes");
     m.insert((22, 0x07), "Email2:UmAttDuration");
@@ -604,7 +618,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((22, 0x12), "Email2:FirstDayOfWeek");
     m.insert((22, 0x13), "Email2:MeetingMessageType");
 
-
+    // Code page 23: Notes
     m.insert((23, 0x05), "Notes:Subject");
     m.insert((23, 0x06), "Notes:MessageClass");
     m.insert((23, 0x07), "Notes:LastModifiedDate");
@@ -612,7 +626,7 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((23, 0x09), "Notes:Category");
     m.insert((23, 0x0B), "Notes:Body");
 
-
+    // Code page 24: RightsManagement
     m.insert((24, 0x05), "RightsManagement:RightsManagementSupport");
     m.insert((24, 0x06), "RightsManagement:RightsManagementTemplates");
     m.insert((24, 0x07), "RightsManagement:RightsManagementTemplate");
@@ -694,8 +708,9 @@ impl Wbxml {
         pos += 1;
         let _public_id = Self::read_mb_uint(bytes, &mut pos)?;
         let _charset = Self::read_mb_uint(bytes, &mut pos)?;
-        let str_table_len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
-            .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
+        let str_table_len =
+            usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
         if pos + str_table_len > bytes.len() {
             return Err(anyhow!("WBXML string table exceeds payload"));
         }
@@ -704,7 +719,8 @@ impl Wbxml {
 
         let mut current_code_page = 0u8;
         let mut xml_stack: Vec<String> = Vec::new();
-        let mut output = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+        let mut output =
+            String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
 
         while pos < bytes.len() {
             let token = bytes[pos];
@@ -728,8 +744,9 @@ impl Wbxml {
                     output.push_str(&xml_escape_text(&content));
                 }
                 STR_T => {
-                    let offset = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
-                        .map_err(|_| anyhow!("Invalid STR_T offset"))?;
+                    let offset =
+                        usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                            .map_err(|_| anyhow!("Invalid STR_T offset"))?;
                     if offset >= string_table.len() {
                         return Err(anyhow!("STR_T offset outside string table"));
                     }
@@ -737,7 +754,8 @@ impl Wbxml {
                     while end < string_table.len() && string_table[end] != 0 {
                         end += 1;
                     }
-                    let content = String::from_utf8(string_table[offset..end].to_vec())?;
+                    let content =
+                        String::from_utf8(string_table[offset..end].to_vec())?;
                     output.push_str(&xml_escape_text(&content));
                 }
                 ENTITY => {
@@ -745,14 +763,17 @@ impl Wbxml {
                     output.push_str(&format!("&#{ent};"));
                 }
                 OPAQUE => {
-                    let len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
-                        .map_err(|_| anyhow!("Invalid OPAQUE length"))?;
+                    let len =
+                        usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                            .map_err(|_| anyhow!("Invalid OPAQUE length"))?;
                     if pos + len > bytes.len() {
                         return Err(anyhow!("OPAQUE data exceeds payload"));
                     }
                     let opaque = &bytes[pos..pos + len];
                     pos += len;
-                    output.push_str(&base64::engine::general_purpose::STANDARD.encode(opaque));
+                    output.push_str(
+                        &base64::engine::general_purpose::STANDARD.encode(opaque),
+                    );
                 }
                 LITERAL => {
                     return Err(anyhow!("LITERAL token unsupported in this profile"));
@@ -761,7 +782,9 @@ impl Wbxml {
                     if token >= 0x05 {
                         let has_content = (token & 0x40) != 0;
                         let tag_id = token & 0x3F;
-                        if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
+                        if let Some(name) =
+                            TAG_TO_NAME.get(&(current_code_page, tag_id))
+                        {
                             output.push_str(&format!("<{name}>"));
                             if has_content {
                                 xml_stack.push(name.to_string());
@@ -775,8 +798,9 @@ impl Wbxml {
                                 tag_id
                             );
                             if has_content {
-                                let placeholder =
-                                    format!("_unknown_cp{current_code_page}_{tag_id:02x}");
+                                let placeholder = format!(
+                                    "_unknown_cp{current_code_page}_{tag_id:02x}"
+                                );
                                 output.push_str(&format!("<{placeholder}>"));
                                 xml_stack.push(placeholder);
                             }
@@ -794,7 +818,6 @@ impl Wbxml {
     }
 
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
-
         let mut buf: Vec<u8> = vec![0x03, 0x01, 0x6A, 0x00];
         let mut current_code_page = 0u8;
         let mut ns_stack: Vec<Option<u8>> = Vec::new();
@@ -808,20 +831,37 @@ impl Wbxml {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
                     let ns_cp = extract_xmlns_cp(e);
                     ns_stack.push(ns_cp);
-                    let effective_cp = ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x));
+                    let effective_cp =
+                        ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x));
                     let name_raw = e.name().local_name();
                     let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, effective_cp, true)?;
+                    self.encode_open_tag(
+                        &mut buf,
+                        &mut current_code_page,
+                        name_str,
+                        effective_cp,
+                        true,
+                    )?;
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     let ns_cp = extract_xmlns_cp(e);
-                    let effective_cp = ns_cp.or_else(|| ns_stack.last().copied().flatten());
+                    let effective_cp =
+                        ns_cp.or_else(|| ns_stack.last().copied().flatten());
                     let name_raw = e.name().local_name();
                     let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(&mut buf, &mut current_code_page, name_str, effective_cp, false)?;
+                    self.encode_open_tag(
+                        &mut buf,
+                        &mut current_code_page,
+                        name_str,
+                        effective_cp,
+                        false,
+                    )?;
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
-                    let txt = e.decode().map_err(|e| anyhow!("XML decode error: {e}"))?.into_owned();
+                    let txt = e
+                        .decode()
+                        .map_err(|e| anyhow!("XML decode error: {e}"))?
+                        .into_owned();
                     if !txt.is_empty() {
                         buf.push(STR_I);
                         buf.extend_from_slice(txt.as_bytes());
@@ -860,7 +900,7 @@ impl Wbxml {
             buf.push(token);
             return Ok(());
         }
-        return Err(anyhow!("WBXML encode: unknown tag '{}'", name_str));
+        Err(anyhow!("WBXML encode: unknown tag '{}'", name_str))
     }
 }
 
@@ -868,7 +908,9 @@ fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
     for attr in e.attributes().flatten() {
         let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
         if key == "xmlns" || key.starts_with("xmlns:") {
-            if let Ok(val) = attr.decode_and_unescape_value(quick_xml::encoding::Decoder::utf8()) {
+            if let Ok(val) =
+                attr.decode_and_unescape_value(quick_xml::encoding::Decoder::utf8())
+            {
                 if let Some(cp) = namespace_to_code_page(val.as_ref()) {
                     return Some(cp);
                 }
@@ -883,7 +925,9 @@ fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
 }
 
 fn xml_escape_text(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -983,7 +1027,37 @@ mod tests {
         let xml = r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><Commands><Add><ClientId>c1</ClientId><ApplicationData><Calendar:Subject>Test</Calendar:Subject><Calendar:StartTime>2026-03-22T09:00:00Z</Calendar:StartTime><Calendar:EndTime>2026-03-22T10:00:00Z</Calendar:EndTime></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
         let wb = codec.encode(xml).expect("encode");
         let dec = codec.decode(&wb).expect("decode");
-        assert!(dec.contains("<Calendar:Subject>Test</Calendar:Subject>"), "decoded: {dec}");
+        assert!(
+            dec.contains("<Calendar:Subject>Test</Calendar:Subject>"),
+            "decoded: {dec}"
+        );
+    }
+
+    #[test]
+    fn airsyncbase_location_round_trip() {
+        let codec = Wbxml::new();
+        let xml = r#"<Sync xmlns="AirSync:" xmlns:AirSyncBase="AirSyncBase:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><Commands><Add><ClientId>c1</ClientId><ApplicationData><AirSyncBase:Location><AirSyncBase:DisplayName>Conference Room A</AirSyncBase:DisplayName></AirSyncBase:Location></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
+        let wb = codec.encode(xml).expect("encode location");
+        let dec = codec.decode(&wb).expect("decode location");
+        assert!(dec.contains("<AirSyncBase:Location>"), "decoded: {dec}");
+        assert!(dec.contains("<AirSyncBase:DisplayName>Conference Room A</AirSyncBase:DisplayName>"), "decoded: {dec}");
+    }
+
+    #[test]
+    fn meeting_response_send_response_round_trip() {
+        let codec = Wbxml::new();
+        let xml = r#"<MeetingResponse xmlns="MeetingResponse:"><Request><RequestId>req-123</RequestId><UserResponse>1</UserResponse><SendResponse/></Request></MeetingResponse>"#;
+        let wb = codec.encode(xml).expect("encode");
+        let dec = codec.decode(&wb).expect("decode");
+        assert!(dec.contains("<SendResponse>"), "decoded: {dec}");
+    }
+
+    #[test]
+    fn calendar_client_uid_round_trip() {
+        let codec = Wbxml::new();
+        let xml = r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><Commands><Add><ClientId>c1</ClientId><ApplicationData><Calendar:Subject>Test</Calendar:Subject><Calendar:StartTime>2026-03-22T09:00:00Z</Calendar:StartTime><Calendar:EndTime>2026-03-22T10:00:00Z</Calendar:EndTime><Calendar:ClientUid>test-uid-123</Calendar:ClientUid></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
+        let wb = codec.encode(xml).expect("encode");
+        let dec = codec.decode(&wb).expect("decode");
+        assert!(dec.contains("<Calendar:ClientUid>test-uid-123</Calendar:ClientUid>"), "decoded: {dec}");
     }
 }
-
