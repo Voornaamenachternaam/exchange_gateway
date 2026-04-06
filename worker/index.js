@@ -648,7 +648,7 @@ async function handleUpsertDeviceInfo(request, env) {
       INSERT INTO device_info
         (user_email, device_id, friendly_name, model, os, os_version, phone_number, imei, user_agent, protocol_version, last_seen)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(user_email, device_id)
+      ON CONFLICT(device_id)
       DO UPDATE SET
         user_email       = excluded.user_email,
         friendly_name    = excluded.friendly_name,
