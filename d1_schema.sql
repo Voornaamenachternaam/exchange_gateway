@@ -1,4 +1,4 @@
-// d1_schema.sql
+#d1_schema.sql
 
 DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS item_map;
