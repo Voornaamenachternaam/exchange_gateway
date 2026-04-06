@@ -19,7 +19,7 @@
 | ResolveRecipients | ✅ Full | GAL resolution |
 | ValidateCert | ✅ Full | Certificate validation |
 | GetItemEstimate | ✅ Full | Change count |
-| SendMail | ✅ Full | SmartForward/SmartReply |
+| SendMail | ⚠️ Limited | Returns ComposeMail success status only (no message processing) |
 | Move | ❌ Not supported | Command not implemented |
 | MoveItems | ❌ Not supported | Returns error for this calendar-only mailbox surface |
 
