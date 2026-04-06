@@ -1795,9 +1795,13 @@ pub async fn handle(
                 let user_response = extract_first_tag_text(&xml, b"UserResponse")
                     .and_then(|v| v.parse::<u8>().ok())
                     .unwrap_or(0);
-                let instance_id = extract_first_tag_text(&xml, b"InstanceId")
-                    .as_deref()
-                    .and_then(parse_datetime);
+                let response_xml = format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"><Result><RequestId>{}</RequestId><CalendarId>{}</CalendarId><Status>1</Status>{}</Result></MeetingResponse>"#,
+                    sync::xml_escape(&req_id),
+                    sync::xml_escape(&req_id),
+                    instance_xml
+                );
+                xml_or_wbxml_response(&wbxml, wants_wbxml, &response_xml, &request_id)
                 let send_response = xml.contains("<SendResponse")
                     || xml.contains(":SendResponse");
                 if let Err(e) = sync::apply_meeting_response(
