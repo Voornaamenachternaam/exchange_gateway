@@ -136,7 +136,6 @@ async fn main() -> anyhow::Result<()> {
                 .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
                 .layer(CompressionLayer::new())
         )
-        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app_state);
 
     let addr: SocketAddr = config.bind.parse()?;
