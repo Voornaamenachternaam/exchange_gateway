@@ -1,28 +1,32 @@
 // src/caldav.rs
 use crate::config::Config;
 use anyhow::Result;
-use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest_tracing::TracingMiddleware;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 use uuid::Uuid;
 
 pub struct CaldavClient {
     base: String,
-    client: Client,
+    client: ClientWithMiddleware,
 }
 
 impl CaldavClient {
-    pub fn new(cfg: &Config) -> Self {
-        let client = Client::builder()
-            .http1_only()
-            .pool_max_idle_per_host(8)
-            .build()
-            .expect("reqwest client construction should be infallible for static config");
-        CaldavClient {
-            base: cfg.caldav_base.clone(),
-            client,
-        }
-    }
+    pub fn new(cfg: &Config) -> Result<Self> {
+    let retry_policy = ExponentialBackoff::builder()
+        .build_with_max_retries(3);
+    let client = ClientBuilder::new(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?,
+    )
+    .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+    .build();
+    Ok(Self { base: cfg.caldav_base.clone(), client })
+    }        
 
     pub async fn find_user_calendars(
         &self,
