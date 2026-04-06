@@ -20,8 +20,8 @@
 | ValidateCert | ✅ Full | Certificate validation |
 | GetItemEstimate | ✅ Full | Change count |
 | SendMail | ✅ Full | SmartForward/SmartReply |
-| Move | ✅ Full | Item move between folders |
-| MoveItems | ✅ Full | Bulk move operations |
+| Move | ❌ Not supported | Command not implemented |
+| MoveItems | ❌ Not supported | Returns error for this calendar-only mailbox surface |
 
 ### Protocol 16.1 Features
 
