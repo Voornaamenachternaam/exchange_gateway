@@ -1264,7 +1264,7 @@ async fn handle_item_operations(
             }
         };
         let get_future = caldav.get_event(&lookup.resource_href, username, password.expose_secret());
-        let Ok((ics, _etag)) = timeout(CALDAV_TIMEOUT, get_future).await else {
+        let Ok(Ok((ics, _etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
                 sync::xml_escape(&store),
