@@ -1414,6 +1414,14 @@ async fn handle_get_room_lists() -> Response {
 <m:GetRoomListsResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
 <m:RoomLists/>
+</m:GetRoomListsResponseMessage>
+</m:ResponseMessages>
+</m:GetRoomListsResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
 async fn handle_get_rooms(_auth: &AuthContext, _body: &str) -> Response {
     let inner = format!(
         r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}">
@@ -1427,14 +1435,6 @@ async fn handle_get_rooms(_auth: &AuthContext, _body: &str) -> Response {
         EWS_MSG_NS, EWS_TYPE_NS
     );
     soap_ok(inner)
-}
-<m:Rooms/>
-</m:GetRoomsResponseMessage>
-</m:ResponseMessages>
-</m:GetRoomsResponse>"#,
-EWS_MSG_NS, EWS_TYPE_NS
-);
-soap_ok(inner)
 }
 
 async fn handle_get_delegate(auth: &AuthContext) -> Response {
