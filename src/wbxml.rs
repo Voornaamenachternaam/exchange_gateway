@@ -846,7 +846,7 @@ impl Wbxml {
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
                     let ns_cp = extract_xmlns_cp(e);
                     let effective_cp =
-                        ns_cp.or_else(|| ns_stack.last().copied().flatten());
+                        ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x));
                     let name_raw = e.name().local_name();
                     let name_str = std::str::from_utf8(name_raw.as_ref())?;
                     self.encode_open_tag(
