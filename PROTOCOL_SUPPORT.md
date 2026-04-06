@@ -8,7 +8,7 @@
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| Sync | ✅ Full | Calendar, Contacts, Email, Tasks classes |
+| Sync | ⚠️ Partial | Calendar class only (non-Calendar classes are rejected) |
 | FolderSync | ✅ Full | Full hierarchy sync |
 | Provision | ✅ Full | Policy key exchange, device info |
 | Ping | ✅ Full | Real-time change notifications |
