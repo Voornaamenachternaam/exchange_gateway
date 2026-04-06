@@ -108,10 +108,12 @@ pub enum EasSyncMutation {
     },
     Change {
         server_id: String,
+        instance_id: Option<chrono::DateTime<Utc>>,
         patch: CalendarPatch,
     },
     Delete {
         server_id: String,
+        instance_id: Option<chrono::DateTime<Utc>>,
     },
 }
 
@@ -126,6 +128,7 @@ enum EasOpKind {
 struct EasBuilder {
     client_id: Option<String>,
     server_id: Option<String>,
+    instance_id: Option<chrono::DateTime<Utc>>,
     subject: Option<String>,
     description: Option<String>,
     location: Option<String>,
@@ -136,6 +139,7 @@ struct EasBuilder {
     timezone: Option<String>,
     timezone_blob: Option<String>,
     uid: Option<String>,
+    client_uid: Option<String>,
     recurrence: EasRecurrence,
     exdates: Vec<chrono::DateTime<Utc>>,
     organizer_name: Option<String>,
@@ -153,7 +157,6 @@ struct EasBuilder {
     response_type: Option<u8>,
     online_meeting_conf_link: Option<String>,
     online_meeting_external_link: Option<String>,
-    client_uid: Option<String>,
     exceptions: Vec<CalendarException>,
     current_exception: Option<CalendarException>,
 }
@@ -170,14 +173,16 @@ pub(crate) struct EasRecurrence {
     occurrences: Option<u32>,
     first_day_of_week: Option<u32>,
     calendar_type: Option<u8>,
+    is_empty: bool,
 }
 
 impl EasBuilder {
     fn into_item(self) -> Result<CalendarItem> {
         let start = self.start.ok_or_else(|| anyhow!("missing StartTime"))?;
         let end = self.end.ok_or_else(|| anyhow!("missing EndTime"))?;
+let uid = self.client_uid.or(self.uid).unwrap_or_else(|| Uuid::new_v4().to_string());
         Ok(CalendarItem {
-            uid: self.uid.unwrap_or_else(|| Uuid::new_v4().to_string()),
+            uid,
             subject: self.subject.unwrap_or_else(|| "(no subject)".to_string()),
             description: self.description.unwrap_or_default(),
             location: self.location.unwrap_or_default(),
@@ -209,6 +214,11 @@ impl EasBuilder {
     }
 
     fn into_patch(self) -> CalendarPatch {
+        let rrule = if self.recurrence.is_empty {
+            Some(String::new())
+        } else {
+            self.recurrence.to_rrule()
+        };
         CalendarPatch {
             uid: self.uid,
             subject: self.subject,
@@ -220,7 +230,7 @@ impl EasBuilder {
             dtstamp: self.dtstamp,
             timezone: self.timezone,
             timezone_blob: self.timezone_blob,
-            rrule: self.recurrence.to_rrule(),
+            rrule,
             exdates: (!self.exdates.is_empty()).then_some(self.exdates),
             organizer_name: self.organizer_name,
             organizer_email: self.organizer_email,
@@ -243,7 +253,10 @@ impl EasBuilder {
 }
 
 impl EasRecurrence {
-    fn to_rrule(&self) -> Option<String> {
+    pub fn to_rrule(&self) -> Option<String> {
+        if self.is_empty {
+            return None;
+        }
         let kind = self.kind?;
         let freq = match kind {
             0 => "DAILY",
@@ -262,7 +275,15 @@ impl EasRecurrence {
         if let Some(mask) = &self.day_of_week {
             let mut byday = Vec::new();
             let value = mask.parse::<u32>().unwrap_or(0);
-            let mapping = [(1,"SU"),(2,"MO"),(4,"TU"),(8,"WE"),(16,"TH"),(32,"FR"),(64,"SA")];
+            let mapping = [
+                (1, "SU"),
+                (2, "MO"),
+                (4, "TU"),
+                (8, "WE"),
+                (16, "TH"),
+                (32, "FR"),
+                (64, "SA"),
+            ];
             for (bit, code) in mapping {
                 if value & bit != 0 {
                     byday.push(code.to_string());
@@ -273,7 +294,10 @@ impl EasRecurrence {
                     && (kind == 3 || kind == 6)
                     && week > 0
                 {
-                    let ordinal = match week { 5 => -1, n => n as i32 };
+                    let ordinal = match week {
+                        5 => -1,
+                        n => n as i32,
+                    };
                     parts.push(format!("BYDAY={}{}", ordinal, byday[0]));
                 } else {
                     parts.push(format!("BYDAY={}", byday.join(",")));
@@ -305,6 +329,7 @@ impl EasRecurrence {
 }
 
 pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
+    let val = val.trim();
     if val.ends_with('Z') {
         NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%SZ")
             .map(|dt| Utc.from_utc_datetime(&dt))
@@ -322,6 +347,11 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
                 NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S")
                     .map(|dt| Utc.from_utc_datetime(&dt))
                     .ok()
+            })
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(val)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc))
             })
     } else {
         NaiveDate::parse_from_str(val, "%Y%m%d")
@@ -369,7 +399,9 @@ pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
     let mut properties = Vec::new();
     let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
     for line in unfolded.lines() {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if let Some(colon_idx) = line.find(':') {
             let key = line[..colon_idx].to_string();
             let value = line[colon_idx + 1..].to_string();
@@ -425,14 +457,21 @@ fn extract_vtimezone_block(ics: &str) -> Option<String> {
 }
 
 fn parse_categories_value(value: &str) -> Vec<String> {
-    value.split(',').map(unescape_ical_text).filter(|v| !v.is_empty()).collect()
+    value
+        .split(',')
+        .map(unescape_ical_text)
+        .filter(|v| !v.is_empty())
+        .collect()
 }
 
 fn parse_tzid_from_key(key: &str) -> Option<String> {
     parse_ical_param(key, "TZID").map(|v| v.trim_matches('"').to_string())
 }
 
-fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::DateTime<Utc>> {
+fn parse_datetime_with_tzid(
+    val: &str,
+    tzid: Option<&str>,
+) -> Option<chrono::DateTime<Utc>> {
     if let Some(tzid) = tzid {
         if !val.ends_with('Z') && val.contains('T') {
             if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S") {
@@ -481,7 +520,10 @@ fn format_ical_datetime_with_timezone(
 
 fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     let negative = trigger.starts_with('-');
-    let value = trigger.trim_start_matches('-').trim_start_matches('P').trim_start_matches('T');
+    let value = trigger
+        .trim_start_matches('-')
+        .trim_start_matches('P')
+        .trim_start_matches('T');
     if let Some(raw) = value.strip_suffix('M') {
         let mins = raw.parse::<i32>().ok()?;
         return Some(if negative { mins } else { -mins });
@@ -514,11 +556,21 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
     let mut in_valarm = false;
 
     for line in lines {
-        if line == "BEGIN:VALARM" { in_valarm = true; continue; }
-        if line == "END:VALARM" { in_valarm = false; continue; }
-        if matches!(line.as_str(), "BEGIN:VEVENT" | "END:VEVENT") { continue; }
+        if line == "BEGIN:VALARM" {
+            in_valarm = true;
+            continue;
+        }
+        if line == "END:VALARM" {
+            in_valarm = false;
+            continue;
+        }
+        if matches!(line.as_str(), "BEGIN:VEVENT" | "END:VEVENT") {
+            continue;
+        }
 
-        let Some((key, value)) = line.split_once(':') else { continue; };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
 
         if in_valarm {
             if key.starts_with("TRIGGER") {
@@ -529,31 +581,45 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
 
         match key {
             k if k.starts_with("SUMMARY") => fields.subject = Some(unescape_ical_text(value)),
-            k if k.starts_with("DESCRIPTION") => fields.description = Some(unescape_ical_text(value)),
+            k if k.starts_with("DESCRIPTION") => {
+                fields.description = Some(unescape_ical_text(value))
+            }
             k if k.starts_with("LOCATION") => fields.location = Some(unescape_ical_text(value)),
             k if k.starts_with("UID") => fields.uid = Some(value.to_string()),
             k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
             k if k.starts_with("DTSTART") => {
                 let tzid = parse_tzid_from_key(k);
                 fields.start = parse_datetime_with_tzid(value, tzid.as_deref());
-                if fields.timezone.is_none() { fields.timezone = tzid; }
-                if !value.contains('T') { fields.all_day = Some(true); }
+                if fields.timezone.is_none() {
+                    fields.timezone = tzid;
+                }
+                if !value.contains('T') {
+                    fields.all_day = Some(true);
+                }
             }
             k if k.starts_with("DTEND") => {
                 let tzid = parse_tzid_from_key(k);
                 fields.end = parse_datetime_with_tzid(value, tzid.as_deref());
-                if fields.timezone.is_none() { fields.timezone = tzid; }
+                if fields.timezone.is_none() {
+                    fields.timezone = tzid;
+                }
             }
             k if k.starts_with("RECURRENCE-ID") => {
                 let tzid = parse_tzid_from_key(k);
                 fields.recurrence_id = parse_datetime_with_tzid(value, tzid.as_deref());
-                if fields.timezone.is_none() { fields.timezone = tzid; }
-                if !value.contains('T') { fields.all_day = Some(true); }
+                if fields.timezone.is_none() {
+                    fields.timezone = tzid;
+                }
+                if !value.contains('T') {
+                    fields.all_day = Some(true);
+                }
             }
             k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
             k if k.starts_with("EXDATE") => {
                 for ex in value.split(',') {
-                    if let Some(dt) = parse_datetime_with_tzid(ex, parse_tzid_from_key(k).as_deref()) {
+                    if let Some(dt) =
+                        parse_datetime_with_tzid(ex, parse_tzid_from_key(k).as_deref())
+                    {
                         fields.exdates.push(dt);
                     }
                 }
@@ -569,11 +635,13 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
                 fields.attendees.push(Attendee {
                     name,
                     email: email.unwrap_or_default(),
-                    attendee_type: parse_ical_param(k, "ROLE").map(|role| match role.as_str() {
-                        "REQ-PARTICIPANT" => 1,
-                        "OPT-PARTICIPANT" => 2,
-                        "NON-PARTICIPANT" => 3,
-                        _ => 1,
+                    attendee_type: parse_ical_param(k, "ROLE").map(|role| {
+                        match role.as_str() {
+                            "REQ-PARTICIPANT" => 1,
+                            "OPT-PARTICIPANT" => 2,
+                            "NON-PARTICIPANT" => 3,
+                            _ => 1,
+                        }
                     }),
                     attendee_status: partstat.as_deref().map(partstat_to_status),
                     partstat,
@@ -585,7 +653,8 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             "CLASS" => fields.sensitivity = class_to_sensitivity(value),
             "STATUS" if value.eq_ignore_ascii_case("CANCELLED") => fields.deleted = true,
             "TRANSP" => {
-                fields.busy_status = Some(if value.eq_ignore_ascii_case("TRANSPARENT") { 0 } else { 2 });
+                fields.busy_status =
+                    Some(if value.eq_ignore_ascii_case("TRANSPARENT") { 0 } else { 2 });
             }
             "X-MICROSOFT-CDO-BUSYSTATUS" => fields.busy_status = value.parse().ok(),
             "X-MICROSOFT-CDO-ALLDAYEVENT" => fields.all_day = Some(value == "TRUE"),
@@ -593,9 +662,13 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
                 fields.appointment_reply_time = parse_datetime(value)
             }
             "X-MS-OLK-CONFLINK" => fields.online_meeting_conf_link = Some(value.to_string()),
-            "X-MS-OLK-EXTERNALLINK" => fields.online_meeting_external_link = Some(value.to_string()),
+            "X-MS-OLK-EXTERNALLINK" => {
+                fields.online_meeting_external_link = Some(value.to_string())
+            }
             "X-MS-RESPONSE-REQUESTED" => fields.response_requested = Some(value == "TRUE"),
-            "X-MS-DISALLOW-COUNTER" => fields.disallow_new_time_proposal = Some(value == "TRUE"),
+            "X-MS-DISALLOW-COUNTER" => {
+                fields.disallow_new_time_proposal = Some(value == "TRUE")
+            }
             "X-MS-MEETING-STATUS" => fields.meeting_status = value.parse().ok(),
             "X-MS-RESPONSE-TYPE" => fields.response_type = value.parse().ok(),
             "X-MS-CLIENT-UID" => fields.client_uid = Some(value.to_string()),
@@ -706,11 +779,16 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             exceptions: Vec::new(),
         };
         derived_deleted.append(
-            &mut item.exdates.iter().copied().map(|dt| CalendarException {
-                deleted: true,
-                exception_start: dt,
-                ..Default::default()
-            }).collect(),
+            &mut item
+                .exdates
+                .iter()
+                .copied()
+                .map(|dt| CalendarException {
+                    deleted: true,
+                    exception_start: dt,
+                    ..Default::default()
+                })
+                .collect(),
         );
         item.exceptions.append(&mut pending_exceptions);
         master = Some(item);
@@ -718,7 +796,11 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
 
     let mut item = master?;
     for deleted in derived_deleted {
-        if !item.exceptions.iter().any(|existing| existing.exception_start == deleted.exception_start) {
+        if !item
+            .exceptions
+            .iter()
+            .any(|existing| existing.exception_start == deleted.exception_start)
+        {
             item.exceptions.push(deleted);
         }
     }
@@ -727,8 +809,16 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
 }
 
 pub fn render_ics(item: &CalendarItem) -> String {
-    let dtstamp = item.dtstamp.unwrap_or_else(Utc::now).format("%Y%m%dT%H%M%SZ").to_string();
-    let uid = if item.uid.is_empty() { Uuid::new_v4().to_string() } else { item.uid.clone() };
+    let dtstamp = item
+        .dtstamp
+        .unwrap_or_else(Utc::now)
+        .format("%Y%m%dT%H%M%SZ")
+        .to_string();
+    let uid = if item.uid.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        item.uid.clone()
+    };
 
     let mut lines = vec![
         "BEGIN:VCALENDAR".to_string(),
@@ -738,7 +828,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
     if let Some(blob) = &item.timezone_blob {
         for line in blob.lines() {
             let trimmed = line.trim_end();
-            if !trimmed.is_empty() { lines.push(trimmed.to_string()); }
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
         }
     }
     let (dtstart_tzid, dtstart_value) =
@@ -764,23 +856,43 @@ pub fn render_ics(item: &CalendarItem) -> String {
         dtend_line,
     ]);
     if !item.location.is_empty() {
-        lines.push(format!("LOCATION:{}", escape_ical_text(&item.location)));
+        lines.push(format!(
+            "LOCATION:{}",
+            escape_ical_text(&item.location)
+        ));
     }
     if !item.description.is_empty() {
-        lines.push(format!("DESCRIPTION:{}", escape_ical_text(&item.description)));
+        lines.push(format!(
+            "DESCRIPTION:{}",
+            escape_ical_text(&item.description)
+        ));
     }
     if let Some(rrule) = &item.rrule
         && !rrule.is_empty()
     {
         lines.push(format!("RRULE:{rrule}"));
     }
-    let deleted_exdates: Vec<_> = item.exceptions.iter().filter(|v| v.deleted).map(|v| {
-        format_ical_datetime_with_timezone(&v.exception_start, item.all_day, item.timezone.as_deref()).1
-    }).collect();
+    let deleted_exdates: Vec<_> = item
+        .exceptions
+        .iter()
+        .filter(|v| v.deleted)
+        .map(|v| {
+            format_ical_datetime_with_timezone(
+                &v.exception_start,
+                item.all_day,
+                item.timezone.as_deref(),
+            )
+            .1
+        })
+        .collect();
     if !item.exdates.is_empty() || !deleted_exdates.is_empty() {
-        let mut exdates: Vec<String> = item.exdates.iter().map(|v| {
-            format_ical_datetime_with_timezone(v, item.all_day, item.timezone.as_deref()).1
-        }).collect();
+        let mut exdates: Vec<String> = item
+            .exdates
+            .iter()
+            .map(|v| {
+                format_ical_datetime_with_timezone(v, item.all_day, item.timezone.as_deref()).1
+            })
+            .collect();
         exdates.extend(deleted_exdates);
         exdates.sort();
         exdates.dedup();
@@ -788,7 +900,11 @@ pub fn render_ics(item: &CalendarItem) -> String {
             if let Some(tzid) = &item.timezone
                 && tzid.parse::<Tz>().is_ok()
             {
-                lines.push(format!("EXDATE;TZID={}:{}", escape_ical_text(tzid), exdates.join(",")));
+                lines.push(format!(
+                    "EXDATE;TZID={}:{}",
+                    escape_ical_text(tzid),
+                    exdates.join(",")
+                ));
             } else {
                 lines.push(format!("EXDATE:{}", exdates.join(",")));
             }
@@ -806,15 +922,27 @@ pub fn render_ics(item: &CalendarItem) -> String {
         lines.push(line);
     }
     for attendee in &item.attendees {
-        if attendee.email.is_empty() { continue; }
+        if attendee.email.is_empty() {
+            continue;
+        }
         lines.push(render_attendee_line(attendee));
     }
     if !item.categories.is_empty() {
-        lines.push(format!("CATEGORIES:{}", item.categories.iter().map(|v| escape_ical_text(v)).collect::<Vec<_>>().join(",")));
+        lines.push(format!(
+            "CATEGORIES:{}",
+            item.categories
+                .iter()
+                .map(|v| escape_ical_text(v))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
     }
     if let Some(busy) = item.busy_status {
         lines.push(format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
-        lines.push(format!("TRANSP:{}", if busy == 0 { "TRANSPARENT" } else { "OPAQUE" }));
+        lines.push(format!(
+            "TRANSP:{}",
+            if busy == 0 { "TRANSPARENT" } else { "OPAQUE" }
+        ));
     }
     if let Some(sensitivity) = item.sensitivity {
         lines.push(format!("CLASS:{}", sensitivity_to_class(sensitivity)));
@@ -823,13 +951,22 @@ pub fn render_ics(item: &CalendarItem) -> String {
         lines.extend(render_valarm(reminder));
     }
     if let Some(v) = item.response_requested {
-        lines.push(format!("X-MS-RESPONSE-REQUESTED:{}", if v { "TRUE" } else { "FALSE" }));
+        lines.push(format!(
+            "X-MS-RESPONSE-REQUESTED:{}",
+            if v { "TRUE" } else { "FALSE" }
+        ));
     }
     if let Some(v) = item.disallow_new_time_proposal {
-        lines.push(format!("X-MS-DISALLOW-COUNTER:{}", if v { "TRUE" } else { "FALSE" }));
+        lines.push(format!(
+            "X-MS-DISALLOW-COUNTER:{}",
+            if v { "TRUE" } else { "FALSE" }
+        ));
     }
     if let Some(v) = item.appointment_reply_time {
-        lines.push(format!("X-MS-APPOINTMENT-REPLY-TIME:{}", v.format("%Y%m%dT%H%M%SZ")));
+        lines.push(format!(
+            "X-MS-APPOINTMENT-REPLY-TIME:{}",
+            v.format("%Y%m%dT%H%M%SZ")
+        ));
     }
     if let Some(v) = item.meeting_status {
         lines.push(format!("X-MS-MEETING-STATUS:{v}"));
@@ -857,52 +994,96 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let base_duration = item.end - item.start;
         let effective_all_day = exception.all_day.unwrap_or(item.all_day);
         let effective_start = exception.start.unwrap_or(exception.exception_start);
-        let effective_end = exception.end.unwrap_or_else(|| effective_start + base_duration);
+        let effective_end =
+            exception
+                .end
+                .unwrap_or_else(|| effective_start + base_duration);
         lines.push("BEGIN:VEVENT".to_string());
         lines.push(format!("UID:{uid}"));
         lines.push(format!("DTSTAMP:{dtstamp}"));
         let (recurrence_tzid, recurrence_value) = format_ical_datetime_with_timezone(
-            &exception.exception_start, effective_all_day, item.timezone.as_deref(),
+            &exception.exception_start,
+            effective_all_day,
+            item.timezone.as_deref(),
         );
         let (exception_start_tzid, exception_start_value) = format_ical_datetime_with_timezone(
-            &effective_start, effective_all_day, item.timezone.as_deref(),
+            &effective_start,
+            effective_all_day,
+            item.timezone.as_deref(),
         );
         let (exception_end_tzid, exception_end_value) = format_ical_datetime_with_timezone(
-            &effective_end, effective_all_day, item.timezone.as_deref(),
+            &effective_end,
+            effective_all_day,
+            item.timezone.as_deref(),
         );
         lines.push(if let Some(tzid) = recurrence_tzid {
-            format!("RECURRENCE-ID;TZID={}:{}", escape_ical_text(&tzid), recurrence_value)
+            format!(
+                "RECURRENCE-ID;TZID={}:{}",
+                escape_ical_text(&tzid),
+                recurrence_value
+            )
         } else {
             format!("RECURRENCE-ID:{}", recurrence_value)
         });
         lines.push(if let Some(tzid) = exception_start_tzid {
-            format!("DTSTART;TZID={}:{}", escape_ical_text(&tzid), exception_start_value)
+            format!(
+                "DTSTART;TZID={}:{}",
+                escape_ical_text(&tzid),
+                exception_start_value
+            )
         } else {
             format!("DTSTART:{}", exception_start_value)
         });
         lines.push(if let Some(tzid) = exception_end_tzid {
-            format!("DTEND;TZID={}:{}", escape_ical_text(&tzid), exception_end_value)
+            format!(
+                "DTEND;TZID={}:{}",
+                escape_ical_text(&tzid),
+                exception_end_value
+            )
         } else {
             format!("DTEND:{}", exception_end_value)
         });
-        lines.push(format!("SUMMARY:{}", escape_ical_text(exception.subject.as_deref().unwrap_or(&item.subject))));
-        if let Some(location) = exception.location.as_deref().or(Some(&item.location))
+        lines.push(format!(
+            "SUMMARY:{}",
+            escape_ical_text(
+                exception
+                    .subject
+                    .as_deref()
+                    .unwrap_or(&item.subject)
+            )
+        ));
+        if let Some(location) = exception
+            .location
+            .as_deref()
+            .or(Some(&item.location))
             && !location.is_empty()
         {
             lines.push(format!("LOCATION:{}", escape_ical_text(location)));
         }
-        if let Some(description) = exception.description.as_deref().or(Some(&item.description))
+        if let Some(description) = exception
+            .description
+            .as_deref()
+            .or(Some(&item.description))
             && !description.is_empty()
         {
             lines.push(format!("DESCRIPTION:{}", escape_ical_text(description)));
         }
         if let Some(attendees) = &exception.attendees {
-            for attendee in attendees { lines.push(render_attendee_line(attendee)); }
+            for attendee in attendees {
+                lines.push(render_attendee_line(attendee));
+            }
         }
         if let Some(categories) = &exception.categories
             && !categories.is_empty()
         {
-            lines.push(format!("CATEGORIES:{}", categories.iter().map(|v| escape_ical_text(v)).collect::<Vec<_>>().join(",")));
+            lines.push(format!(
+                "CATEGORIES:{}",
+                categories
+                    .iter()
+                    .map(|v| escape_ical_text(v))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
         }
         if let Some(busy) = exception.busy_status {
             lines.push(format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
@@ -914,7 +1095,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
             lines.extend(render_valarm(reminder));
         }
         if let Some(v) = exception.appointment_reply_time {
-            lines.push(format!("X-MS-APPOINTMENT-REPLY-TIME:{}", v.format("%Y%m%dT%H%M%SZ")));
+            lines.push(format!(
+                "X-MS-APPOINTMENT-REPLY-TIME:{}",
+                v.format("%Y%m%dT%H%M%SZ")
+            ));
         }
         if let Some(v) = exception.meeting_status {
             lines.push(format!("X-MS-MEETING-STATUS:{v}"));
@@ -935,7 +1119,11 @@ fn render_attendee_line(attendee: &Attendee) -> String {
         line.push_str(&format!(";CN={}", escape_ical_text(name)));
     }
     if let Some(kind) = attendee.attendee_type {
-        let role = match kind { 2 => "OPT-PARTICIPANT", 3 => "NON-PARTICIPANT", _ => "REQ-PARTICIPANT" };
+        let role = match kind {
+            2 => "OPT-PARTICIPANT",
+            3 => "NON-PARTICIPANT",
+            _ => "REQ-PARTICIPANT",
+        };
         line.push_str(&format!(";ROLE={role}"));
     }
     if let Some(partstat) = &attendee.partstat {
@@ -949,7 +1137,9 @@ fn render_attendee_line(attendee: &Attendee) -> String {
 fn parse_ical_param(key: &str, name: &str) -> Option<String> {
     for part in key.split(';').skip(1) {
         let (k, v) = part.split_once('=')?;
-        if k.eq_ignore_ascii_case(name) { return Some(v.to_string()); }
+        if k.eq_ignore_ascii_case(name) {
+            return Some(v.to_string());
+        }
     }
     None
 }
@@ -965,27 +1155,59 @@ fn parse_ical_actor_line(key: &str, value: &str) -> (Option<String>, Option<Stri
 }
 
 fn normalize_mailto(email: &str) -> String {
-    if email.to_ascii_lowercase().starts_with("mailto:") { email.to_string() } else { format!("mailto:{email}") }
+    if email.to_ascii_lowercase().starts_with("mailto:") {
+        email.to_string()
+    } else {
+        format!("mailto:{email}")
+    }
 }
 
-fn partstat_to_status(value: &str) -> u8 {
-    match value { "ACCEPTED" => 3, "DECLINED" => 4, "TENTATIVE" => 2, _ => 5 }
+pub fn partstat_to_status(value: &str) -> u8 {
+    match value {
+        "ACCEPTED" => 3,
+        "DECLINED" => 4,
+        "TENTATIVE" => 2,
+        _ => 5,
+    }
 }
 
-fn status_to_partstat(value: u8) -> String {
-    match value { 3 => "ACCEPTED".to_string(), 4 => "DECLINED".to_string(), 2 => "TENTATIVE".to_string(), _ => "NEEDS-ACTION".to_string() }
+pub fn status_to_partstat(value: u8) -> String {
+    match value {
+        3 => "ACCEPTED".to_string(),
+        4 => "DECLINED".to_string(),
+        2 => "TENTATIVE".to_string(),
+        _ => "NEEDS-ACTION".to_string(),
+    }
 }
 
 fn class_to_sensitivity(value: &str) -> Option<u8> {
-    match value.to_ascii_uppercase().as_str() { "PRIVATE" => Some(2), "CONFIDENTIAL" => Some(3), "PUBLIC" => Some(0), _ => None }
+    match value.to_ascii_uppercase().as_str() {
+        "PRIVATE" => Some(2),
+        "CONFIDENTIAL" => Some(3),
+        "PUBLIC" => Some(0),
+        _ => None,
+    }
 }
 
 fn sensitivity_to_class(value: u8) -> &'static str {
-    match value { 2 => "PRIVATE", 3 => "CONFIDENTIAL", _ => "PUBLIC" }
+    match value {
+        2 => "PRIVATE",
+        3 => "CONFIDENTIAL",
+        _ => "PUBLIC",
+    }
 }
 
 fn weekday_code_from_eas(value: u32) -> &'static str {
-    match value { 1=>"SU", 2=>"MO", 3=>"TU", 4=>"WE", 5=>"TH", 6=>"FR", 7=>"SA", _=>"MO" }
+    match value {
+        1 => "SU",
+        2 => "MO",
+        3 => "TU",
+        4 => "WE",
+        5 => "TH",
+        6 => "FR",
+        7 => "SA",
+        _ => "MO",
+    }
 }
 
 pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
@@ -1010,11 +1232,16 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     current = EasBuilder::default();
                 } else if name.as_slice() == b"Exception" {
                     current.current_exception = Some(CalendarException::default());
+                } else if name.as_slice() == b"Recurrence" {
+                    current.recurrence.is_empty = false;
                 }
                 stack.push(name);
             }
             Ok(Event::Empty(e)) => {
                 let name = e.name().local_name().as_ref().to_vec();
+                if name.as_slice() == b"Recurrence" {
+                    current.recurrence.is_empty = true;
+                }
                 stack.push(name);
                 stack.pop();
             }
@@ -1026,61 +1253,120 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     };
                     match stack.last().map(|v| v.as_slice()) {
                         Some(b"ClientId") => current.client_id = Some(value),
-                        Some(b"ServerId") => current.server_id = Some(value),
+                        Some(b"ServerId") => {
+                            if !stack.iter().any(|v| v.as_slice() == b"Exception") {
+                                current.server_id = Some(value);
+                            }
+                        }
+                        Some(b"InstanceId") => {
+                            current.instance_id = parse_datetime(&value);
+                        }
                         Some(b"Subject") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.subject = Some(value); }
-                            else { current.subject = Some(value); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.subject = Some(value);
+                            } else {
+                                current.subject = Some(value);
+                            }
                         }
                         Some(b"Location") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.location = Some(value); }
-                            else { current.location = Some(value); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.location = Some(value);
+                            } else {
+                                current.location = Some(value);
+                            }
+                        }
+                        Some(b"DisplayName")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Location") =>
+                        {
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.location = Some(value);
+                            } else {
+                                current.location = Some(value);
+                            }
                         }
                         Some(b"Timezone") => current.timezone = Some(value),
                         Some(b"DtStamp") => current.dtstamp = parse_datetime(&value),
                         Some(b"StartTime") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.start = parse_datetime(&value); }
-                            else { current.start = parse_datetime(&value); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.start = parse_datetime(&value);
+                            } else {
+                                current.start = parse_datetime(&value);
+                            }
                         }
                         Some(b"EndTime") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.end = parse_datetime(&value); }
-                            else { current.end = parse_datetime(&value); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.end = parse_datetime(&value);
+                            } else {
+                                current.end = parse_datetime(&value);
+                            }
                         }
                         Some(b"AllDayEvent") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.all_day = Some(value == "1"); }
-                            else { current.all_day = Some(value == "1"); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.all_day = Some(value == "1");
+                            } else {
+                                current.all_day = Some(value == "1");
+                            }
                         }
                         Some(b"UID") => current.uid = Some(value),
+                        Some(b"ClientUid") => current.client_uid = Some(value),
                         Some(b"OrganizerName") => current.organizer_name = Some(value),
                         Some(b"OrganizerEmail") => current.organizer_email = Some(value),
                         Some(b"BusyStatus") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.busy_status = value.parse().ok(); }
-                            else { current.busy_status = value.parse().ok(); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.busy_status = value.parse().ok();
+                            } else {
+                                current.busy_status = value.parse().ok();
+                            }
                         }
                         Some(b"Sensitivity") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.sensitivity = value.parse().ok(); }
-                            else { current.sensitivity = value.parse().ok(); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.sensitivity = value.parse().ok();
+                            } else {
+                                current.sensitivity = value.parse().ok();
+                            }
                         }
                         Some(b"Reminder") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.reminder = value.parse().ok(); }
-                            else { current.reminder = value.parse().ok(); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.reminder = value.parse().ok();
+                            } else {
+                                current.reminder = value.parse().ok();
+                            }
                         }
-                        Some(b"ResponseRequested") => current.response_requested = Some(value == "1"),
-                        Some(b"DisallowNewTimeProposal") => current.disallow_new_time_proposal = Some(value == "1"),
+                        Some(b"ResponseRequested") => {
+                            current.response_requested = Some(value == "1")
+                        }
+                        Some(b"DisallowNewTimeProposal") => {
+                            current.disallow_new_time_proposal = Some(value == "1")
+                        }
                         Some(b"AppointmentReplyTime") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.appointment_reply_time = parse_datetime(&value); }
-                            else { current.appointment_reply_time = parse_datetime(&value); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.appointment_reply_time = parse_datetime(&value);
+                            } else {
+                                current.appointment_reply_time = parse_datetime(&value);
+                            }
                         }
                         Some(b"MeetingStatus") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.meeting_status = value.parse().ok(); }
-                            else { current.meeting_status = value.parse().ok(); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.meeting_status = value.parse().ok();
+                            } else {
+                                current.meeting_status = value.parse().ok();
+                            }
                         }
                         Some(b"ResponseType") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.response_type = value.parse().ok(); }
-                            else { current.response_type = value.parse().ok(); }
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.response_type = value.parse().ok();
+                            } else {
+                                current.response_type = value.parse().ok();
+                            }
                         }
-                        Some(b"OnlineMeetingConfLink") => current.online_meeting_conf_link = Some(value),
-                        Some(b"OnlineMeetingExternalLink") => current.online_meeting_external_link = Some(value),
-                        Some(b"ClientUid") => current.client_uid = Some(value),
+                        Some(b"OnlineMeetingConfLink") => {
+                            current.online_meeting_conf_link = Some(value)
+                        }
+                        Some(b"OnlineMeetingExternalLink") => {
+                            current.online_meeting_external_link = Some(value)
+                        }
                         Some(b"Category") => {
                             if let Some(ex) = current.current_exception.as_mut() {
                                 ex.categories.get_or_insert_with(Vec::new).push(value);
@@ -1088,62 +1374,144 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                                 current.categories.push(value);
                             }
                         }
-                        Some(b"Name") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
-                            current.current_attendee.get_or_insert_with(Attendee::default).name = Some(value);
+                        Some(b"Name")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Attendee") =>
+                        {
+                            current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default)
+                                .name = Some(value);
                         }
-                        Some(b"Email") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
-                            current.current_attendee.get_or_insert_with(Attendee::default).email = value;
+                        Some(b"Email")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Attendee") =>
+                        {
+                            current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default)
+                                .email = value;
                         }
-                        Some(b"AttendeeType") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
-                            current.current_attendee.get_or_insert_with(Attendee::default).attendee_type = value.parse().ok();
+                        Some(b"AttendeeType")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Attendee") =>
+                        {
+                            current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default)
+                                .attendee_type = value.parse().ok();
                         }
-                        Some(b"AttendeeStatus") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
-                            let attendee = current.current_attendee.get_or_insert_with(Attendee::default);
-                            let status = value.parse().ok();
+                        Some(b"AttendeeStatus")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Attendee") =>
+                        {
+                            let attendee = current
+                                .current_attendee
+                                .get_or_insert_with(Attendee::default);
+                            let status: Option<u8> = value.parse().ok();
                             attendee.attendee_status = status;
                             attendee.partstat = status.map(status_to_partstat);
                         }
-                        Some(b"Deleted") if stack.iter().any(|v| v.as_slice() == b"Exception") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.deleted = value == "1"; }
+                        Some(b"Deleted")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Exception") =>
+                        {
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.deleted = value == "1";
+                            }
                         }
-                        Some(b"ExceptionStartTime") if stack.iter().any(|v| v.as_slice() == b"Exception") => {
+                        Some(b"ExceptionStartTime")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Exception") =>
+                        {
                             if let Some(ex) = current.current_exception.as_mut() {
                                 ex.exception_start = parse_datetime(&value)
                                     .ok_or_else(|| anyhow!("invalid ExceptionStartTime"))?;
                             }
                         }
-                        Some(b"Data") if stack.iter().any(|v| v.as_slice() == b"Body") => {
-                            if let Some(ex) = current.current_exception.as_mut() { ex.description = Some(value); }
-                            else { current.description = Some(value); }
+                        Some(b"Data")
+                            if stack.iter().any(|v| v.as_slice() == b"Body") =>
+                        {
+                            if let Some(ex) = current.current_exception.as_mut() {
+                                ex.description = Some(value);
+                            } else {
+                                current.description = Some(value);
+                            }
                         }
-                        Some(b"Type") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"Type")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.kind = value.parse().ok()
                         }
-                        Some(b"Interval") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"Interval")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.interval = value.parse().ok()
                         }
-                        Some(b"DayOfWeek") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"DayOfWeek")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.day_of_week = Some(value)
                         }
-                        Some(b"DayOfMonth") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"DayOfMonth")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.day_of_month = value.parse().ok()
                         }
-                        Some(b"WeekOfMonth") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"WeekOfMonth")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.week_of_month = value.parse().ok()
                         }
-                        Some(b"MonthOfYear") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"MonthOfYear")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.month_of_year = value.parse().ok()
                         }
-                        Some(b"Until") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"Until")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.until = Some(value)
                         }
-                        Some(b"Occurrences") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"Occurrences")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.occurrences = value.parse().ok()
                         }
-                        Some(b"FirstDayOfWeek") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"FirstDayOfWeek")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.first_day_of_week = value.parse().ok()
                         }
-                        Some(b"CalendarType") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
+                        Some(b"CalendarType")
+                            if stack
+                                .iter()
+                                .any(|v| v.as_slice() == b"Recurrence") =>
+                        {
                             current.recurrence.calendar_type = value.parse().ok()
                         }
                         _ => {}
@@ -1167,7 +1535,10 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                 {
                     current.exceptions.push(exception);
                 }
-                if matches!(name.as_slice(), b"Add" | b"Change" | b"Delete") {
+                if matches!(
+                    name.as_slice(),
+                    b"Add" | b"Change" | b"Delete"
+                ) {
                     match current_kind.take() {
                         Some(EasOpKind::Add) => out.push(EasSyncMutation::Add {
                             client_id: current.client_id.clone(),
@@ -1175,10 +1546,12 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         }),
                         Some(EasOpKind::Change) => out.push(EasSyncMutation::Change {
                             server_id: current.server_id.clone().unwrap_or_default(),
+                            instance_id: current.instance_id,
                             patch: current.into_patch(),
                         }),
                         Some(EasOpKind::Delete) => out.push(EasSyncMutation::Delete {
                             server_id: current.server_id.clone().unwrap_or_default(),
+                            instance_id: current.instance_id,
                         }),
                         None => {}
                     }
@@ -1204,7 +1577,8 @@ pub fn extract_ews_field(xml: &str, tag: &[u8]) -> Option<String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
             Ok(Event::Text(t)) if inside => {
-                let decoded: std::result::Result<Cow<'_, str>, _> = t.decode().map_err(|e| anyhow!(e));
+                let decoded: std::result::Result<Cow<'_, str>, _> =
+                    t.decode().map_err(|e| anyhow!(e));
                 return decoded.ok().map(|v| v.into_owned());
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
@@ -1225,7 +1599,9 @@ pub fn extract_ews_fields(xml: &str, tag: &[u8]) -> Vec<String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
             Ok(Event::Text(t)) if inside => {
-                if let Ok(v) = t.decode() { out.push(v.into_owned()); }
+                if let Ok(v) = t.decode() {
+                    out.push(v.into_owned());
+                }
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
             Ok(Event::Eof) | Err(_) => break,
@@ -1238,10 +1614,19 @@ pub fn extract_ews_fields(xml: &str, tag: &[u8]) -> Vec<String> {
 
 fn parse_ews_month(value: &str) -> Option<u32> {
     match value {
-        "January"=>Some(1),"February"=>Some(2),"March"=>Some(3),"April"=>Some(4),
-        "May"=>Some(5),"June"=>Some(6),"July"=>Some(7),"August"=>Some(8),
-        "September"=>Some(9),"October"=>Some(10),"November"=>Some(11),"December"=>Some(12),
-        _=>None,
+        "January" => Some(1),
+        "February" => Some(2),
+        "March" => Some(3),
+        "April" => Some(4),
+        "May" => Some(5),
+        "June" => Some(6),
+        "July" => Some(7),
+        "August" => Some(8),
+        "September" => Some(9),
+        "October" => Some(10),
+        "November" => Some(11),
+        "December" => Some(12),
+        _ => None,
     }
 }
 
@@ -1250,18 +1635,31 @@ fn parse_ews_days_mask(value: &str) -> (String, Option<i32>) {
     let mut ordinal = None;
     for token in value.split_whitespace() {
         match token {
-            "Sunday"=>mask|=1,"Monday"=>mask|=2,"Tuesday"=>mask|=4,
-            "Wednesday"=>mask|=8,"Thursday"=>mask|=16,"Friday"=>mask|=32,"Saturday"=>mask|=64,
-            "First"=>ordinal=Some(1),"Second"=>ordinal=Some(2),"Third"=>ordinal=Some(3),
-            "Fourth"=>ordinal=Some(4),"Last"=>ordinal=Some(-1), _=>{}
+            "Sunday" => mask |= 1,
+            "Monday" => mask |= 2,
+            "Tuesday" => mask |= 4,
+            "Wednesday" => mask |= 8,
+            "Thursday" => mask |= 16,
+            "Friday" => mask |= 32,
+            "Saturday" => mask |= 64,
+            "First" => ordinal = Some(1),
+            "Second" => ordinal = Some(2),
+            "Third" => ordinal = Some(3),
+            "Fourth" => ordinal = Some(4),
+            "Last" => ordinal = Some(-1),
+            _ => {}
         }
     }
     (mask.to_string(), ordinal)
 }
 
 pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
-    if !xml.contains("Recurrence") { return None; }
-    let interval = extract_ews_field(xml, b"Interval").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+    if !xml.contains("Recurrence") {
+        return None;
+    }
+    let interval = extract_ews_field(xml, b"Interval")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1);
     let mut parts = Vec::new();
     if xml.contains("DailyRecurrence") {
         parts.push("FREQ=DAILY".to_string());
@@ -1271,48 +1669,113 @@ pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
             let (mask, _) = parse_ews_days_mask(&days);
             if mask != "0" {
                 let value = mask.parse::<u32>().ok()?;
-                let mapping = [(1,"SU"),(2,"MO"),(4,"TU"),(8,"WE"),(16,"TH"),(32,"FR"),(64,"SA")];
-                let byday: Vec<&str> = mapping.iter().filter_map(|(bit, code)| if value & bit != 0 { Some(*code) } else { None }).collect();
-                if !byday.is_empty() { parts.push(format!("BYDAY={}", byday.join(","))); }
+                let mapping = [
+                    (1, "SU"),
+                    (2, "MO"),
+                    (4, "TU"),
+                    (8, "WE"),
+                    (16, "TH"),
+                    (32, "FR"),
+                    (64, "SA"),
+                ];
+                let byday: Vec<&str> = mapping
+                    .iter()
+                    .filter_map(|(bit, code)| {
+                        if value & bit != 0 { Some(*code) } else { None }
+                    })
+                    .collect();
+                if !byday.is_empty() {
+                    parts.push(format!("BYDAY={}", byday.join(",")));
+                }
             }
         }
     } else if xml.contains("AbsoluteMonthlyRecurrence") {
         parts.push("FREQ=MONTHLY".to_string());
-        if let Some(day) = extract_ews_field(xml, b"DayOfMonth") { parts.push(format!("BYMONTHDAY={day}")); }
+        if let Some(day) = extract_ews_field(xml, b"DayOfMonth") {
+            parts.push(format!("BYMONTHDAY={day}"));
+        }
     } else if xml.contains("RelativeMonthlyRecurrence") {
         parts.push("FREQ=MONTHLY".to_string());
         if let Some(days) = extract_ews_field(xml, b"DaysOfWeek") {
             let (mask, ordinal) = parse_ews_days_mask(&days);
             let value = mask.parse::<u32>().ok()?;
-            let mapping = [(1,"SU"),(2,"MO"),(4,"TU"),(8,"WE"),(16,"TH"),(32,"FR"),(64,"SA")];
-            let code = mapping.iter().find_map(|(bit, code)| (value & bit != 0).then_some(*code))?;
+            let mapping = [
+                (1, "SU"),
+                (2, "MO"),
+                (4, "TU"),
+                (8, "WE"),
+                (16, "TH"),
+                (32, "FR"),
+                (64, "SA"),
+            ];
+            let code = mapping
+                .iter()
+                .find_map(|(bit, code)| (value & bit != 0).then_some(*code))?;
             let ord = ordinal.unwrap_or_else(|| {
-                extract_ews_field(xml, b"DayOfWeekIndex").as_deref().and_then(|v| match v {
-                    "First"=>Some(1),"Second"=>Some(2),"Third"=>Some(3),"Fourth"=>Some(4),"Last"=>Some(-1),_=>None,
-                }).unwrap_or(1)
+                extract_ews_field(xml, b"DayOfWeekIndex")
+                    .as_deref()
+                    .and_then(|v| match v {
+                        "First" => Some(1),
+                        "Second" => Some(2),
+                        "Third" => Some(3),
+                        "Fourth" => Some(4),
+                        "Last" => Some(-1),
+                        _ => None,
+                    })
+                    .unwrap_or(1)
             });
             parts.push(format!("BYDAY={}{}", ord, code));
         }
     } else if xml.contains("AbsoluteYearlyRecurrence") {
         parts.push("FREQ=YEARLY".to_string());
-        if let Some(month) = extract_ews_field(xml, b"Month").and_then(|v| parse_ews_month(&v)) { parts.push(format!("BYMONTH={month}")); }
-        if let Some(day) = extract_ews_field(xml, b"DayOfMonth") { parts.push(format!("BYMONTHDAY={day}")); }
+        if let Some(month) =
+            extract_ews_field(xml, b"Month").and_then(|v| parse_ews_month(&v))
+        {
+            parts.push(format!("BYMONTH={month}"));
+        }
+        if let Some(day) = extract_ews_field(xml, b"DayOfMonth") {
+            parts.push(format!("BYMONTHDAY={day}"));
+        }
     } else if xml.contains("RelativeYearlyRecurrence") {
         parts.push("FREQ=YEARLY".to_string());
-        if let Some(month) = extract_ews_field(xml, b"Month").and_then(|v| parse_ews_month(&v)) { parts.push(format!("BYMONTH={month}")); }
+        if let Some(month) =
+            extract_ews_field(xml, b"Month").and_then(|v| parse_ews_month(&v))
+        {
+            parts.push(format!("BYMONTH={month}"));
+        }
         if let Some(days) = extract_ews_field(xml, b"DaysOfWeek") {
             let (mask, ordinal) = parse_ews_days_mask(&days);
             let value = mask.parse::<u32>().ok()?;
-            let mapping = [(1,"SU"),(2,"MO"),(4,"TU"),(8,"WE"),(16,"TH"),(32,"FR"),(64,"SA")];
-            let code = mapping.iter().find_map(|(bit, code)| (value & bit != 0).then_some(*code))?;
+            let mapping = [
+                (1, "SU"),
+                (2, "MO"),
+                (4, "TU"),
+                (8, "WE"),
+                (16, "TH"),
+                (32, "FR"),
+                (64, "SA"),
+            ];
+            let code = mapping
+                .iter()
+                .find_map(|(bit, code)| (value & bit != 0).then_some(*code))?;
             parts.push(format!("BYDAY={}{}", ordinal.unwrap_or(1), code));
         }
-    } else { return None; }
+    } else {
+        return None;
+    }
 
-    if interval > 1 { parts.push(format!("INTERVAL={interval}")); }
-    if let Some(count) = extract_ews_field(xml, b"NumberOfOccurrences") { parts.push(format!("COUNT={count}")); }
-    else if let Some(until) = extract_ews_field(xml, b"EndDate").and_then(|v| parse_datetime(&v)) {
-        parts.push(format!("UNTIL={}", until.format("%Y%m%dT%H%M%SZ")));
+    if interval > 1 {
+        parts.push(format!("INTERVAL={interval}"));
+    }
+    if let Some(count) = extract_ews_field(xml, b"NumberOfOccurrences") {
+        parts.push(format!("COUNT={count}"));
+    } else if let Some(until) =
+        extract_ews_field(xml, b"EndDate").and_then(|v| parse_datetime(&v))
+    {
+        parts.push(format!(
+            "UNTIL={}",
+            until.format("%Y%m%dT%H%M%SZ")
+        ));
     }
     Some(parts.join(";"))
 }
@@ -1329,14 +1792,25 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = e.name().local_name().as_ref().to_vec();
-                if name.as_slice() == b"RequiredAttendees" { attendee_type = Some(1u8); }
-                else if name.as_slice() == b"OptionalAttendees" { attendee_type = Some(2u8); }
-                else if name.as_slice() == b"Attendee" { current = Some(Attendee { attendee_type, ..Default::default() }); }
+                if name.as_slice() == b"RequiredAttendees" {
+                    attendee_type = Some(1u8);
+                } else if name.as_slice() == b"OptionalAttendees" {
+                    attendee_type = Some(2u8);
+                } else if name.as_slice() == b"Attendee" {
+                    current = Some(Attendee {
+                        attendee_type,
+                        ..Default::default()
+                    });
+                }
                 stack.push(name);
             }
             Ok(Event::Text(t)) => {
                 if let Some(attendee) = current.as_mut() {
-                    let value = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
+                    let value = t
+                        .decode()
+                        .ok()
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default();
                     match stack.last().map(|v| v.as_slice()) {
                         Some(b"Name") => attendee.name = Some(value),
                         Some(b"EmailAddress") => attendee.email = value,
@@ -1361,7 +1835,10 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
                     && !attendee.email.is_empty()
                 {
                     attendees.push(attendee);
-                } else if matches!(name.as_slice(), b"RequiredAttendees" | b"OptionalAttendees") {
+                } else if matches!(
+                    name.as_slice(),
+                    b"RequiredAttendees" | b"OptionalAttendees"
+                ) {
                     attendee_type = None;
                 }
                 stack.pop();
@@ -1376,7 +1853,8 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
 }
 
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
-    let subject = extract_ews_field(xml, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
+    let subject = extract_ews_field(xml, b"Subject")
+        .unwrap_or_else(|| "(no subject)".to_string());
     let start = extract_ews_field(xml, b"Start")
         .or_else(|| extract_ews_field(xml, b"StartTime"))
         .and_then(|v| parse_datetime(&v))
@@ -1388,43 +1866,83 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let uid = extract_ews_field(xml, b"UID")
         .or_else(|| extract_ews_field(xml, b"ClientUid"))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let description = extract_ews_field(xml, b"Body").or_else(|| extract_ews_field(xml, b"TextBody")).unwrap_or_default();
+    let description = extract_ews_field(xml, b"Body")
+        .or_else(|| extract_ews_field(xml, b"TextBody"))
+        .unwrap_or_default();
     let location = extract_ews_field(xml, b"Location").unwrap_or_default();
-    let all_day = extract_ews_field(xml, b"IsAllDayEvent").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let all_day = extract_ews_field(xml, b"IsAllDayEvent")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let organizer_name = extract_ews_field(xml, b"OrganizerName");
     let organizer_email = extract_ews_field(xml, b"OrganizerEmail");
     let categories = extract_ews_fields(xml, b"String");
     let attendees = parse_ews_attendees(xml);
-    let reminder = extract_ews_field(xml, b"ReminderMinutesBeforeStart").and_then(|v| v.parse().ok());
-    let busy_status = extract_ews_field(xml, b"LegacyFreeBusyStatus").and_then(|v| match v.as_str() {
-        "Free"=>Some(0),"Tentative"=>Some(1),"Busy"=>Some(2),"OOF"=>Some(3),_=>None,
-    });
-    let sensitivity = extract_ews_field(xml, b"Sensitivity").and_then(|v| match v.as_str() {
-        "Normal"=>Some(0),"Personal"=>Some(1),"Private"=>Some(2),"Confidential"=>Some(3),_=>None,
-    });
-    let response_requested = extract_ews_field(xml, b"ResponseRequested").map(|v| v.eq_ignore_ascii_case("true"));
-    let disallow_new_time_proposal = extract_ews_field(xml, b"DisallowNewTimeProposal").map(|v| v.eq_ignore_ascii_case("true"));
+    let reminder = extract_ews_field(xml, b"ReminderMinutesBeforeStart")
+        .and_then(|v| v.parse().ok());
+    let busy_status =
+        extract_ews_field(xml, b"LegacyFreeBusyStatus").and_then(|v| match v.as_str() {
+            "Free" => Some(0),
+            "Tentative" => Some(1),
+            "Busy" => Some(2),
+            "OOF" => Some(3),
+            _ => None,
+        });
+    let sensitivity =
+        extract_ews_field(xml, b"Sensitivity").and_then(|v| match v.as_str() {
+            "Normal" => Some(0),
+            "Personal" => Some(1),
+            "Private" => Some(2),
+            "Confidential" => Some(3),
+            _ => None,
+        });
+    let response_requested = extract_ews_field(xml, b"ResponseRequested")
+        .map(|v| v.eq_ignore_ascii_case("true"));
+    let disallow_new_time_proposal = extract_ews_field(xml, b"DisallowNewTimeProposal")
+        .map(|v| v.eq_ignore_ascii_case("true"));
     let online_meeting_conf_link = extract_ews_field(xml, b"OnlineMeetingConfLink");
-    let online_meeting_external_link = extract_ews_field(xml, b"OnlineMeetingExternalLink");
+    let online_meeting_external_link =
+        extract_ews_field(xml, b"OnlineMeetingExternalLink");
     let client_uid = extract_ews_field(xml, b"ClientUid");
     let rrule = parse_ews_recurrence(xml);
 
     Ok(CalendarItem {
-        uid, subject, description, location, start, end, all_day,
+        uid,
+        subject,
+        description,
+        location,
+        start,
+        end,
+        all_day,
         dtstamp: Some(Utc::now()),
         timezone: extract_ews_field(xml, b"StartTimeZone"),
         timezone_blob: extract_ews_field(xml, b"MeetingTimeZone"),
-        rrule, exdates: Vec::new(),
-        organizer_name, organizer_email, attendees, categories,
-        busy_status, sensitivity, reminder, response_requested, disallow_new_time_proposal,
-        appointment_reply_time: None, meeting_status: None, response_type: None,
-        online_meeting_conf_link, online_meeting_external_link, client_uid, exceptions: Vec::new(),
+        rrule,
+        exdates: Vec::new(),
+        organizer_name,
+        organizer_email,
+        attendees,
+        categories,
+        busy_status,
+        sensitivity,
+        reminder,
+        response_requested,
+        disallow_new_time_proposal,
+        appointment_reply_time: None,
+        meeting_status: None,
+        response_type: None,
+        online_meeting_conf_link,
+        online_meeting_external_link,
+        client_uid,
+        exceptions: Vec::new(),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_datetime, parse_eas_sync_mutations, parse_ews_attendees, parse_ews_recurrence, parse_ics_event, render_ics, EasRecurrence};
+    use super::{
+        parse_datetime, parse_eas_sync_mutations, parse_ews_attendees,
+        parse_ews_recurrence, parse_ics_event, render_ics, EasRecurrence,
+    };
 
     #[test]
     fn parses_eas_add_mutation() {
@@ -1442,6 +1960,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_eas_change_with_instance_id() {
+        let xml = r#"<Sync xmlns="AirSync:"><Collections><Collection><Commands><Change><ServerId>abc123</ServerId><InstanceId>2026-03-22T10:00:00Z</InstanceId><ApplicationData><Subject>Updated</Subject></ApplicationData></Change></Commands></Collection></Collections></Sync>"#;
+        let items = parse_eas_sync_mutations(xml).unwrap();
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            super::EasSyncMutation::Change { server_id, instance_id, .. } => {
+                assert_eq!(server_id, "abc123");
+                assert!(instance_id.is_some());
+            }
+            _ => panic!("expected change"),
+        }
+    }
+
+    #[test]
+    fn parses_client_uid() {
+        let xml = r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:"><Collections><Collection><Commands><Add><ClientId>c1</ClientId><ApplicationData><Calendar:Subject>Test</Calendar:Subject><Calendar:StartTime>2026-03-21T10:00:00Z</Calendar:StartTime><Calendar:EndTime>2026-03-21T11:00:00Z</Calendar:EndTime><Calendar:ClientUid>my-client-uid-123</Calendar:ClientUid></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
+        let items = parse_eas_sync_mutations(xml).unwrap();
+        match &items[0] {
+            super::EasSyncMutation::Add { item, .. } => {
+                assert_eq!(item.client_uid.as_deref(), Some("my-client-uid-123"));
+                assert_eq!(item.uid, "my-client-uid-123");
+            }
+            _ => panic!("expected add"),
+        }
+    }
+
+    #[test]
     fn prefers_count_over_until_when_building_rrule() {
         let recurrence = EasRecurrence {
             kind: Some(1),
@@ -1451,7 +1996,19 @@ mod tests {
             occurrences: Some(5),
             ..Default::default()
         };
-        assert_eq!(recurrence.to_rrule().as_deref(), Some("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=5"));
+        assert_eq!(
+            recurrence.to_rrule().as_deref(),
+            Some("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=5")
+        );
+    }
+
+    #[test]
+    fn empty_recurrence_clears_rrule() {
+        let recurrence = EasRecurrence {
+            is_empty: true,
+            ..Default::default()
+        };
+        assert!(recurrence.to_rrule().is_none());
     }
 
     #[test]
@@ -1467,7 +2024,10 @@ mod tests {
     #[test]
     fn parses_ews_recurrence_and_attendees() {
         let xml = r#"<CalendarItem><Recurrence><WeeklyRecurrence><Interval>2</Interval><DaysOfWeek>Monday Wednesday</DaysOfWeek></WeeklyRecurrence><NumberedRecurrence><NumberOfOccurrences>5</NumberOfOccurrences></NumberedRecurrence></Recurrence><RequiredAttendees><Attendee><Mailbox><Name>Alice</Name><EmailAddress>alice@example.com</EmailAddress></Mailbox><ResponseType>Accept</ResponseType></Attendee></RequiredAttendees><OptionalAttendees><Attendee><Mailbox><Name>Bob</Name><EmailAddress>bob@example.com</EmailAddress></Mailbox><ResponseType>Tentative</ResponseType></Attendee></OptionalAttendees></CalendarItem>"#;
-        assert_eq!(parse_ews_recurrence(xml).as_deref(), Some("FREQ=WEEKLY;BYDAY=MO,WE;INTERVAL=2;COUNT=5"));
+        assert_eq!(
+            parse_ews_recurrence(xml).as_deref(),
+            Some("FREQ=WEEKLY;BYDAY=MO,WE;INTERVAL=2;COUNT=5")
+        );
         let attendees = parse_ews_attendees(xml);
         assert_eq!(attendees.len(), 2);
         assert_eq!(attendees[0].attendee_type, Some(1));
