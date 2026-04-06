@@ -1336,7 +1336,7 @@ async fn merged_freebusy_for_mailbox(
         .await
         .ok()
         .and_then(|r| r.ok());
-        if let Ok(events_xml) = query_result {
+        if let Some(events_xml) = query_result {
             let mut reader = Reader::from_str(&events_xml);
             reader.config_mut().trim_text(true);
             let mut buf = Vec::new();
