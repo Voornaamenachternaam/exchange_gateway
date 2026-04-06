@@ -180,11 +180,7 @@ impl EasBuilder {
     fn into_item(self) -> Result<CalendarItem> {
         let start = self.start.ok_or_else(|| anyhow!("missing StartTime"))?;
         let end = self.end.ok_or_else(|| anyhow!("missing EndTime"))?;
-        let uid = self
-            .client_uid
-            .clone()
-            .or_else(|| self.uid.clone())
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
+let uid = self.client_uid.or(self.uid).unwrap_or_else(|| Uuid::new_v4().to_string());
         Ok(CalendarItem {
             uid,
             subject: self.subject.unwrap_or_else(|| "(no subject)".to_string()),
