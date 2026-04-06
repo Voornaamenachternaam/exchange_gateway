@@ -584,29 +584,37 @@ async function handleGetProvisionPolicy(url, request, env) {
 async function handleUpsertDeviceInfo(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   await checkIdempotency(request, env, 'handleUpsertDeviceInfo');
-  const body = await readJson(request);
-  const {
-    owner = '',
-    device_id = '',
-    friendly_name = null,
-    model = null,
-    os = null,
-    os_version = null,
-    phone_number = null,
-    imei = null,
-    user_agent = null,
-    protocol_version = '16.1',
-  } = body;
-  if (!owner || !device_id) {
-    return new Response('Missing owner/device_id', { status: 400 });
-  }
+  try {
+    const body = await readJson(request);
+    const {
+      owner = '',
+      device_id = '',
+      friendly_name = null,
+      model = null,
+      os = null,
+      os_version = null,
+      phone_number = null,
+      imei = null,
+      user_agent = null,
+      protocol_version = '16.1',
+    } = body;
+    if (!owner || !device_id) {
+      return new Response('Missing owner/device_id', { status: 400 });
+    }
 
-  await env.EXCHANGE_DB
-    .prepare(`INSERT INTO device_info (user_email, device_id, friendly_name, model, os, os_version, phone_number, imei, user_agent, protocol_version, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_email, device_id) DO UPDATE SET friendly_name = excluded.friendly_name, model = excluded.model, os = excluded.os, os_version = excluded.os_version, phone_number = excluded.phone_number, imei = excluded.imei, user_agent = excluded.user_agent, protocol_version = excluded.protocol_version, last_seen = CURRENT_TIMESTAMP`)
-    .bind(owner, device_id, friendly_name, model, os, os_version,
-      phone_number, imei, user_agent, protocol_version)
-    .run();
-  return Response.json({ success: true });
+    await env.EXCHANGE_DB
+      .prepare(`INSERT INTO device_info (user_email, device_id, friendly_name, model, os, os_version, phone_number, imei, user_agent, protocol_version, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_email, device_id) DO UPDATE SET friendly_name = excluded.friendly_name, model = excluded.model, os = excluded.os, os_version = excluded.os_version, phone_number = excluded.phone_number, imei = excluded.imei, user_agent = excluded.user_agent, protocol_version = excluded.protocol_version, last_seen = CURRENT_TIMESTAMP`)
+      .bind(owner, device_id, friendly_name, model, os, os_version,
+        phone_number, imei, user_agent, protocol_version)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error upserting device info:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
 }
 
 async function handleListEwsItems(url, request, env) {
