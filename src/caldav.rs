@@ -15,30 +15,18 @@ pub struct CaldavClient {
 }
 
 impl CaldavClient {
-    pub fn new(cfg: &Config) -> Self {
-        let retry_policy = ExponentialBackoff::builder()
-            .retry_bounds(Duration::from_millis(100), Duration::from_secs(5))
-            .build_with_max_retries(3);
-        
-        let client = ClientBuilder::new(
-            reqwest::Client::builder()
-                .http1_only()
-                .pool_max_idle_per_host(8)
-                .pool_idle_timeout(Duration::from_secs(30))
-                .timeout(Duration::from_secs(30))
-                .connect_timeout(Duration::from_secs(10))
-                .build()
-                .expect("reqwest client construction should be infallible for static config"),
-        )
-        .with(TracingMiddleware::default())
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build();
-        
-        CaldavClient {
-            base: cfg.caldav_base.clone(),
-            client,
-        }
-    }
+    pub fn new(cfg: &Config) -> Result<Self> {
+    let retry_policy = ExponentialBackoff::builder()
+        .build_with_max_retries(3);
+    let client = ClientBuilder::new(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?,
+    )
+    .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+    .build();
+    Ok(Self { base: cfg.caldav_base.clone(), client })
+    }        
 
     pub async fn find_user_calendars(
         &self,
