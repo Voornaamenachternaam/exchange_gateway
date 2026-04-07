@@ -30,11 +30,41 @@ pub enum GatewayError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
-    #[error("Protocol error: {0}")]
-    Protocol(String),
+    #[error("Protocol error: {context}")]
+    Protocol {
+        context: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 
-    #[error("Rate limited")]
-    RateLimited,
+    #[error("Rate limited: retry after {retry_after_secs}s ({endpoint})")]
+    RateLimited {
+        endpoint: String,
+        retry_after_secs: u64,
+    },
+}
+
+impl GatewayError {
+    pub fn protocol(context: impl Into<String>) -> Self {
+        GatewayError::Protocol {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    pub fn protocol_with_source(context: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        GatewayError::Protocol {
+            context: context.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    pub fn rate_limited(endpoint: impl Into<String>, retry_after_secs: u64) -> Self {
+        GatewayError::RateLimited {
+            endpoint: endpoint.into(),
+            retry_after_secs,
+        }
+    }
 }
 
 impl From<anyhow::Error> for GatewayError {
