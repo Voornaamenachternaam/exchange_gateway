@@ -19,7 +19,7 @@ use quick_xml::events::Event;
 use secrecy::{SecretString, ExposeSecret};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex as TokioMutex;

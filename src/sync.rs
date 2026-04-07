@@ -88,7 +88,7 @@ pub async fn apply_client_sync_mutations(
     let mutations = parse_eas_sync_mutations(xml)?;
     if mutations.is_empty() { return Ok(Vec::new()); }
 
-    let caldav = CaldavClient::new(&state.cfg);
+    let caldav = CaldavClient::new(&state.cfg)?;
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars.first().ok_or_else(|| anyhow!("no calendars found"))?.clone();
     let mut results = Vec::new();
@@ -128,7 +128,7 @@ pub async fn apply_client_sync_mutations(
                     }
                 }
             }
-            EasSyncMutation::Change { server_id, patch } => {
+            EasSyncMutation::Change { server_id, instance_id: _, patch } => {
                 let Some(existing) = state.storage.get_ews_item_by_server_id(owner, &server_id).await? else {
                     results.push(ClientMutationResult::Change { server_id, status: "6" });
                     continue;
@@ -174,7 +174,7 @@ pub async fn apply_client_sync_mutations(
                     Err(_) => results.push(ClientMutationResult::Change { server_id, status: "6" }),
                 }
             }
-            EasSyncMutation::Delete { server_id } => {
+            EasSyncMutation::Delete { server_id, instance_id: _ } => {
                 let Some(existing) = state.storage.get_ews_item_by_server_id(owner, &server_id).await? else {
                     results.push(ClientMutationResult::Delete { server_id, status: "6" });
                     continue;
@@ -224,11 +224,13 @@ pub async fn apply_meeting_response(
     password: &str,
     request_id: &str,
     user_response: u8,
+    _instance_id: Option<chrono::DateTime<Utc>>,
+    _send_response: bool,
 ) -> Result<()> {
     let Some(existing) = state.storage.get_ews_item_by_server_id(owner, request_id).await? else {
         return Err(anyhow!("unknown meeting request id: {request_id}"));
     };
-    let caldav = CaldavClient::new(&state.cfg);
+    let caldav = CaldavClient::new(&state.cfg)?;
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars.first().ok_or_else(|| anyhow!("no calendars found"))?.clone();
     let (existing_ics, existing_etag) = caldav.get_event(&existing.resource_href, username, password).await?;
@@ -577,7 +579,7 @@ pub async fn perform_sync(
     }
 
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
-    let caldav = CaldavClient::new(&state.cfg);
+    let caldav = CaldavClient::new(&state.cfg)?;
     let calendars = caldav.find_user_calendars(username, password).await?;
     let collection_href = calendars.first().ok_or_else(|| anyhow!("no calendars found"))?.clone();
     let start = opts.filter_start.format("%Y%m%dT%H%M%SZ").to_string();
