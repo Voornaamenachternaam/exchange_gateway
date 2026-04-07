@@ -1,4 +1,6 @@
 -- d1_schema.sql
+-- Cloudflare D1 database schema for exchange_gateway.
+-- Apply with: wrangler d1 execute exchange_gateway_db --file=d1_schema.sql
 
 DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS item_map;

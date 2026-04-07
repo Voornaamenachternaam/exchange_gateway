@@ -1,3 +1,4 @@
+# Cargo.toml
 [package]
 name = "exchange_gateway"
 version = "1.2.0"
@@ -44,7 +45,6 @@ tokio-util = { version = "^0.7.18", features = ["codec", "io", "compat"] }
 secrecy = { version = "^0.10.3", features = ["serde"] }
 zeroize = { version = "^1.8.2", features = ["derive", "serde"] }
 subtle = "^2.6.1"
-dashmap = "^6.1.0"
 tokio-stream = { version = "^0.1.18", features = ["sync"] }
 pin-project-lite = "^0.2.17"
 http-body-util = "^0.1.3"
