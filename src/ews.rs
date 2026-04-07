@@ -45,6 +45,7 @@ enum EwsAction {
     ConvertId, GetRoomLists, GetRooms, GetDelegate, GetUserPhoto,
     MarkAsJunk, GetAppManifests, GetAppMarketplaceUrl,
     InstallApp, UninstallApp, GetClientAccessToken,
+    GetReminders, PerformReminderAction, GetPersona,
 }
 
 fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
@@ -167,6 +168,9 @@ fn operation_error_response(action: &EwsAction, code: &str, message: &str, statu
         EwsAction::InstallApp => "InstallAppResponseMessage",
         EwsAction::UninstallApp => "UninstallAppResponseMessage",
         EwsAction::GetClientAccessToken => "GetClientAccessTokenResponseMessage",
+        EwsAction::GetReminders => "GetRemindersResponseMessage",
+        EwsAction::PerformReminderAction => "PerformReminderActionResponseMessage",
+        EwsAction::GetPersona => "GetPersonaResponseMessage",
     };
     let inner = format!(
         r#"<m:{resp} ResponseClass="Error" xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:{resp}>"#,
@@ -229,6 +233,9 @@ pub async fn handle(State(state): State<Arc<AppState>>, headers: HeaderMap, body
         EwsAction::InstallApp => handle_install_app().await,
         EwsAction::UninstallApp => handle_uninstall_app().await,
         EwsAction::GetClientAccessToken => handle_get_client_access_token().await,
+        EwsAction::GetReminders => handle_get_reminders(&auth, &body).await,
+        EwsAction::PerformReminderAction => handle_perform_reminder_action(&auth, &body).await,
+        EwsAction::GetPersona => handle_get_persona(&auth, &body).await,
     }
 }
 
@@ -283,6 +290,9 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
         b"InstallApp" => EwsAction::InstallApp,
         b"UninstallApp" => EwsAction::UninstallApp,
         b"GetClientAccessToken" => EwsAction::GetClientAccessToken,
+                    b"GetReminders" => EwsAction::GetReminders,
+                    b"PerformReminderAction" => EwsAction::PerformReminderAction,
+                    b"GetPersona" => EwsAction::GetPersona,
                     _ => { buf.clear(); continue; }
                 });
             }
@@ -1348,7 +1358,7 @@ async fn handle_get_mail_tips(auth: &AuthContext, _body: &str) -> Response {
     </m:MailTipsResponseMessage>
   </m:ResponseMessages>
 </m:GetMailTipsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(email)
+        EWS_MSG_NS, EWS_TYPE_NS, xml_escape(&auth.username)
     );
     soap_ok(inner)
 }
@@ -1372,8 +1382,8 @@ async fn handle_find_people(auth: &AuthContext, _body: &str) -> Response {
 </m:FindPeopleResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS,
         uuid::Uuid::new_v4(),
-        xml_escape(email),
-        xml_escape(email),
+        xml_escape(&auth.username),
+        xml_escape(&auth.username),
     );
     soap_ok(inner)
 }
@@ -1550,6 +1560,57 @@ async fn handle_get_client_access_token() -> Response {
 </m:ResponseMessages>
 </m:GetClientAccessTokenResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+async fn handle_get_reminders(_auth: &AuthContext, _body: &str) -> Response {
+    let inner = format!(
+        r#"<m:GetRemindersResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:RemindersResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:Reminders/>
+    </m:RemindersResponseMessage>
+  </m:ResponseMessages>
+</m:GetRemindersResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_perform_reminder_action(_auth: &AuthContext, _body: &str) -> Response {
+    let inner = format!(
+        r#"<m:PerformReminderActionResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:PerformReminderActionResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:UpdatedReminderIds/>
+    </m:PerformReminderActionResponseMessage>
+  </m:ResponseMessages>
+</m:PerformReminderActionResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_persona(auth: &AuthContext, _body: &str) -> Response {
+    let inner = format!(
+        r#"<m:GetPersonaResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessages>
+    <m:GetPersonaResponseMessage ResponseClass="Success">
+      <m:ResponseCode>NoError</m:ResponseCode>
+      <m:Persona>
+        <t:PersonaId Id="{}" ChangeKey="01"/>
+        <t:DisplayName>{}</t:DisplayName>
+        <t:EmailAddress><t:EmailAddress>{}</t:EmailAddress></t:EmailAddress>
+      </m:Persona>
+    </m:GetPersonaResponseMessage>
+  </m:ResponseMessages>
+</m:GetPersonaResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS,
+        uuid::Uuid::new_v4(),
+        xml_escape(&auth.username),
+        xml_escape(&auth.username)
     );
     soap_ok(inner)
 }
