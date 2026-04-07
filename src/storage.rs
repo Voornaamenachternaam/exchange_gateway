@@ -137,12 +137,14 @@ impl Storage {
         let clean_path = path.trim_start_matches('/');
         let url = format!("{}/{}", self.base_url, clean_path);
         let idempotency_key = self.make_idempotency_key(clean_path, body)?;
+        let json_body = serde_json::to_string(body)?;
         let resp = self
             .client
             .post(&url)
             .header("x-gateway-secret", &self.secret)
             .header("Idempotency-Key", idempotency_key)
-            .json(body)
+            .header("Content-Type", "application/json")
+            .body(json_body)
             .send()
             .await?;
         if !resp.status().is_success() {

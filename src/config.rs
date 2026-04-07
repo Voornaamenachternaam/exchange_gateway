@@ -1,5 +1,5 @@
 // src/config.rs
-use secrecy::{ExposeSecret, Secret, SecretString};
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::fs;
 use zeroize::Zeroizing;
@@ -15,14 +15,6 @@ pub struct Config {
 
     #[serde(default)]
     pub gateway_host: String,
-}
-
-fn deserialize_secret<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: String = String::deserialize(deserializer)?;
-    Ok(Secret::new(s))
 }
 
 impl Config {
@@ -130,8 +122,8 @@ mod tests {
             bind: bind.into(),
             caldav_base: caldav_base.into(),
             worker_url: worker_url.into(),
-            worker_secret: Secret::new(worker_secret.to_string()),
-            hmac_secret: Secret::new(hmac_secret.to_string()),
+            worker_secret: SecretString::from(worker_secret.to_string()),
+            hmac_secret: SecretString::from(hmac_secret.to_string()),
             gateway_host: gateway_host.into(),
         }
     }

@@ -180,7 +180,7 @@ impl EasBuilder {
     fn into_item(self) -> Result<CalendarItem> {
         let start = self.start.ok_or_else(|| anyhow!("missing StartTime"))?;
         let end = self.end.ok_or_else(|| anyhow!("missing EndTime"))?;
-let uid = self.client_uid.or(self.uid).unwrap_or_else(|| Uuid::new_v4().to_string());
+let uid = self.client_uid.clone().or(self.uid).unwrap_or_else(|| Uuid::new_v4().to_string());
         Ok(CalendarItem {
             uid,
             subject: self.subject.unwrap_or_else(|| "(no subject)".to_string()),
@@ -1546,12 +1546,12 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         }),
                         Some(EasOpKind::Change) => out.push(EasSyncMutation::Change {
                             server_id: current.server_id.clone().unwrap_or_default(),
-                            instance_id: current.instance_id,
+                            instance_id: current.instance_id.clone(),
                             patch: current.into_patch(),
                         }),
                         Some(EasOpKind::Delete) => out.push(EasSyncMutation::Delete {
                             server_id: current.server_id.clone().unwrap_or_default(),
-                            instance_id: current.instance_id,
+                            instance_id: current.instance_id.clone(),
                         }),
                         None => {}
                     }
