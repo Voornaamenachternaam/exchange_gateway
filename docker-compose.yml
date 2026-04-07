@@ -1,4 +1,7 @@
 # docker-compose.yml
+# Docker Compose configuration for exchange_gateway.
+# Deploy with: docker-compose up -d
+
 services:
   exchange_gateway:
     build: .

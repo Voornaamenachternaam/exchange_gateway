@@ -15,9 +15,6 @@ pub enum GatewayError {
     #[error("Storage error: {0}")]
     Storage(String),
 
-    #[error("SMTP error: {0}")]
-    Smtp(String),
-
     #[error("Config error: {0}")]
     Config(String),
 
@@ -32,6 +29,12 @@ pub enum GatewayError {
 
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+
+    #[error("Rate limited")]
+    RateLimited,
 }
 
 impl From<anyhow::Error> for GatewayError {
