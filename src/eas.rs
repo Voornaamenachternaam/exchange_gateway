@@ -225,26 +225,12 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, SecretString)> {
         return None;
     }
     let b64 = &auth[6..].trim();
-    let mut decoded = Vec::new();
-    BASE64.decode_vec(b64.as_bytes(), &mut decoded).ok()?;
-    let creds = String::from_utf8(decoded).ok()?;
-    let idx = creds.find(':')?;
-    let user = creds[..idx].to_string();
-fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, SecretString)> {
-    let auth = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let auth = auth.trim();
-    if !auth.to_ascii_lowercase().starts_with("basic ") {
-        return None;
-    }
-    let b64 = &auth[6..].trim();
     let mut decoded = zeroize::Zeroizing::new(Vec::new());
     BASE64.decode_vec(b64.as_bytes(), decoded.as_mut()).ok()?;
     let creds = zeroize::Zeroizing::new(String::from_utf8(decoded.to_vec()).ok()?);
     let idx = creds.find(':')?;
     let user = creds[..idx].to_string();
     let pass = SecretString::from(creds[idx + 1..].to_string());
-    Some((user, pass))
-}
     Some((user, pass))
 }
 
