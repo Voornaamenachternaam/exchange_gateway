@@ -1,4 +1,4 @@
-# d1_schema.sql
+-- d1_schema.sql
 -- Cloudflare D1 database schema for exchange_gateway.
 -- Apply with: wrangler d1 execute exchange_gateway_db --file=d1_schema.sql
 
