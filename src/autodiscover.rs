@@ -92,7 +92,7 @@ fn extract_email_from_soap(body: &str) -> Option<String> {
             if let Some(end) = body.find(open).and_then(|i| {
                 let start = i + open.len();
                 body[start..].find(close).map(|j| start + j)
-            }) {
+            })
             let email = body[start..end].trim().to_string();
             if email.contains('@') {
                 return Some(email);
