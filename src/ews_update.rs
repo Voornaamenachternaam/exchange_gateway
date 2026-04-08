@@ -1,10 +1,9 @@
 // src/ews_update.rs
 use crate::calendar::{
-    extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_recurrence,
-    CalendarItem,
+    CalendarItem, extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_recurrence,
 };
-use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::Reader;
+use quick_xml::events::{BytesEnd, BytesStart, Event};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EwsFieldChange {
@@ -71,7 +70,9 @@ fn push_start_tag(out: &mut String, e: &BytesStart<'_>) {
         out.push_str("=\"");
         match attr.unescape_value() {
             Ok(value) => out.push_str(&xml_escape_attr(&value)),
-            Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(attr.value.as_ref()))),
+            Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(
+                attr.value.as_ref(),
+            ))),
         }
         out.push('"');
     }
@@ -87,7 +88,9 @@ fn push_empty_tag(out: &mut String, e: &BytesStart<'_>) {
         out.push_str("=\"");
         match attr.unescape_value() {
             Ok(value) => out.push_str(&xml_escape_attr(&value)),
-            Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(attr.value.as_ref()))),
+            Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(
+                attr.value.as_ref(),
+            ))),
         }
         out.push('"');
     }
@@ -101,7 +104,9 @@ fn push_end_tag(out: &mut String, e: &BytesEnd<'_>) {
 }
 
 fn first_ews_field(payload: &str, candidates: &[&[u8]]) -> Option<String> {
-    candidates.iter().find_map(|name| extract_ews_field(payload, name))
+    candidates
+        .iter()
+        .find_map(|name| extract_ews_field(payload, name))
 }
 
 fn first_ews_i32(payload: &str, candidates: &[&[u8]]) -> Option<i32> {
@@ -142,13 +147,18 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                             };
                         }
                     }
-                    State::InVerb { field_uri, payload_xml, collecting_payload, .. } => {
+                    State::InVerb {
+                        field_uri,
+                        payload_xml,
+                        collecting_payload,
+                        ..
+                    } => {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"FieldURI" {
-                                    if let Ok(v) = attr.unescape_value() {
-                                        *field_uri = Some(v.to_string());
-                                    }
+                                if attr.key.local_name().as_ref() == b"FieldURI"
+                                    && let Ok(v) = attr.unescape_value()
+                                {
+                                    *field_uri = Some(v.to_string());
                                 }
                             }
                         } else if field_uri.is_some() {
@@ -162,13 +172,18 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 let local = local_name_bytes(e.name().as_ref());
                 match &mut state {
                     State::Root => {}
-                    State::InVerb { field_uri, payload_xml, collecting_payload, .. } => {
+                    State::InVerb {
+                        field_uri,
+                        payload_xml,
+                        collecting_payload,
+                        ..
+                    } => {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"FieldURI" {
-                                    if let Ok(v) = attr.unescape_value() {
-                                        *field_uri = Some(v.to_string());
-                                    }
+                                if attr.key.local_name().as_ref() == b"FieldURI"
+                                    && let Ok(v) = attr.unescape_value()
+                                {
+                                    *field_uri = Some(v.to_string());
                                 }
                             }
                         } else if field_uri.is_some() {
@@ -182,8 +197,16 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 let local = local_name_bytes(e.name().as_ref());
                 match &mut state {
                     State::Root => {}
-                    State::InVerb { verb, field_uri, payload_xml, collecting_payload } => {
-                        if matches!(local.as_str(), "SetItemField" | "AppendToItemField" | "DeleteItemField") {
+                    State::InVerb {
+                        verb,
+                        field_uri,
+                        payload_xml,
+                        collecting_payload,
+                    } => {
+                        if matches!(
+                            local.as_str(),
+                            "SetItemField" | "AppendToItemField" | "DeleteItemField"
+                        ) {
                             if let Some(field_uri) = field_uri.take() {
                                 results.push(EwsFieldChange {
                                     verb: *verb,
@@ -199,17 +222,25 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 }
             }
             Ok(Event::Text(t)) => {
-                if let State::InVerb { collecting_payload: true, payload_xml, .. } = &mut state {
-                    if let Ok(text) = t.decode() {
-                        payload_xml.push_str(&xml_escape_text(&text));
-                    }
+                if let State::InVerb {
+                    collecting_payload: true,
+                    payload_xml,
+                    ..
+                } = &mut state
+                    && let Ok(text) = t.decode()
+                {
+                    payload_xml.push_str(&xml_escape_text(&text));
                 }
             }
             Ok(Event::CData(t)) => {
-                if let State::InVerb { collecting_payload: true, payload_xml, .. } = &mut state {
-                    if let Ok(text) = t.decode() {
-                        payload_xml.push_str(&xml_escape_text(&text));
-                    }
+                if let State::InVerb {
+                    collecting_payload: true,
+                    payload_xml,
+                    ..
+                } = &mut state
+                    && let Ok(text) = t.decode()
+                {
+                    payload_xml.push_str(&xml_escape_text(&text));
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -231,7 +262,9 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "item:subject" => match verb {
                 ChangeVerb::Delete => item.subject.clear(),
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"Subject".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) =
+                        first_ews_field(payload, &[b"Subject".as_ref(), b"Value".as_ref()])
+                    {
                         item.subject = v;
                     }
                 }
@@ -239,7 +272,10 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "item:body" => match verb {
                 ChangeVerb::Delete => item.description.clear(),
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"Body".as_ref(), b"TextBody".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) = first_ews_field(
+                        payload,
+                        &[b"Body".as_ref(), b"TextBody".as_ref(), b"Value".as_ref()],
+                    ) {
                         item.description = v;
                     }
                 }
@@ -247,17 +283,20 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "item:reminderisset" => match verb {
                 ChangeVerb::Delete => item.reminder = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"ReminderIsSet".as_ref()]) {
-                        if v.eq_ignore_ascii_case("false") {
-                            item.reminder = None;
-                        }
+                    if let Some(v) = first_ews_field(payload, &[b"ReminderIsSet".as_ref()])
+                        && v.eq_ignore_ascii_case("false")
+                    {
+                        item.reminder = None;
                     }
                 }
             },
             "item:reminderminutesbeforestart" => match verb {
                 ChangeVerb::Delete => item.reminder = None,
                 _ => {
-                    if let Some(v) = first_ews_i32(payload, &[b"ReminderMinutesBeforeStart".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) = first_ews_i32(
+                        payload,
+                        &[b"ReminderMinutesBeforeStart".as_ref(), b"Value".as_ref()],
+                    ) {
                         item.reminder = Some(v);
                     }
                 }
@@ -265,7 +304,9 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "item:sensitivity" => match verb {
                 ChangeVerb::Delete => item.sensitivity = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"Sensitivity".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) =
+                        first_ews_field(payload, &[b"Sensitivity".as_ref(), b"Value".as_ref()])
+                    {
                         item.sensitivity = Some(match v.as_str() {
                             "Normal" => 0,
                             "Personal" => 1,
@@ -287,8 +328,9 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "calendar:start" => match verb {
                 ChangeVerb::Delete => {}
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"Start".as_ref(), b"Value".as_ref()])
-                        .and_then(|s| crate::calendar::parse_datetime(&s))
+                    if let Some(v) =
+                        first_ews_field(payload, &[b"Start".as_ref(), b"Value".as_ref()])
+                            .and_then(|s| crate::calendar::parse_datetime(&s))
                     {
                         item.start = v;
                     }
@@ -315,7 +357,9 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "calendar:location" => match verb {
                 ChangeVerb::Delete => item.location.clear(),
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"Location".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) =
+                        first_ews_field(payload, &[b"Location".as_ref(), b"Value".as_ref()])
+                    {
                         item.location = v;
                     }
                 }
@@ -323,7 +367,10 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "calendar:legacyfreebusystatus" => match verb {
                 ChangeVerb::Delete => item.busy_status = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"LegacyFreeBusyStatus".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) = first_ews_field(
+                        payload,
+                        &[b"LegacyFreeBusyStatus".as_ref(), b"Value".as_ref()],
+                    ) {
                         item.busy_status = Some(match v.as_str() {
                             "Free" => 0,
                             "Tentative" => 1,
@@ -336,7 +383,9 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             },
             "calendar:recurrence" => match verb {
                 ChangeVerb::Delete => item.rrule = None,
-                _ => { item.rrule = parse_ews_recurrence(payload); }
+                _ => {
+                    item.rrule = parse_ews_recurrence(payload);
+                }
             },
             "calendar:requiredattendees" | "calendar:optionalattendees" => {
                 let attendees = parse_ews_attendees(payload);
@@ -344,16 +393,26 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 match verb {
                     ChangeVerb::Delete => {
                         item.attendees.retain(|a| {
-                            if is_optional { a.attendee_type != Some(2) } else { a.attendee_type == Some(2) }
+                            if is_optional {
+                                a.attendee_type != Some(2)
+                            } else {
+                                a.attendee_type == Some(2)
+                            }
                         });
                     }
                     ChangeVerb::Set => {
                         item.attendees.retain(|a| {
-                            if is_optional { a.attendee_type != Some(2) } else { a.attendee_type == Some(2) }
+                            if is_optional {
+                                a.attendee_type != Some(2)
+                            } else {
+                                a.attendee_type == Some(2)
+                            }
                         });
                         item.attendees.extend(attendees);
                     }
-                    ChangeVerb::Append => { item.attendees.extend(attendees); }
+                    ChangeVerb::Append => {
+                        item.attendees.extend(attendees);
+                    }
                 }
             }
             "calendar:organizer" => match verb {
@@ -373,7 +432,13 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "calendar:isresponserequested" | "calendar:responserequested" => match verb {
                 ChangeVerb::Delete => item.response_requested = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"IsResponseRequested".as_ref(), b"ResponseRequested".as_ref()]) {
+                    if let Some(v) = first_ews_field(
+                        payload,
+                        &[
+                            b"IsResponseRequested".as_ref(),
+                            b"ResponseRequested".as_ref(),
+                        ],
+                    ) {
                         item.response_requested = Some(v.eq_ignore_ascii_case("true"));
                     }
                 }
@@ -389,24 +454,28 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "calendar:starttimezone" | "calendar:starttimezoneid" => match verb {
                 ChangeVerb::Delete => item.timezone = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"StartTimeZone".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) =
+                        first_ews_field(payload, &[b"StartTimeZone".as_ref(), b"Value".as_ref()])
+                    {
                         item.timezone = Some(v);
                     }
                 }
             },
             "calendar:endtimezone" | "calendar:endtimezoneid" => {
-                if verb != ChangeVerb::Delete {
-                    if let Some(v) = first_ews_field(payload, &[b"EndTimeZone".as_ref(), b"Value".as_ref()]) {
-                        if item.timezone.is_none() {
-                            item.timezone = Some(v);
-                        }
-                    }
+                if verb != ChangeVerb::Delete
+                    && let Some(v) =
+                        first_ews_field(payload, &[b"EndTimeZone".as_ref(), b"Value".as_ref()])
+                    && item.timezone.is_none()
+                {
+                    item.timezone = Some(v);
                 }
             }
             "calendar:meetingtimezone" => match verb {
                 ChangeVerb::Delete => item.timezone_blob = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"MeetingTimeZone".as_ref(), b"Value".as_ref()]) {
+                    if let Some(v) =
+                        first_ews_field(payload, &[b"MeetingTimeZone".as_ref(), b"Value".as_ref()])
+                    {
                         item.timezone_blob = Some(v);
                     }
                 }
@@ -415,8 +484,11 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "calendar:appointmentreplytime" => match verb {
                 ChangeVerb::Delete => item.appointment_reply_time = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"AppointmentReplyTime".as_ref(), b"Value".as_ref()])
-                        .and_then(|s| crate::calendar::parse_datetime(&s))
+                    if let Some(v) = first_ews_field(
+                        payload,
+                        &[b"AppointmentReplyTime".as_ref(), b"Value".as_ref()],
+                    )
+                    .and_then(|s| crate::calendar::parse_datetime(&s))
                     {
                         item.appointment_reply_time = Some(v);
                     }
@@ -424,11 +496,21 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             },
             "calendar:onlinemeetingconflink" => match verb {
                 ChangeVerb::Delete => item.online_meeting_conf_link = None,
-                _ => { item.online_meeting_conf_link = first_ews_field(payload, &[b"OnlineMeetingConfLink".as_ref(), b"Value".as_ref()]); }
+                _ => {
+                    item.online_meeting_conf_link = first_ews_field(
+                        payload,
+                        &[b"OnlineMeetingConfLink".as_ref(), b"Value".as_ref()],
+                    );
+                }
             },
             "calendar:onlinemeetingexternallink" => match verb {
                 ChangeVerb::Delete => item.online_meeting_external_link = None,
-                _ => { item.online_meeting_external_link = first_ews_field(payload, &[b"OnlineMeetingExternalLink".as_ref(), b"Value".as_ref()]); }
+                _ => {
+                    item.online_meeting_external_link = first_ews_field(
+                        payload,
+                        &[b"OnlineMeetingExternalLink".as_ref(), b"Value".as_ref()],
+                    );
+                }
             },
             _ => {}
         }
