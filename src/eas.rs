@@ -171,9 +171,10 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let name = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
+                // Check for both default namespace (xmlns) and prefixed namespaces (xmlns:*)
                 let ns = e.attributes().flatten().find_map(|attr| {
                     let key = String::from_utf8_lossy(attr.key.as_ref());
-                    if key == "xmlns" {
+                    if key == "xmlns" || key.starts_with("xmlns:") {
                         Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
                     } else {
                         None

@@ -839,7 +839,7 @@ impl Wbxml {
             // Extract xmlns:prefix declarations
             let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
             for attr in e.attributes().flatten() {
-                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                let key = String::from_utf8_lossy(attr.key.as_ref());
                 if key.starts_with("xmlns:") {
                     let prefix = &key[6..];
                     if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
@@ -856,7 +856,7 @@ impl Wbxml {
             
             // Determine code page from prefix if present
             let qname = e.name();
-            let full_name = std::str::from_utf8(qname.as_ref())?;
+            let full_name = String::from_utf8_lossy(qname.as_ref());
             let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
                 let prefix = &full_name[..pos];
                 let local = &full_name[pos + 1..];
@@ -864,7 +864,7 @@ impl Wbxml {
                     .find_map(|map| map.get(prefix).copied().flatten());
                 (local, prefix_cp.or(ns_cp).or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
             } else {
-                (full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
+                (&*full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
             };
             
             self.encode_open_tag(
@@ -879,7 +879,7 @@ impl Wbxml {
             // Extract xmlns:prefix declarations
             let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
             for attr in e.attributes().flatten() {
-                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                let key = String::from_utf8_lossy(attr.key.as_ref());
                 if key.starts_with("xmlns:") {
                     let prefix = &key[6..];
                     if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
@@ -895,7 +895,7 @@ impl Wbxml {
             
             // Determine code page from prefix if present
             let qname = e.name();
-            let full_name = std::str::from_utf8(qname.as_ref())?;
+            let full_name = String::from_utf8_lossy(qname.as_ref());
             let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
                 let prefix = &full_name[..pos];
                 let local = &full_name[pos + 1..];
@@ -903,7 +903,7 @@ impl Wbxml {
                     .find_map(|map| map.get(prefix).copied().flatten());
                 (local, prefix_cp.or(ns_cp).or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
             } else {
-                (full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
+                (&*full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
             };
             
             self.encode_open_tag(
@@ -966,9 +966,11 @@ impl Wbxml {
 }
 
 fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'a>, reader: &quick_xml::Reader<R>) -> Option<u8> {
+    // Only check for default namespace (xmlns). Prefixed namespaces (xmlns:*) are
+    // handled separately in the encode function's prefix collection loop.
     for attr in e.attributes().flatten() {
-        let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
-        if key == "xmlns" || key.starts_with("xmlns:") {
+        let key = String::from_utf8_lossy(attr.key.as_ref());
+        if key == "xmlns" {
             if let Ok(val) =
                 attr.decode_and_unescape_value(reader.decoder())
             {
