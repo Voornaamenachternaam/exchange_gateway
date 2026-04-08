@@ -231,8 +231,8 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
 
     match lower_cmd.as_str() {
         "sync" => {
-            if let Some(class) = extract_first_tag_text(xml, b"Class")
-                && !class.eq_ignore_ascii_case("Calendar")
+            if extract_first_tag_text(xml, b"Class")
+                .is_some_and(|class| !class.eq_ignore_ascii_case("Calendar"))
             {
                 return Err("Only Calendar Sync class is supported");
             }
