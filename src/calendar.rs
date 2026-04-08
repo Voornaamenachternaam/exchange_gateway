@@ -1540,21 +1540,35 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     b"Add" | b"Change" | b"Delete"
                 ) {
                     match current_kind.take() {
-                        Some(EasOpKind::Add) => out.push(EasSyncMutation::Add {
-                            client_id: current.client_id.clone(),
-                            item: current.into_item()?,
-                        }),
-                        Some(EasOpKind::Change) => out.push(EasSyncMutation::Change {
-                            server_id: current.server_id.clone().unwrap_or_default(),
-                            instance_id: current.instance_id.clone(),
-                            patch: current.into_patch(),
-                        }),
-                        Some(EasOpKind::Delete) => out.push(EasSyncMutation::Delete {
-                            server_id: current.server_id.clone().unwrap_or_default(),
-                            instance_id: current.instance_id.clone(),
-                        }),
-                        None => {}
-                    }
+                Some(EasOpKind::Add) => {
+                    let client_id = current.client_id.clone();
+                    let builder = std::mem::take(&mut current);
+                    out.push(EasSyncMutation::Add {
+                        client_id,
+                        item: builder.into_item()?,
+                    });
+                }
+                Some(EasOpKind::Change) => {
+                    let server_id = current.server_id.clone().unwrap_or_default();
+                    let instance_id = current.instance_id.clone();
+                    let builder = std::mem::take(&mut current);
+                    out.push(EasSyncMutation::Change {
+                        server_id,
+                        instance_id,
+                        patch: builder.into_patch(),
+                    });
+                }
+                Some(EasOpKind::Delete) => {
+                    let server_id = current.server_id.clone().unwrap_or_default();
+                    let instance_id = current.instance_id.clone();
+                    let _builder = std::mem::take(&mut current);
+                    out.push(EasSyncMutation::Delete {
+                        server_id,
+                        instance_id,
+                    });
+                }
+                None => {}
+            }
                 }
                 stack.pop();
             }

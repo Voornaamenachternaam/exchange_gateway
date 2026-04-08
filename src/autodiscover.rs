@@ -1,13 +1,6 @@
 // src/autodiscover.rs
-use crate::config::Config;
-use axum::{
-    extract::{Query, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
-};
+use axum::http::StatusCode;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 pub struct AutodiscoverJsonParams {
@@ -126,7 +119,7 @@ pub fn handle_autodiscover_json(
     (StatusCode::OK, no_cache_headers_json(), body)
 }
 
-pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdResponse {
+pub fn handle_autodiscover_xml(host: &str, _body: &str, email: &str) -> AdResponse {
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
     let xml = format!(

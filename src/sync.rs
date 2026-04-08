@@ -527,7 +527,7 @@ pub async fn perform_sync(
         let new_sync_key = Uuid::new_v4().to_string();
         storage.set_sync_key(owner, state_collection_id, &new_sync_key, Some("token")).await?;
         let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
-        let server_id = generate_server_id(&state.cfg.hmac_secret, &pseudo_resource);
+        let server_id = generate_server_id(state.cfg.hmac_secret(), &pseudo_resource);
         let app_data = class_placeholder_app_data(normalized, owner);
         let commands = if app_data.is_empty() { String::new() } else {
             format!("<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>", xml_escape(&server_id), app_data)
