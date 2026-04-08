@@ -198,9 +198,7 @@ pub fn validate_folder_request(
         }
     }
 
-    if let Some(did) = distinguished_id
-        && DistinguishedFolder::from_str(did).is_none()
-    {
+    if distinguished_id.is_some_and(|did| DistinguishedFolder::from_str(did).is_none()) {
         return Some("ErrorFolderNotFound");
     }
     None
