@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn blob_to_iana_from_utc_offset_name() {
         let mut blob = [0u8; 172];
-        blob[0..4].copy_from_slice(&-120i32.to_le_bytes());
+        blob[0..4].copy_from_slice(&(-120i32).to_le_bytes());
         write_wchar_name(&mut blob, 4, "(UTC+02:00) Custom");
         let b64 = BASE64.encode(blob);
         assert_eq!(eas_timezone_blob_to_iana(&b64), Some("Etc/GMT-2".to_string()));

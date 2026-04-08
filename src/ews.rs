@@ -672,7 +672,13 @@ async fn merged_freebusy_for_mailbox(
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1)) / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
     let mut events_xml_out = String::new();
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = match CaldavClient::new(&state.cfg) {
+        Ok(c) => c,
+        Err(_) => {
+            merged.fill('4');
+            return (merged.into_iter().collect(), events_xml_out);
+        }
+    };
     if let Ok(calendars) = caldav.find_user_calendars(mailbox, password).await
         && let Some(collection_href) = calendars.first()
         && let Ok(raw_events_xml) = caldav.query_events(collection_href,
@@ -967,7 +973,10 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     let Some(item) = item else { return operation_error_response(&EwsAction::GetItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK); };
     let ck = changekey_for_item(&item);
     let shape = requested_item_shape(body);
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = match CaldavClient::new(&state.cfg) {
+        Ok(c) => c,
+        Err(e) => return operation_error_response(&EwsAction::GetItem, "ErrorInternalServerError", &format!("Failed to create CalDAV client: {}", e), StatusCode::INTERNAL_SERVER_ERROR),
+    };
     let calendar_item_xml = match caldav.get_event(&item.resource_href, owner, &auth.password).await {
         Ok((ics, _)) => match parse_ics_event(&ics) {
             Some(ci) => render_ews_calendar_item_xml_with_shape(&item.server_id, &ck, &ci, shape),
@@ -1107,7 +1116,10 @@ async fn handle_unsubscribe(_auth: &AuthContext, _body: &str) -> Response {
 async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::CreateItem, owner, body) { return resp; }
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = match CaldavClient::new(&state.cfg) {
+        Ok(c) => c,
+        Err(e) => return operation_error_response(&EwsAction::GetItem, "ErrorInternalServerError", &format!("Failed to create CalDAV client: {}", e), StatusCode::INTERNAL_SERVER_ERROR),
+    };
     let item = match parse_ews_calendar_item(body) {
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::CreateItem, "ErrorSchemaValidation", &format!("Failed to parse CalendarItem payload: {e}"), StatusCode::BAD_REQUEST),
@@ -1144,7 +1156,10 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     };
     let Some(stored_item) = stored_item else { return operation_error_response(&EwsAction::UpdateItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK); };
     if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item) { return resp; }
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = match CaldavClient::new(&state.cfg) {
+        Ok(c) => c,
+        Err(e) => return operation_error_response(&EwsAction::GetItem, "ErrorInternalServerError", &format!("Failed to create CalDAV client: {}", e), StatusCode::INTERNAL_SERVER_ERROR),
+    };
     let (existing_ics, existing_etag) = match caldav.get_event(&stored_item.resource_href, owner, &auth.password).await {
         Ok(v) => v,
         Err(e) => return operation_error_response(&EwsAction::UpdateItem, "ErrorInternalServerError", &format!("Failed to fetch existing event: {e}"), StatusCode::INTERNAL_SERVER_ERROR),
@@ -1212,7 +1227,10 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     };
     let Some(existing) = existing else { return operation_error_response(&EwsAction::DeleteItem, "ErrorItemNotFound", "Requested item does not exist", StatusCode::OK); };
     if let Err(resp) = validate_item_change_key(&EwsAction::DeleteItem, body, &existing) { return resp; }
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = match CaldavClient::new(&state.cfg) {
+        Ok(c) => c,
+        Err(e) => return operation_error_response(&EwsAction::GetItem, "ErrorInternalServerError", &format!("Failed to create CalDAV client: {}", e), StatusCode::INTERNAL_SERVER_ERROR),
+    };
     if let Err(e) = caldav.delete_event(&existing.resource_href, owner, &auth.password, existing.etag.as_deref()).await {
         return operation_error_response(&EwsAction::DeleteItem, "ErrorInternalServerError", &format!("Failed to delete CalDAV item: {}", e), StatusCode::INTERNAL_SERVER_ERROR);
     }

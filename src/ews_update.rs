@@ -62,14 +62,14 @@ fn local_name_bytes(name: &[u8]) -> String {
     String::from_utf8_lossy(local).into_owned()
 }
 
-fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::encoding::Decoder) {
+fn push_start_tag(out: &mut String, e: &BytesStart<'_>) {
     out.push('<');
     out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
     for attr in e.attributes().flatten() {
         out.push(' ');
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
-        match attr.decode_and_unescape_value(decoder) {
+        match attr.unescape_value() {
             Ok(value) => out.push_str(&xml_escape_attr(&value)),
             Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
@@ -78,14 +78,14 @@ fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::enco
     out.push('>');
 }
 
-fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::encoding::Decoder) {
+fn push_empty_tag(out: &mut String, e: &BytesStart<'_>) {
     out.push('<');
     out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
     for attr in e.attributes().flatten() {
         out.push(' ');
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
-        match attr.decode_and_unescape_value(decoder) {
+        match attr.unescape_value() {
             Ok(value) => out.push_str(&xml_escape_attr(&value)),
             Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
@@ -146,14 +146,14 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"FieldURI" {
-                                    if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                                    if let Ok(v) = attr.unescape_value() {
                                         *field_uri = Some(v.to_string());
                                     }
                                 }
                             }
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
-                            push_start_tag(payload_xml, e, reader.decoder());
+                            push_start_tag(payload_xml, e);
                         }
                     }
                 }
@@ -166,14 +166,14 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"FieldURI" {
-                                    if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                                    if let Ok(v) = attr.unescape_value() {
                                         *field_uri = Some(v.to_string());
                                     }
                                 }
                             }
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
-                            push_empty_tag(payload_xml, e, reader.decoder());
+                            push_empty_tag(payload_xml, e);
                         }
                     }
                 }

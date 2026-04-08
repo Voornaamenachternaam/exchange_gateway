@@ -1,4 +1,5 @@
 // src/wbxml.rs
+use base64::Engine;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -47,6 +48,7 @@ fn namespace_to_code_page(ns: &str) -> Option<u8> {
 }
 
 fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<(u8, u8)> {
+    // First try direct lookup in NAME_TO_TAG (fast path)
     if let Some(&pair) = NAME_TO_TAG.get(qualified_or_local) {
         if let Some(cp) = override_cp {
             if pair.0 == cp {
@@ -56,7 +58,11 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
             return Some(pair);
         }
     }
-    for (name, &(cp, id)) in NAME_TO_TAG.iter() {
+    
+    // Fallback: iterate over TAG_TO_NAME to find all matching entries
+    // This is needed because NAME_TO_TAG only holds one entry per tag name,
+    // but many tags exist in multiple code pages (e.g., "Status" in cp 0, 6, 7, 8, etc.)
+    for (&(cp, id), &name) in TAG_TO_NAME.iter() {
         let local = if let Some(p) = name.rfind(':') {
             &name[p + 1..]
         } else {
@@ -821,6 +827,7 @@ impl Wbxml {
         let mut buf: Vec<u8> = vec![0x03, 0x01, 0x6A, 0x00];
         let mut current_code_page = 0u8;
         let mut ns_stack: Vec<Option<u8>> = Vec::new();
+        let mut prefix_ns_stack: Vec<std::collections::HashMap<String, Option<u8>>> = Vec::new();
 
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -829,34 +836,87 @@ impl Wbxml {
         loop {
             match reader.read_event_into(&mut event_buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
-                    let ns_cp = extract_xmlns_cp(e);
-                    ns_stack.push(ns_cp);
-                    let effective_cp =
-                        ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x));
-                    let name_raw = e.name().local_name();
-                    let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(
-                        &mut buf,
-                        &mut current_code_page,
-                        name_str,
-                        effective_cp,
-                        true,
-                    )?;
+            // Extract xmlns:prefix declarations
+            let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
+            for attr in e.attributes().flatten() {
+                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                if key.starts_with("xmlns:") {
+                    let prefix = &key[6..];
+                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
+                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                            new_prefixes.insert(prefix.to_string(), Some(cp));
+                        }
+                    }
                 }
+            }
+            prefix_ns_stack.push(new_prefixes);
+            
+            let ns_cp = extract_xmlns_cp(e, &reader);
+            ns_stack.push(ns_cp);
+            
+            // Determine code page from prefix if present
+            let qname = e.name();
+            let full_name = std::str::from_utf8(qname.as_ref())?;
+            let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
+                let prefix = &full_name[..pos];
+                let local = &full_name[pos + 1..];
+                let prefix_cp = prefix_ns_stack.iter().rev()
+                    .find_map(|map| map.get(prefix).copied().flatten());
+                (local, prefix_cp.or(ns_cp).or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
+            } else {
+                (full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
+            };
+            
+            self.encode_open_tag(
+                &mut buf,
+                &mut current_code_page,
+                local_name,
+                effective_cp,
+                true,
+            )?;
+        }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    let ns_cp = extract_xmlns_cp(e);
-                    let effective_cp =
-                        ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x));
-                    let name_raw = e.name().local_name();
-                    let name_str = std::str::from_utf8(name_raw.as_ref())?;
-                    self.encode_open_tag(
-                        &mut buf,
-                        &mut current_code_page,
-                        name_str,
-                        effective_cp,
-                        false,
-                    )?;
+            // Extract xmlns:prefix declarations
+            let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
+            for attr in e.attributes().flatten() {
+                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
+                if key.starts_with("xmlns:") {
+                    let prefix = &key[6..];
+                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
+                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                            new_prefixes.insert(prefix.to_string(), Some(cp));
+                        }
+                    }
                 }
+            }
+            prefix_ns_stack.push(new_prefixes);
+            
+            let ns_cp = extract_xmlns_cp(e, &reader);
+            
+            // Determine code page from prefix if present
+            let qname = e.name();
+            let full_name = std::str::from_utf8(qname.as_ref())?;
+            let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
+                let prefix = &full_name[..pos];
+                let local = &full_name[pos + 1..];
+                let prefix_cp = prefix_ns_stack.iter().rev()
+                    .find_map(|map| map.get(prefix).copied().flatten());
+                (local, prefix_cp.or(ns_cp).or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
+            } else {
+                (full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
+            };
+            
+            self.encode_open_tag(
+                &mut buf,
+                &mut current_code_page,
+                local_name,
+                effective_cp,
+                false,
+            )?;
+            
+            // Pop for Empty elements (they don't have End events)
+            prefix_ns_stack.pop();
+        }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     let txt = e
                         .decode()
@@ -869,9 +929,10 @@ impl Wbxml {
                     }
                 }
                 Ok(quick_xml::events::Event::End(_)) => {
-                    ns_stack.pop();
-                    buf.push(END);
-                }
+            ns_stack.pop();
+            prefix_ns_stack.pop();
+            buf.push(END);
+        }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(anyhow!("XML encode error: {e:?}")),
                 _ => {}
@@ -904,12 +965,12 @@ impl Wbxml {
     }
 }
 
-fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
+fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'a>, reader: &quick_xml::Reader<R>) -> Option<u8> {
     for attr in e.attributes().flatten() {
         let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
         if key == "xmlns" || key.starts_with("xmlns:") {
             if let Ok(val) =
-                attr.decode_and_unescape_value(quick_xml::encoding::Decoder::utf8())
+                attr.decode_and_unescape_value(reader.decoder())
             {
                 if let Some(cp) = namespace_to_code_page(val.as_ref()) {
                     return Some(cp);

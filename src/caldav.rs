@@ -4,7 +4,6 @@ use anyhow::Result;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
-use reqwest_tracing::TracingMiddleware;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use uuid::Uuid;

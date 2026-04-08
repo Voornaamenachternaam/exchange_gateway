@@ -13,10 +13,8 @@ use axum::{
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{
-    cors::{Any, CorsLayer},
     sensitive_headers::SetSensitiveRequestHeadersLayer,
     trace::TraceLayer,
-    request_id::MakeRequestUuid,
     timeout::RequestBodyTimeoutLayer,
     limit::RequestBodyLimitLayer,
     compression::CompressionLayer,
