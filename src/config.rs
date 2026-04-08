@@ -2,8 +2,8 @@
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::fs;
-use zeroize::Zeroizing;
 use url::Url;
+use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -29,8 +29,8 @@ impl Config {
         cfg.validate()?;
 
         if cfg.gateway_host.is_empty() {
-            cfg.gateway_host = extract_host_from_url(&cfg.worker_url)
-                .unwrap_or_else(|| "localhost".to_string());
+            cfg.gateway_host =
+                extract_host_from_url(&cfg.worker_url).unwrap_or_else(|| "localhost".to_string());
         }
 
         Ok(cfg)
@@ -49,7 +49,9 @@ impl Config {
             return Err(anyhow::anyhow!("Config: 'bind' address is required"));
         }
         if !self.bind.contains(':') {
-            return Err(anyhow::anyhow!("Config: 'bind' must be in format 'host:port'"));
+            return Err(anyhow::anyhow!(
+                "Config: 'bind' must be in format 'host:port'"
+            ));
         }
         if self.caldav_base.is_empty() {
             return Err(anyhow::anyhow!("Config: 'caldav_base' URL is required"));
@@ -65,7 +67,9 @@ impl Config {
             return Err(anyhow::anyhow!("Config: 'worker_secret' is required"));
         }
         if self.worker_secret.expose_secret().len() < 16 {
-            tracing::warn!("Config: worker_secret is shorter than 16 characters — this is insecure");
+            tracing::warn!(
+                "Config: worker_secret is shorter than 16 characters — this is insecure"
+            );
         }
 
         if self.hmac_secret.expose_secret().is_empty() {
@@ -117,7 +121,14 @@ fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    fn make_config(bind: &str, caldav_base: &str, worker_url: &str, worker_secret: &str, hmac_secret: &str, gateway_host: &str) -> Config {
+    fn make_config(
+        bind: &str,
+        caldav_base: &str,
+        worker_url: &str,
+        worker_secret: &str,
+        hmac_secret: &str,
+        gateway_host: &str,
+    ) -> Config {
         Config {
             bind: bind.into(),
             caldav_base: caldav_base.into(),
@@ -151,25 +162,53 @@ mod tests {
 
     #[test]
     fn validates_empty_bind_fails() {
-        let cfg = make_config("", "http://localhost", "https://worker.example.com/api", "secret1234567890", "12345678901234567890123456789012", "");
+        let cfg = make_config(
+            "",
+            "http://localhost",
+            "https://worker.example.com/api",
+            "secret1234567890",
+            "12345678901234567890123456789012",
+            "",
+        );
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn validates_missing_scheme_fails() {
-        let cfg = make_config("0.0.0.0:8134", "not-a-url", "https://worker.example.com/api", "secret1234567890", "12345678901234567890123456789012", "");
+        let cfg = make_config(
+            "0.0.0.0:8134",
+            "not-a-url",
+            "https://worker.example.com/api",
+            "secret1234567890",
+            "12345678901234567890123456789012",
+            "",
+        );
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn validates_weak_secret_warns() {
-        let cfg = make_config("0.0.0.0:8134", "http://localhost", "https://worker.example.com/api", "short", "12345678901234567890123456789012", "");
+        let cfg = make_config(
+            "0.0.0.0:8134",
+            "http://localhost",
+            "https://worker.example.com/api",
+            "short",
+            "12345678901234567890123456789012",
+            "",
+        );
         let _ = cfg.validate();
     }
 
     #[test]
     fn gateway_host_with_scheme_fails() {
-        let cfg = make_config("0.0.0.0:8134", "http://localhost", "https://worker.example.com/api", "secret1234567890", "12345678901234567890123456789012", "https://exchange.example.com");
+        let cfg = make_config(
+            "0.0.0.0:8134",
+            "http://localhost",
+            "https://worker.example.com/api",
+            "secret1234567890",
+            "12345678901234567890123456789012",
+            "https://exchange.example.com",
+        );
         assert!(cfg.validate().is_err());
     }
 }

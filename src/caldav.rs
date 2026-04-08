@@ -3,7 +3,7 @@ use crate::config::Config;
 use anyhow::Result;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use uuid::Uuid;
@@ -15,23 +15,21 @@ pub struct CaldavClient {
 
 impl CaldavClient {
     pub fn new(cfg: &Config) -> Result<Self> {
-    let retry_policy = ExponentialBackoff::builder()
-        .build_with_max_retries(3);
-    let client = ClientBuilder::new(
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()?,
-    )
-    .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-    .build();
-    Ok(Self { base: cfg.caldav_base.clone(), client })
-    }        
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
+        let client = ClientBuilder::new(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()?,
+        )
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+        Ok(Self {
+            base: cfg.caldav_base.clone(),
+            client,
+        })
+    }
 
-    pub async fn find_user_calendars(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<Vec<String>> {
+    pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
 
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -97,8 +95,11 @@ impl CaldavClient {
             }
         }
 
-        let default_url =
-            format!("{}/cal/{}/default/", self.base.trim_end_matches('/'), username);
+        let default_url = format!(
+            "{}/cal/{}/default/",
+            self.base.trim_end_matches('/'),
+            username
+        );
         tracing::debug!(
             "caldav: using fallback default calendar URL: {}",
             default_url
@@ -139,10 +140,7 @@ impl CaldavClient {
             .send()
             .await?;
         if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow::anyhow!(
-                "failed to query events: {}",
-                resp.status()
-            ));
+            return Err(anyhow::anyhow!("failed to query events: {}", resp.status()));
         }
         Ok(resp.text().await?)
     }
@@ -161,10 +159,7 @@ impl CaldavClient {
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "failed to fetch event: {}",
-                resp.status()
-            ));
+            return Err(anyhow::anyhow!("failed to fetch event: {}", resp.status()));
         }
         let etag = resp
             .headers()
@@ -199,10 +194,7 @@ impl CaldavClient {
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "failed to write event: {}",
-                resp.status()
-            ));
+            return Err(anyhow::anyhow!("failed to write event: {}", resp.status()));
         }
         let etag = resp
             .headers()
@@ -227,10 +219,7 @@ impl CaldavClient {
         }
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "failed to delete event: {}",
-                resp.status()
-            ));
+            return Err(anyhow::anyhow!("failed to delete event: {}", resp.status()));
         }
         Ok(())
     }
@@ -253,9 +242,7 @@ impl CaldavClient {
         }
         let collection = self.absolute_url(collection_href)?;
         let base = reqwest::Url::parse(&collection)?;
-        Ok(base
-            .join(&format!("{}.ics", Uuid::new_v4()))?
-            .to_string())
+        Ok(base.join(&format!("{}.ics", Uuid::new_v4()))?.to_string())
     }
 
     fn relative_href(&self, href: &str) -> String {

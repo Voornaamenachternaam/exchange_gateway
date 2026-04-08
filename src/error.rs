@@ -52,7 +52,10 @@ impl GatewayError {
         }
     }
 
-    pub fn protocol_with_source(context: impl Into<String>, source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+    pub fn protocol_with_source(
+        context: impl Into<String>,
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
         GatewayError::Protocol {
             context: context.into(),
             source: Some(source.into()),

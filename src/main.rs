@@ -4,20 +4,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
+    Router,
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{any, get, post},
-    Router,
 };
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{
-    sensitive_headers::SetSensitiveRequestHeadersLayer,
+    compression::CompressionLayer, limit::RequestBodyLimitLayer,
+    sensitive_headers::SetSensitiveRequestHeadersLayer, timeout::RequestBodyTimeoutLayer,
     trace::TraceLayer,
-    timeout::RequestBodyTimeoutLayer,
-    limit::RequestBodyLimitLayer,
-    compression::CompressionLayer,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -69,7 +67,11 @@ async fn autodiscover_json(
     build_response(status, &hdrs, body_out)
 }
 
-fn build_response(status: StatusCode, hdrs: &[(&'static str, &'static str)], body: String) -> Response {
+fn build_response(
+    status: StatusCode,
+    hdrs: &[(&'static str, &'static str)],
+    body: String,
+) -> Response {
     let mut resp = (status, body).into_response();
     for (k, v) in hdrs {
         if let (Ok(name), Ok(value)) = (
@@ -94,7 +96,10 @@ async fn main() -> anyhow::Result<()> {
     let config = match Config::load(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("CRITICAL: Failed to load config from {}: {}", config_path, e);
+            eprintln!(
+                "CRITICAL: Failed to load config from {}: {}",
+                config_path, e
+            );
             return Err(e);
         }
     };
@@ -130,9 +135,11 @@ async fn main() -> anyhow::Result<()> {
                     header::HeaderName::from_static("x-gateway-secret"),
                 ]))
                 .layer(TraceLayer::new_for_http())
-                .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+                .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
+                    REQUEST_TIMEOUT_SECS,
+                )))
                 .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-                .layer(CompressionLayer::new())
+                .layer(CompressionLayer::new()),
         )
         .with_state(app_state);
 

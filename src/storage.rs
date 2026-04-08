@@ -1,7 +1,7 @@
 // src/storage.rs
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use reqwest_tracing::TracingMiddleware;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,7 +103,7 @@ impl Storage {
         let retry_policy = ExponentialBackoff::builder()
             .retry_bounds(Duration::from_millis(50), Duration::from_secs(3))
             .build_with_max_retries(3);
-        
+
         let client = ClientBuilder::new(
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
@@ -114,7 +114,7 @@ impl Storage {
         .with(TracingMiddleware::default())
         .with(RetryTransientMiddleware::new_with_policy(retry_policy))
         .build();
-        
+
         Ok(Self {
             client,
             base_url: worker_url.trim_end_matches('/').to_string(),
@@ -173,7 +173,12 @@ impl Storage {
         sync_key: &str,
         token: Option<&str>,
     ) -> Result<()> {
-        let body = SetSyncKeyReq { owner, collection_id, sync_key, token };
+        let body = SetSyncKeyReq {
+            owner,
+            collection_id,
+            sync_key,
+            token,
+        };
         self.post_json("set_sync_key", &body).await
     }
 
@@ -200,7 +205,14 @@ impl Storage {
         uid: &str,
         etag: &str,
     ) -> Result<()> {
-        let body = UpsertItemReq { owner, caldav_href, resource_href, server_id, uid, etag };
+        let body = UpsertItemReq {
+            owner,
+            caldav_href,
+            resource_href,
+            server_id,
+            uid,
+            etag,
+        };
         self.post_json("upsert_item_map", &body).await
     }
 
@@ -238,7 +250,13 @@ impl Storage {
         }
         self.post_json(
             "put_client_sync_command",
-            &Req { owner, collection_id, client_id, server_id, status },
+            &Req {
+                owner,
+                collection_id,
+                client_id,
+                server_id,
+                status,
+            },
         )
         .await
     }
@@ -249,7 +267,8 @@ impl Storage {
             owner: &'a str,
             server_id: &'a str,
         }
-        self.post_json("delete_item_by_server_id", &Req { owner, server_id }).await
+        self.post_json("delete_item_by_server_id", &Req { owner, server_id })
+            .await
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
@@ -258,7 +277,8 @@ impl Storage {
             owner: &'a str,
             server_id: &'a str,
         }
-        self.post_json("add_delete_tombstone", &Req { owner, server_id }).await
+        self.post_json("add_delete_tombstone", &Req { owner, server_id })
+            .await
     }
 
     pub async fn list_changes_since(
@@ -278,11 +298,7 @@ impl Storage {
             .collect())
     }
 
-    pub async fn list_deleted_since(
-        &self,
-        owner: &str,
-        since_unix_ts: i64,
-    ) -> Result<Vec<String>> {
+    pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
         let path = format!(
             "list_deleted_since?owner={}&since={}",
             urlencoding::encode(owner),
@@ -355,7 +371,12 @@ impl Storage {
         policy_key: &str,
         policy_status: &str,
     ) -> Result<()> {
-        let body = SetProvisionReq { owner, device_id, policy_key, policy_status };
+        let body = SetProvisionReq {
+            owner,
+            device_id,
+            policy_key,
+            policy_status,
+        };
         self.post_json("set_provision_policy", &body).await
     }
 
@@ -397,7 +418,16 @@ impl Storage {
         }
         self.post_json(
             "upsert_device_info",
-            &Req { owner, device_id, friendly_name, model, os, phone_number, imei, user_agent },
+            &Req {
+                owner,
+                device_id,
+                friendly_name,
+                model,
+                os,
+                phone_number,
+                imei,
+                user_agent,
+            },
         )
         .await
     }
@@ -452,7 +482,14 @@ impl Storage {
             folder_id: &'a str,
             sync_state: &'a str,
         }
-        self.post_json("set_ews_sync_state", &Req { owner, folder_id, sync_state })
-            .await
+        self.post_json(
+            "set_ews_sync_state",
+            &Req {
+                owner,
+                folder_id,
+                sync_state,
+            },
+        )
+        .await
     }
 }

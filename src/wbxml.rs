@@ -1,6 +1,6 @@
 // src/wbxml.rs
+use anyhow::{Result, anyhow};
 use base64::Engine;
-use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -12,8 +12,7 @@ const LITERAL: u8 = 0x04;
 const STR_T: u8 = 0x83;
 const OPAQUE: u8 = 0xC3;
 
-static TAG_TO_NAME: LazyLock<HashMap<(u8, u8), &'static str>> =
-    LazyLock::new(build_tag_to_name);
+static TAG_TO_NAME: LazyLock<HashMap<(u8, u8), &'static str>> = LazyLock::new(build_tag_to_name);
 static NAME_TO_TAG: LazyLock<HashMap<&'static str, (u8, u8)>> =
     LazyLock::new(|| TAG_TO_NAME.iter().map(|(&k, &v)| (v, k)).collect());
 
@@ -58,7 +57,7 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
             return Some(pair);
         }
     }
-    
+
     // Fallback: iterate over TAG_TO_NAME to find all matching entries
     // This is needed because NAME_TO_TAG only holds one entry per tag name,
     // but many tags exist in multiple code pages (e.g., "Status" in cp 0, 6, 7, 8, etc.)
@@ -710,13 +709,14 @@ impl Wbxml {
         }
 
         let mut pos = 0usize;
-        let _version = *bytes.get(pos).ok_or_else(|| anyhow!("Missing WBXML version"))?;
+        let _version = *bytes
+            .get(pos)
+            .ok_or_else(|| anyhow!("Missing WBXML version"))?;
         pos += 1;
         let _public_id = Self::read_mb_uint(bytes, &mut pos)?;
         let _charset = Self::read_mb_uint(bytes, &mut pos)?;
-        let str_table_len =
-            usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
-                .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
+        let str_table_len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+            .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
         if pos + str_table_len > bytes.len() {
             return Err(anyhow!("WBXML string table exceeds payload"));
         }
@@ -725,8 +725,7 @@ impl Wbxml {
 
         let mut current_code_page = 0u8;
         let mut xml_stack: Vec<String> = Vec::new();
-        let mut output =
-            String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+        let mut output = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
 
         while pos < bytes.len() {
             let token = bytes[pos];
@@ -750,9 +749,8 @@ impl Wbxml {
                     output.push_str(&xml_escape_text(&content));
                 }
                 STR_T => {
-                    let offset =
-                        usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
-                            .map_err(|_| anyhow!("Invalid STR_T offset"))?;
+                    let offset = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                        .map_err(|_| anyhow!("Invalid STR_T offset"))?;
                     if offset >= string_table.len() {
                         return Err(anyhow!("STR_T offset outside string table"));
                     }
@@ -760,8 +758,7 @@ impl Wbxml {
                     while end < string_table.len() && string_table[end] != 0 {
                         end += 1;
                     }
-                    let content =
-                        String::from_utf8(string_table[offset..end].to_vec())?;
+                    let content = String::from_utf8(string_table[offset..end].to_vec())?;
                     output.push_str(&xml_escape_text(&content));
                 }
                 ENTITY => {
@@ -769,17 +766,14 @@ impl Wbxml {
                     output.push_str(&format!("&#{ent};"));
                 }
                 OPAQUE => {
-                    let len =
-                        usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
-                            .map_err(|_| anyhow!("Invalid OPAQUE length"))?;
+                    let len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
+                        .map_err(|_| anyhow!("Invalid OPAQUE length"))?;
                     if pos + len > bytes.len() {
                         return Err(anyhow!("OPAQUE data exceeds payload"));
                     }
                     let opaque = &bytes[pos..pos + len];
                     pos += len;
-                    output.push_str(
-                        &base64::engine::general_purpose::STANDARD.encode(opaque),
-                    );
+                    output.push_str(&base64::engine::general_purpose::STANDARD.encode(opaque));
                 }
                 LITERAL => {
                     return Err(anyhow!("LITERAL token unsupported in this profile"));
@@ -788,9 +782,7 @@ impl Wbxml {
                     if token >= 0x05 {
                         let has_content = (token & 0x40) != 0;
                         let tag_id = token & 0x3F;
-                        if let Some(name) =
-                            TAG_TO_NAME.get(&(current_code_page, tag_id))
-                        {
+                        if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
                             output.push_str(&format!("<{name}>"));
                             if has_content {
                                 xml_stack.push(name.to_string());
@@ -804,9 +796,8 @@ impl Wbxml {
                                 tag_id
                             );
                             if has_content {
-                                let placeholder = format!(
-                                    "_unknown_cp{current_code_page}_{tag_id:02x}"
-                                );
+                                let placeholder =
+                                    format!("_unknown_cp{current_code_page}_{tag_id:02x}");
                                 output.push_str(&format!("<{placeholder}>"));
                                 xml_stack.push(placeholder);
                             }
@@ -836,89 +827,111 @@ impl Wbxml {
         loop {
             match reader.read_event_into(&mut event_buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
-            // Extract xmlns:prefix declarations
-            let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
-            for attr in e.attributes().flatten() {
-                let key_bytes = attr.key.as_ref();
-                if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
-                    // XML attribute names are ASCII, so this is safe
-                    let prefix = String::from_utf8_lossy(&key_bytes[6..]);
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
-                            new_prefixes.insert(prefix.into_owned(), Some(cp));
+                    // Extract xmlns:prefix declarations
+                    let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
+                        std::collections::HashMap::new();
+                    for attr in e.attributes().flatten() {
+                        let key_bytes = attr.key.as_ref();
+                        if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
+                            // XML attribute names are ASCII, so this is safe
+                            let prefix = String::from_utf8_lossy(&key_bytes[6..]);
+                            if let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
+                                && let Some(cp) = namespace_to_code_page(val.as_ref())
+                            {
+                                new_prefixes.insert(prefix.into_owned(), Some(cp));
+                            }
                         }
                     }
+                    prefix_ns_stack.push(new_prefixes);
+
+                    let ns_cp = extract_xmlns_cp(e, &reader);
+                    ns_stack.push(ns_cp);
+
+                    // Determine code page from prefix if present
+                    let qname = e.name();
+                    let full_name = String::from_utf8_lossy(qname.as_ref());
+                    let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
+                        let prefix = &full_name[..pos];
+                        let local = &full_name[pos + 1..];
+                        let prefix_cp = prefix_ns_stack
+                            .iter()
+                            .rev()
+                            .find_map(|map| map.get(prefix).copied().flatten());
+                        (
+                            local,
+                            prefix_cp
+                                .or(ns_cp)
+                                .or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
+                        )
+                    } else {
+                        (
+                            &*full_name,
+                            ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
+                        )
+                    };
+
+                    self.encode_open_tag(
+                        &mut buf,
+                        &mut current_code_page,
+                        local_name,
+                        effective_cp,
+                        true,
+                    )?;
                 }
-            }
-            prefix_ns_stack.push(new_prefixes);
-            
-            let ns_cp = extract_xmlns_cp(e, &reader);
-            ns_stack.push(ns_cp);
-            
-            // Determine code page from prefix if present
-            let qname = e.name();
-            let full_name = String::from_utf8_lossy(qname.as_ref());
-            let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
-                let prefix = &full_name[..pos];
-                let local = &full_name[pos + 1..];
-                let prefix_cp = prefix_ns_stack.iter().rev()
-                    .find_map(|map| map.get(prefix).copied().flatten());
-                (local, prefix_cp.or(ns_cp).or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
-            } else {
-                (&*full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
-            };
-            
-            self.encode_open_tag(
-                &mut buf,
-                &mut current_code_page,
-                local_name,
-                effective_cp,
-                true,
-            )?;
-        }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-            // Extract xmlns:prefix declarations
-            let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
-            for attr in e.attributes().flatten() {
-                let key_bytes = attr.key.as_ref();
-                if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
-                    // XML attribute names are ASCII, so this is safe
-                    let prefix = String::from_utf8_lossy(&key_bytes[6..]);
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
-                            new_prefixes.insert(prefix.into_owned(), Some(cp));
+                    // Extract xmlns:prefix declarations
+                    let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
+                        std::collections::HashMap::new();
+                    for attr in e.attributes().flatten() {
+                        let key_bytes = attr.key.as_ref();
+                        if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
+                            // XML attribute names are ASCII, so this is safe
+                            let prefix = String::from_utf8_lossy(&key_bytes[6..]);
+                            if let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
+                                && let Some(cp) = namespace_to_code_page(val.as_ref())
+                            {
+                                new_prefixes.insert(prefix.into_owned(), Some(cp));
+                            }
                         }
                     }
+                    prefix_ns_stack.push(new_prefixes);
+
+                    let ns_cp = extract_xmlns_cp(e, &reader);
+
+                    // Determine code page from prefix if present
+                    let qname = e.name();
+                    let full_name = String::from_utf8_lossy(qname.as_ref());
+                    let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
+                        let prefix = &full_name[..pos];
+                        let local = &full_name[pos + 1..];
+                        let prefix_cp = prefix_ns_stack
+                            .iter()
+                            .rev()
+                            .find_map(|map| map.get(prefix).copied().flatten());
+                        (
+                            local,
+                            prefix_cp
+                                .or(ns_cp)
+                                .or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
+                        )
+                    } else {
+                        (
+                            &*full_name,
+                            ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
+                        )
+                    };
+
+                    self.encode_open_tag(
+                        &mut buf,
+                        &mut current_code_page,
+                        local_name,
+                        effective_cp,
+                        false,
+                    )?;
+
+                    // Pop for Empty elements (they don't have End events)
+                    prefix_ns_stack.pop();
                 }
-            }
-            prefix_ns_stack.push(new_prefixes);
-            
-            let ns_cp = extract_xmlns_cp(e, &reader);
-            
-            // Determine code page from prefix if present
-            let qname = e.name();
-            let full_name = String::from_utf8_lossy(qname.as_ref());
-            let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
-                let prefix = &full_name[..pos];
-                let local = &full_name[pos + 1..];
-                let prefix_cp = prefix_ns_stack.iter().rev()
-                    .find_map(|map| map.get(prefix).copied().flatten());
-                (local, prefix_cp.or(ns_cp).or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
-            } else {
-                (&*full_name, ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)))
-            };
-            
-            self.encode_open_tag(
-                &mut buf,
-                &mut current_code_page,
-                local_name,
-                effective_cp,
-                false,
-            )?;
-            
-            // Pop for Empty elements (they don't have End events)
-            prefix_ns_stack.pop();
-        }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
                     let txt = e
                         .decode()
@@ -931,10 +944,10 @@ impl Wbxml {
                     }
                 }
                 Ok(quick_xml::events::Event::End(_)) => {
-            ns_stack.pop();
-            prefix_ns_stack.pop();
-            buf.push(END);
-        }
+                    ns_stack.pop();
+                    prefix_ns_stack.pop();
+                    buf.push(END);
+                }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => return Err(anyhow!("XML encode error: {e:?}")),
                 _ => {}
@@ -967,22 +980,23 @@ impl Wbxml {
     }
 }
 
-fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'a>, reader: &quick_xml::Reader<R>) -> Option<u8> {
+fn extract_xmlns_cp<'a, R: std::io::BufRead>(
+    e: &quick_xml::events::BytesStart<'a>,
+    reader: &quick_xml::Reader<R>,
+) -> Option<u8> {
     // Only check for default namespace (xmlns). Prefixed namespaces (xmlns:*) are
     // handled separately in the encode function's prefix collection loop.
     // Use direct byte slice comparison to avoid UTF-8 validation and Cow allocation.
     for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"xmlns" {
-            if let Ok(val) =
-                attr.decode_and_unescape_value(reader.decoder())
-            {
-                if let Some(cp) = namespace_to_code_page(val.as_ref()) {
-                    return Some(cp);
-                }
-                let with_colon = format!("{}:", val);
-                if let Some(cp) = namespace_to_code_page(&with_colon) {
-                    return Some(cp);
-                }
+        if attr.key.as_ref() == b"xmlns"
+            && let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
+        {
+            if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                return Some(cp);
+            }
+            let with_colon = format!("{}:", val);
+            if let Some(cp) = namespace_to_code_page(&with_colon) {
+                return Some(cp);
             }
         }
     }
@@ -1034,7 +1048,10 @@ mod tests {
         let wb = codec.encode(xml).expect("encode");
         let dec = codec.decode(&wb).expect("decode");
         assert!(dec.contains("<MeetingResponse>"), "decoded: {dec}");
-        assert!(dec.contains("<UserResponse>1</UserResponse>"), "decoded: {dec}");
+        assert!(
+            dec.contains("<UserResponse>1</UserResponse>"),
+            "decoded: {dec}"
+        );
         assert!(dec.contains("<RequestId>abc</RequestId>"), "decoded: {dec}");
     }
 
@@ -1075,7 +1092,10 @@ mod tests {
         let xml = r#"<Ping xmlns="Ping:"><Status>6</Status><MaxFolders>200</MaxFolders></Ping>"#;
         let wb = codec.encode(xml).expect("encode ping");
         let dec = codec.decode(&wb).expect("decode ping");
-        assert!(dec.contains("<MaxFolders>200</MaxFolders>"), "decoded: {dec}");
+        assert!(
+            dec.contains("<MaxFolders>200</MaxFolders>"),
+            "decoded: {dec}"
+        );
     }
 
     #[test]
@@ -1105,7 +1125,10 @@ mod tests {
         let wb = codec.encode(xml).expect("encode location");
         let dec = codec.decode(&wb).expect("decode location");
         assert!(dec.contains("<AirSyncBase:Location>"), "decoded: {dec}");
-        assert!(dec.contains("<AirSyncBase:DisplayName>Conference Room A</AirSyncBase:DisplayName>"), "decoded: {dec}");
+        assert!(
+            dec.contains("<AirSyncBase:DisplayName>Conference Room A</AirSyncBase:DisplayName>"),
+            "decoded: {dec}"
+        );
     }
 
     #[test]
@@ -1123,6 +1146,9 @@ mod tests {
         let xml = r#"<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><Commands><Add><ClientId>c1</ClientId><ApplicationData><Calendar:Subject>Test</Calendar:Subject><Calendar:StartTime>2026-03-22T09:00:00Z</Calendar:StartTime><Calendar:EndTime>2026-03-22T10:00:00Z</Calendar:EndTime><Calendar:ClientUid>test-uid-123</Calendar:ClientUid></ApplicationData></Add></Commands></Collection></Collections></Sync>"#;
         let wb = codec.encode(xml).expect("encode");
         let dec = codec.decode(&wb).expect("decode");
-        assert!(dec.contains("<Calendar:ClientUid>test-uid-123</Calendar:ClientUid>"), "decoded: {dec}");
+        assert!(
+            dec.contains("<Calendar:ClientUid>test-uid-123</Calendar:ClientUid>"),
+            "decoded: {dec}"
+        );
     }
 }
