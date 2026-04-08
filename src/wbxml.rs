@@ -842,7 +842,12 @@ impl Wbxml {
                 let key_bytes = attr.key.as_ref();
                 if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
                     // XML attribute names are ASCII, so this is safe
-                    let prefix = std::str::from_utf8(&key_bytes[6..]).unwrap();
+                    let prefix = String::from_utf8_lossy(&key_bytes[6..]);
+                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
+                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                            new_prefixes.insert(prefix.into_owned(), Some(cp));
+                        }
+                    }
                     if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
                         if let Some(cp) = namespace_to_code_page(val.as_ref()) {
                             new_prefixes.insert(prefix.to_string(), Some(cp));
