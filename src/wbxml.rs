@@ -839,9 +839,15 @@ impl Wbxml {
             // Extract xmlns:prefix declarations
             let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
             for attr in e.attributes().flatten() {
-                let key = String::from_utf8_lossy(attr.key.as_ref());
-                if key.starts_with("xmlns:") {
-                    let prefix = &key[6..];
+                let key_bytes = attr.key.as_ref();
+                if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
+                    // XML attribute names are ASCII, so this is safe
+                    let prefix = String::from_utf8_lossy(&key_bytes[6..]);
+                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
+                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                            new_prefixes.insert(prefix.into_owned(), Some(cp));
+                        }
+                    }
                     if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
                         if let Some(cp) = namespace_to_code_page(val.as_ref()) {
                             new_prefixes.insert(prefix.to_string(), Some(cp));
@@ -879,9 +885,15 @@ impl Wbxml {
             // Extract xmlns:prefix declarations
             let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
             for attr in e.attributes().flatten() {
-                let key = String::from_utf8_lossy(attr.key.as_ref());
-                if key.starts_with("xmlns:") {
-                    let prefix = &key[6..];
+                let key_bytes = attr.key.as_ref();
+                if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
+                    // XML attribute names are ASCII, so this is safe
+                    let prefix = String::from_utf8_lossy(&key_bytes[6..]);
+                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
+                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                            new_prefixes.insert(prefix.into_owned(), Some(cp));
+                        }
+                    }
                     if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
                         if let Some(cp) = namespace_to_code_page(val.as_ref()) {
                             new_prefixes.insert(prefix.to_string(), Some(cp));
@@ -968,9 +980,9 @@ impl Wbxml {
 fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'a>, reader: &quick_xml::Reader<R>) -> Option<u8> {
     // Only check for default namespace (xmlns). Prefixed namespaces (xmlns:*) are
     // handled separately in the encode function's prefix collection loop.
+    // Use direct byte slice comparison to avoid UTF-8 validation and Cow allocation.
     for attr in e.attributes().flatten() {
-        let key = String::from_utf8_lossy(attr.key.as_ref());
-        if key == "xmlns" {
+        if attr.key.as_ref() == b"xmlns" {
             if let Ok(val) =
                 attr.decode_and_unescape_value(reader.decoder())
             {

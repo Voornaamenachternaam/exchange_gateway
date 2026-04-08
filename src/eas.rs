@@ -171,15 +171,33 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let name = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
-                // Check for both default namespace (xmlns) and prefixed namespaces (xmlns:*)
-                let ns = e.attributes().flatten().find_map(|attr| {
-                    let key = String::from_utf8_lossy(attr.key.as_ref());
-                    if key == "xmlns" || key.starts_with("xmlns:") {
-                        Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
-                    } else {
-                        None
-                    }
-                }).unwrap_or_default();
+                let qname = e.name();
+                let qname_bytes = qname.as_ref();
+                
+                // Determine the root element's namespace correctly:
+                // - For unprefixed elements (e.g., <Sync>): use the default namespace (xmlns="...")
+                // - For prefixed elements (e.g., <as:Sync>): use the namespace bound to that prefix (xmlns:as="...")
+                let ns = if let Some(colon_pos) = qname_bytes.iter().position(|&b| b == b':') {
+                    // Prefixed element: find the namespace bound to this prefix
+                    let prefix = &qname_bytes[..colon_pos];
+                    e.attributes().flatten().find_map(|attr| {
+                        let key = attr.key.as_ref();
+                        if key.starts_with(b"xmlns:") && &key[6..] == prefix {
+                            Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        } else {
+                            None
+                        }
+                    }).unwrap_or_default()
+                } else {
+                    // Unprefixed element: use the default namespace (xmlns="...")
+                    e.attributes().flatten().find_map(|attr| {
+                        if attr.key.as_ref() == b"xmlns" {
+                            Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        } else {
+                            None
+                        }
+                    }).unwrap_or_default()
+                };
                 break (name, ns);
             }
             Ok(Event::Eof) | Err(_) => return Err("Missing root element"),
