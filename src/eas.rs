@@ -221,11 +221,10 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
 
     match lower_cmd.as_str() {
         "sync" => {
-            if let Some(class) = extract_first_tag_text(xml, b"Class") {
-                if !class.eq_ignore_ascii_case("Calendar") {
+            if let Some(class) = extract_first_tag_text(xml, b"Class")
+                && !class.eq_ignore_ascii_case("Calendar") {
                     return Err("Only Calendar Sync class is supported");
                 }
-            }
             if xml.contains("<Add>") && !xml.contains("<ClientId>") {
                 return Err("Add requires ClientId");
             }
@@ -582,10 +581,10 @@ async fn maybe_throttle(owner: &str, device_id: &str) -> bool {
     let key = format!("{}:{}", owner, device_id);
     let now = Instant::now();
     let mut cache = DEVICE_WINDOW.lock().await;
-    let entries = cache.get_or_insert_mut(key, || Vec::new());
+    let entries = cache.get_or_insert_mut(key, Vec::new);
     entries.retain(|ts| {
         now.checked_duration_since(*ts)
-            .map_or(false, |d| d < WINDOW)
+            .is_some_and(|d| d < WINDOW)
     });
     if entries.len() >= MAX_REQUESTS_PER_WINDOW {
         return true;

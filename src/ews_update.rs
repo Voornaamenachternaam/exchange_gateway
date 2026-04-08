@@ -145,11 +145,10 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                     State::InVerb { field_uri, payload_xml, collecting_payload, .. } => {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"FieldURI" {
-                                    if let Ok(v) = attr.unescape_value() {
+                                if attr.key.local_name().as_ref() == b"FieldURI"
+                                    && let Ok(v) = attr.unescape_value() {
                                         *field_uri = Some(v.to_string());
                                     }
-                                }
                             }
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
@@ -165,11 +164,10 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                     State::InVerb { field_uri, payload_xml, collecting_payload, .. } => {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"FieldURI" {
-                                    if let Ok(v) = attr.unescape_value() {
+                                if attr.key.local_name().as_ref() == b"FieldURI"
+                                    && let Ok(v) = attr.unescape_value() {
                                         *field_uri = Some(v.to_string());
                                     }
-                                }
                             }
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
@@ -199,18 +197,16 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 }
             }
             Ok(Event::Text(t)) => {
-                if let State::InVerb { collecting_payload: true, payload_xml, .. } = &mut state {
-                    if let Ok(text) = t.decode() {
+                if let State::InVerb { collecting_payload: true, payload_xml, .. } = &mut state
+                    && let Ok(text) = t.decode() {
                         payload_xml.push_str(&xml_escape_text(&text));
                     }
-                }
             }
             Ok(Event::CData(t)) => {
-                if let State::InVerb { collecting_payload: true, payload_xml, .. } = &mut state {
-                    if let Ok(text) = t.decode() {
+                if let State::InVerb { collecting_payload: true, payload_xml, .. } = &mut state
+                    && let Ok(text) = t.decode() {
                         payload_xml.push_str(&xml_escape_text(&text));
                     }
-                }
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
@@ -247,11 +243,10 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
             "item:reminderisset" => match verb {
                 ChangeVerb::Delete => item.reminder = None,
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"ReminderIsSet".as_ref()]) {
-                        if v.eq_ignore_ascii_case("false") {
+                    if let Some(v) = first_ews_field(payload, &[b"ReminderIsSet".as_ref()])
+                        && v.eq_ignore_ascii_case("false") {
                             item.reminder = None;
                         }
-                    }
                 }
             },
             "item:reminderminutesbeforestart" => match verb {
@@ -395,13 +390,11 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 }
             },
             "calendar:endtimezone" | "calendar:endtimezoneid" => {
-                if verb != ChangeVerb::Delete {
-                    if let Some(v) = first_ews_field(payload, &[b"EndTimeZone".as_ref(), b"Value".as_ref()]) {
-                        if item.timezone.is_none() {
+                if verb != ChangeVerb::Delete
+                    && let Some(v) = first_ews_field(payload, &[b"EndTimeZone".as_ref(), b"Value".as_ref()])
+                        && item.timezone.is_none() {
                             item.timezone = Some(v);
                         }
-                    }
-                }
             }
             "calendar:meetingtimezone" => match verb {
                 ChangeVerb::Delete => item.timezone_blob = None,

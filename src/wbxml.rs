@@ -843,16 +843,10 @@ impl Wbxml {
                 if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
                     // XML attribute names are ASCII, so this is safe
                     let prefix = String::from_utf8_lossy(&key_bytes[6..]);
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
+                        && let Some(cp) = namespace_to_code_page(val.as_ref()) {
                             new_prefixes.insert(prefix.into_owned(), Some(cp));
                         }
-                    }
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
-                            new_prefixes.insert(prefix.to_string(), Some(cp));
-                        }
-                    }
                 }
             }
             prefix_ns_stack.push(new_prefixes);
@@ -889,16 +883,10 @@ impl Wbxml {
                 if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
                     // XML attribute names are ASCII, so this is safe
                     let prefix = String::from_utf8_lossy(&key_bytes[6..]);
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
+                        && let Some(cp) = namespace_to_code_page(val.as_ref()) {
                             new_prefixes.insert(prefix.into_owned(), Some(cp));
                         }
-                    }
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
-                            new_prefixes.insert(prefix.to_string(), Some(cp));
-                        }
-                    }
                 }
             }
             prefix_ns_stack.push(new_prefixes);
@@ -982,8 +970,8 @@ fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'
     // handled separately in the encode function's prefix collection loop.
     // Use direct byte slice comparison to avoid UTF-8 validation and Cow allocation.
     for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"xmlns" {
-            if let Ok(val) =
+        if attr.key.as_ref() == b"xmlns"
+            && let Ok(val) =
                 attr.decode_and_unescape_value(reader.decoder())
             {
                 if let Some(cp) = namespace_to_code_page(val.as_ref()) {
@@ -994,7 +982,6 @@ fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'
                     return Some(cp);
                 }
             }
-        }
     }
     None
 }

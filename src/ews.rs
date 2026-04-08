@@ -817,11 +817,10 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
     ].iter().map(|&f| folder_id_for(owner, f)).collect();
 
     for maybe_id in [&explicit_id, &parent_id, &sync_id] {
-        if let Some(fid) = maybe_id {
-            if fid != "root" && !all_owner_ids.contains(fid) {
+        if let Some(fid) = maybe_id
+            && fid != "root" && !all_owner_ids.contains(fid) {
                 return Err(operation_error_response(action, "ErrorFolderNotFound", "Requested folder was not found for this mailbox", StatusCode::OK));
             }
-        }
     }
 
     if let Some(error_code) = validate_folder_request(owner, distinguished.as_deref(), explicit_id.as_deref(), sync_id.as_deref()) {

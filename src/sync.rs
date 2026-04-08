@@ -438,7 +438,7 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     xml.push_str(&format!("<Calendar:EndTime>{}</Calendar:EndTime>", item.end.format("%Y-%m-%dT%H:%M:%SZ")));
     xml.push_str(&format!("<Calendar:DtStamp>{}</Calendar:DtStamp>", item.dtstamp.unwrap_or_else(Utc::now).format("%Y-%m-%dT%H:%M:%SZ")));
     xml.push_str(if item.all_day { "<Calendar:AllDayEvent>1</Calendar:AllDayEvent>" } else { "<Calendar:AllDayEvent>0</Calendar:AllDayEvent>" });
-    if !item.all_day { if let Some(v) = &item.timezone { xml.push_str(&format!("<Calendar:Timezone>{}</Calendar:Timezone>", xml_escape(v))); } }
+    if !item.all_day && let Some(v) = &item.timezone { xml.push_str(&format!("<Calendar:Timezone>{}</Calendar:Timezone>", xml_escape(v))); }
     if let Some(v) = item.busy_status { xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v)); }
     if let Some(v) = item.sensitivity { xml.push_str(&format!("<Calendar:Sensitivity>{}</Calendar:Sensitivity>", v)); }
     if let Some(v) = item.reminder { xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v)); }
@@ -461,12 +461,11 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     xml.push_str(&xml_escape(&item.description));
     xml.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
     xml.push_str("<AirSyncBase:NativeBodyType>1</AirSyncBase:NativeBodyType>");
-    if !item.all_day {
-        if let Some(tz) = &item.timezone {
+    if !item.all_day
+        && let Some(tz) = &item.timezone {
             xml.push_str(&format!("<Calendar:StartTimeZone>{}</Calendar:StartTimeZone>", xml_escape(tz)));
             xml.push_str(&format!("<Calendar:EndTimeZone>{}</Calendar:EndTimeZone>", xml_escape(tz)));
         }
-    }
     xml.push_str(&format!("<Calendar:UID>{}</Calendar:UID>", xml_escape(&item.uid)));
     if let Some(rrule) = &item.rrule
         && let Some(rec_xml) = map_rrule_to_recurrence_xml(rrule, item.timezone.as_deref(), item.all_day)
