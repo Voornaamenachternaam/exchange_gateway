@@ -88,11 +88,11 @@ fn extract_email_from_soap(body: &str) -> Option<String> {
         ("<a:EMailAddress>", "</a:EMailAddress>"),
         ("<Mailbox>", "</Mailbox>"),
     ] {
-        if let Some(start) = body.find(open).map(|i| i + open.len()) {
-            if let Some(end) = body.find(open).and_then(|i| {
-                let start = i + open.len();
-                body[start..].find(close).map(|j| start + j)
-            })
+        if let Some(end) = body.find(open).and_then(|i| {
+            let start = i + open.len();
+            body[start..].find(close).map(|j| start + j)
+        }) {
+            let start = body.find(open).map(|i| i + open.len()).unwrap_or(0);
             let email = body[start..end].trim().to_string();
             if email.contains('@') {
                 return Some(email);
