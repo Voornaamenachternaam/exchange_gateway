@@ -184,11 +184,7 @@ pub async fn apply_client_sync_mutations(
                     }
                 }
             }
-            EasSyncMutation::Change {
-                server_id,
-                instance_id: _,
-                patch,
-            } => {
+            EasSyncMutation::Change { server_id, patch, .. } => {
                 let Some(existing) = state
                     .storage
                     .get_ews_item_by_server_id(owner, &server_id)
@@ -324,10 +320,7 @@ pub async fn apply_client_sync_mutations(
                     }),
                 }
             }
-            EasSyncMutation::Delete {
-                server_id,
-                instance_id: _,
-            } => {
+            EasSyncMutation::Delete { server_id, .. } => {
                 let Some(existing) = state
                     .storage
                     .get_ews_item_by_server_id(owner, &server_id)
