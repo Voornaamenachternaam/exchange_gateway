@@ -839,15 +839,12 @@ impl Wbxml {
             // Extract xmlns:prefix declarations
             let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
             for attr in e.attributes().flatten() {
-                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
-                if key.starts_with("xmlns:") {
-                    let prefix = &key[6..];
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                let key = String::from_utf8_lossy(attr.key.as_ref());
+                if let Some(prefix) = key.strip_prefix("xmlns:")
+                    && let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
+                        && let Some(cp) = namespace_to_code_page(val.as_ref()) {
                             new_prefixes.insert(prefix.to_string(), Some(cp));
                         }
-                    }
-                }
             }
             prefix_ns_stack.push(new_prefixes);
             
@@ -879,15 +876,12 @@ impl Wbxml {
             // Extract xmlns:prefix declarations
             let mut new_prefixes: std::collections::HashMap<String, Option<u8>> = std::collections::HashMap::new();
             for attr in e.attributes().flatten() {
-                let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
-                if key.starts_with("xmlns:") {
-                    let prefix = &key[6..];
-                    if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
-                        if let Some(cp) = namespace_to_code_page(val.as_ref()) {
+                let key = String::from_utf8_lossy(attr.key.as_ref());
+                if let Some(prefix) = key.strip_prefix("xmlns:")
+                    && let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
+                        && let Some(cp) = namespace_to_code_page(val.as_ref()) {
                             new_prefixes.insert(prefix.to_string(), Some(cp));
                         }
-                    }
-                }
             }
             prefix_ns_stack.push(new_prefixes);
             
@@ -967,9 +961,9 @@ impl Wbxml {
 
 fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'a>, reader: &quick_xml::Reader<R>) -> Option<u8> {
     for attr in e.attributes().flatten() {
-        let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
-        if key == "xmlns" || key.starts_with("xmlns:") {
-            if let Ok(val) =
+        let key = String::from_utf8_lossy(attr.key.as_ref());
+        if key == "xmlns"
+            && let Ok(val) =
                 attr.decode_and_unescape_value(reader.decoder())
             {
                 if let Some(cp) = namespace_to_code_page(val.as_ref()) {
@@ -980,7 +974,6 @@ fn extract_xmlns_cp<'a, R: std::io::BufRead>(e: &quick_xml::events::BytesStart<'
                     return Some(cp);
                 }
             }
-        }
     }
     None
 }

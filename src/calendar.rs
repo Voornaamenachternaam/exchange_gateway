@@ -472,10 +472,10 @@ fn parse_datetime_with_tzid(
     val: &str,
     tzid: Option<&str>,
 ) -> Option<chrono::DateTime<Utc>> {
-    if let Some(tzid) = tzid {
-        if !val.ends_with('Z') && val.contains('T') {
-            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S") {
-                if let Ok(tz) = tzid.parse::<Tz>() {
+    if let Some(tzid) = tzid
+        && !val.ends_with('Z') && val.contains('T') {
+            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S")
+                && let Ok(tz) = tzid.parse::<Tz>() {
                     if let Some(dt) = tz.from_local_datetime(&local).single() {
                         return Some(dt.with_timezone(&Utc));
                     }
@@ -483,9 +483,8 @@ fn parse_datetime_with_tzid(
                         return Some(dt.with_timezone(&Utc));
                     }
                 }
-            }
-            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S") {
-                if let Ok(tz) = tzid.parse::<Tz>() {
+            if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S")
+                && let Ok(tz) = tzid.parse::<Tz>() {
                     if let Some(dt) = tz.from_local_datetime(&local).single() {
                         return Some(dt.with_timezone(&Utc));
                     }
@@ -493,9 +492,7 @@ fn parse_datetime_with_tzid(
                         return Some(dt.with_timezone(&Utc));
                     }
                 }
-            }
         }
-    }
     parse_datetime(val)
 }
 
@@ -507,14 +504,13 @@ fn format_ical_datetime_with_timezone(
     if all_day {
         return (None, dt.format("%Y%m%d").to_string());
     }
-    if let Some(tzid) = timezone {
-        if let Ok(tz) = tzid.parse::<Tz>() {
+    if let Some(tzid) = timezone
+        && let Ok(tz) = tzid.parse::<Tz>() {
             return (
                 Some(tzid.to_string()),
                 dt.with_timezone(&tz).format("%Y%m%dT%H%M%S").to_string(),
             );
         }
-    }
     (None, dt.format("%Y%m%dT%H%M%SZ").to_string())
 }
 
@@ -983,11 +979,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
     if let Some(v) = &item.client_uid {
         lines.push(format!("X-MS-CLIENT-UID:{}", escape_ical_text(v)));
     }
-    if !item.all_day {
-        if let Some(v) = &item.timezone {
+    if !item.all_day
+        && let Some(v) = &item.timezone {
             lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
         }
-    }
     lines.push("END:VEVENT".to_string());
 
     for exception in item.exceptions.iter().filter(|v| !v.deleted) {
@@ -1550,7 +1545,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                 }
                 Some(EasOpKind::Change) => {
                     let server_id = current.server_id.clone().unwrap_or_default();
-                    let instance_id = current.instance_id.clone();
+                    let instance_id = current.instance_id;
                     let builder = std::mem::take(&mut current);
                     out.push(EasSyncMutation::Change {
                         server_id,
@@ -1560,7 +1555,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                 }
                 Some(EasOpKind::Delete) => {
                     let server_id = current.server_id.clone().unwrap_or_default();
-                    let instance_id = current.instance_id.clone();
+                    let instance_id = current.instance_id;
                     let _builder = std::mem::take(&mut current);
                     out.push(EasSyncMutation::Delete {
                         server_id,
@@ -1954,7 +1949,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_datetime, parse_eas_sync_mutations, parse_ews_attendees,
+        parse_eas_sync_mutations, parse_ews_attendees,
         parse_ews_recurrence, parse_ics_event, render_ics, EasRecurrence,
     };
 
