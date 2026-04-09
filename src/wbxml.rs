@@ -46,9 +46,6 @@ fn namespace_to_code_page(ns: &str) -> Option<u8> {
     }
 }
 
-fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<(u8, u8)> {
-    // First try direct lookup in NAME_TO_TAG (fast path)
-    if let Some(&pair) = NAME_TO_TAG.get(qualified_or_local) {
         if let Some(cp) = override_cp {
             if pair.0 == cp {
                 return Some(pair);
@@ -58,11 +55,6 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
         }
     }
 
-    // Fallback: iterate over TAG_TO_NAME to find all matching entries
-    // This is needed because NAME_TO_TAG only holds one entry per tag name,
-    // but many tags exist in multiple code pages (e.g., "Status" in cp 0, 6, 7, 8, etc.)
-    for (&(cp, id), &name) in TAG_TO_NAME.iter() {
-        let local = if let Some(p) = name.rfind(':') {
             &name[p + 1..]
         } else {
             name
@@ -827,13 +819,11 @@ impl Wbxml {
         loop {
             match reader.read_event_into(&mut event_buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
-                    // Extract xmlns:prefix declarations
                     let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
                         std::collections::HashMap::new();
                     for attr in e.attributes().flatten() {
                         let key_bytes = attr.key.as_ref();
                         if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
-                            // XML attribute names are ASCII, so this is safe
                             let prefix = String::from_utf8_lossy(&key_bytes[6..]);
                             if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
                                 let cp = namespace_to_code_page(val.as_ref());
@@ -846,7 +836,6 @@ impl Wbxml {
                     let ns_cp = extract_xmlns_cp(e, &reader);
                     ns_stack.push(ns_cp);
 
-                    // Determine code page from prefix if present
                     let qname = e.name();
                     let full_name = String::from_utf8_lossy(qname.as_ref());
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
@@ -881,7 +870,6 @@ impl Wbxml {
                     )?;
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    // Extract xmlns:prefix declarations
                     let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
                         std::collections::HashMap::new();
                     for attr in e.attributes().flatten() {
@@ -898,7 +886,6 @@ impl Wbxml {
 
                     let ns_cp = extract_xmlns_cp(e, &reader);
 
-                    // Determine code page from prefix if present
                     let qname = e.name();
                     let full_name = String::from_utf8_lossy(qname.as_ref());
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
@@ -932,7 +919,6 @@ impl Wbxml {
                         false,
                     )?;
 
-                    // Pop for Empty elements (they don't have End events)
                     prefix_ns_stack.pop();
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -987,9 +973,6 @@ fn extract_xmlns_cp<'a, R: std::io::BufRead>(
     e: &quick_xml::events::BytesStart<'a>,
     reader: &quick_xml::Reader<R>,
 ) -> Option<u8> {
-    // Only check for default namespace (xmlns). Prefixed namespaces (xmlns:*) are
-    // handled separately in the encode function's prefix collection loop.
-    // Use direct byte slice comparison to avoid UTF-8 validation and Cow allocation.
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == b"xmlns"
             && let Ok(val) = attr.decode_and_unescape_value(reader.decoder())

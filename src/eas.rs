@@ -175,9 +175,6 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 let qname = e.name();
                 let qname_bytes = qname.as_ref();
 
-                // Determine the root element's namespace correctly:
-                // - For unprefixed elements (e.g., <Sync>): use the default namespace (xmlns="...")
-                // - For prefixed elements (e.g., <as:Sync>): use the namespace bound to that prefix (xmlns:as="...")
                 let ns = if let Some(colon_pos) = qname_bytes.iter().position(|&b| b == b':') {
                                     let prefix = &qname_bytes[..colon_pos];
                     e.attributes()

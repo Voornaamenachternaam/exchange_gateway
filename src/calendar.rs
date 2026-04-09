@@ -9,7 +9,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 fn is_valid_iana_timezone(tz: &str) -> bool {
-    tz.is_empty() || Tz::from_str(tz).is_ok()
+    !tz.is_empty() && Tz::from_str(tz).is_ok()
 }
 
 #[derive(Clone, Debug, Default)]

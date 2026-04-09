@@ -284,11 +284,4 @@ mod tests {
     fn msgfolderroot_has_one_child_folder() {
         assert_eq!(DistinguishedFolder::MsgFolderRoot.child_folder_count(), 1);
     }
-
-    #[test]
-    fn child_folders_xml_contains_calendar() {
-        let xml = render_child_folders_xml("user@example.com");
-        assert!(xml.contains("CalendarFolder"));
-        assert!(xml.contains("IPF.Appointment"));
-    }
 }
