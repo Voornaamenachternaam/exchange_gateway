@@ -26,9 +26,6 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-// -----------------------------------------------------------------------------
-// Constants & static caches
-// -----------------------------------------------------------------------------
 
 const MAX_REQUESTS_PER_WINDOW: usize = 60;
 const WINDOW: Duration = Duration::from_secs(60);
@@ -182,8 +179,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 // - For unprefixed elements (e.g., <Sync>): use the default namespace (xmlns="...")
                 // - For prefixed elements (e.g., <as:Sync>): use the namespace bound to that prefix (xmlns:as="...")
                 let ns = if let Some(colon_pos) = qname_bytes.iter().position(|&b| b == b':') {
-                    // Prefixed element: find the namespace bound to this prefix
-                    let prefix = &qname_bytes[..colon_pos];
+                                    let prefix = &qname_bytes[..colon_pos];
                     e.attributes()
                         .flatten()
                         .find_map(|attr| {
@@ -196,8 +192,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                         })
                         .unwrap_or_default()
                 } else {
-                    // Unprefixed element: use the default namespace (xmlns="...")
-                    e.attributes()
+                                    e.attributes()
                         .flatten()
                         .find_map(|attr| {
                             if attr.key.as_ref() == b"xmlns" {

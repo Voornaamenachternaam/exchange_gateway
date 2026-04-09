@@ -281,33 +281,6 @@ impl Storage {
             .await
     }
 
-    pub async fn list_changes_since(
-        &self,
-        owner: &str,
-        since_unix_ts: i64,
-    ) -> Result<Vec<(String, String)>> {
-        let path = format!(
-            "list_changes_since?owner={}&since={}",
-            urlencoding::encode(owner),
-            since_unix_ts
-        );
-        let rows: Vec<ChangeRow> = self.get_json(&path).await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.server_id, r.resource_href.unwrap_or_default()))
-            .collect())
-    }
-
-    pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
-        let path = format!(
-            "list_deleted_since?owner={}&since={}",
-            urlencoding::encode(owner),
-            since_unix_ts
-        );
-        let rows: Vec<TombstoneRow> = self.get_json(&path).await?;
-        Ok(rows.into_iter().map(|r| r.server_id).collect())
-    }
-
     pub async fn get_latest_change_seq(&self) -> Result<i64> {
         let row: LatestSeqRow = self.get_json("get_latest_change_seq").await?;
         Ok(row.seq)

@@ -856,12 +856,15 @@ impl Wbxml {
                             .iter()
                             .rev()
                             .find_map(|map| map.get(prefix).copied().flatten());
-                        (
-                            local,
-                            prefix_cp
-                                .or(ns_cp)
-                                .or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
-                        )
+                match prefix_cp {
+                    Some(cp) => (local, Some(cp)),
+                    None => {
+                        return Err(anyhow!(
+                            "Undeclared or unsupported namespace prefix: '{}'",
+                            prefix
+                        ));
+                    }
+                }
                     } else {
                         (
                             &*full_name,
@@ -905,12 +908,15 @@ impl Wbxml {
                             .iter()
                             .rev()
                             .find_map(|map| map.get(prefix).copied().flatten());
-                        (
-                            local,
-                            prefix_cp
-                                .or(ns_cp)
-                                .or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
-                        )
+                match prefix_cp {
+                    Some(cp) => (local, Some(cp)),
+                    None => {
+                        return Err(anyhow!(
+                            "Undeclared or unsupported namespace prefix: '{}'",
+                            prefix
+                        ));
+                    }
+                }
                     } else {
                         (
                             &*full_name,

@@ -24,7 +24,6 @@ mod caldav;
 mod calendar;
 mod config;
 mod eas;
-mod error;
 mod ews;
 mod ews_folders;
 mod ews_update;

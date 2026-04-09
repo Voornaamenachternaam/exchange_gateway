@@ -85,12 +85,6 @@ impl DistinguishedFolder {
         matches!(self, Self::Calendar)
     }
 
-    pub fn parent_id(self) -> Option<&'static str> {
-        match self {
-            Self::MsgFolderRoot => None,
-            _ => Some("root"),
-        }
-    }
 }
 
 pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
@@ -158,14 +152,6 @@ pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: 
         count = count,
         child_count = child_count
     )
-}
-
-pub fn render_child_folders_xml(owner: &str) -> String {
-    let folders = [DistinguishedFolder::Calendar];
-    folders
-        .iter()
-        .map(|&f| render_folder_xml(owner, f, 0))
-        .collect()
 }
 
 pub fn validate_folder_request(

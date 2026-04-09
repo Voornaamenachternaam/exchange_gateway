@@ -5,7 +5,12 @@ use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::borrow::Cow;
+use std::str::FromStr;
 use uuid::Uuid;
+
+fn is_valid_iana_timezone(tz: &str) -> bool {
+    tz.is_empty() || Tz::from_str(tz).is_ok()
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct CalendarItem {
@@ -397,22 +402,6 @@ fn unescape_ical_text(input: &str) -> String {
         }
     }
     out
-}
-
-pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
-    let mut properties = Vec::new();
-    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
-    for line in unfolded.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(colon_idx) = line.find(':') {
-            let key = line[..colon_idx].to_string();
-            let value = line[colon_idx + 1..].to_string();
-            properties.push((key, value));
-        }
-    }
-    properties
 }
 
 fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
@@ -983,6 +972,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
     }
     if !item.all_day
         && let Some(v) = &item.timezone
+        && is_valid_iana_timezone(v)
     {
         lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
     }
