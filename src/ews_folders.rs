@@ -127,11 +127,7 @@ pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
     )
 }
 
-pub fn render_folder_xml(
-    owner: &str,
-    folder: DistinguishedFolder,
-    total_count: usize,
-) -> String {
+pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: usize) -> String {
     let fid = folder_id_for(owner, folder);
     let parent = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
     let prefix_len = fid.find('-').map(|i| i + 1).unwrap_or(4);
@@ -202,10 +198,8 @@ pub fn validate_folder_request(
         }
     }
 
-    if let Some(did) = distinguished_id {
-        if DistinguishedFolder::from_str(did).is_none() {
-            return Some("ErrorFolderNotFound");
-        }
+    if distinguished_id.is_some_and(|did| DistinguishedFolder::from_str(did).is_none()) {
+        return Some("ErrorFolderNotFound");
     }
     None
 }
@@ -224,11 +218,23 @@ mod tests {
     #[test]
     fn all_distinguished_folders_parse() {
         let ids = [
-            "calendar", "msgfolderroot", "inbox", "sentitems", "deleteditems",
-            "drafts", "outbox", "junkemail", "contacts", "tasks", "notes",
+            "calendar",
+            "msgfolderroot",
+            "inbox",
+            "sentitems",
+            "deleteditems",
+            "drafts",
+            "outbox",
+            "junkemail",
+            "contacts",
+            "tasks",
+            "notes",
         ];
         for id in &ids {
-            assert!(DistinguishedFolder::from_str(id).is_some(), "Failed to parse: {id}");
+            assert!(
+                DistinguishedFolder::from_str(id).is_some(),
+                "Failed to parse: {id}"
+            );
         }
     }
 
@@ -271,7 +277,8 @@ mod tests {
 
     #[test]
     fn validate_unknown_distinguished_id_fails() {
-        let result = validate_folder_request("user@example.com", Some("publicfoldersroot"), None, None);
+        let result =
+            validate_folder_request("user@example.com", Some("publicfoldersroot"), None, None);
         assert_eq!(result, Some("ErrorFolderNotFound"));
     }
 

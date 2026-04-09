@@ -27,7 +27,10 @@ fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
-        ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        (
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; sandbox",
+        ),
         ("X-XSS-Protection", "1; mode=block"),
     ]
 }
@@ -39,7 +42,10 @@ fn no_cache_headers_json() -> Vec<(&'static str, &'static str)> {
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
-        ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        (
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; sandbox",
+        ),
         ("X-XSS-Protection", "1; mode=block"),
     ]
 }
@@ -51,7 +57,10 @@ fn no_cache_headers_soap() -> Vec<(&'static str, &'static str)> {
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Frame-Options", "DENY"),
-        ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox"),
+        (
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; sandbox",
+        ),
         ("X-XSS-Protection", "1; mode=block"),
     ]
 }
@@ -66,7 +75,11 @@ fn extract_email_from_v1_xml(body: &str) -> Option<String> {
         .map(|i| i + "<EMailAddress>".len())?;
     let end = body[start..].find("</EMailAddress>").map(|i| start + i)?;
     let email = body[start..end].trim().to_string();
-    if email.contains('@') { Some(email) } else { None }
+    if email.contains('@') {
+        Some(email)
+    } else {
+        None
+    }
 }
 
 fn extract_email_from_soap(body: &str) -> Option<String> {
@@ -75,12 +88,14 @@ fn extract_email_from_soap(body: &str) -> Option<String> {
         ("<a:EMailAddress>", "</a:EMailAddress>"),
         ("<Mailbox>", "</Mailbox>"),
     ] {
-        if let Some(start) = body.find(open).map(|i| i + open.len()) {
-            if let Some(end) = body[start..].find(close).map(|i| start + i) {
-                let email = body[start..end].trim().to_string();
-                if email.contains('@') {
-                    return Some(email);
-                }
+        if let Some(end) = body.find(open).and_then(|i| {
+            let start = i + open.len();
+            body[start..].find(close).map(|j| start + j)
+        }) {
+            let start = body.find(open).map(|i| i + open.len()).unwrap_or(0);
+            let email = body[start..end].trim().to_string();
+            if email.contains('@') {
+                return Some(email);
             }
         }
     }
@@ -264,7 +279,10 @@ mod tests {
     #[test]
     fn extract_email_from_v1_body() {
         let body = r#"<Autodiscover xmlns="..."><Request><EMailAddress>alice@example.com</EMailAddress></Request></Autodiscover>"#;
-        assert_eq!(extract_email_from_body_xml(body), Some("alice@example.com".to_string()));
+        assert_eq!(
+            extract_email_from_body_xml(body),
+            Some("alice@example.com".to_string())
+        );
     }
 
     #[test]
@@ -278,7 +296,8 @@ mod tests {
 
     #[test]
     fn autodiscover_json_activesync_only() {
-        let (_, _, body) = handle_autodiscover_json("exchange.example.com", Some("ActiveSync"), None);
+        let (_, _, body) =
+            handle_autodiscover_json("exchange.example.com", Some("ActiveSync"), None);
         assert!(body.contains("ActiveSync"));
         assert!(!body.contains("EwsUrl"));
     }
@@ -292,14 +311,16 @@ mod tests {
 
     #[test]
     fn autodiscover_json_autodiscoverv1() {
-        let (_, _, body) = handle_autodiscover_json("exchange.example.com", Some("AutodiscoverV1"), None);
+        let (_, _, body) =
+            handle_autodiscover_json("exchange.example.com", Some("AutodiscoverV1"), None);
         assert!(body.contains("AutodiscoverV1"));
         assert!(body.contains("autodiscover.xml"));
     }
 
     #[test]
     fn autodiscover_xml_contains_required_fields() {
-        let (status, _, body) = handle_autodiscover_xml("exchange.example.com", "", "alice@example.com");
+        let (status, _, body) =
+            handle_autodiscover_xml("exchange.example.com", "", "alice@example.com");
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("<Type>EXCH</Type>"));
         assert!(body.contains("<Type>EXPR</Type>"));
