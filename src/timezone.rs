@@ -169,7 +169,7 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
         ("lagos", "Africa/Lagos"),
         ("nairobi", "Africa/Nairobi"),
         ("casablanca", "Africa/Casablanca"),
-        ("GMT", "UTC"),
+        ("gmt", "UTC"),
         ("utc", "UTC"),
         ("zulu", "UTC"),
         ("azores", "Atlantic/Azores"),
