@@ -74,12 +74,7 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
 fn windows_name_to_iana(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_lowercase();
 
-    // FIX: Check for specific UTC offsets first. 
-    // This prevents the generic "utc" pattern in the table from matching 
-    // "(UTC+02:00) Custom" and returning "UTC" prematurely.
-    if let Some(offset_iana) = parse_utc_offset_name(&n) {
-        return Some(offset_iana);
-    }
+    let mut matched_generic_utc = false;
 
     const TABLE: &[(&str, &str)] = &[
         ("coordinated universal time", "UTC"),
@@ -251,10 +246,22 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
 
     for &(pattern, iana) in TABLE {
         if n.contains(pattern) {
+            if matches!(pattern, "gmt" | "utc" | "zulu") {
+                matched_generic_utc = true;
+                continue;
+            }
             return Some(iana);
         }
     }
     None
+
+    if let Some(offset_iana) = parse_utc_offset_name(&n) {
+        return Some(offset_iana);
+    }
+    if matched_generic_utc {
+        return Some("UTC");
+    }
+    None        
 }
 
 fn parse_utc_offset_name(name: &str) -> Option<&'static str> {
