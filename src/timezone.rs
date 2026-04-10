@@ -253,7 +253,7 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
             return Some(iana);
         }
     }
-    None
+    parse_utc_offset_name(&n)
 }
 
 fn parse_utc_offset_name(name: &str) -> Option<&'static str> {
