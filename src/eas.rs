@@ -101,61 +101,80 @@ struct EasRequest {
 struct CommandGrammar {
     namespace: &'static str,
     required_tags: &'static [&'static str],
+    optional_tags: &'static [&'static str],
 }
 
 fn command_grammar(command: &str) -> Option<CommandGrammar> {
     match command.to_ascii_lowercase().as_str() {
         "sync" => Some(CommandGrammar {
             namespace: "AirSync:",
-            required_tags: &["Collections", "Collection", "CollectionId", "SyncKey"],
+            required_tags: &["Collections", "Collection", "SyncKey"],
+            optional_tags: &[
+                "CollectionId", "Class", "Options", "Supported", "Commands",
+                "WindowSize", "FilterType", "DeletesAsMoves", "GetChanges",
+                "MoreAvailable", "Partial", "ConversationMode", "MIMESupport",
+                "MIMETruncation", "MaxItems", "BodyPreference",
+            ],
         }),
         "foldersync" => Some(CommandGrammar {
             namespace: "FolderHierarchy:",
             required_tags: &["SyncKey"],
+            optional_tags: &[],
         }),
         "provision" => Some(CommandGrammar {
             namespace: "Provision:",
             required_tags: &[],
+            optional_tags: &["Policies", "Policy", "PolicyType", "PolicyKey", "Status", "Data"],
         }),
         "settings" => Some(CommandGrammar {
             namespace: "Settings:",
-            required_tags: &["UserInformation"],
+            required_tags: &[],
+            optional_tags: &["UserInformation", "Oof", "DevicePassword", "DeviceInformation"],
         }),
         "ping" => Some(CommandGrammar {
             namespace: "Ping:",
-            required_tags: &["HeartbeatInterval", "Folders"],
+            required_tags: &[],
+            optional_tags: &["HeartbeatInterval", "Folders", "Folder", "Id", "Class", "MaxFolders"],
         }),
         "itemoperations" => Some(CommandGrammar {
             namespace: "ItemOperations:",
-            required_tags: &["Fetch"],
+            required_tags: &[],
+            optional_tags: &["Fetch", "Store", "CollectionId", "ServerId", "LongId", "Options"],
         }),
         "search" => Some(CommandGrammar {
             namespace: "Search:",
-            required_tags: &["Store"],
+            required_tags: &[],
+            optional_tags: &["Store", "Name", "Query", "Options", "Range"],
         }),
         "meetingresponse" => Some(CommandGrammar {
             namespace: "MeetingResponse:",
-            required_tags: &["RequestId", "UserResponse"],
+            required_tags: &[],
+            optional_tags: &["RequestId", "UserResponse", "InstanceId", "SendResponse"],
         }),
         "resolverecipients" => Some(CommandGrammar {
             namespace: "ResolveRecipients:",
-            required_tags: &["To"],
+            required_tags: &[],
+            optional_tags: &["To", "Options", "MaxCertificates", "MaxAmbiguousRecipients"],
         }),
         "validatecert" => Some(CommandGrammar {
             namespace: "ValidateCert:",
-            required_tags: &["Certificates"],
+            required_tags: &[],
+            optional_tags: &["Certificates", "Certificate", "CertChain"],
         }),
         "getitemestimate" => Some(CommandGrammar {
             namespace: "GetItemEstimate:",
-            required_tags: &["Collections", "Collection", "SyncKey", "CollectionId"],
+            required_tags: &[],
+            optional_tags: &["Collections", "Collection", "SyncKey", "CollectionId", "Class", "Options"],
         }),
         "moveitems" => Some(CommandGrammar {
             namespace: "Move:",
-            required_tags: &["Move"],
+            required_tags: &[],
+            optional_tags: &["Move", "SrcMsgId", "SrcFldId", "DstFldId"],
         }),
         "sendmail" | "smartreply" | "smartforward" => Some(CommandGrammar {
             namespace: "ComposeMail:",
             required_tags: &[],
+            optional_tags: &["ClientId", "Subject", "Body", "Mime"],
         }),
         _ => None,
     }

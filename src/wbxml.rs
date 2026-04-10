@@ -242,6 +242,10 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((4, 0x3A), "Calendar:OnlineMeetingConfLink");
     m.insert((4, 0x3B), "Calendar:OnlineMeetingExternalLink");
     m.insert((4, 0x3C), "Calendar:ClientUid");
+    m.insert((4, 0x3D), "Calendar:StartTimeZoneId");
+    m.insert((4, 0x3E), "Calendar:StartTimeZone");
+    m.insert((4, 0x3F), "Calendar:EndTimeZone");
+    m.insert((4, 0x40), "Calendar:EndTimeZoneId");
 
     // Code page 5: MoveItems
     m.insert((5, 0x05), "MoveItems");
