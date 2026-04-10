@@ -93,7 +93,7 @@ jobs:
 
       - name: Create pull request (single source of truth)
         if: env.changes_made == 'true'
-        uses: peter-evans/create-pull-request@v8.1.0
+        uses: peter-evans/create-pull-request@v8.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: cargo-rust-auto-update
