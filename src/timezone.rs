@@ -1,4 +1,3 @@
-// src/timezone.rs
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
 const TZ_BLOB_LEN: usize = 172;
@@ -74,6 +73,14 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
 
 fn windows_name_to_iana(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_lowercase();
+
+    // FIX: Check for specific UTC offsets first. 
+    // This prevents the generic "utc" pattern in the table from matching 
+    // "(UTC+02:00) Custom" and returning "UTC" prematurely.
+    if let Some(offset_iana) = parse_utc_offset_name(&n) {
+        return Some(offset_iana);
+    }
+
     const TABLE: &[(&str, &str)] = &[
         ("coordinated universal time", "UTC"),
         ("greenwich standard time", "UTC"),
@@ -241,88 +248,41 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
         ("kamchatka", "Asia/Kamchatka"),
         ("sakhalin", "Asia/Sakhalin"),
     ];
+
     for &(pattern, iana) in TABLE {
         if n.contains(pattern) {
             return Some(iana);
         }
     }
-    parse_utc_offset_name(&n)
+    None
 }
 
 fn parse_utc_offset_name(name: &str) -> Option<&'static str> {
     if name.contains("utc") || name.contains("gmt") {
-        if name.contains("+01") {
-            return Some("Etc/GMT-1");
-        }
-        if name.contains("+02") {
-            return Some("Etc/GMT-2");
-        }
-        if name.contains("+03") {
-            return Some("Etc/GMT-3");
-        }
-        if name.contains("+04") {
-            return Some("Etc/GMT-4");
-        }
-        if name.contains("+05") {
-            return Some("Etc/GMT-5");
-        }
-        if name.contains("+06") {
-            return Some("Etc/GMT-6");
-        }
-        if name.contains("+07") {
-            return Some("Etc/GMT-7");
-        }
-        if name.contains("+08") {
-            return Some("Etc/GMT-8");
-        }
-        if name.contains("+09") {
-            return Some("Etc/GMT-9");
-        }
-        if name.contains("+10") {
-            return Some("Etc/GMT-10");
-        }
-        if name.contains("+11") {
-            return Some("Etc/GMT-11");
-        }
-        if name.contains("+12") {
-            return Some("Etc/GMT-12");
-        }
-        if name.contains("-01") {
-            return Some("Etc/GMT+1");
-        }
-        if name.contains("-02") {
-            return Some("Etc/GMT+2");
-        }
-        if name.contains("-03") {
-            return Some("Etc/GMT+3");
-        }
-        if name.contains("-04") {
-            return Some("Etc/GMT+4");
-        }
-        if name.contains("-05") {
-            return Some("Etc/GMT+5");
-        }
-        if name.contains("-06") {
-            return Some("Etc/GMT+6");
-        }
-        if name.contains("-07") {
-            return Some("Etc/GMT+7");
-        }
-        if name.contains("-08") {
-            return Some("Etc/GMT+8");
-        }
-        if name.contains("-09") {
-            return Some("Etc/GMT+9");
-        }
-        if name.contains("-10") {
-            return Some("Etc/GMT+10");
-        }
-        if name.contains("-11") {
-            return Some("Etc/GMT+11");
-        }
-        if name.contains("-12") {
-            return Some("Etc/GMT+12");
-        }
+        if name.contains("+01") { return Some("Etc/GMT-1"); }
+        if name.contains("+02") { return Some("Etc/GMT-2"); }
+        if name.contains("+03") { return Some("Etc/GMT-3"); }
+        if name.contains("+04") { return Some("Etc/GMT-4"); }
+        if name.contains("+05") { return Some("Etc/GMT-5"); }
+        if name.contains("+06") { return Some("Etc/GMT-6"); }
+        if name.contains("+07") { return Some("Etc/GMT-7"); }
+        if name.contains("+08") { return Some("Etc/GMT-8"); }
+        if name.contains("+09") { return Some("Etc/GMT-9"); }
+        if name.contains("+10") { return Some("Etc/GMT-10"); }
+        if name.contains("+11") { return Some("Etc/GMT-11"); }
+        if name.contains("+12") { return Some("Etc/GMT-12"); }
+        if name.contains("-01") { return Some("Etc/GMT+1"); }
+        if name.contains("-02") { return Some("Etc/GMT+2"); }
+        if name.contains("-03") { return Some("Etc/GMT+3"); }
+        if name.contains("-04") { return Some("Etc/GMT+4"); }
+        if name.contains("-05") { return Some("Etc/GMT+5"); }
+        if name.contains("-06") { return Some("Etc/GMT+6"); }
+        if name.contains("-07") { return Some("Etc/GMT+7"); }
+        if name.contains("-08") { return Some("Etc/GMT+8"); }
+        if name.contains("-09") { return Some("Etc/GMT+9"); }
+        if name.contains("-10") { return Some("Etc/GMT+10"); }
+        if name.contains("-11") { return Some("Etc/GMT+11"); }
+        if name.contains("-12") { return Some("Etc/GMT+12"); }
     }
     None
 }
