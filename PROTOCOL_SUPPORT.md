@@ -160,7 +160,7 @@ All EWS calendar item properties are mapped to/from CalDAV:
 | Client | Version | EWS | EAS | Notes |
 |--------|---------|-----|-----|-------|
 | Outlook Windows 11 | 20251205004.10 | ✅ | - | Full calendar support |
-| Outlook Android | 5.2607.0 | - | ✅ | Full calendar sync |
+| Outlook Android | 5.2613.1 | - | ✅ | Full calendar sync |
 | Outlook iOS | Latest | - | ✅ | Basic calendar |
 | Thunderbird | 128+ | ✅ | - | Via Autodiscover |
 | macOS Calendar | Ventura+ | ✅ | - | Via EWS |
