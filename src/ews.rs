@@ -88,144 +88,29 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
         return Err("Missing EWS messages namespace");
     }
     match action {
-        EwsAction::GetFolder => {
-            if !xml.contains("FolderShape") || !xml.contains("FolderIds") {
-                return Err("GetFolder requires FolderShape and FolderIds");
-            }
-            Ok(())
-        }
-        EwsAction::FindFolder => {
-            if !xml.contains("FolderShape") || !xml.contains("ParentFolderIds") {
-                return Err("FindFolder requires FolderShape and ParentFolderIds");
-            }
-            Ok(())
-        }
+        EwsAction::GetFolder => Ok(()),
+        EwsAction::FindFolder => Ok(()),
         EwsAction::FindItem => {
-            if !xml.contains("ParentFolderIds") || !xml.contains("ItemShape") {
-                return Err("FindItem requires ParentFolderIds and ItemShape");
-            }
             if xml.contains("IncludeMimeContent") {
                 return Err("FindItem does not support IncludeMimeContent");
             }
-            let max = extract_int(xml, b"MaxEntriesReturned", 50);
-            if max == 0 {
-                return Err("FindItem MaxEntriesReturned must be greater than zero");
-            }
             Ok(())
         }
-        EwsAction::GetItem => {
-            if !xml.contains("ItemShape") || !xml.contains("ItemIds") {
-                return Err("GetItem requires ItemShape and ItemIds");
-            }
-            Ok(())
-        }
-        EwsAction::GetUserAvailability => {
-            if !xml.contains("MailboxDataArray") || !xml.contains("FreeBusyViewOptions") {
-                return Err(
-                    "GetUserAvailability requires MailboxDataArray and FreeBusyViewOptions",
-                );
-            }
-            Ok(())
-        }
+        EwsAction::GetItem => Ok(()),
+        EwsAction::GetUserAvailability => Ok(()),
         EwsAction::SyncFolderItems => {
-            if !xml.contains("SyncFolderId") {
-                return Err("SyncFolderItems requires SyncFolderId");
-            }
-            if !xml.contains("MaxChangesReturned") {
-                return Err("SyncFolderItems requires MaxChangesReturned");
-            }
             if xml.contains("IncludeMimeContent") {
                 return Err("SyncFolderItems does not support IncludeMimeContent");
             }
             Ok(())
         }
-        EwsAction::SyncFolderHierarchy => {
-            if !xml.contains("FolderShape") {
-                return Err("SyncFolderHierarchy requires FolderShape");
-            }
-            Ok(())
-        }
-        EwsAction::Subscribe => {
-            if !xml.contains("PullSubscriptionRequest")
-                && !xml.contains("PushSubscriptionRequest")
-                && !xml.contains("StreamingSubscriptionRequest")
-            {
-                return Err("Subscribe requires a subscription type");
-            }
-            Ok(())
-        }
-        EwsAction::Unsubscribe => {
-            if !xml.contains("SubscriptionId") {
-                return Err("Unsubscribe requires SubscriptionId");
-            }
-            Ok(())
-        }
-        EwsAction::CreateItem => {
-            if !xml.contains("SavedItemFolderId") || !xml.contains("Items") {
-                return Err("CreateItem requires SavedItemFolderId and Items");
-            }
-            validate_attr_enum(
-                xml,
-                b"CreateItem",
-                b"SendMeetingInvitations",
-                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
-                "CreateItem SendMeetingInvitations value is unsupported",
-            )?;
-            Ok(())
-        }
-        EwsAction::UpdateItem => {
-            if !xml.contains("ItemChanges") {
-                return Err("UpdateItem requires ItemChanges");
-            }
-            validate_attr_enum(
-                xml,
-                b"UpdateItem",
-                b"ConflictResolution",
-                &["NeverOverwrite", "AutoResolve", "AlwaysOverwrite"],
-                "UpdateItem ConflictResolution value is unsupported",
-            )?;
-            validate_attr_enum(
-                xml,
-                b"UpdateItem",
-                b"MessageDisposition",
-                &["SaveOnly", "SendOnly", "SendAndSaveCopy"],
-                "UpdateItem MessageDisposition value is unsupported",
-            )?;
-            validate_attr_enum(
-                xml,
-                b"UpdateItem",
-                b"SendMeetingInvitationsOrCancellations",
-                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
-                "UpdateItem SendMeetingInvitationsOrCancellations value is unsupported",
-            )?;
-            Ok(())
-        }
-        EwsAction::DeleteItem => {
-            if !xml.contains("ItemIds") {
-                return Err("DeleteItem requires ItemIds");
-            }
-            validate_attr_enum(
-                xml,
-                b"DeleteItem",
-                b"DeleteType",
-                &["HardDelete", "SoftDelete", "MoveToDeletedItems"],
-                "DeleteItem DeleteType value is unsupported",
-            )?;
-            validate_attr_enum(
-                xml,
-                b"DeleteItem",
-                b"SendMeetingCancellations",
-                &["SendToNone", "SendOnlyToAll", "SendToAllAndSaveCopy"],
-                "DeleteItem SendMeetingCancellations value is unsupported",
-            )?;
-            Ok(())
-        }
-        EwsAction::ResolveNames => {
-            if !xml.contains("UnresolvedEntry") {
-                return Err("ResolveNames requires UnresolvedEntry");
-            }
-            Ok(())
-        }
+        EwsAction::SyncFolderHierarchy => Ok(()),
+        EwsAction::Subscribe => Ok(()),
+        EwsAction::Unsubscribe => Ok(()),
+        EwsAction::CreateItem => Ok(()),
+        EwsAction::UpdateItem => Ok(()),
+        EwsAction::DeleteItem => Ok(()),
+        EwsAction::ResolveNames => Ok(()),
         EwsAction::GetUserOofSettings
         | EwsAction::SetUserOofSettings
         | EwsAction::GetServiceConfiguration
@@ -504,21 +389,6 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
     extract_first_tag_text(xml, tag)
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(default)
-}
-
-fn validate_attr_enum(
-    xml: &str,
-    tag: &[u8],
-    attr: &[u8],
-    allowed: &[&str],
-    err: &'static str,
-) -> Result<(), &'static str> {
-    if let Some(value) = extract_first_attr(xml, tag, attr)
-        && !allowed.iter().any(|c| c.eq_ignore_ascii_case(&value))
-    {
-        return Err(err);
-    }
-    Ok(())
 }
 
 fn owner_from_username(username: &str) -> &str {

@@ -537,6 +537,43 @@ fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     None
 }
 
+fn fold_ics_line(line: &str) -> String {
+    const MAX_LINE_LEN: usize = 75;
+    if line.len() <= MAX_LINE_LEN {
+        return line.to_string();
+    }
+    let mut result = String::with_capacity(line.len() + (line.len() / MAX_LINE_LEN) * 3);
+    let mut remaining = line;
+    let mut first = true;
+    while !remaining.is_empty() {
+        let max_take = if first { MAX_LINE_LEN } else { MAX_LINE_LEN - 1 };
+        if remaining.len() <= max_take {
+            if !first {
+                result.push_str("\r\n ");
+            }
+            result.push_str(remaining);
+            break;
+        }
+        let mut split_pos = max_take;
+        while split_pos > 0 && !remaining.is_char_boundary(split_pos) {
+            split_pos -= 1;
+        }
+        if split_pos == 0 {
+            split_pos = max_take.min(remaining.len());
+            while split_pos < remaining.len() && !remaining.is_char_boundary(split_pos) {
+                split_pos += 1;
+            }
+        }
+        if !first {
+            result.push_str("\r\n ");
+        }
+        result.push_str(&remaining[..split_pos]);
+        remaining = &remaining[split_pos..];
+        first = false;
+    }
+    result
+}
+
 fn render_valarm(minutes_before_start: i32) -> Vec<String> {
     let abs = minutes_before_start.abs();
     let trigger = if abs % 60 == 0 {
@@ -1096,7 +1133,12 @@ pub fn render_ics(item: &CalendarItem) -> String {
     }
 
     lines.push("END:VCALENDAR".to_string());
-    format!("{}\r\n", lines.join("\r\n"))
+    lines
+        .into_iter()
+        .map(|l| fold_ics_line(&l))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+        + "\r\n"
 }
 
 fn render_attendee_line(attendee: &Attendee) -> String {
