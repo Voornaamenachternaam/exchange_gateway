@@ -546,7 +546,11 @@ fn fold_ics_line(line: &str) -> String {
     let mut remaining = line;
     let mut first = true;
     while !remaining.is_empty() {
-        let max_take = if first { MAX_LINE_LEN } else { MAX_LINE_LEN - 1 };
+        let max_take = if first {
+            MAX_LINE_LEN
+        } else {
+            MAX_LINE_LEN - 1
+        };
         if remaining.len() <= max_take {
             if !first {
                 result.push_str("\r\n ");
