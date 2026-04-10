@@ -74,6 +74,13 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
 
 fn windows_name_to_iana(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_lowercase();
+
+    // Resolve offset-format names (e.g. "(UTC+02:00) Custom", "GMT-05:00") first,
+    // before the generic "utc" / "gmt" table entries match them as substrings.
+    if let Some(iana) = parse_utc_offset_name(&n) {
+        return Some(iana);
+    }
+
     const TABLE: &[(&str, &str)] = &[
         ("coordinated universal time", "UTC"),
         ("greenwich standard time", "UTC"),
@@ -246,7 +253,7 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
             return Some(iana);
         }
     }
-    parse_utc_offset_name(&n)
+    None
 }
 
 fn parse_utc_offset_name(name: &str) -> Option<&'static str> {
