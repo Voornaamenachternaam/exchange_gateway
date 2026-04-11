@@ -47,7 +47,6 @@ fn namespace_to_code_page(ns: &str) -> Option<u8> {
 }
 
 fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<(u8, u8)> {
-    // First try direct lookup in NAME_TO_TAG (fast path)
     if let Some(&pair) = NAME_TO_TAG.get(qualified_or_local) {
         if let Some(cp) = override_cp {
             if pair.0 == cp {
@@ -58,9 +57,6 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
         }
     }
 
-    // Fallback: iterate over TAG_TO_NAME to find all matching entries
-    // This is needed because NAME_TO_TAG only holds one entry per tag name,
-    // but many tags exist in multiple code pages (e.g., "Status" in cp 0, 6, 7, 8, etc.)
     for (&(cp, id), &name) in TAG_TO_NAME.iter() {
         let local = if let Some(p) = name.rfind(':') {
             &name[p + 1..]
@@ -84,7 +80,6 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
 fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     let mut m: HashMap<(u8, u8), &'static str> = HashMap::new();
 
-    // Code page 0: AirSync
     m.insert((0, 0x05), "Sync");
     m.insert((0, 0x06), "Responses");
     m.insert((0, 0x07), "Add");
@@ -119,7 +114,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((0, 0x28), "MaxItems");
     m.insert((0, 0x29), "HeartbeatInterval");
 
-    // Code page 1: Contacts
     m.insert((1, 0x05), "Contacts:Anniversary");
     m.insert((1, 0x06), "Contacts:AssistantName");
     m.insert((1, 0x07), "Contacts:AssistantPhoneNumber");
@@ -146,7 +140,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((1, 0x48), "Contacts:YomiFirstName");
     m.insert((1, 0x49), "Contacts:YomiLastName");
 
-    // Code page 2: Email
     m.insert((2, 0x05), "Email:Attachment");
     m.insert((2, 0x06), "Email:Attachments");
     m.insert((2, 0x07), "Email:AttName");
@@ -189,28 +182,22 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((2, 0x3E), "Email:CompleteTime");
     m.insert((2, 0x40), "Email:DisallowNewTimeProposal");
 
-    // Code page 4: Calendar
-    // Per MS-ASCAL WBXML code page 4 table
     m.insert((4, 0x05), "Calendar:Timezone");
     m.insert((4, 0x06), "Calendar:AllDayEvent");
     m.insert((4, 0x07), "Calendar:Attendees");
     m.insert((4, 0x08), "Calendar:Attendee");
     m.insert((4, 0x09), "Calendar:Email");
     m.insert((4, 0x0A), "Calendar:Name");
-    // 0x0B: Body (deprecated in 12.0+, use AirSyncBase:Body)
     m.insert((4, 0x0B), "Calendar:Body");
-    // 0x0C: BodyTruncated (2.5 only)
     m.insert((4, 0x0D), "Calendar:BusyStatus");
     m.insert((4, 0x0E), "Calendar:Categories");
     m.insert((4, 0x0F), "Calendar:Category");
-    // 0x10: Reserved
     m.insert((4, 0x11), "Calendar:DtStamp");
     m.insert((4, 0x12), "Calendar:EndTime");
     m.insert((4, 0x13), "Calendar:Exception");
     m.insert((4, 0x14), "Calendar:Exceptions");
     m.insert((4, 0x15), "Calendar:Deleted");
     m.insert((4, 0x16), "Calendar:ExceptionStartTime");
-    // 0x17: Location (deprecated 16.0+, use AirSyncBase:Location)
     m.insert((4, 0x17), "Calendar:Location");
     m.insert((4, 0x18), "Calendar:MeetingStatus");
     m.insert((4, 0x19), "Calendar:OrganizerEmail");
@@ -231,7 +218,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((4, 0x28), "Calendar:UID");
     m.insert((4, 0x29), "Calendar:AttendeeStatus");
     m.insert((4, 0x2A), "Calendar:AttendeeType");
-    // 0x2B-0x32: Reserved
     m.insert((4, 0x33), "Calendar:DisallowNewTimeProposal");
     m.insert((4, 0x34), "Calendar:ResponseRequested");
     m.insert((4, 0x35), "Calendar:AppointmentReplyTime");
@@ -247,7 +233,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((4, 0x3F), "Calendar:EndTimeZone");
     m.insert((4, 0x40), "Calendar:EndTimeZoneId");
 
-    // Code page 5: MoveItems
     m.insert((5, 0x05), "MoveItems");
     m.insert((5, 0x06), "Move");
     m.insert((5, 0x07), "SrcMsgId");
@@ -256,7 +241,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((5, 0x0A), "MoveResponse");
     m.insert((5, 0x0B), "MoveStatus");
 
-    // Code page 6: GetItemEstimate
     m.insert((6, 0x05), "GetItemEstimate");
     m.insert((6, 0x06), "GIEVersion");
     m.insert((6, 0x07), "GIECollections");
@@ -268,7 +252,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((6, 0x0D), "Response");
     m.insert((6, 0x0E), "Status");
 
-    // Code page 7: FolderHierarchy
     m.insert((7, 0x07), "DisplayName");
     m.insert((7, 0x08), "ServerId");
     m.insert((7, 0x09), "ParentId");
@@ -285,7 +268,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((7, 0x16), "FolderSync");
     m.insert((7, 0x17), "Count");
 
-    // Code page 8: MeetingResponse
     m.insert((8, 0x05), "CalendarId");
     m.insert((8, 0x06), "MeetingCollectionId");
     m.insert((8, 0x07), "MeetingResponse");
@@ -300,7 +282,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((8, 0x11), "ProposedEndTime");
     m.insert((8, 0x12), "SendResponse");
 
-    // Code page 9: Tasks
     m.insert((9, 0x08), "Tasks:Complete");
     m.insert((9, 0x09), "Tasks:DateCompleted");
     m.insert((9, 0x0D), "Tasks:DueDate");
@@ -325,7 +306,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((9, 0x28), "Tasks:Categories");
     m.insert((9, 0x29), "Tasks:Category");
 
-    // Code page 10: ResolveRecipients
     m.insert((10, 0x05), "ResolveRecipients");
     m.insert((10, 0x06), "Response");
     m.insert((10, 0x07), "Status");
@@ -352,7 +332,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((10, 0x1C), "Data");
     m.insert((10, 0x1D), "MaxPictures");
 
-    // Code page 11: ValidateCert
     m.insert((11, 0x05), "ValidateCert");
     m.insert((11, 0x06), "Certificates");
     m.insert((11, 0x07), "Certificate");
@@ -361,7 +340,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((11, 0x0A), "CertificateStatus");
     m.insert((11, 0x0B), "Status");
 
-    // Code page 12: Contacts2
     m.insert((12, 0x05), "Contacts2:CustomerId");
     m.insert((12, 0x06), "Contacts2:GovernmentId");
     m.insert((12, 0x07), "Contacts2:IMAddress");
@@ -373,7 +351,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((12, 0x0D), "Contacts2:MMS");
     m.insert((12, 0x0E), "Contacts2:NickName");
 
-    // Code page 13: Ping
     m.insert((13, 0x05), "Ping");
     m.insert((13, 0x07), "Status");
     m.insert((13, 0x08), "HeartbeatInterval");
@@ -383,7 +360,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((13, 0x0C), "Class");
     m.insert((13, 0x0D), "MaxFolders");
 
-    // Code page 14: Provision
     m.insert((14, 0x05), "Provision");
     m.insert((14, 0x06), "Policies");
     m.insert((14, 0x07), "Policy");
@@ -438,7 +414,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((14, 0x39), "ApprovedApplicationList");
     m.insert((14, 0x3A), "Hash");
 
-    // Code page 15: Search
     m.insert((15, 0x05), "Search");
     m.insert((15, 0x07), "Store");
     m.insert((15, 0x08), "Name");
@@ -464,7 +439,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((15, 0x1D), "QueryId");
     m.insert((15, 0x1E), "MaxResults");
 
-    // Code page 16: GAL
     m.insert((16, 0x05), "GAL:DisplayName");
     m.insert((16, 0x06), "GAL:Phone");
     m.insert((16, 0x07), "GAL:Office");
@@ -480,7 +454,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((16, 0x11), "GAL:Status");
     m.insert((16, 0x12), "GAL:Data");
 
-    // Code page 17: AirSyncBase
     m.insert((17, 0x05), "AirSyncBase:BodyPreference");
     m.insert((17, 0x06), "AirSyncBase:Type");
     m.insert((17, 0x07), "AirSyncBase:TruncationSize");
@@ -522,7 +495,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((17, 0x2C), "AirSyncBase:LocationUri");
     m.insert((17, 0x2D), "AirSyncBase:InstanceId");
 
-    // Code page 18: Settings
     m.insert((18, 0x05), "Settings");
     m.insert((18, 0x06), "Status");
     m.insert((18, 0x07), "Get");
@@ -562,7 +534,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((18, 0x29), "SendDisabled");
     m.insert((18, 0x2B), "RightsManagementInformation");
 
-    // Code page 19: DocumentLibrary
     m.insert((19, 0x05), "DocumentLibrary:LinkId");
     m.insert((19, 0x06), "DocumentLibrary:DisplayName");
     m.insert((19, 0x07), "DocumentLibrary:IsFolder");
@@ -572,7 +543,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((19, 0x0B), "DocumentLibrary:ContentLength");
     m.insert((19, 0x0C), "DocumentLibrary:ContentType");
 
-    // Code page 20: ItemOperations
     m.insert((20, 0x05), "ItemOperations");
     m.insert((20, 0x06), "Fetch");
     m.insert((20, 0x07), "Store");
@@ -595,7 +565,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((20, 0x18), "ConversationId");
     m.insert((20, 0x19), "MoveAlways");
 
-    // Code page 21: ComposeMail
     m.insert((21, 0x05), "SendMail");
     m.insert((21, 0x06), "SmartForward");
     m.insert((21, 0x07), "SmartReply");
@@ -610,7 +579,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((21, 0x11), "ForwardeeName");
     m.insert((21, 0x12), "ForwardeeEmail");
 
-    // Code page 22: Email2
     m.insert((22, 0x05), "Email2:UmCallerId");
     m.insert((22, 0x06), "Email2:UmUserNotes");
     m.insert((22, 0x07), "Email2:UmAttDuration");
@@ -627,7 +595,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((22, 0x12), "Email2:FirstDayOfWeek");
     m.insert((22, 0x13), "Email2:MeetingMessageType");
 
-    // Code page 23: Notes
     m.insert((23, 0x05), "Notes:Subject");
     m.insert((23, 0x06), "Notes:MessageClass");
     m.insert((23, 0x07), "Notes:LastModifiedDate");
@@ -635,7 +602,6 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
     m.insert((23, 0x09), "Notes:Category");
     m.insert((23, 0x0B), "Notes:Body");
 
-    // Code page 24: RightsManagement
     m.insert((24, 0x05), "RightsManagement:RightsManagementSupport");
     m.insert((24, 0x06), "RightsManagement:RightsManagementTemplates");
     m.insert((24, 0x07), "RightsManagement:RightsManagementTemplate");
@@ -831,13 +797,11 @@ impl Wbxml {
         loop {
             match reader.read_event_into(&mut event_buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
-                    // Extract xmlns:prefix declarations
                     let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
                         std::collections::HashMap::new();
                     for attr in e.attributes().flatten() {
                         let key_bytes = attr.key.as_ref();
                         if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
-                            // XML attribute names are ASCII, so this is safe
                             let prefix = String::from_utf8_lossy(&key_bytes[6..]);
                             if let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) {
                                 let cp = namespace_to_code_page(val.as_ref());
@@ -850,7 +814,6 @@ impl Wbxml {
                     let ns_cp = extract_xmlns_cp(e, &reader);
                     ns_stack.push(ns_cp);
 
-                    // Determine code page from prefix if present
                     let qname = e.name();
                     let full_name = String::from_utf8_lossy(qname.as_ref());
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
@@ -882,7 +845,6 @@ impl Wbxml {
                     )?;
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    // Extract xmlns:prefix declarations
                     let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
                         std::collections::HashMap::new();
                     for attr in e.attributes().flatten() {
@@ -899,7 +861,6 @@ impl Wbxml {
 
                     let ns_cp = extract_xmlns_cp(e, &reader);
 
-                    // Determine code page from prefix if present
                     let qname = e.name();
                     let full_name = String::from_utf8_lossy(qname.as_ref());
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
@@ -930,7 +891,6 @@ impl Wbxml {
                         false,
                     )?;
 
-                    // Pop for Empty elements (they don't have End events)
                     prefix_ns_stack.pop();
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
@@ -985,9 +945,6 @@ fn extract_xmlns_cp<'a, R: std::io::BufRead>(
     e: &quick_xml::events::BytesStart<'a>,
     reader: &quick_xml::Reader<R>,
 ) -> Option<u8> {
-    // Only check for default namespace (xmlns). Prefixed namespaces (xmlns:*) are
-    // handled separately in the encode function's prefix collection loop.
-    // Use direct byte slice comparison to avoid UTF-8 validation and Cow allocation.
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == b"xmlns"
             && let Ok(val) = attr.decode_and_unescape_value(reader.decoder())

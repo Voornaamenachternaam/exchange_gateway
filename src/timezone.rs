@@ -1,5 +1,9 @@
 // src/timezone.rs
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use chrono_tz::Tz;
+use std::str::FromStr;
+use strum::IntoEnumIterator;
+use windows_timezones::WindowsTimezone;
 
 const TZ_BLOB_LEN: usize = 172;
 
@@ -58,6 +62,43 @@ pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     Some(format!("Etc/GMT{:+}", hours))
 }
 
+pub fn eas_timezone_blob_to_tz(b64: &str) -> Option<Tz> {
+    let iana = eas_timezone_blob_to_iana(b64)?;
+    iana.parse().ok()
+}
+
+pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+
+    let n_lower = n.to_ascii_lowercase();
+    if let Some(iana) = parse_utc_offset_name(&n_lower) {
+        return iana.parse().ok();
+    }
+
+    if let Ok(tz) = WindowsTimezone::from_str(n) {
+        return Some(Tz::from(tz));
+    }
+
+    for variant in WindowsTimezone::iter() {
+        let tz_name = variant.name();
+        if tz_name.eq_ignore_ascii_case(n) {
+            return Some(Tz::from(variant));
+        }
+    }
+
+    for variant in WindowsTimezone::iter() {
+        let tz_name = variant.name();
+        if n_lower.contains(&tz_name.to_ascii_lowercase()) {
+            return Some(Tz::from(variant));
+        }
+    }
+
+    None
+}
+
 pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
     let (bias, std_name, dst_name, std_date, dst_date, std_bias, dst_bias) =
         iana_to_windows_params(iana)?;
@@ -73,186 +114,34 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
 }
 
 fn windows_name_to_iana(name: &str) -> Option<&'static str> {
-    let n = name.to_ascii_lowercase();
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
 
-    // Resolve offset-format names (e.g. "(UTC+02:00) Custom", "GMT-05:00") first,
-    // before the generic "utc" / "gmt" table entries match them as substrings.
-    if let Some(iana) = parse_utc_offset_name(&n) {
+    let n_lower = n.to_ascii_lowercase();
+    if let Some(iana) = parse_utc_offset_name(&n_lower) {
         return Some(iana);
     }
 
-    const TABLE: &[(&str, &str)] = &[
-        ("coordinated universal time", "UTC"),
-        ("greenwich standard time", "UTC"),
-        ("gmt standard time", "Europe/London"),
-        ("w. europe standard time", "Europe/Berlin"),
-        ("central europe standard time", "Europe/Budapest"),
-        ("central european standard time", "Europe/Warsaw"),
-        ("romance standard time", "Europe/Paris"),
-        ("fle standard time", "Europe/Helsinki"),
-        ("gtb standard time", "Europe/Bucharest"),
-        ("e. europe standard time", "Asia/Nicosia"),
-        ("eastern europe standard time", "Asia/Nicosia"),
-        ("turkey standard time", "Europe/Istanbul"),
-        ("russian standard time", "Europe/Moscow"),
-        ("russia time zone 3", "Europe/Moscow"),
-        ("arab standard time", "Asia/Riyadh"),
-        ("arabian standard time", "Asia/Dubai"),
-        ("israel standard time", "Asia/Jerusalem"),
-        ("india standard time", "Asia/Kolkata"),
-        ("china standard time", "Asia/Shanghai"),
-        ("singapore standard time", "Asia/Singapore"),
-        ("tokyo standard time", "Asia/Tokyo"),
-        ("korea standard time", "Asia/Seoul"),
-        ("aus eastern standard time", "Australia/Sydney"),
-        ("eastern standard time", "America/New_York"),
-        ("central standard time", "America/Chicago"),
-        ("mountain standard time", "America/Denver"),
-        ("pacific standard time", "America/Los_Angeles"),
-        ("alaska standard time", "America/Anchorage"),
-        ("hawaiian standard time", "Pacific/Honolulu"),
-        ("atlantic standard time", "America/Halifax"),
-        ("newfoundland standard time", "America/St_Johns"),
-        ("e. south america standard time", "America/Sao_Paulo"),
-        ("sa eastern standard time", "America/Cayenne"),
-        ("amsterdam", "Europe/Amsterdam"),
-        ("berlin", "Europe/Berlin"),
-        ("brussels", "Europe/Brussels"),
-        ("copenhagen", "Europe/Copenhagen"),
-        ("madrid", "Europe/Madrid"),
-        ("paris", "Europe/Paris"),
-        ("rome", "Europe/Rome"),
-        ("stockholm", "Europe/Stockholm"),
-        ("vienna", "Europe/Vienna"),
-        ("warsaw", "Europe/Warsaw"),
-        ("zagreb", "Europe/Zagreb"),
-        ("helsinki", "Europe/Helsinki"),
-        ("kyiv", "Europe/Kyiv"),
-        ("kiev", "Europe/Kyiv"),
-        ("riga", "Europe/Riga"),
-        ("sofia", "Europe/Sofia"),
-        ("tallinn", "Europe/Tallinn"),
-        ("vilnius", "Europe/Vilnius"),
-        ("bucharest", "Europe/Bucharest"),
-        ("athens", "Europe/Athens"),
-        ("istanbul", "Europe/Istanbul"),
-        ("moscow", "Europe/Moscow"),
-        ("dubai", "Asia/Dubai"),
-        ("calcutta", "Asia/Kolkata"),
-        ("kolkata", "Asia/Kolkata"),
-        ("shanghai", "Asia/Shanghai"),
-        ("singapore", "Asia/Singapore"),
-        ("tokyo", "Asia/Tokyo"),
-        ("seoul", "Asia/Seoul"),
-        ("sydney", "Australia/Sydney"),
-        ("new york", "America/New_York"),
-        ("chicago", "America/Chicago"),
-        ("denver", "America/Denver"),
-        ("los angeles", "America/Los_Angeles"),
-        ("anchorage", "America/Anchorage"),
-        ("honolulu", "Pacific/Honolulu"),
-        ("halifax", "America/Halifax"),
-        ("sao paulo", "America/Sao_Paulo"),
-        ("taipei", "Asia/Taipei"),
-        ("bangkok", "Asia/Bangkok"),
-        ("jakarta", "Asia/Jakarta"),
-        ("manila", "Asia/Manila"),
-        ("karachi", "Asia/Karachi"),
-        ("dhaka", "Asia/Dhaka"),
-        ("hong kong", "Asia/Hong_Kong"),
-        ("osaka", "Asia/Osaka"),
-        ("sapporo", "Asia/Tokyo"),
-        ("brisbane", "Australia/Brisbane"),
-        ("melbourne", "Australia/Melbourne"),
-        ("perth", "Australia/Perth"),
-        ("adelaide", "Australia/Adelaide"),
-        ("auckland", "Pacific/Auckland"),
-        ("wellington", "Pacific/Auckland"),
-        ("christchurch", "Pacific/Auckland"),
-        ("fiji", "Pacific/Fiji"),
-        ("pretoria", "Africa/Johannesburg"),
-        ("johannesburg", "Africa/Johannesburg"),
-        ("cairo", "Africa/Cairo"),
-        ("lagos", "Africa/Lagos"),
-        ("nairobi", "Africa/Nairobi"),
-        ("casablanca", "Africa/Casablanca"),
-        ("gmt", "UTC"),
-        ("utc", "UTC"),
-        ("zulu", "UTC"),
-        ("azores", "Atlantic/Azores"),
-        ("canary", "Atlantic/Canary"),
-        ("cape verde", "Atlantic/Cape_Verde"),
-        ("midway", "Pacific/Midway"),
-        ("samoa", "Pacific/Samoa"),
-        ("tahiti", "Pacific/Tahiti"),
-        ("mexico city", "America/Mexico_City"),
-        ("monterrey", "America/Monterrey"),
-        ("guadalajara", "America/Mexico_City"),
-        ("buenos aires", "America/Argentina/Buenos_Aires"),
-        ("lima", "America/Lima"),
-        ("santiago", "America/Santiago"),
-        ("bogota", "America/Bogota"),
-        ("quito", "America/Guayaquil"),
-        ("caracas", "America/Caracas"),
-        ("asuncion", "America/Asuncion"),
-        ("montevideo", "America/Montevideo"),
-        ("reykjavik", "Atlantic/Reykjavik"),
-        ("dublin", "Europe/Dublin"),
-        ("lisbon", "Europe/Lisbon"),
-        ("bern", "Europe/Zurich"),
-        ("zurich", "Europe/Zurich"),
-        ("geneva", "Europe/Zurich"),
-        ("prague", "Europe/Prague"),
-        ("budapest", "Europe/Budapest"),
-        ("ljubljana", "Europe/Ljubljana"),
-        ("bratislava", "Europe/Bratislava"),
-        ("minsk", "Europe/Minsk"),
-        ("tbilisi", "Asia/Tbilisi"),
-        ("yerevan", "Asia/Yerevan"),
-        ("baku", "Asia/Baku"),
-        ("tehran", "Asia/Tehran"),
-        ("baghdad", "Asia/Baghdad"),
-        ("riyadh", "Asia/Riyadh"),
-        ("jeddah", "Asia/Riyadh"),
-        ("cape town", "Africa/Johannesburg"),
-        ("harare", "Africa/Harare"),
-        ("kinshasa", "Africa/Kinshasa"),
-        ("algiers", "Africa/Algiers"),
-        ("tunis", "Africa/Tunis"),
-        ("abu dhabi", "Asia/Dubai"),
-        ("muscat", "Asia/Dubai"),
-        ("islamabad", "Asia/Karachi"),
-        ("tashkent", "Asia/Tashkent"),
-        ("almaty", "Asia/Almaty"),
-        ("bishkek", "Asia/Bishkek"),
-        ("yangon", "Asia/Yangon"),
-        ("ho chi minh", "Asia/Ho_Chi_Minh"),
-        ("phnom penh", "Asia/Phnom_Penh"),
-        ("vientiane", "Asia/Vientiane"),
-        ("kuala lumpur", "Asia/Kuala_Lumpur"),
-        ("makassar", "Asia/Makassar"),
-        ("jayapura", "Asia/Jayapura"),
-        ("chennai", "Asia/Kolkata"),
-        ("mumbai", "Asia/Kolkata"),
-        ("new delhi", "Asia/Kolkata"),
-        ("colombo", "Asia/Colombo"),
-        ("katmandu", "Asia/Kathmandu"),
-        ("kathmandu", "Asia/Kathmandu"),
-        ("thimphu", "Asia/Thimphu"),
-        ("novosibirsk", "Asia/Novosibirsk"),
-        ("krasnoyarsk", "Asia/Krasnoyarsk"),
-        ("irkutsk", "Asia/Irkutsk"),
-        ("yakutsk", "Asia/Yakutsk"),
-        ("vladivostok", "Asia/Vladivostok"),
-        ("magadan", "Asia/Magadan"),
-        ("kamchatka", "Asia/Kamchatka"),
-        ("sakhalin", "Asia/Sakhalin"),
-    ];
-    for &(pattern, iana) in TABLE {
-        if n.contains(pattern) {
-            return Some(iana);
+    if let Ok(tz) = WindowsTimezone::from_str(n) {
+        return Some(tz.tzdb_id());
+    }
+
+    for variant in WindowsTimezone::iter() {
+        let tz_name = variant.name();
+        if tz_name.eq_ignore_ascii_case(n) {
+            return Some(variant.tzdb_id());
         }
     }
+
+    for variant in WindowsTimezone::iter() {
+        let tz_name = variant.name();
+        if n_lower.contains(&tz_name.to_ascii_lowercase()) {
+            return Some(variant.tzdb_id());
+        }
+    }
+
     None
 }
 
@@ -786,4 +675,31 @@ mod tests {
     fn unknown_iana_returns_none() {
         assert!(iana_to_eas_timezone_blob("Not/A/Zone").is_none());
     }
+#[test]
+fn blob_to_tz_pacific() {
+    let mut blob = [0u8; 172];
+    blob[0..4].copy_from_slice(&480i32.to_le_bytes());
+    write_wchar_name(&mut blob, 4, "Pacific Standard Time");
+    let b64 = BASE64.encode(blob);
+    let tz = eas_timezone_blob_to_tz(&b64).unwrap();
+    assert_eq!(tz, chrono_tz::America::Los_Angeles);
+}
+
+#[test]
+fn windows_name_to_tz_eastern() {
+    let tz = windows_timezone_name_to_tz("Eastern Standard Time").unwrap();
+    assert_eq!(tz, chrono_tz::America::New_York);
+}
+
+#[test]
+fn windows_name_to_tz_case_insensitive() {
+    let tz = windows_timezone_name_to_tz("eastern standard time").unwrap();
+    assert_eq!(tz, chrono_tz::America::New_York);
+}
+
+#[test]
+fn windows_name_to_tz_utc() {
+    let tz = windows_timezone_name_to_tz("UTC").unwrap();
+    assert_eq!(tz, chrono_tz::UTC);
+}
 }
