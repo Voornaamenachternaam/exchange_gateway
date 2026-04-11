@@ -1708,7 +1708,11 @@ async fn handle_sync_folder_items(
     }
     let requested_state = extract_first_tag_text(body, b"SyncState");
     let effective_state = if requested_state.as_deref().unwrap_or("0").is_empty() {
-        state.storage.get_ews_sync_state(owner, &folder_id).await.unwrap_or_default()
+        state
+            .storage
+            .get_ews_sync_state(owner, &folder_id)
+            .await
+            .unwrap_or_default()
     } else {
         requested_state
     };
@@ -1907,7 +1911,10 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
-    let calendars = caldav.find_user_calendars(owner, &auth.password).await.unwrap_or_default();
+    let calendars = caldav
+        .find_user_calendars(owner, &auth.password)
+        .await
+        .unwrap_or_default();
     let collection_href = match calendars.first() {
         Some(v) => v.clone(),
         None => {
