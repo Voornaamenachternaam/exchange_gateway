@@ -94,7 +94,45 @@ pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
         if n_lower.contains(&tz_name.to_ascii_lowercase()) {
             return Some(Tz::from(variant));
         }
+fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
     }
+
+    if let Ok(tz) = WindowsTimezone::from_str(n) {
+        return Some(tz);
+    }
+
+    for variant in WindowsTimezone::iter() {
+        if variant.name().eq_ignore_ascii_case(n) {
+            return Some(variant);
+        }
+    }
+
+    let n_lower = n.to_ascii_lowercase();
+    for variant in WindowsTimezone::iter() {
+        if n_lower.contains(&variant.name().to_ascii_lowercase()) {
+            return Some(variant);
+        }
+    }
+
+    None
+}
+
+pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
+    if let Some(iana) = parse_utc_offset_name(&name.to_ascii_lowercase()) {
+        return iana.parse().ok();
+    }
+    find_windows_timezone(name).map(Tz::from)
+}
+
+fn windows_name_to_iana(name: &str) -> Option<&'static str> {
+    if let Some(iana) = parse_utc_offset_name(&name.to_ascii_lowercase()) {
+        return Some(iana);
+    }
+    find_windows_timezone(name).map(|tz| tz.tzdb_id())
+}
 
     None
 }
