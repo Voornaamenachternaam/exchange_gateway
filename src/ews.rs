@@ -1712,7 +1712,12 @@ async fn handle_sync_folder_items(
             Ok(v) => v,
             Err(e) => {
                 tracing::error!(error = %e, owner = %owner, folder_id = %folder_id, "Failed to fetch EWS sync state");
-                None
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorInternalServerError",
+                    &format!("Failed to fetch EWS sync state: {e}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
             }
         }
     } else {
