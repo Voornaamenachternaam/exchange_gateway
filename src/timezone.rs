@@ -59,11 +59,12 @@ fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
 
     let n_lower = n.to_ascii_lowercase();
     WindowsTimezone::iter()
-        .filter_map(|variant| {
+                .filter_map(|variant| {
             let name = variant.name();
-            n_lower.contains(&name.to_ascii_lowercase()).then_some(variant)
+            n_lower.contains(&name.to_ascii_lowercase()).then_some((name.len(), variant))
         })
-        .max_by_key(|variant| variant.name().len())
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, variant)| variant)
 }
 
 fn windows_name_to_iana(name: &str) -> Option<&'static str> {
