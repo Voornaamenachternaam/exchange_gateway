@@ -1,5 +1,5 @@
 // src/timezone.rs
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono_tz::Tz;
 use std::str::FromStr;
 use strum::IntoEnumIterator;
@@ -102,7 +102,8 @@ pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     let std_name = read_wchar_name(&bytes, 4);
     let dst_name = read_wchar_name(&bytes, 88);
 
-    if let Some(iana) = windows_name_to_iana(&std_name).or_else(|| windows_name_to_iana(&dst_name)) {
+    if let Some(iana) = windows_name_to_iana(&std_name).or_else(|| windows_name_to_iana(&dst_name))
+    {
         return Some(iana.to_string());
     }
 
@@ -141,30 +142,78 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
 
 fn parse_utc_offset_name(name: &str) -> Option<&'static str> {
     if name.contains("utc") || name.contains("gmt") {
-        if name.contains("+01") { return Some("Etc/GMT-1"); }
-        if name.contains("+02") { return Some("Etc/GMT-2"); }
-        if name.contains("+03") { return Some("Etc/GMT-3"); }
-        if name.contains("+04") { return Some("Etc/GMT-4"); }
-        if name.contains("+05") { return Some("Etc/GMT-5"); }
-        if name.contains("+06") { return Some("Etc/GMT-6"); }
-        if name.contains("+07") { return Some("Etc/GMT-7"); }
-        if name.contains("+08") { return Some("Etc/GMT-8"); }
-        if name.contains("+09") { return Some("Etc/GMT-9"); }
-        if name.contains("+10") { return Some("Etc/GMT-10"); }
-        if name.contains("+11") { return Some("Etc/GMT-11"); }
-        if name.contains("+12") { return Some("Etc/GMT-12"); }
-        if name.contains("-01") { return Some("Etc/GMT+1"); }
-        if name.contains("-02") { return Some("Etc/GMT+2"); }
-        if name.contains("-03") { return Some("Etc/GMT+3"); }
-        if name.contains("-04") { return Some("Etc/GMT+4"); }
-        if name.contains("-05") { return Some("Etc/GMT+5"); }
-        if name.contains("-06") { return Some("Etc/GMT+6"); }
-        if name.contains("-07") { return Some("Etc/GMT+7"); }
-        if name.contains("-08") { return Some("Etc/GMT+8"); }
-        if name.contains("-09") { return Some("Etc/GMT+9"); }
-        if name.contains("-10") { return Some("Etc/GMT+10"); }
-        if name.contains("-11") { return Some("Etc/GMT+11"); }
-        if name.contains("-12") { return Some("Etc/GMT+12"); }
+        if name.contains("+01") {
+            return Some("Etc/GMT-1");
+        }
+        if name.contains("+02") {
+            return Some("Etc/GMT-2");
+        }
+        if name.contains("+03") {
+            return Some("Etc/GMT-3");
+        }
+        if name.contains("+04") {
+            return Some("Etc/GMT-4");
+        }
+        if name.contains("+05") {
+            return Some("Etc/GMT-5");
+        }
+        if name.contains("+06") {
+            return Some("Etc/GMT-6");
+        }
+        if name.contains("+07") {
+            return Some("Etc/GMT-7");
+        }
+        if name.contains("+08") {
+            return Some("Etc/GMT-8");
+        }
+        if name.contains("+09") {
+            return Some("Etc/GMT-9");
+        }
+        if name.contains("+10") {
+            return Some("Etc/GMT-10");
+        }
+        if name.contains("+11") {
+            return Some("Etc/GMT-11");
+        }
+        if name.contains("+12") {
+            return Some("Etc/GMT-12");
+        }
+        if name.contains("-01") {
+            return Some("Etc/GMT+1");
+        }
+        if name.contains("-02") {
+            return Some("Etc/GMT+2");
+        }
+        if name.contains("-03") {
+            return Some("Etc/GMT+3");
+        }
+        if name.contains("-04") {
+            return Some("Etc/GMT+4");
+        }
+        if name.contains("-05") {
+            return Some("Etc/GMT+5");
+        }
+        if name.contains("-06") {
+            return Some("Etc/GMT+6");
+        }
+        if name.contains("-07") {
+            return Some("Etc/GMT+7");
+        }
+        if name.contains("-08") {
+            return Some("Etc/GMT+8");
+        }
+        if name.contains("-09") {
+            return Some("Etc/GMT+9");
+        }
+        if name.contains("-10") {
+            return Some("Etc/GMT+10");
+        }
+        if name.contains("-11") {
+            return Some("Etc/GMT+11");
+        }
+        if name.contains("-12") {
+            return Some("Etc/GMT+12");
+        }
     }
     None
 }
@@ -175,50 +224,375 @@ const US_DST: [u8; 16] = [0, 0, 3, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0];
 const US_STD: [u8; 16] = [0, 0, 11, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0];
 const NO_DST: [u8; 16] = [0u8; 16];
 
-type TzParams = (i32, &'static str, &'static str, [u8; 16], [u8; 16], i32, i32);
+type TzParams = (
+    i32,
+    &'static str,
+    &'static str,
+    [u8; 16],
+    [u8; 16],
+    i32,
+    i32,
+);
 
 fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
     Some(match iana {
-        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => (0, "Coordinated Universal Time", "", NO_DST, NO_DST, 0, 0),
-        "Europe/London" => (0, "GMT Standard Time", "GMT Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Europe/Amsterdam" | "Europe/Berlin" | "Europe/Paris" | "Europe/Rome" | "Europe/Madrid" | "Europe/Stockholm" | "Europe/Brussels" | "Europe/Copenhagen" | "Europe/Vienna" | "Europe/Warsaw" | "Europe/Zagreb" | "Europe/Budapest" => (-60, "W. Europe Standard Time", "W. Europe Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Europe/Helsinki" | "Europe/Tallinn" | "Europe/Riga" | "Europe/Vilnius" | "Europe/Kyiv" | "Europe/Bucharest" | "Europe/Athens" | "Europe/Sofia" => (-120, "FLE Standard Time", "FLE Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Europe/Moscow" => (-180, "Russian Standard Time", "Russian Standard Time", NO_DST, NO_DST, 0, 0),
-        "Europe/Istanbul" => (-180, "Turkey Standard Time", "Turkey Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Dubai" => (-240, "Arabian Standard Time", "Arabian Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Kolkata" | "Asia/Calcutta" => (-330, "India Standard Time", "India Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Shanghai" | "Asia/Hong_Kong" => (-480, "China Standard Time", "China Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Singapore" => (-480, "Singapore Standard Time", "Singapore Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Tokyo" => (-540, "Tokyo Standard Time", "Tokyo Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Seoul" => (-540, "Korea Standard Time", "Korea Standard Time", NO_DST, NO_DST, 0, 0),
-        "Australia/Sydney" => (-600, "AUS Eastern Standard Time", "AUS Eastern Daylight Time", NO_DST, EU_DST, 0, -60),
-        "America/New_York" => (300, "Eastern Standard Time", "Eastern Daylight Time", US_STD, US_DST, 0, -60),
-        "America/Chicago" => (360, "Central Standard Time", "Central Daylight Time", US_STD, US_DST, 0, -60),
-        "America/Denver" => (420, "Mountain Standard Time", "Mountain Daylight Time", US_STD, US_DST, 0, -60),
-        "America/Los_Angeles" => (480, "Pacific Standard Time", "Pacific Daylight Time", US_STD, US_DST, 0, -60),
-        "America/Anchorage" => (540, "Alaskan Standard Time", "Alaskan Daylight Time", US_STD, US_DST, 0, -60),
-        "Pacific/Honolulu" => (600, "Hawaiian Standard Time", "Hawaiian Standard Time", NO_DST, NO_DST, 0, 0),
-        "America/Halifax" => (240, "Atlantic Standard Time", "Atlantic Daylight Time", US_STD, US_DST, 0, -60),
-        "America/St_Johns" => (210, "Newfoundland Standard Time", "Newfoundland Daylight Time", US_STD, US_DST, 0, -60),
-        "America/Sao_Paulo" => (180, "E. South America Standard Time", "E. South America Daylight Time", NO_DST, NO_DST, 0, -60),
-        "Europe/Prague" => (-60, "Central Europe Standard Time", "Central Europe Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Europe/Dublin" | "Europe/Lisbon" => (0, "GMT Standard Time", "GMT Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Europe/Zurich" => (-60, "W. Europe Standard Time", "W. Europe Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Asia/Taipei" => (-480, "Taipei Standard Time", "Taipei Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Bangkok" | "Asia/Jakarta" => (-420, "SE Asia Standard Time", "SE Asia Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Karachi" => (-300, "Pakistan Standard Time", "Pakistan Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Dhaka" => (-360, "Bangladesh Standard Time", "Bangladesh Standard Time", NO_DST, NO_DST, 0, 0),
-        "Asia/Tehran" => (-210, "Iran Standard Time", "Iran Daylight Time", NO_DST, NO_DST, 0, -60),
-        "Asia/Baghdad" => (-180, "Arabic Standard Time", "Arabic Standard Time", NO_DST, NO_DST, 0, 0),
-        "Africa/Johannesburg" => (-120, "South Africa Standard Time", "South Africa Standard Time", NO_DST, NO_DST, 0, 0),
-        "Africa/Cairo" => (-120, "Egypt Standard Time", "Egypt Standard Time", NO_DST, NO_DST, 0, 0),
-        "Pacific/Auckland" => (-720, "New Zealand Standard Time", "New Zealand Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Australia/Brisbane" => (-600, "E. Australia Standard Time", "E. Australia Standard Time", NO_DST, NO_DST, 0, 0),
-        "Australia/Melbourne" => (-600, "AUS Eastern Standard Time", "AUS Eastern Daylight Time", EU_STD, EU_DST, 0, -60),
-        "Australia/Perth" => (-480, "W. Australia Standard Time", "W. Australia Standard Time", NO_DST, NO_DST, 0, 0),
-        "America/Mexico_City" => (360, "Central Standard Time (Mexico)", "Central Daylight Time (Mexico)", US_STD, US_DST, 0, -60),
-        "America/Buenos_Aires" => (180, "Argentina Standard Time", "Argentina Standard Time", NO_DST, NO_DST, 0, 0),
-        "America/Santiago" => (240, "Pacific SA Standard Time", "Pacific SA Daylight Time", EU_STD, EU_DST, 0, -60),
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => {
+            (0, "Coordinated Universal Time", "", NO_DST, NO_DST, 0, 0)
+        }
+        "Europe/London" => (
+            0,
+            "GMT Standard Time",
+            "GMT Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Amsterdam" | "Europe/Berlin" | "Europe/Paris" | "Europe/Rome" | "Europe/Madrid"
+        | "Europe/Stockholm" | "Europe/Brussels" | "Europe/Copenhagen" | "Europe/Vienna"
+        | "Europe/Warsaw" | "Europe/Zagreb" | "Europe/Budapest" => (
+            -60,
+            "W. Europe Standard Time",
+            "W. Europe Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Helsinki" | "Europe/Tallinn" | "Europe/Riga" | "Europe/Vilnius" | "Europe/Kyiv"
+        | "Europe/Bucharest" | "Europe/Athens" | "Europe/Sofia" => (
+            -120,
+            "FLE Standard Time",
+            "FLE Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Moscow" => (
+            -180,
+            "Russian Standard Time",
+            "Russian Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Europe/Istanbul" => (
+            -180,
+            "Turkey Standard Time",
+            "Turkey Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Dubai" => (
+            -240,
+            "Arabian Standard Time",
+            "Arabian Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Kolkata" | "Asia/Calcutta" => (
+            -330,
+            "India Standard Time",
+            "India Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Shanghai" | "Asia/Hong_Kong" => (
+            -480,
+            "China Standard Time",
+            "China Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Singapore" => (
+            -480,
+            "Singapore Standard Time",
+            "Singapore Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Tokyo" => (
+            -540,
+            "Tokyo Standard Time",
+            "Tokyo Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Seoul" => (
+            -540,
+            "Korea Standard Time",
+            "Korea Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Australia/Sydney" => (
+            -600,
+            "AUS Eastern Standard Time",
+            "AUS Eastern Daylight Time",
+            NO_DST,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "America/New_York" => (
+            300,
+            "Eastern Standard Time",
+            "Eastern Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Chicago" => (
+            360,
+            "Central Standard Time",
+            "Central Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Denver" => (
+            420,
+            "Mountain Standard Time",
+            "Mountain Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Los_Angeles" => (
+            480,
+            "Pacific Standard Time",
+            "Pacific Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Anchorage" => (
+            540,
+            "Alaskan Standard Time",
+            "Alaskan Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "Pacific/Honolulu" => (
+            600,
+            "Hawaiian Standard Time",
+            "Hawaiian Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "America/Halifax" => (
+            240,
+            "Atlantic Standard Time",
+            "Atlantic Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/St_Johns" => (
+            210,
+            "Newfoundland Standard Time",
+            "Newfoundland Daylight Time",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Sao_Paulo" => (
+            180,
+            "E. South America Standard Time",
+            "E. South America Daylight Time",
+            NO_DST,
+            NO_DST,
+            0,
+            -60,
+        ),
+        "Europe/Prague" => (
+            -60,
+            "Central Europe Standard Time",
+            "Central Europe Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Dublin" | "Europe/Lisbon" => (
+            0,
+            "GMT Standard Time",
+            "GMT Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Europe/Zurich" => (
+            -60,
+            "W. Europe Standard Time",
+            "W. Europe Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Asia/Taipei" => (
+            -480,
+            "Taipei Standard Time",
+            "Taipei Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Bangkok" | "Asia/Jakarta" => (
+            -420,
+            "SE Asia Standard Time",
+            "SE Asia Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Karachi" => (
+            -300,
+            "Pakistan Standard Time",
+            "Pakistan Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Dhaka" => (
+            -360,
+            "Bangladesh Standard Time",
+            "Bangladesh Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Asia/Tehran" => (
+            -210,
+            "Iran Standard Time",
+            "Iran Daylight Time",
+            NO_DST,
+            NO_DST,
+            0,
+            -60,
+        ),
+        "Asia/Baghdad" => (
+            -180,
+            "Arabic Standard Time",
+            "Arabic Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Africa/Johannesburg" => (
+            -120,
+            "South Africa Standard Time",
+            "South Africa Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Africa/Cairo" => (
+            -120,
+            "Egypt Standard Time",
+            "Egypt Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Pacific/Auckland" => (
+            -720,
+            "New Zealand Standard Time",
+            "New Zealand Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Australia/Brisbane" => (
+            -600,
+            "E. Australia Standard Time",
+            "E. Australia Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "Australia/Melbourne" => (
+            -600,
+            "AUS Eastern Standard Time",
+            "AUS Eastern Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
+        "Australia/Perth" => (
+            -480,
+            "W. Australia Standard Time",
+            "W. Australia Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "America/Mexico_City" => (
+            360,
+            "Central Standard Time (Mexico)",
+            "Central Daylight Time (Mexico)",
+            US_STD,
+            US_DST,
+            0,
+            -60,
+        ),
+        "America/Buenos_Aires" => (
+            180,
+            "Argentina Standard Time",
+            "Argentina Standard Time",
+            NO_DST,
+            NO_DST,
+            0,
+            0,
+        ),
+        "America/Santiago" => (
+            240,
+            "Pacific SA Standard Time",
+            "Pacific SA Daylight Time",
+            EU_STD,
+            EU_DST,
+            0,
+            -60,
+        ),
         _ => return None,
     })
 }
@@ -255,7 +629,10 @@ mod tests {
         blob[0..4].copy_from_slice(&480i32.to_le_bytes());
         write_wchar_name(&mut blob, 4, "Pacific Standard Time");
         let b64 = BASE64.encode(blob);
-        assert_eq!(eas_timezone_blob_to_iana(&b64), Some("America/Los_Angeles".to_string()));
+        assert_eq!(
+            eas_timezone_blob_to_iana(&b64),
+            Some("America/Los_Angeles".to_string())
+        );
     }
 
     #[test]
@@ -264,7 +641,10 @@ mod tests {
         blob[0..4].copy_from_slice(&(-120i32).to_le_bytes());
         write_wchar_name(&mut blob, 4, "(UTC+02:00) Custom");
         let b64 = BASE64.encode(blob);
-        assert_eq!(eas_timezone_blob_to_iana(&b64), Some("Etc/GMT-2".to_string()));
+        assert_eq!(
+            eas_timezone_blob_to_iana(&b64),
+            Some("Etc/GMT-2".to_string())
+        );
     }
 
     #[test]
