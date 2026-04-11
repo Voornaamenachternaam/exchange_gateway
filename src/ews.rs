@@ -1907,7 +1907,22 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
-    let calendars = caldav.find_user_calendars(owner, &auth.password).await.unwrap_or_default();
+    let calendars = match caldav.find_user_calendars(owner, &auth.password).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                owner = %owner,
+                "CalDAV calendar discovery failed for owner"
+            );
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                &format!("Failed to discover calendars: {e}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
     let collection_href = match calendars.first() {
         Some(v) => v.clone(),
         None => {
