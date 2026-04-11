@@ -54,6 +54,8 @@ lru = "^0.16.3"
 memchr = "^2.7.5"
 itoa = "^1.0.15"
 ryu = "^1.0.20"
+windows-timezones = { version = "^0.5.1", features = ["strum", "chrono-tz"] }
+strum = "^0.27.2"
 
 [dev-dependencies]
 proptest = "^1.11.0"

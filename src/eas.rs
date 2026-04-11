@@ -26,15 +26,11 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-// -----------------------------------------------------------------------------
-// Constants & static caches
-// -----------------------------------------------------------------------------
-
 const MAX_REQUESTS_PER_WINDOW: usize = 60;
 const WINDOW: Duration = Duration::from_secs(60);
 const RETRY_AFTER_SECONDS: u64 = 30;
 const MAX_FREEBUSY_DAYS: i64 = 30;
-const MAX_BODY_SIZE: usize = 1_048_576; // 1 MiB
+const MAX_BODY_SIZE: usize = 1_048_576;
 const CALDAV_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
 const MAX_DEVICE_WINDOW_ENTRIES: usize = 100_000;
@@ -242,11 +238,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 let qname = e.name();
                 let qname_bytes = qname.as_ref();
 
-                // Determine the root element's namespace correctly:
-                // - For unprefixed elements (e.g., <Sync>): use the default namespace (xmlns="...")
-                // - For prefixed elements (e.g., <as:Sync>): use the namespace bound to that prefix (xmlns:as="...")
                 let ns = if let Some(colon_pos) = qname_bytes.iter().position(|&b| b == b':') {
-                    // Prefixed element: find the namespace bound to this prefix
                     let prefix = &qname_bytes[..colon_pos];
                     e.attributes()
                         .flatten()
@@ -260,7 +252,6 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                         })
                         .unwrap_or_default()
                 } else {
-                    // Unprefixed element: use the default namespace (xmlns="...")
                     e.attributes()
                         .flatten()
                         .find_map(|attr| {
