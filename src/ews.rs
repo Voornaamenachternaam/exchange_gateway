@@ -1708,11 +1708,13 @@ async fn handle_sync_folder_items(
     }
     let requested_state = extract_first_tag_text(body, b"SyncState");
     let effective_state = if requested_state.as_deref().unwrap_or("0").is_empty() {
-        state
-            .storage
-            .get_ews_sync_state(owner, &folder_id)
-            .await
-            .unwrap_or_default()
+        match state.storage.get_ews_sync_state(owner, &folder_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(error = %e, owner = %owner, folder_id = %folder_id, "Failed to fetch EWS sync state");
+                None
+            }
+        }
     } else {
         requested_state
     };
