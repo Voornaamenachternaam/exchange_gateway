@@ -1910,6 +1910,11 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let calendars = match caldav.find_user_calendars(owner, &auth.password).await {
         Ok(v) => v,
         Err(e) => {
+            tracing::error!(
+                error = %e,
+                owner = %owner,
+                "CalDAV calendar discovery failed for owner"
+            );
             return operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorInternalServerError",
