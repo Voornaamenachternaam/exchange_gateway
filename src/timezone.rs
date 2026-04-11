@@ -58,8 +58,10 @@ fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
     }
 
     let n_lower = n.to_ascii_lowercase();
-    WindowsTimezone::iter().find(|&variant| n_lower.contains(&variant.name().to_ascii_lowercase()))
-}
+    WindowsTimezone::iter()
+        .filter(|variant| n_lower.contains(&variant.name().to_ascii_lowercase()))
+        .max_by_key(|variant| variant.name().len())
+ }
 
 fn windows_name_to_iana(name: &str) -> Option<&'static str> {
     let n = name.trim();
@@ -67,30 +69,11 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
         return None;
     }
 
-    let n_lower = n.to_ascii_lowercase();
-    if let Some(iana) = parse_utc_offset_name(&n_lower) {
-        return Some(iana);
-    }
-
-    if let Ok(tz) = WindowsTimezone::from_str(n) {
+    if let Some(tz) = find_windows_timezone(n) {
         return Some(tz.tzdb_id());
     }
 
-    for variant in WindowsTimezone::iter() {
-        let tz_name = variant.name();
-        if tz_name.eq_ignore_ascii_case(n) {
-            return Some(variant.tzdb_id());
-        }
-    }
-
-    for variant in WindowsTimezone::iter() {
-        let tz_name = variant.name();
-        if n_lower.contains(&tz_name.to_ascii_lowercase()) {
-            return Some(variant.tzdb_id());
-        }
-    }
-
-    None
+    parse_utc_offset_name(&n.to_ascii_lowercase()) 
 }
 
 pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
