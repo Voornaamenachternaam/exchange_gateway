@@ -1078,7 +1078,7 @@ pub async fn perform_sync(
     client_mutation_responses: &str,
 ) -> Result<String> {
     let storage = &state.storage;
-    let window_size = opts.window_size.min(MAX_WINDOW_SIZE).max(1);
+    let window_size = opts.window_size.clamp(1, MAX_WINDOW_SIZE);
 
     if !content_class.eq_ignore_ascii_case("Calendar") {
         let class_name = content_class.trim();
