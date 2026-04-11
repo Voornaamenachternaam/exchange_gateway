@@ -110,6 +110,9 @@ pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     if bias == 0 {
         return Some("UTC".to_string());
     }
+    if bias % 60 != 0 {
+        return None;
+    }
     let hours = bias / 60;
     Some(format!("Etc/GMT{:+}", hours))
 }
