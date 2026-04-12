@@ -492,4 +492,139 @@ impl Storage {
         )
         .await
     }
+
+    pub async fn upsert_calendar_exception(
+        &self,
+        owner: &str,
+        parent_server_id: &str,
+        exception_start: &str,
+        server_id: Option<&str>,
+        is_deleted: bool,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            parent_server_id: &'a str,
+            exception_start: &'a str,
+            server_id: Option<&'a str>,
+            is_deleted: i32,
+        }
+        self.post_json(
+            "upsert_calendar_exception",
+            &Req {
+                owner,
+                parent_server_id,
+                exception_start,
+                server_id,
+                is_deleted: if is_deleted { 1 } else { 0 },
+            },
+        )
+        .await
+    }
+
+    pub async fn get_calendar_exceptions(
+        &self,
+        owner: &str,
+        parent_server_id: &str,
+    ) -> Result<Vec<CalendarExceptionRow>> {
+        let path = format!(
+            "get_calendar_exceptions?owner={}&parent_server_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(parent_server_id)
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn get_calendar_exception(
+        &self,
+        owner: &str,
+        parent_server_id: &str,
+        exception_start: &str,
+    ) -> Result<Option<CalendarExceptionRow>> {
+        let path = format!(
+            "get_calendar_exception?owner={}&parent_server_id={}&exception_start={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(parent_server_id),
+            urlencoding::encode(exception_start)
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn delete_calendar_exception(
+        &self,
+        owner: &str,
+        parent_server_id: &str,
+        exception_start: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            parent_server_id: &'a str,
+            exception_start: &'a str,
+        }
+        self.post_json(
+            "delete_calendar_exception",
+            &Req {
+                owner,
+                parent_server_id,
+                exception_start,
+            },
+        )
+        .await
+    }
+
+    pub async fn record_meeting_response(
+        &self,
+        owner: &str,
+        request_id: &str,
+        calendar_id: &str,
+        user_response: i32,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            request_id: &'a str,
+            calendar_id: &'a str,
+            user_response: i32,
+        }
+        self.post_json(
+            "record_meeting_response",
+            &Req {
+                owner,
+                request_id,
+                calendar_id,
+                user_response,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_meeting_response(
+        &self,
+        owner: &str,
+        request_id: &str,
+    ) -> Result<Option<MeetingResponseRow>> {
+        let path = format!(
+            "get_meeting_response?owner={}&request_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(request_id)
+        );
+        self.get_json(&path).await
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CalendarExceptionRow {
+    pub parent_server_id: String,
+    pub exception_start: String,
+    pub server_id: Option<String>,
+    pub is_deleted: i32,
+}
+
+#[derive(Deserialize)]
+pub struct MeetingResponseRow {
+    pub request_id: String,
+    pub calendar_id: String,
+    pub user_response: i32,
+    pub created_at: String,
 }

@@ -26,7 +26,13 @@ const API_METHODS = {
   '/api/get_ews_sync_state': 'GET',
   '/api/set_ews_sync_state': 'POST',
   '/api/get_ews_item_by_id': 'GET',
-  '/api/upsert_device_info': 'POST'
+  '/api/upsert_device_info': 'POST',
+  '/api/upsert_calendar_exception': 'POST',
+  '/api/get_calendar_exceptions': 'GET',
+  '/api/get_calendar_exception': 'GET',
+  '/api/delete_calendar_exception': 'POST',
+  '/api/record_meeting_response': 'POST',
+  '/api/get_meeting_response': 'GET'
 };
 
 export default {
@@ -71,6 +77,12 @@ export default {
     if (path === '/api/set_ews_sync_state') return handleSetEwsSyncState(request, env);
     if (path === '/api/get_ews_item_by_id') return handleGetEwsItemById(url, request, env);
     if (path === '/api/upsert_device_info') return handleUpsertDeviceInfo(request, env);
+    if (path === '/api/upsert_calendar_exception') return handleUpsertCalendarException(request, env);
+    if (path === '/api/get_calendar_exceptions') return handleGetCalendarExceptions(url, request, env);
+    if (path === '/api/get_calendar_exception') return handleGetCalendarException(url, request, env);
+    if (path === '/api/delete_calendar_exception') return handleDeleteCalendarException(request, env);
+    if (path === '/api/record_meeting_response') return handleRecordMeetingResponse(request, env);
+    if (path === '/api/get_meeting_response') return handleGetMeetingResponse(url, request, env);
 
     if (path.startsWith('/api/')) {
       return withCors(await handleApiRequest(request, env));
@@ -738,5 +750,138 @@ async function cleanupIdempotencyKeys(env) {
   } catch (e) {
     console.error('Failed to clean up idempotency keys:', e);
   }
+}
+
+async function handleUpsertCalendarException(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleUpsertCalendarException');
+  try {
+    const body = await readJson(request);
+    const {
+      owner = '',
+      parent_server_id = '',
+      exception_start = '',
+      server_id = null,
+      is_deleted = 0
+    } = body;
+    if (!owner || !parent_server_id || !exception_start) {
+      return new Response('Missing owner/parent_server_id/exception_start', { status: 400 });
+    }
+    const isDeletedInt = Number(is_deleted) || 0;
+    await env.EXCHANGE_DB
+      .prepare(`INSERT INTO calendar_exceptions (owner, parent_server_id, exception_start, server_id, is_deleted, created_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(owner, parent_server_id, exception_start) DO UPDATE SET
+          server_id = excluded.server_id,
+          is_deleted = excluded.is_deleted,
+          created_at = CURRENT_TIMESTAMP`)
+      .bind(owner, parent_server_id, exception_start, server_id, isDeletedInt)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error upserting calendar exception:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetCalendarExceptions(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const parentServerId = url.searchParams.get('parent_server_id') || '';
+  if (!owner || !parentServerId) {
+    return new Response('Missing owner/parent_server_id', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare(`SELECT parent_server_id, exception_start, server_id, is_deleted, created_at
+      FROM calendar_exceptions WHERE owner = ? AND parent_server_id = ? ORDER BY exception_start ASC`)
+    .bind(owner, parentServerId)
+    .all();
+  return Response.json(result.results || []);
+}
+
+async function handleGetCalendarException(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const parentServerId = url.searchParams.get('parent_server_id') || '';
+  const exceptionStart = url.searchParams.get('exception_start') || '';
+  if (!owner || !parentServerId || !exceptionStart) {
+    return new Response('Missing owner/parent_server_id/exception_start', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare(`SELECT parent_server_id, exception_start, server_id, is_deleted, created_at
+      FROM calendar_exceptions WHERE owner = ? AND parent_server_id = ? AND exception_start = ? LIMIT 1`)
+    .bind(owner, parentServerId, exceptionStart)
+    .all();
+  return Response.json((result.results || [])[0] || null);
+}
+
+async function handleDeleteCalendarException(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleDeleteCalendarException');
+  try {
+    const body = await readJson(request);
+    const { owner = '', parent_server_id = '', exception_start = '' } = body;
+    if (!owner || !parent_server_id || !exception_start) {
+      return new Response('Missing owner/parent_server_id/exception_start', { status: 400 });
+    }
+    await env.EXCHANGE_DB
+      .prepare(`DELETE FROM calendar_exceptions WHERE owner = ? AND parent_server_id = ? AND exception_start = ?`)
+      .bind(owner, parent_server_id, exception_start)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error deleting calendar exception:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleRecordMeetingResponse(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleRecordMeetingResponse');
+  try {
+    const body = await readJson(request);
+    const { owner = '', request_id = '', calendar_id = '', user_response = 0 } = body;
+    if (!owner || !request_id || !calendar_id) {
+      return new Response('Missing owner/request_id/calendar_id', { status: 400 });
+    }
+    const userResponseInt = Number(user_response) || 0;
+    await env.EXCHANGE_DB
+      .prepare(`INSERT INTO meeting_response (owner, request_id, calendar_id, user_response, created_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(owner, request_id) DO UPDATE SET
+          calendar_id = excluded.calendar_id,
+          user_response = excluded.user_response,
+          created_at = CURRENT_TIMESTAMP`)
+      .bind(owner, request_id, calendar_id, userResponseInt)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error recording meeting response:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetMeetingResponse(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const requestId = url.searchParams.get('request_id') || '';
+  if (!owner || !requestId) {
+    return new Response('Missing owner/request_id', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare(`SELECT request_id, calendar_id, user_response, created_at
+      FROM meeting_response WHERE owner = ? AND request_id = ? LIMIT 1`)
+    .bind(owner, requestId)
+    .all();
+  return Response.json((result.results || [])[0] || null);
 }
 
