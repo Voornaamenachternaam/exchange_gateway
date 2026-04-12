@@ -68,12 +68,14 @@ pub fn ews_soap_response(inner: &str) -> String {
 }
 
 pub fn ews_error_response(code: &str, message: &str) -> String {
+    let escaped_code = code.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let escaped_message = message.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
     format!(
         r#"<s:Fault>
 <s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>{}</s:Value></s:Subcode></s:Code>
 <s:Reason><s:Text xml:lang="en-US">{}</s:Text></s:Reason>
 </s:Fault>"#,
-        code, message
+        escaped_code, escaped_message
     )
 }
 
