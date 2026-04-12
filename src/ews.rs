@@ -78,6 +78,9 @@ enum EwsAction {
     GetReminders,
     PerformReminderAction,
     GetPersona,
+    CreateAttachment,
+    GetAttachment,
+    DeleteAttachment,
 }
 
 fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
@@ -132,7 +135,10 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
         | EwsAction::GetClientAccessToken
         | EwsAction::GetReminders
         | EwsAction::PerformReminderAction
-        | EwsAction::GetPersona => Ok(()),
+        | EwsAction::GetPersona
+    | EwsAction::CreateAttachment
+    | EwsAction::GetAttachment
+    | EwsAction::DeleteAttachment => Ok(()),
     }
 }
 
@@ -178,6 +184,9 @@ fn operation_error_response(
         EwsAction::GetReminders => "GetRemindersResponseMessage",
         EwsAction::PerformReminderAction => "PerformReminderActionResponseMessage",
         EwsAction::GetPersona => "GetPersonaResponseMessage",
+        EwsAction::CreateAttachment => "CreateAttachmentResponseMessage",
+        EwsAction::GetAttachment => "GetAttachmentResponseMessage",
+        EwsAction::DeleteAttachment => "DeleteAttachmentResponseMessage",
     };
     let inner = format!(
         r#"<m:{resp} ResponseClass="Error" xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:{resp}>"#,
@@ -264,6 +273,9 @@ pub async fn handle(
         EwsAction::GetReminders => handle_get_reminders(&auth, &body).await,
         EwsAction::PerformReminderAction => handle_perform_reminder_action(&auth, &body).await,
         EwsAction::GetPersona => handle_get_persona(&auth, &body).await,
+        EwsAction::CreateAttachment => handle_create_attachment(&auth, &body).await,
+        EwsAction::GetAttachment => handle_get_attachment(&auth, &body).await,
+        EwsAction::DeleteAttachment => handle_delete_attachment(&auth, &body).await,
     }
 }
 
@@ -324,6 +336,9 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"GetReminders" => EwsAction::GetReminders,
                     b"PerformReminderAction" => EwsAction::PerformReminderAction,
                     b"GetPersona" => EwsAction::GetPersona,
+                    b"CreateAttachment" => EwsAction::CreateAttachment,
+                    b"GetAttachment" => EwsAction::GetAttachment,
+                    b"DeleteAttachment" => EwsAction::DeleteAttachment,
                     _ => {
                         buf.clear();
                         continue;
@@ -2727,6 +2742,112 @@ async fn handle_get_persona(auth: &AuthContext, _body: &str) -> Response {
         uuid::Uuid::new_v4(),
         xml_escape(&auth.username),
         xml_escape(&auth.username)
+    );
+    soap_ok(inner)
+}
+
+async fn handle_create_attachment(auth: &AuthContext, body: &str) -> Response {
+    let parent_id = extract_ews_field(body, b"ItemId")
+        .or_else(|| extract_ews_field(body, b"ParentItemId"))
+        .unwrap_or_else(|| "unknown".to_string());
+    let attachment_id = uuid::Uuid::new_v4();
+    let inner = format!(
+        r#"<m:CreateAttachmentResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:CreateAttachmentResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        <m:Attachments>
+        <t:FileAttachment>
+        <t:AttachmentId Id="{}" RootItemId="{}" RootItemChangeKey="01"/>
+        </t:FileAttachment>
+        </m:Attachments>
+        </m:CreateAttachmentResponseMessage>
+        </m:ResponseMessages>
+        </m:CreateAttachmentResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        attachment_id,
+        xml_escape(&parent_id)
+    );
+    soap_ok(inner)
+}
+
+async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
+    let attachment_ids: Vec<String> = {
+        let mut ids = Vec::new();
+        let mut reader = Reader::from_str(body);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let local_name = e.name().local_name();
+                    if local_name.as_ref() == b"AttachmentId" || local_name.as_ref() == b"t:AttachmentId" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"Id" {
+                                if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                                    ids.push(v.into_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+        ids
+    };
+    let attachments_xml = attachment_ids
+        .iter()
+        .map(|id| format!(
+            r#"<t:FileAttachment>
+            <t:AttachmentId Id="{}"/>
+            <t:Name>attachment.dat</t:Name>
+            <t:ContentType>application/octet-stream</t:ContentType>
+            <t:Size>0</t:Size>
+            <t:IsInline>false</t:IsInline>
+            </t:FileAttachment>"#,
+            xml_escape(id)
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let inner = format!(
+        r#"<m:GetAttachmentResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:GetAttachmentResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        <m:Attachments>
+        {}
+        </m:Attachments>
+        </m:GetAttachmentResponseMessage>
+        </m:ResponseMessages>
+        </m:GetAttachmentResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        attachments_xml
+    );
+    soap_ok(inner)
+}
+
+async fn handle_delete_attachment(_auth: &AuthContext, body: &str) -> Response {
+    let root_item_id = extract_first_attr(body, b"AttachmentId", b"RootItemId")
+        .or_else(|| extract_first_attr(body, b"ParentItemId", b"Id"))
+        .or_else(|| extract_ews_field(body, b"RootItemId"))
+        .unwrap_or_else(|| "unknown".to_string());
+    let inner = format!(
+        r#"<m:DeleteAttachmentResponse xmlns:m="{}" xmlns:t="{}">
+        <m:ResponseMessages>
+        <m:DeleteAttachmentResponseMessage ResponseClass="Success">
+        <m:ResponseCode>NoError</m:ResponseCode>
+        <m:RootItemId RootItemId="{}" RootItemChangeKey="01"/>
+        </m:DeleteAttachmentResponseMessage>
+        </m:ResponseMessages>
+        </m:DeleteAttachmentResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        xml_escape(&root_item_id)
     );
     soap_ok(inner)
 }
