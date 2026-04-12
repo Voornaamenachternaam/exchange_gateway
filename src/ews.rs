@@ -2782,7 +2782,7 @@ async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let local_name = e.name().local_name();
-                    if local_name.as_ref() == b"AttachmentId" || local_name.as_ref() == b"t:AttachmentId" {
+                    if local_name.as_ref() == b"AttachmentId" {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"Id" {
                                 if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
