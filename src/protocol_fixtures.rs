@@ -141,56 +141,9 @@ pub fn eas_provision_response(policy_key: &str, status: &str) -> String {
 }
 
 pub fn autodiscover_response(host: &str, email: &str) -> String {
+    let escaped_email = email.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let escaped_host = host.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
-<Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
-<User>
-<DisplayName>Stalwart Mail</DisplayName>
-<EMailAddress>{}</EMailAddress>
-<DeploymentId>00000000-0000-0000-0000-000000000000</DeploymentId>
-</User>
-<Account>
-<AccountType>email</AccountType>
-<Action>settings</Action>
-<Protocol>
-<Type>EXCH</Type>
-<Server>{}</Server>
-<ServerDN>/o=Exchange/ou=Exchange Administrative Group/cn=Recipients/cn={}</ServerDN>
-<ServerVersion>15.20.0.0</ServerVersion>
-<ASUrl>https://{}/Microsoft-Server-ActiveSync</ASUrl>
-<EwsUrl>https://{}/EWS/Exchange.asmx</EwsUrl>
-<AuthPackage>Basic</AuthPackage>
-<SSL>on</SSL>
-<AuthRequired>on</AuthRequired>
-</Protocol>
-<Protocol>
-<Type>EXPR</Type>
-<Server>{}</Server>
-<SSL>on</SSL>
-<AuthPackage>Basic</AuthPackage>
-<ASUrl>https://{}/Microsoft-Server-ActiveSync</ASUrl>
-<EwsUrl>https://{}/EWS/Exchange.asmx</EwsUrl>
-</Protocol>
-<Protocol>
-<Type>MobileSync</Type>
-<Server>{}</Server>
-<Url>https://{}/Microsoft-Server-ActiveSync</Url>
-</Protocol>
-</Account>
-</Response>
-</Autodiscover>"#,
-        email,
-        host,
-        email,
-        host,
-        host,
-        host,
-        host,
-        host,
-        host,
-        host
-    )
 }
 
 #[cfg(test)]
