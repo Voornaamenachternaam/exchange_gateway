@@ -136,9 +136,9 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
         | EwsAction::GetReminders
         | EwsAction::PerformReminderAction
         | EwsAction::GetPersona
-    | EwsAction::CreateAttachment
-    | EwsAction::GetAttachment
-    | EwsAction::DeleteAttachment => Ok(()),
+        | EwsAction::CreateAttachment
+        | EwsAction::GetAttachment
+        | EwsAction::DeleteAttachment => Ok(()),
     }
 }
 
@@ -2746,7 +2746,7 @@ async fn handle_get_persona(auth: &AuthContext, _body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_create_attachment(auth: &AuthContext, body: &str) -> Response {
+async fn handle_create_attachment(_auth: &AuthContext, body: &str) -> Response {
     let parent_id = extract_ews_field(body, b"ItemId")
         .or_else(|| extract_ews_field(body, b"ParentItemId"))
         .unwrap_or_else(|| "unknown".to_string());
@@ -2784,10 +2784,10 @@ async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
                     let local_name = e.name().local_name();
                     if local_name.as_ref() == b"AttachmentId" {
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id" {
-                                if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
-                                    ids.push(v.into_owned());
-                                }
+                            if attr.key.local_name().as_ref() == b"Id"
+                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+                            {
+                                ids.push(v.into_owned());
                             }
                         }
                     }
@@ -2801,16 +2801,18 @@ async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
     };
     let attachments_xml = attachment_ids
         .iter()
-        .map(|id| format!(
-            r#"<t:FileAttachment>
+        .map(|id| {
+            format!(
+                r#"<t:FileAttachment>
             <t:AttachmentId Id="{}"/>
             <t:Name>attachment.dat</t:Name>
             <t:ContentType>application/octet-stream</t:ContentType>
             <t:Size>0</t:Size>
             <t:IsInline>false</t:IsInline>
             </t:FileAttachment>"#,
-            xml_escape(id)
-        ))
+                xml_escape(id)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let inner = format!(
@@ -2824,9 +2826,7 @@ async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
         </m:GetAttachmentResponseMessage>
         </m:ResponseMessages>
         </m:GetAttachmentResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        attachments_xml
+        EWS_MSG_NS, EWS_TYPE_NS, attachments_xml
     );
     soap_ok(inner)
 }
