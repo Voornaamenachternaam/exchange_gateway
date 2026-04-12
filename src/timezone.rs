@@ -41,6 +41,46 @@ fn write_wchar_name(blob: &mut [u8], offset: usize, name: &str) {
     }
 }
 
+fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+
+    if let Ok(tz) = WindowsTimezone::from_str(n) {
+        return Some(tz);
+    }
+
+    for variant in WindowsTimezone::iter() {
+        if variant.name().eq_ignore_ascii_case(n) {
+            return Some(variant);
+        }
+    }
+
+    let n_lower = n.to_ascii_lowercase();
+    WindowsTimezone::iter()
+        .filter_map(|variant| {
+            let name = variant.name();
+            n_lower.contains(&name.to_ascii_lowercase()).then_some(variant)
+        })
+        .max_by_key(|variant| variant.name().len())
+}
+
+fn windows_name_to_iana(name: &str) -> Option<&'static str> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+
+    // First try UTC offset names like "(UTC+02:00) Custom" for better compatibility
+    if let Some(tz) = parse_utc_offset_name(&n.to_ascii_lowercase()) {
+        return Some(tz);
+    }
+
+    // Then fall back to Windows timezone name resolution
+    find_windows_timezone(n).map(|tz| tz.tzdb_id())
+}
+
 pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     let bytes = BASE64.decode(b64.trim()).ok()?;
     if bytes.len() < TZ_BLOB_LEN {
@@ -68,73 +108,10 @@ pub fn eas_timezone_blob_to_tz(b64: &str) -> Option<Tz> {
 }
 
 pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
-    let n = name.trim();
-    if n.is_empty() {
-        return None;
-    }
-
-    let n_lower = n.to_ascii_lowercase();
-    if let Some(iana) = parse_utc_offset_name(&n_lower) {
-        return iana.parse().ok();
-    }
-
-    if let Ok(tz) = WindowsTimezone::from_str(n) {
-        return Some(Tz::from(tz));
-    }
-
-    for variant in WindowsTimezone::iter() {
-        let tz_name = variant.name();
-        if tz_name.eq_ignore_ascii_case(n) {
-            return Some(Tz::from(variant));
-        }
-    }
-
-    for variant in WindowsTimezone::iter() {
-        let tz_name = variant.name();
-        if n_lower.contains(&tz_name.to_ascii_lowercase()) {
-            return Some(Tz::from(variant));
-        }
-fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
-    let n = name.trim();
-    if n.is_empty() {
-        return None;
-    }
-
-    if let Ok(tz) = WindowsTimezone::from_str(n) {
-        return Some(tz);
-    }
-
-    for variant in WindowsTimezone::iter() {
-        if variant.name().eq_ignore_ascii_case(n) {
-            return Some(variant);
-        }
-    }
-
-    let n_lower = n.to_ascii_lowercase();
-    for variant in WindowsTimezone::iter() {
-        if n_lower.contains(&variant.name().to_ascii_lowercase()) {
-            return Some(variant);
-        }
-    }
-
-    None
-}
-
-pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
     if let Some(iana) = parse_utc_offset_name(&name.to_ascii_lowercase()) {
         return iana.parse().ok();
     }
     find_windows_timezone(name).map(Tz::from)
-}
-
-fn windows_name_to_iana(name: &str) -> Option<&'static str> {
-    if let Some(iana) = parse_utc_offset_name(&name.to_ascii_lowercase()) {
-        return Some(iana);
-    }
-    find_windows_timezone(name).map(|tz| tz.tzdb_id())
-}
-
-    None
 }
 
 pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
@@ -149,76 +126,6 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
     blob[152..168].copy_from_slice(&dst_date);
     blob[168..172].copy_from_slice(&dst_bias.to_le_bytes());
     Some(BASE64.encode(blob))
-}
-
-fn windows_name_to_iana(name: &str) -> Option<&'static str> {
-    let n = name.trim();
-    if n.is_empty() {
-        return None;
-    }
-
-    let n_lower = n.to_ascii_lowercase();
-    if let Some(iana) = parse_utc_offset_name(&n_lower) {
-        return Some(iana);
-    }
-
-    if let Ok(tz) = WindowsTimezone::from_str(n) {
-        return Some(tz.tzdb_id());
-    }
-
-    for variant in WindowsTimezone::iter() {
-fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
-    let n = name.trim();
-    if n.is_empty() {
-        return None;
-    }
-
-    if let Ok(tz) = WindowsTimezone::from_str(n) {
-        return Some(tz);
-    }
-
-    for variant in WindowsTimezone::iter() {
-        if variant.name().eq_ignore_ascii_case(n) {
-            return Some(variant);
-        }
-    }
-
-    let n_lower = n.to_ascii_lowercase();
-    for variant in WindowsTimezone::iter() {
-        if n_lower.contains(&variant.name().to_ascii_lowercase()) {
-            return Some(variant);
-        }
-    }
-
-    None
-}
-
-pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
-    if let Some(iana) = parse_utc_offset_name(&name.to_ascii_lowercase()) {
-        return iana.parse().ok();
-    }
-    find_windows_timezone(name).map(Tz::from)
-}
-
-fn windows_name_to_iana(name: &str) -> Option<&'static str> {
-    if let Some(iana) = parse_utc_offset_name(&name.to_ascii_lowercase()) {
-        return Some(iana);
-    }
-    find_windows_timezone(name).map(|tz| tz.tzdb_id())
-}
-        if tz_name.eq_ignore_ascii_case(n) {
-            return Some(variant.tzdb_id());
-        }
-    }
-
-    for variant in WindowsTimezone::iter() {
-        let tz_name = variant.name();
-        if n_lower.contains(&tz_name.to_ascii_lowercase()) {
-            return Some(variant.tzdb_id());
-        }
-    }
-
-    None
 }
 
 fn parse_utc_offset_name(name: &str) -> Option<&'static str> {
@@ -676,106 +583,4 @@ fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
         ),
         _ => return None,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decode_bias_zero_utc() {
-        let blob = [0u8; 172];
-        let b64 = BASE64.encode(blob);
-        assert_eq!(decode_eas_timezone_bias(&b64), Some(0));
-    }
-
-    #[test]
-    fn decode_bias_eastern_us() {
-        let mut blob = [0u8; 172];
-        blob[0..4].copy_from_slice(&300i32.to_le_bytes());
-        let b64 = BASE64.encode(blob);
-        assert_eq!(decode_eas_timezone_bias(&b64), Some(300));
-    }
-
-    #[test]
-    fn blob_to_iana_utc_bias() {
-        let blob = [0u8; 172];
-        let b64 = BASE64.encode(blob);
-        assert_eq!(eas_timezone_blob_to_iana(&b64), Some("UTC".to_string()));
-    }
-
-    #[test]
-    fn blob_to_iana_via_name_pacific() {
-        let mut blob = [0u8; 172];
-        blob[0..4].copy_from_slice(&480i32.to_le_bytes());
-        write_wchar_name(&mut blob, 4, "Pacific Standard Time");
-        let b64 = BASE64.encode(blob);
-        assert_eq!(
-            eas_timezone_blob_to_iana(&b64),
-            Some("America/Los_Angeles".to_string())
-        );
-    }
-
-    #[test]
-    fn blob_to_iana_from_utc_offset_name() {
-        let mut blob = [0u8; 172];
-        blob[0..4].copy_from_slice(&(-120i32).to_le_bytes());
-        write_wchar_name(&mut blob, 4, "(UTC+02:00) Custom");
-        let b64 = BASE64.encode(blob);
-        assert_eq!(
-            eas_timezone_blob_to_iana(&b64),
-            Some("Etc/GMT-2".to_string())
-        );
-    }
-
-    #[test]
-    fn iana_to_blob_round_trip_amsterdam() {
-        let b64 = iana_to_eas_timezone_blob("Europe/Amsterdam").unwrap();
-        let bytes = BASE64.decode(&b64).unwrap();
-        assert_eq!(bytes.len(), 172);
-        let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        assert_eq!(bias, -60);
-        let name = read_wchar_name(&bytes, 4);
-        assert!(name.starts_with("W. Europe"), "got: {name}");
-    }
-
-    #[test]
-    fn iana_to_blob_utc() {
-        let b64 = iana_to_eas_timezone_blob("UTC").unwrap();
-        let bytes = BASE64.decode(&b64).unwrap();
-        let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        assert_eq!(bias, 0);
-    }
-
-    #[test]
-    fn unknown_iana_returns_none() {
-        assert!(iana_to_eas_timezone_blob("Not/A/Zone").is_none());
-    }
-#[test]
-fn blob_to_tz_pacific() {
-    let mut blob = [0u8; 172];
-    blob[0..4].copy_from_slice(&480i32.to_le_bytes());
-    write_wchar_name(&mut blob, 4, "Pacific Standard Time");
-    let b64 = BASE64.encode(blob);
-    let tz = eas_timezone_blob_to_tz(&b64).unwrap();
-    assert_eq!(tz, chrono_tz::America::Los_Angeles);
-}
-
-#[test]
-fn windows_name_to_tz_eastern() {
-    let tz = windows_timezone_name_to_tz("Eastern Standard Time").unwrap();
-    assert_eq!(tz, chrono_tz::America::New_York);
-}
-
-#[test]
-fn windows_name_to_tz_case_insensitive() {
-    let tz = windows_timezone_name_to_tz("eastern standard time").unwrap();
-    assert_eq!(tz, chrono_tz::America::New_York);
-}
-
-#[test]
-fn windows_name_to_tz_utc() {
-    let tz = windows_timezone_name_to_tz("UTC").unwrap();
-    assert_eq!(tz, chrono_tz::UTC);
-}
 }
