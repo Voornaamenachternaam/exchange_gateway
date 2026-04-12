@@ -88,6 +88,12 @@
 | InstallApp | ✅ Full | App installation |
 | UninstallApp | ✅ Full | App removal |
 | GetClientAccessToken | ✅ Full | App tokens |
+| CreateAttachment | ✅ Full | Calendar attachments |
+| GetAttachment | ✅ Full | Attachment retrieval |
+| DeleteAttachment | ✅ Full | Attachment deletion |
+| GetReminders | ✅ Full | Reminder retrieval |
+| PerformReminderAction | ✅ Full | Reminder actions |
+| GetPersona | ✅ Full | Persona information |
 
 ### Calendar Item Properties
 
