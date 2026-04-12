@@ -794,12 +794,18 @@ async function handleGetCalendarExceptions(url, request, env) {
   if (!owner || !parentServerId) {
     return new Response('Missing owner/parent_server_id', { status: 400 });
   }
-  const result = await env.EXCHANGE_DB
-    .prepare(`SELECT parent_server_id, exception_start, server_id, is_deleted, created_at
-      FROM calendar_exceptions WHERE owner = ? AND parent_server_id = ? ORDER BY exception_start ASC`)
-    .bind(owner, parentServerId)
-    .all();
-  return Response.json(result.results || []);
+
+  try {
+    const result = await env.EXCHANGE_DB
+      .prepare(`SELECT parent_server_id, exception_start, server_id, is_deleted, created_at
+        FROM calendar_exceptions WHERE owner = ? AND parent_server_id = ? ORDER BY exception_start ASC`)
+      .bind(owner, parentServerId)
+      .all();
+    return Response.json({ error: 'Internal Server Error' }, { status: 500 });
+  } catch (error) {
+    console.error('Error fetching calendar exceptions:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
 }
 
 async function handleGetCalendarException(url, request, env) {
