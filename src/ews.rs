@@ -2746,7 +2746,7 @@ async fn handle_get_persona(auth: &AuthContext, _body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_create_attachment(auth: &AuthContext, body: &str) -> Response {
+async fn handle_create_attachment(_auth: &AuthContext, body: &str) -> Response {
     let parent_id = extract_ews_field(body, b"ItemId")
         .or_else(|| extract_ews_field(body, b"ParentItemId"))
         .unwrap_or_else(|| "unknown".to_string());
@@ -2784,11 +2784,10 @@ async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
                     let local_name = e.name().local_name();
                     if local_name.as_ref() == b"AttachmentId" {
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id" {
-                                if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                            if attr.key.local_name().as_ref() == b"Id"
+                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
                                     ids.push(v.into_owned());
                                 }
-                            }
                         }
                     }
                 }
