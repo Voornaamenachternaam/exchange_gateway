@@ -72,11 +72,13 @@ fn windows_name_to_iana(name: &str) -> Option<&'static str> {
         return None;
     }
 
-    if let Some(tz) = find_windows_timezone(n) {
-        return Some(tz.tzdb_id());
+    // First try UTC offset names like "(UTC+02:00) Custom" for better compatibility
+    if let Some(tz) = parse_utc_offset_name(&n.to_ascii_lowercase()) {
+        return Some(tz);
     }
 
-    parse_utc_offset_name(&n.to_ascii_lowercase()) 
+    // Then fall back to Windows timezone name resolution
+    find_windows_timezone(n).map(|tz| tz.tzdb_id())
 }
 
 pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {

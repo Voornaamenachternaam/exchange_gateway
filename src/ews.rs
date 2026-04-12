@@ -2773,14 +2773,32 @@ async fn handle_create_attachment(auth: &AuthContext, body: &str) -> Response {
 }
 
 async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
-    let attachment_ids: Vec<String> = body
-        .match_indices("<t:AttachmentId")
-        .filter_map(|(i, _)| {
-            let start = i + body[i..].find("Id=\"")? + 3;
-            let end = body[start..].find('"')?;
-            Some(body[start..start + end].to_string())
-        })
-        .collect();
+    let attachment_ids: Vec<String> = {
+        let mut ids = Vec::new();
+        let mut reader = Reader::from_str(body);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let local_name = e.name().local_name();
+                    if local_name.as_ref() == b"AttachmentId" || local_name.as_ref() == b"t:AttachmentId" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"Id" {
+                                if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                                    ids.push(v.into_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+        ids
+    };
     let attachments_xml = attachment_ids
         .iter()
         .map(|id| format!(
@@ -2813,7 +2831,11 @@ async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_delete_attachment(auth: &AuthContext, _body: &str) -> Response {
+async fn handle_delete_attachment(_auth: &AuthContext, body: &str) -> Response {
+    let root_item_id = extract_first_attr(body, b"AttachmentId", b"RootItemId")
+        .or_else(|| extract_first_attr(body, b"ParentItemId", b"Id"))
+        .or_else(|| extract_ews_field(body, b"RootItemId"))
+        .unwrap_or_else(|| "unknown".to_string());
     let inner = format!(
         r#"<m:DeleteAttachmentResponse xmlns:m="{}" xmlns:t="{}">
         <m:ResponseMessages>
@@ -2825,7 +2847,7 @@ async fn handle_delete_attachment(auth: &AuthContext, _body: &str) -> Response {
         </m:DeleteAttachmentResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&auth.username)
+        xml_escape(&root_item_id)
     );
     soap_ok(inner)
 }
