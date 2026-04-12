@@ -619,6 +619,7 @@ pub struct CalendarExceptionRow {
     pub exception_start: String,
     pub server_id: Option<String>,
     pub is_deleted: i32,
+    pub created_at: String,
 }
 
 #[derive(Deserialize)]
