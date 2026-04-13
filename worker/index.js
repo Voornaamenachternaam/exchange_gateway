@@ -801,7 +801,7 @@ async function handleGetCalendarExceptions(url, request, env) {
         FROM calendar_exceptions WHERE owner = ? AND parent_server_id = ? ORDER BY exception_start ASC`)
       .bind(owner, parentServerId)
       .all();
-    return Response.json({ error: 'Internal Server Error' }, { status: 500 });
+		return Response.json(result.results || []);
   } catch (error) {
     console.error('Error fetching calendar exceptions:', error);
     return new Response('Internal Server Error', { status: 500 });
