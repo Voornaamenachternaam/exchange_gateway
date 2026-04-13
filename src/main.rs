@@ -22,25 +22,10 @@ use tower_http::{
 };
 use tracing_subscriber::EnvFilter;
 
-mod autodiscover;
-mod caldav;
-mod calendar;
-mod config;
-mod eas;
-mod error;
-mod ews;
-mod ews_folders;
-mod ews_update;
-mod models;
-mod storage;
-mod sync;
-mod timezone;
-mod util;
-mod wbxml;
-
-use crate::config::Config;
-use crate::models::AppState;
-use crate::storage::Storage;
+// Use modules from the library crate instead of re-declaring them
+use exchange_gateway::{
+    autodiscover, config::Config, eas, ews, models::AppState, storage::Storage,
+};
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
