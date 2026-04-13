@@ -1,5 +1,7 @@
 // src/protocol_fixtures.rs
 
+use crate::util::xml_escape;
+
 pub const EWS_SOAP_ENVELOPE_HEADER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
 <s:Header>
@@ -68,8 +70,8 @@ pub fn ews_soap_response(inner: &str) -> String {
 }
 
 pub fn ews_error_response(code: &str, message: &str) -> String {
-    let escaped_code = code.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    let escaped_message = message.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let escaped_code = xml_escape(code);
+    let escaped_message = xml_escape(message);
     format!(
         r#"<s:Fault>
 <s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>{}</s:Value></s:Subcode></s:Code>

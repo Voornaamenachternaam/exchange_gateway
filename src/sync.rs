@@ -5,6 +5,7 @@ use crate::calendar::{
     parse_ics_event, render_ics,
 };
 use crate::models::AppState;
+use crate::util::{xml_escape, xml_escape_text, parse_datetime as util_parse_datetime};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -487,12 +488,6 @@ pub async fn apply_meeting_response(
     Ok(())
 }
 
-pub(crate) fn xml_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
 
 fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
     match content_class.to_ascii_lowercase().as_str() {

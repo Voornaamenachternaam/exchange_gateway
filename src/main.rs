@@ -6,15 +6,18 @@ use std::time::Duration;
 use axum::{
     Router,
     extract::{Query, State},
-    http::{StatusCode, header},
+    http::{StatusCode, header, HeaderValue},
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{
-    compression::CompressionLayer, limit::RequestBodyLimitLayer,
-    sensitive_headers::SetSensitiveRequestHeadersLayer, timeout::RequestBodyTimeoutLayer,
+    compression::CompressionLayer,
+    limit::RequestBodyLimitLayer,
+    sensitive_headers::SetSensitiveRequestHeadersLayer,
+    set_header::SetResponseHeaderLayer,
+    timeout::RequestBodyTimeoutLayer,
     trace::TraceLayer,
 };
 use tracing_subscriber::EnvFilter;
@@ -32,6 +35,7 @@ mod models;
 mod storage;
 mod sync;
 mod timezone;
+mod util;
 mod wbxml;
 
 use crate::config::Config;
@@ -130,15 +134,45 @@ async fn main() -> anyhow::Result<()> {
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         .layer(
             ServiceBuilder::new()
+                // Security: Redact sensitive headers from logs
                 .layer(SetSensitiveRequestHeadersLayer::new([
                     header::AUTHORIZATION,
                     header::HeaderName::from_static("x-gateway-secret"),
                 ]))
+                // Security: Add security headers to all responses
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("x-content-type-options"),
+                    HeaderValue::from_static("nosniff"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("x-frame-options"),
+                    HeaderValue::from_static("DENY"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("x-xss-protection"),
+                    HeaderValue::from_static("1; mode=block"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("referrer-policy"),
+                    HeaderValue::from_static("strict-origin-when-cross-origin"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("content-security-policy"),
+                    HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; sandbox"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("cache-control"),
+                    HeaderValue::from_static("private, no-store, no-cache, max-age=0"),
+                ))
+                // Observability
                 .layer(TraceLayer::new_for_http())
+                // Security: Request timeout
                 .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
                     REQUEST_TIMEOUT_SECS,
                 )))
+                // Security: Request body size limit
                 .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+                // Performance: Response compression
                 .layer(CompressionLayer::new()),
         )
         .with_state(app_state);

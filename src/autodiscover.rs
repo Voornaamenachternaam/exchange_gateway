@@ -1,4 +1,5 @@
 // src/autodiscover.rs
+use crate::util::xml_escape;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
@@ -11,14 +12,6 @@ pub struct AutodiscoverJsonParams {
 }
 
 pub type AdResponse = (StatusCode, Vec<(&'static str, &'static str)>, String);
-
-pub fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
 
 fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
     vec![
