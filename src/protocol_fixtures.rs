@@ -141,77 +141,7 @@ pub fn eas_provision_response(policy_key: &str, status: &str) -> String {
 }
 
 pub fn autodiscover_response(host: &str, email: &str) -> String {
-    let escaped_email = email.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    let escaped_host = host.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
-<Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
-<User>
-<DisplayName>Stalwart Mail</DisplayName>
-<EMailAddress>{escaped_email}</EMailAddress>
-<DeploymentId>00000000-0000-0000-0000-000000000000</DeploymentId>
-</User>
-<Account>
-<AccountType>email</AccountType>
-<Action>settings</Action>
-<Protocol>
-<Type>EXCH</Type>
-<Server>{escaped_host}</Server>
-<ServerDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={escaped_host}</ServerDN>
-<ServerVersion>15.20.0.0</ServerVersion>
-<MdbDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={escaped_host}/cn=Microsoft Private MDB</MdbDN>
-<ASUrl>https://{escaped_host}/Microsoft-Server-ActiveSync</ASUrl>
-<EwsUrl>https://{escaped_host}/EWS/Exchange.asmx</EwsUrl>
-<EmwsUrl>https://{escaped_host}/EWS/Exchange.asmx</EmwsUrl>
-<EcpUrl>https://{escaped_host}/EWS/Exchange.asmx</EcpUrl>
-<OABUrl>https://{escaped_host}/EWS/Exchange.asmx</OABUrl>
-<OOFUrl>https://{escaped_host}/EWS/Exchange.asmx</OOFUrl>
-<UMUrl>https://{escaped_host}/EWS/Exchange.asmx</UMUrl>
-<EwsPartnerUrl>https://{escaped_host}/EWS/Exchange.asmx</EwsPartnerUrl>
-<LoginName>{escaped_email}</LoginName>
-<DomainRequired>off</DomainRequired>
-<SPA>off</SPA>
-<AuthPackage>Basic</AuthPackage>
-<CertPrincipalName>None</CertPrincipalName>
-<SSL>on</SSL>
-<AuthRequired>on</AuthRequired>
-</Protocol>
-<Protocol>
-<Type>EXPR</Type>
-<Server>{escaped_host}</Server>
-<SSL>on</SSL>
-<SPA>off</SPA>
-<CertPrincipalName>None</CertPrincipalName>
-<AuthPackage>Basic</AuthPackage>
-<LoginName>{escaped_email}</LoginName>
-<ServerExclusiveConnect>off</ServerExclusiveConnect>
-<TTL>1</TTL>
-<ASUrl>https://{escaped_host}/Microsoft-Server-ActiveSync</ASUrl>
-<EwsUrl>https://{escaped_host}/EWS/Exchange.asmx</EwsUrl>
-<EmwsUrl>https://{escaped_host}/EWS/Exchange.asmx</EmwsUrl>
-<EcpUrl>https://{escaped_host}/EWS/Exchange.asmx</EcpUrl>
-<OABUrl>https://{escaped_host}/EWS/Exchange.asmx</OABUrl>
-<OOFUrl>https://{escaped_host}/EWS/Exchange.asmx</OOFUrl>
-<EwsPartnerUrl>https://{escaped_host}/EWS/Exchange.asmx</EwsPartnerUrl>
-</Protocol>
-<Protocol>
-<Type>MobileSync</Type>
-<Server>{escaped_host}</Server>
-<DisplayName>Exchange Gateway</DisplayName>
-<Url>https://{escaped_host}/Microsoft-Server-ActiveSync</Url>
-<LoginName>{escaped_email}</LoginName>
-<DomainRequired>off</DomainRequired>
-<SSL>on</SSL>
-<AuthPackage>Basic</AuthPackage>
-<ASUrl>https://{escaped_host}/Microsoft-Server-ActiveSync</ASUrl>
-</Protocol>
-</Account>
-</Response>
-</Autodiscover>"#,
-        escaped_email = escaped_email,
-        escaped_host = escaped_host
-    )
+    crate::autodiscover::handle_autodiscover_xml(host, "", email).2
 }
 
 #[cfg(test)]
