@@ -105,6 +105,7 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Datelike, Timelike};
 
     #[test]
     fn test_xml_escape_all_entities() {

@@ -124,7 +124,18 @@ async fn main() -> anyhow::Result<()> {
                     header::AUTHORIZATION,
                     header::HeaderName::from_static("x-gateway-secret"),
                 ]))
-                // Security: Add security headers to all responses
+                // Observability (applied first to capture all requests/responses)
+                .layer(TraceLayer::new_for_http())
+                // Security: Request timeout
+                .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
+                    REQUEST_TIMEOUT_SECS,
+                )))
+                // Security: Request body size limit
+                .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+                // Performance: Response compression
+                .layer(CompressionLayer::new())
+                // Security headers (applied last so they cover all responses,
+                // including error responses from timeout/limit layers)
                 // Note: X-XSS-Protection is intentionally omitted as it's deprecated
                 // in modern browsers and CSP provides adequate protection
                 .layer(SetResponseHeaderLayer::overriding(
@@ -135,7 +146,8 @@ async fn main() -> anyhow::Result<()> {
                     header::HeaderName::from_static("x-frame-options"),
                     HeaderValue::from_static("DENY"),
                 ))
-                .layer(SetResponseHeaderLayer::overriding(
+                // Use if_not_present to preserve handler-level policies
+                .layer(SetResponseHeaderLayer::if_not_present(
                     header::REFERRER_POLICY,
                     HeaderValue::from_static("strict-origin-when-cross-origin"),
                 ))
@@ -146,17 +158,7 @@ async fn main() -> anyhow::Result<()> {
                 .layer(SetResponseHeaderLayer::overriding(
                     header::CACHE_CONTROL,
                     HeaderValue::from_static("private, no-store, no-cache, max-age=0"),
-                ))
-                // Observability
-                .layer(TraceLayer::new_for_http())
-                // Security: Request timeout
-                .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
-                    REQUEST_TIMEOUT_SECS,
-                )))
-                // Security: Request body size limit
-                .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-                // Performance: Response compression
-                .layer(CompressionLayer::new()),
+                )),
         )
         .with_state(app_state);
 
