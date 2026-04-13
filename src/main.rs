@@ -125,8 +125,10 @@ async fn main() -> anyhow::Result<()> {
                     header::HeaderName::from_static("x-gateway-secret"),
                 ]))
                 // Security: Add security headers to all responses
+                // Note: X-XSS-Protection is intentionally omitted as it's deprecated
+                // in modern browsers and CSP provides adequate protection
                 .layer(SetResponseHeaderLayer::overriding(
-                    header::HeaderName::from_static("x-content-type-options"),
+                    header::X_CONTENT_TYPE_OPTIONS,
                     HeaderValue::from_static("nosniff"),
                 ))
                 .layer(SetResponseHeaderLayer::overriding(
@@ -134,19 +136,15 @@ async fn main() -> anyhow::Result<()> {
                     HeaderValue::from_static("DENY"),
                 ))
                 .layer(SetResponseHeaderLayer::overriding(
-                    header::HeaderName::from_static("x-xss-protection"),
-                    HeaderValue::from_static("1; mode=block"),
-                ))
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::HeaderName::from_static("referrer-policy"),
+                    header::REFERRER_POLICY,
                     HeaderValue::from_static("strict-origin-when-cross-origin"),
                 ))
                 .layer(SetResponseHeaderLayer::overriding(
-                    header::HeaderName::from_static("content-security-policy"),
+                    header::CONTENT_SECURITY_POLICY,
                     HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; sandbox"),
                 ))
                 .layer(SetResponseHeaderLayer::overriding(
-                    header::HeaderName::from_static("cache-control"),
+                    header::CACHE_CONTROL,
                     HeaderValue::from_static("private, no-store, no-cache, max-age=0"),
                 ))
                 // Observability

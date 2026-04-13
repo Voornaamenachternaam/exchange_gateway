@@ -81,10 +81,10 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
     }
 
     // Try without timezone (assume UTC)
+    // Note: 'Z' suffix is trimmed before parsing, so formats don't include it
     let formats = [
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%dT%H:%M:%S",
-        "%Y%m%dT%H%M%SZ",
         "%Y%m%dT%H%M%S",
     ];
 
