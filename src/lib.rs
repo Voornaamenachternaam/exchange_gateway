@@ -46,4 +46,4 @@ pub use config::Config;
 pub use error::{GatewayError, Result};
 pub use models::AppState;
 pub use storage::Storage;
-pub use util::{xml_escape, xml_escape_owned};
+pub use util::xml_escape;

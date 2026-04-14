@@ -33,15 +33,74 @@ const MAX_BODY_SIZE: usize = 1_048_576;
 const CALDAV_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
 const MAX_DEVICE_WINDOW_ENTRIES: usize = 100_000;
+// Cleanup interval for evicting stale entries (prevents unbounded memory growth)
+const CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
+// Maximum age for entries before they're considered stale
+const MAX_ENTRY_AGE_SECS: u64 = 3600; // 1 hour
 
 // DashMap provides lock-free reads and sharded writes for better concurrency
-// compared to TokioMutex<LruCache>. This eliminates lock contention under high load.
+// compared to TokioMutex<LruCache>. To prevent unbounded memory growth,
+// we use with_capacity() as a hint and periodically clean up stale entries.
 static DEVICE_WINDOW: LazyLock<DashMap<String, Vec<Instant>>> = LazyLock::new(|| {
-    DashMap::with_capacity(MAX_DEVICE_WINDOW_ENTRIES)
+    let map = DashMap::with_capacity(MAX_DEVICE_WINDOW_ENTRIES);
+    // Start background cleanup task
+    spawn_device_window_cleanup();
+    map
 });
 static PING_CACHE: LazyLock<DashMap<String, PingCacheEntry>> = LazyLock::new(|| {
-    DashMap::with_capacity(MAX_PING_CACHE_ENTRIES)
+    let map = DashMap::with_capacity(MAX_PING_CACHE_ENTRIES);
+    // Start background cleanup task
+    spawn_ping_cache_cleanup();
+    map
 });
+
+/// Spawns a background task that periodically removes stale entries from DEVICE_WINDOW.
+/// This prevents unbounded memory growth since DashMap doesn't have built-in LRU eviction.
+fn spawn_device_window_cleanup() {
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            let now = Instant::now();
+            let max_age = Duration::from_secs(MAX_ENTRY_AGE_SECS);
+            
+            // Remove entries where all timestamps are older than MAX_ENTRY_AGE
+            DEVICE_WINDOW.retain(|_key, entries| {
+                entries.iter().any(|&ts| {
+                    now.checked_duration_since(ts)
+                        .is_some_and(|age| age < max_age)
+                })
+            });
+        }
+    });
+}
+
+/// Spawns a background task that periodically removes stale entries from PING_CACHE.
+fn spawn_ping_cache_cleanup() {
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            
+            // Enforce capacity limit by removing oldest entries if over limit
+            // Note: We use shard_count() * estimated_entries_per_shard as a soft limit
+            let current_size = PING_CACHE.len();
+            if current_size > MAX_PING_CACHE_ENTRIES {
+                // Remove excess entries (DashMap iteration order is not LRU, 
+                // so this is a simple random-ish eviction)
+                let to_remove = current_size - MAX_PING_CACHE_ENTRIES;
+                let keys: Vec<String> = PING_CACHE
+                    .iter()
+                    .take(to_remove)
+                    .map(|entry| entry.key().clone())
+                    .collect();
+                for key in keys {
+                    PING_CACHE.remove(&key);
+                }
+            }
+        }
+    });
+}
 
 #[derive(Clone, Debug)]
 struct PingFolder {

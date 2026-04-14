@@ -6,7 +6,6 @@
 
 use crate::error::Result;
 use crate::calendar::CalendarItem;
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 /// Trait for calendar storage backends.

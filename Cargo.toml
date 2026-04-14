@@ -63,7 +63,7 @@ tower = { version = "^0.5.3", features = ["util", "limit", "timeout", "buffer"] 
 tower-http = { version = "^0.6.8", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full", "set-header"] }
 
 # Concurrency primitives - parking_lot for better performance than std sync
-parking_lot = { version = "^0.12.5", features = ["send_guard", "deadlock_detection"] }
+parking_lot = { version = "^0.12.5", features = ["send_guard"] }
 
 # Async utilities - use futures-util instead of full futures crate
 futures-util = "^0.3.32"
@@ -122,9 +122,6 @@ http = "^1.3.0"
 
 # Memory-efficient string handling (NEW)
 smartstring = "^1.0.1"
-
-# Async traits (for Rust 2024 compatibility layer)
-async-trait = "^0.1.87"
 
 [dev-dependencies]
 proptest = "^1.11.0"

@@ -180,7 +180,8 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
     
     // Use the action's method for cleaner pattern matching
     if action.requires_mime_validation() && xml.contains("IncludeMimeContent") {
-        return Err(format!("{:?} does not support IncludeMimeContent", action).leak());
+        // Return static error string - no dynamic formatting to avoid memory leak
+        return Err("Action does not support IncludeMimeContent");
     }
     
     Ok(())

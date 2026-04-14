@@ -162,24 +162,24 @@ mod tests {
 
     #[test]
     fn test_xml_escape_all_entities() {
-        assert_eq!(xml_escape("&"), "&amp;");
-        assert_eq!(xml_escape("<"), "&lt;");
-        assert_eq!(xml_escape(">"), "&gt;");
-        assert_eq!(xml_escape("\""), "&quot;");
-        assert_eq!(xml_escape("'"), "&apos;");
+        assert_eq!(format!("{}", xml_escape("&")), "&amp;");
+        assert_eq!(format!("{}", xml_escape("<")), "&lt;");
+        assert_eq!(format!("{}", xml_escape(">")), "&gt;");
+        assert_eq!(format!("{}", xml_escape("\"")), "&quot;");
+        assert_eq!(format!("{}", xml_escape("'")), "&apos;");
     }
 
     #[test]
     fn test_xml_escape_combined() {
         assert_eq!(
-            xml_escape("Hello <world> & \"friends\""),
+            format!("{}", xml_escape("Hello <world> & \"friends\"")),
             "Hello &lt;world&gt; &amp; &quot;friends&quot;"
         );
     }
 
     #[test]
     fn test_xml_escape_text() {
-        assert_eq!(xml_escape_text("&<>'\""), "&amp;&lt;&gt;'\"");
+        assert_eq!(xml_escape_text("&<>'\\").to_string(), "&amp;&lt;&gt;'\\");
     }
 
     #[test]

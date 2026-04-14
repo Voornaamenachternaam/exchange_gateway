@@ -836,7 +836,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             online_meeting_conf_link: fields.online_meeting_conf_link,
             online_meeting_external_link: fields.online_meeting_external_link,
             client_uid: fields.client_uid,
-            exceptions: Vec::new(),
+            exceptions: SmallVec::new(),
         };
         derived_deleted.append(
             &mut item
@@ -1417,7 +1417,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         }
                         Some(b"Category") => {
                             if let Some(ex) = current.current_exception.as_mut() {
-                                ex.categories.get_or_insert_with(Vec::new).push(value);
+                                ex.categories.get_or_insert_with(SmallVec::new).push(value);
                             } else {
                                 current.categories.push(value);
                             }
@@ -1529,7 +1529,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     && !attendee.email.is_empty()
                 {
                     if let Some(ex) = current.current_exception.as_mut() {
-                        ex.attendees.get_or_insert_with(Vec::new).push(attendee);
+                        ex.attendees.get_or_insert_with(SmallVec::new).push(attendee);
                     } else {
                         current.attendees.push(attendee);
                     }
@@ -1916,7 +1916,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         timezone: extract_ews_field(xml, b"StartTimeZone"),
         timezone_blob: extract_ews_field(xml, b"MeetingTimeZone"),
         rrule,
-        exdates: Vec::new(),
+        exdates: SmallVec::new(),
         organizer_name,
         organizer_email,
         attendees,
@@ -1932,6 +1932,6 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         online_meeting_conf_link,
         online_meeting_external_link,
         client_uid,
-        exceptions: Vec::new(),
+        exceptions: SmallVec::new(),
     })
 }
