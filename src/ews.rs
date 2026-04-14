@@ -40,7 +40,7 @@ enum ItemShape {
     AllProperties,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum EwsAction {
     GetFolder,
     FindFolder,
@@ -82,94 +82,6 @@ enum EwsAction {
     DeleteAttachment,
 }
 
-impl EwsAction {
-    /// Returns true if the action requires MIME content validation.
-    ///
-    /// These actions have specific restrictions on MIME content handling.
-    const fn requires_mime_validation(self) -> bool {
-        matches!(self, Self::FindItem | Self::SyncFolderItems)
-    }
-    
-    /// Returns true if the action is a "stub" that returns an empty success.
-    ///
-    /// These actions are implemented as stubs that acknowledge the request
-    /// but don't perform actual operations.
-    const fn is_stub_action(self) -> bool {
-        matches!(
-            self,
-            Self::GetUserOofSettings
-                | Self::SetUserOofSettings
-                | Self::GetServiceConfiguration
-                | Self::GetServerTimeZones
-                | Self::GetFolderInfo
-                | Self::GetMailTips
-                | Self::FindPeople
-                | Self::GetConversationItems
-                | Self::ConvertId
-                | Self::GetRoomLists
-                | Self::GetRooms
-                | Self::GetDelegate
-                | Self::GetUserPhoto
-                | Self::MarkAsJunk
-                | Self::GetAppManifests
-                | Self::GetAppMarketplaceUrl
-                | Self::InstallApp
-                | Self::UninstallApp
-                | Self::GetClientAccessToken
-                | Self::GetReminders
-                | Self::PerformReminderAction
-                | Self::GetPersona
-                | Self::CreateAttachment
-                | Self::GetAttachment
-                | Self::DeleteAttachment
-        )
-    }
-    
-    /// Returns the response message element name for this action.
-    const fn response_message_name(self) -> &'static str {
-        match self {
-            Self::GetFolder => "GetFolderResponseMessage",
-            Self::FindFolder => "FindFolderResponseMessage",
-            Self::FindItem => "FindItemResponseMessage",
-            Self::GetItem => "GetItemResponseMessage",
-            Self::GetUserAvailability => "GetUserAvailabilityResponseMessage",
-            Self::SyncFolderItems => "SyncFolderItemsResponseMessage",
-            Self::SyncFolderHierarchy => "SyncFolderHierarchyResponseMessage",
-            Self::Subscribe => "SubscribeResponseMessage",
-            Self::Unsubscribe => "UnsubscribeResponseMessage",
-            Self::CreateItem => "CreateItemResponseMessage",
-            Self::UpdateItem => "UpdateItemResponseMessage",
-            Self::DeleteItem => "DeleteItemResponseMessage",
-            Self::ResolveNames => "ResolveNamesResponseMessage",
-            Self::GetUserOofSettings => "GetUserOofSettingsResponseMessage",
-            Self::SetUserOofSettings => "SetUserOofSettingsResponseMessage",
-            Self::GetServiceConfiguration => "GetServiceConfigurationResponseMessage",
-            Self::GetServerTimeZones => "GetServerTimeZonesResponseMessage",
-            Self::GetFolderInfo => "GetFolderInfoResponseMessage",
-            Self::GetMailTips => "GetMailTipsResponseMessage",
-            Self::FindPeople => "FindPeopleResponseMessage",
-            Self::GetConversationItems => "GetConversationItemsResponseMessage",
-            Self::ConvertId => "ConvertIdResponseMessage",
-            Self::GetRoomLists => "GetRoomListsResponseMessage",
-            Self::GetRooms => "GetRoomsResponseMessage",
-            Self::GetDelegate => "GetDelegateResponseMessage",
-            Self::GetUserPhoto => "GetUserPhotoResponseMessage",
-            Self::MarkAsJunk => "MarkAsJunkResponseMessage",
-            Self::GetAppManifests => "GetAppManifestsResponseMessage",
-            Self::GetAppMarketplaceUrl => "GetAppMarketplaceUrlResponseMessage",
-            Self::InstallApp => "InstallAppResponseMessage",
-            Self::UninstallApp => "UninstallAppResponseMessage",
-            Self::GetClientAccessToken => "GetClientAccessTokenResponseMessage",
-            Self::GetReminders => "GetRemindersResponseMessage",
-            Self::PerformReminderAction => "PerformReminderActionResponseMessage",
-            Self::GetPersona => "GetPersonaResponseMessage",
-            Self::CreateAttachment => "CreateAttachmentResponseMessage",
-            Self::GetAttachment => "GetAttachmentResponseMessage",
-            Self::DeleteAttachment => "DeleteAttachmentResponseMessage",
-        }
-    }
-}
-
 fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
     if !xml.contains("Envelope") || !xml.contains("Body") {
         return Err("Missing SOAP Envelope or Body");
@@ -177,14 +89,56 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
     if !xml.contains(EWS_MSG_NS) && !xml.contains("xmlns:m=") {
         return Err("Missing EWS messages namespace");
     }
-    
-    // Use the action's method for cleaner pattern matching
-    if action.requires_mime_validation() && xml.contains("IncludeMimeContent") {
-        // Return static error string - no dynamic formatting to avoid memory leak
-        return Err("Action does not support IncludeMimeContent");
+    match action {
+        EwsAction::GetFolder => Ok(()),
+        EwsAction::FindFolder => Ok(()),
+        EwsAction::FindItem => {
+            if xml.contains("IncludeMimeContent") {
+                return Err("FindItem does not support IncludeMimeContent");
+            }
+            Ok(())
+        }
+        EwsAction::GetItem => Ok(()),
+        EwsAction::GetUserAvailability => Ok(()),
+        EwsAction::SyncFolderItems => {
+            if xml.contains("IncludeMimeContent") {
+                return Err("SyncFolderItems does not support IncludeMimeContent");
+            }
+            Ok(())
+        }
+        EwsAction::SyncFolderHierarchy => Ok(()),
+        EwsAction::Subscribe => Ok(()),
+        EwsAction::Unsubscribe => Ok(()),
+        EwsAction::CreateItem => Ok(()),
+        EwsAction::UpdateItem => Ok(()),
+        EwsAction::DeleteItem => Ok(()),
+        EwsAction::ResolveNames => Ok(()),
+        EwsAction::GetUserOofSettings
+        | EwsAction::SetUserOofSettings
+        | EwsAction::GetServiceConfiguration
+        | EwsAction::GetServerTimeZones
+        | EwsAction::GetFolderInfo
+        | EwsAction::GetMailTips
+        | EwsAction::FindPeople
+        | EwsAction::GetConversationItems
+        | EwsAction::ConvertId
+        | EwsAction::GetRoomLists
+        | EwsAction::GetRooms
+        | EwsAction::GetDelegate
+        | EwsAction::GetUserPhoto
+        | EwsAction::MarkAsJunk
+        | EwsAction::GetAppManifests
+        | EwsAction::GetAppMarketplaceUrl
+        | EwsAction::InstallApp
+        | EwsAction::UninstallApp
+        | EwsAction::GetClientAccessToken
+        | EwsAction::GetReminders
+        | EwsAction::PerformReminderAction
+        | EwsAction::GetPersona
+        | EwsAction::CreateAttachment
+        | EwsAction::GetAttachment
+        | EwsAction::DeleteAttachment => Ok(()),
     }
-    
-    Ok(())
 }
 
 fn operation_error_response(

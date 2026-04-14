@@ -13,15 +13,16 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use dashmap::DashMap;
-use futures_util::future::join_all;
+use lru::LruCache;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -33,74 +34,20 @@ const MAX_BODY_SIZE: usize = 1_048_576;
 const CALDAV_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
 const MAX_DEVICE_WINDOW_ENTRIES: usize = 100_000;
-// Cleanup interval for evicting stale entries (prevents unbounded memory growth)
-const CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
-// Maximum age for entries before they're considered stale
-const MAX_ENTRY_AGE_SECS: u64 = 3600; // 1 hour
 
-// DashMap provides lock-free reads and sharded writes for better concurrency
-// compared to TokioMutex<LruCache>. To prevent unbounded memory growth,
-// we use with_capacity() as a hint and periodically clean up stale entries.
-static DEVICE_WINDOW: LazyLock<DashMap<String, Vec<Instant>>> = LazyLock::new(|| {
-    let map = DashMap::with_capacity(MAX_DEVICE_WINDOW_ENTRIES);
-    // Start background cleanup task
-    spawn_device_window_cleanup();
-    map
+type DeviceWindowCache = LruCache<String, Vec<Instant>>;
+type PingCache = LruCache<String, PingCacheEntry>;
+
+static DEVICE_WINDOW: LazyLock<TokioMutex<DeviceWindowCache>> = LazyLock::new(|| {
+    TokioMutex::new(LruCache::new(
+        NonZeroUsize::new(MAX_DEVICE_WINDOW_ENTRIES).unwrap(),
+    ))
 });
-static PING_CACHE: LazyLock<DashMap<String, PingCacheEntry>> = LazyLock::new(|| {
-    let map = DashMap::with_capacity(MAX_PING_CACHE_ENTRIES);
-    // Start background cleanup task
-    spawn_ping_cache_cleanup();
-    map
+static PING_CACHE: LazyLock<TokioMutex<PingCache>> = LazyLock::new(|| {
+    TokioMutex::new(LruCache::new(
+        NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).unwrap(),
+    ))
 });
-
-/// Spawns a background task that periodically removes stale entries from DEVICE_WINDOW.
-/// This prevents unbounded memory growth since DashMap doesn't have built-in LRU eviction.
-fn spawn_device_window_cleanup() {
-    tokio::spawn(async {
-        let mut interval = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
-        loop {
-            interval.tick().await;
-            let now = Instant::now();
-            let max_age = Duration::from_secs(MAX_ENTRY_AGE_SECS);
-            
-            // Remove entries where all timestamps are older than MAX_ENTRY_AGE
-            DEVICE_WINDOW.retain(|_key, entries| {
-                entries.iter().any(|&ts| {
-                    now.checked_duration_since(ts)
-                        .is_some_and(|age| age < max_age)
-                })
-            });
-        }
-    });
-}
-
-/// Spawns a background task that periodically removes stale entries from PING_CACHE.
-fn spawn_ping_cache_cleanup() {
-    tokio::spawn(async {
-        let mut interval = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
-        loop {
-            interval.tick().await;
-            
-            // Enforce capacity limit by removing oldest entries if over limit
-            // Note: We use shard_count() * estimated_entries_per_shard as a soft limit
-            let current_size = PING_CACHE.len();
-            if current_size > MAX_PING_CACHE_ENTRIES {
-                // Remove excess entries (DashMap iteration order is not LRU, 
-                // so this is a simple random-ish eviction)
-                let to_remove = current_size - MAX_PING_CACHE_ENTRIES;
-                let keys: Vec<String> = PING_CACHE
-                    .iter()
-                    .take(to_remove)
-                    .map(|entry| entry.key().clone())
-                    .collect();
-                for key in keys {
-                    PING_CACHE.remove(&key);
-                }
-            }
-        }
-    });
-}
 
 #[derive(Clone, Debug)]
 struct PingFolder {
@@ -665,27 +612,14 @@ fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
 async fn maybe_throttle(owner: &str, device_id: &str) -> bool {
     let key = format!("{}:{}", owner, device_id);
     let now = Instant::now();
-    
-    // Use DashMap's entry API for atomic update
-    // This is lock-free for reads and uses sharded writes
-    use dashmap::mapref::entry::Entry;
-    
-    match DEVICE_WINDOW.entry(key) {
-        Entry::Occupied(mut entry) => {
-            let entries = entry.get_mut();
-            // Retain entries within the window
-            entries.retain(|ts| now.checked_duration_since(*ts).is_some_and(|d| d < WINDOW));
-            if entries.len() >= MAX_REQUESTS_PER_WINDOW {
-                return true;
-            }
-            entries.push(now);
-            false
-        }
-        Entry::Vacant(entry) => {
-            entry.insert(vec![now]);
-            false
-        }
+    let mut cache = DEVICE_WINDOW.lock().await;
+    let entries = cache.get_or_insert_mut(key, Vec::new);
+    entries.retain(|ts| now.checked_duration_since(*ts).is_some_and(|d| d < WINDOW));
+    if entries.len() >= MAX_REQUESTS_PER_WINDOW {
+        return true;
     }
+    entries.push(now);
+    false
 }
 
 fn inject_common_headers(resp: &mut Response, request_id: &str) {
@@ -1038,7 +972,10 @@ async fn handle_ping(
     let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
     let cache_key = format!("{}:{}", owner, device_id);
 
-    let cached = PING_CACHE.get(&cache_key).map(|v| v.clone());
+    let cached = {
+        let mut cache = PING_CACHE.lock().await;
+        cache.get(&cache_key).cloned()
+    };
 
     let heartbeat = extract_first_tag_text(xml, b"HeartbeatInterval")
         .and_then(|v| v.parse::<u64>().ok())
@@ -1080,14 +1017,16 @@ async fn handle_ping(
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
 
-    // DashMap insert is lock-free and uses sharded writes
-    PING_CACHE.insert(
-        cache_key.clone(),
-        PingCacheEntry {
-            heartbeat,
-            folders: folders.clone(),
-        },
-    );
+    {
+        let mut cache = PING_CACHE.lock().await;
+        cache.put(
+            cache_key.clone(),
+            PingCacheEntry {
+                heartbeat,
+                folders: folders.clone(),
+            },
+        );
+    }
 
     let deadline = Instant::now() + Duration::from_secs(heartbeat);
     loop {
@@ -1519,7 +1458,7 @@ async fn handle_resolve_recipients(
             }
         }
     });
-    let freebusy_results = join_all(freebusy_futures).await;
+    let freebusy_results = futures::future::join_all(freebusy_futures).await;
 
     let mut recipient_xml = String::new();
     for (recipient, freebusy) in recipients.iter().zip(freebusy_results.into_iter()) {

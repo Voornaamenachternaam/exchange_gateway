@@ -5,12 +5,8 @@
 //! across the protocol handlers.
 
 use chrono::{TimeZone, Utc};
-use std::fmt;
 
 /// Escapes special XML characters in a string.
-///
-/// This function returns an `impl Display` for lazy evaluation, meaning
-/// the string is only allocated when actually displayed or converted.
 ///
 /// This function escapes the five predefined XML entities:
 /// - `&` → `&amp;`
@@ -22,43 +18,9 @@ use std::fmt;
 /// # Example
 /// ```
 /// use exchange_gateway::util::xml_escape;
-/// use std::fmt::Display;
-/// 
-/// let escaped = xml_escape("a<b&c>d");
-/// assert_eq!(format!("{}", escaped), "a&lt;b&amp;c&gt;d");
+/// assert_eq!(xml_escape("a<b&c>d"), "a&lt;b&amp;c&gt;d");
 /// ```
-pub fn xml_escape(s: &str) -> impl fmt::Display + '_ {
-    struct XmlEscape<'a>(&'a str);
-    
-    impl<'a> fmt::Display for XmlEscape<'a> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            for ch in self.0.chars() {
-                match ch {
-                    '&' => f.write_str("&amp;")?,
-                    '<' => f.write_str("&lt;")?,
-                    '>' => f.write_str("&gt;")?,
-                    '"' => f.write_str("&quot;")?,
-                    '\'' => f.write_str("&apos;")?,
-                    _ => f.write_char(ch)?,
-                }
-            }
-            Ok(())
-        }
-    }
-    
-    XmlEscape(s)
-}
-
-/// Escapes special XML characters into a String (eager evaluation).
-///
-/// Use this when you need an owned String rather than lazy evaluation.
-///
-/// # Example
-/// ```
-/// use exchange_gateway::util::xml_escape_owned;
-/// assert_eq!(xml_escape_owned("a<b&c>d"), "a&lt;b&amp;c&gt;d");
-/// ```
-pub fn xml_escape_owned(s: &str) -> String {
+pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
@@ -75,32 +37,25 @@ pub fn xml_escape_owned(s: &str) -> String {
 
 /// Escapes special XML characters for text content.
 ///
-/// This is a lazy-evaluation version that only escapes the three
+/// This is a subset of [`xml_escape`] that only escapes the three
 /// characters that must be escaped in XML text content: `&`, `<`, and `>`.
-pub fn xml_escape_text(s: &str) -> impl fmt::Display + '_ {
-    struct XmlEscapeText<'a>(&'a str);
-    
-    impl<'a> fmt::Display for XmlEscapeText<'a> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            for ch in self.0.chars() {
-                match ch {
-                    '&' => f.write_str("&amp;")?,
-                    '<' => f.write_str("&lt;")?,
-                    '>' => f.write_str("&gt;")?,
-                    _ => f.write_char(ch)?,
-                }
-            }
-            Ok(())
+pub fn xml_escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
         }
     }
-    
-    XmlEscapeText(s)
+    out
 }
 
 /// Escapes special XML characters for attribute values.
 ///
-/// This returns a lazy `impl Display` that escapes all five required characters.
-pub fn xml_escape_attr(s: &str) -> impl fmt::Display + '_ {
+/// This escapes the five characters that must be escaped in XML attributes.
+pub fn xml_escape_attr(s: &str) -> String {
     xml_escape(s)
 }
 
@@ -162,24 +117,24 @@ mod tests {
 
     #[test]
     fn test_xml_escape_all_entities() {
-        assert_eq!(format!("{}", xml_escape("&")), "&amp;");
-        assert_eq!(format!("{}", xml_escape("<")), "&lt;");
-        assert_eq!(format!("{}", xml_escape(">")), "&gt;");
-        assert_eq!(format!("{}", xml_escape("\"")), "&quot;");
-        assert_eq!(format!("{}", xml_escape("'")), "&apos;");
+        assert_eq!(xml_escape("&"), "&amp;");
+        assert_eq!(xml_escape("<"), "&lt;");
+        assert_eq!(xml_escape(">"), "&gt;");
+        assert_eq!(xml_escape("\""), "&quot;");
+        assert_eq!(xml_escape("'"), "&apos;");
     }
 
     #[test]
     fn test_xml_escape_combined() {
         assert_eq!(
-            format!("{}", xml_escape("Hello <world> & \"friends\"")),
+            xml_escape("Hello <world> & \"friends\""),
             "Hello &lt;world&gt; &amp; &quot;friends&quot;"
         );
     }
 
     #[test]
     fn test_xml_escape_text() {
-        assert_eq!(xml_escape_text("&<>'\\").to_string(), "&amp;&lt;&gt;'\\");
+        assert_eq!(xml_escape_text("&<>'\""), "&amp;&lt;&gt;'\"");
     }
 
     #[test]

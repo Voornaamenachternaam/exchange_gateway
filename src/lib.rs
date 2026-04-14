@@ -37,7 +37,6 @@ pub mod protocol_fixtures;
 pub mod storage;
 pub mod sync;
 pub mod timezone;
-pub mod traits;
 pub mod util;
 pub mod wbxml;
 

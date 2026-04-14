@@ -34,14 +34,14 @@ fn local_name_bytes(name: &[u8]) -> String {
     String::from_utf8_lossy(local).into_owned()
 }
 
-fn push_start_tag(out: &mut String, e: &BytesStart<'_>) {
+fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Decoder) {
     out.push('<');
     out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
     for attr in e.attributes().flatten() {
         out.push(' ');
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
-        match attr.unescape_value() {
+        match attr.decode_and_unescape_value(decoder) {
             Ok(value) => out.push_str(&xml_escape_attr(&value)),
             Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(
                 attr.value.as_ref(),
@@ -52,14 +52,14 @@ fn push_start_tag(out: &mut String, e: &BytesStart<'_>) {
     out.push('>');
 }
 
-fn push_empty_tag(out: &mut String, e: &BytesStart<'_>) {
+fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Decoder) {
     out.push('<');
     out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
     for attr in e.attributes().flatten() {
         out.push(' ');
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
-        match attr.unescape_value() {
+        match attr.decode_and_unescape_value(decoder) {
             Ok(value) => out.push_str(&xml_escape_attr(&value)),
             Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(
                 attr.value.as_ref(),
@@ -89,6 +89,7 @@ fn first_ews_i32(payload: &str, candidates: &[&[u8]]) -> Option<i32> {
 pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     let mut reader = Reader::from_str(body);
     reader.config_mut().trim_text(true);
+    let decoder = reader.decoder();
 
     let mut buf = Vec::new();
     let mut results = Vec::new();
@@ -129,14 +130,14 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"FieldURI"
-                                    && let Ok(v) = attr.unescape_value()
+                                    && let Ok(v) = attr.decode_and_unescape_value(decoder)
                                 {
                                     *field_uri = Some(v.to_string());
                                 }
                             }
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
-                            push_start_tag(payload_xml, e);
+                            push_start_tag(payload_xml, e, decoder);
                         }
                     }
                 }
@@ -154,14 +155,14 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                         if local == "FieldURI" && field_uri.is_none() {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"FieldURI"
-                                    && let Ok(v) = attr.unescape_value()
+                                    && let Ok(v) = attr.decode_and_unescape_value(decoder)
                                 {
                                     *field_uri = Some(v.to_string());
                                 }
                             }
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
-                            push_empty_tag(payload_xml, e);
+                            push_empty_tag(payload_xml, e, decoder);
                         }
                     }
                 }
@@ -295,7 +296,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 match verb {
                     ChangeVerb::Delete => item.categories.clear(),
                     ChangeVerb::Append => item.categories.extend(cats),
-                    ChangeVerb::Set => item.categories = cats,
+                    ChangeVerb::Set => item.categories = cats.into(),
                 }
             }
             "calendar:start" => match verb {

@@ -4,18 +4,8 @@ use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use smallvec::SmallVec;
 use std::borrow::Cow;
 use uuid::Uuid;
-
-/// Default inline capacity for attendees (most meetings have ≤4 attendees)
-const ATTENDEE_INLINE: usize = 4;
-/// Default inline capacity for exception dates (most recurring events have ≤2 exceptions)
-const EXDATE_INLINE: usize = 2;
-/// Default inline capacity for categories (most events have ≤2 categories)
-const CATEGORY_INLINE: usize = 2;
-/// Default inline capacity for exceptions (most recurring events have ≤2 exceptions)
-const EXCEPTION_INLINE: usize = 2;
 
 #[derive(Clone, Debug, Default)]
 pub struct CalendarItem {
@@ -30,14 +20,11 @@ pub struct CalendarItem {
     pub timezone: Option<String>,
     pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
-    /// Exception dates for recurring events - stack-allocated for ≤2 entries
-    pub exdates: SmallVec<[chrono::DateTime<Utc>; EXDATE_INLINE]>,
+    pub exdates: Vec<chrono::DateTime<Utc>>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
-    /// Meeting attendees - stack-allocated for ≤4 attendees
-    pub attendees: SmallVec<[Attendee; ATTENDEE_INLINE]>,
-    /// Event categories - stack-allocated for ≤2 categories
-    pub categories: SmallVec<[String; CATEGORY_INLINE]>,
+    pub attendees: Vec<Attendee>,
+    pub categories: Vec<String>,
     pub busy_status: Option<u8>,
     pub sensitivity: Option<u8>,
     pub reminder: Option<i32>,
@@ -49,8 +36,7 @@ pub struct CalendarItem {
     pub online_meeting_conf_link: Option<String>,
     pub online_meeting_external_link: Option<String>,
     pub client_uid: Option<String>,
-    /// Calendar exceptions - stack-allocated for ≤2 exceptions
-    pub exceptions: SmallVec<[CalendarException; EXCEPTION_INLINE]>,
+    pub exceptions: Vec<CalendarException>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -69,8 +55,8 @@ pub struct CalendarException {
     pub appointment_reply_time: Option<chrono::DateTime<Utc>>,
     pub meeting_status: Option<u8>,
     pub response_type: Option<u8>,
-    pub attendees: Option<SmallVec<[Attendee; ATTENDEE_INLINE]>>,
-    pub categories: Option<SmallVec<[String; CATEGORY_INLINE]>>,
+    pub attendees: Option<Vec<Attendee>>,
+    pub categories: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -95,11 +81,11 @@ pub struct CalendarPatch {
     pub timezone: Option<String>,
     pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
-    pub exdates: Option<SmallVec<[chrono::DateTime<Utc>; EXDATE_INLINE]>>,
+    pub exdates: Option<Vec<chrono::DateTime<Utc>>>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
-    pub attendees: Option<SmallVec<[Attendee; ATTENDEE_INLINE]>>,
-    pub categories: Option<SmallVec<[String; CATEGORY_INLINE]>>,
+    pub attendees: Option<Vec<Attendee>>,
+    pub categories: Option<Vec<String>>,
     pub busy_status: Option<u8>,
     pub sensitivity: Option<u8>,
     pub reminder: Option<i32>,
@@ -111,7 +97,7 @@ pub struct CalendarPatch {
     pub online_meeting_conf_link: Option<String>,
     pub online_meeting_external_link: Option<String>,
     pub client_uid: Option<String>,
-    pub exceptions: Option<SmallVec<[CalendarException; EXCEPTION_INLINE]>>,
+    pub exceptions: Option<Vec<CalendarException>>,
 }
 
 #[derive(Clone, Debug)]
@@ -155,15 +141,12 @@ struct EasBuilder {
     uid: Option<String>,
     client_uid: Option<String>,
     recurrence: EasRecurrence,
-    /// Exception dates - using SmallVec for stack allocation
-    exdates: SmallVec<[chrono::DateTime<Utc>; EXDATE_INLINE]>,
+    exdates: Vec<chrono::DateTime<Utc>>,
     organizer_name: Option<String>,
     organizer_email: Option<String>,
-    /// Attendees - using SmallVec for stack allocation
-    attendees: SmallVec<[Attendee; ATTENDEE_INLINE]>,
+    attendees: Vec<Attendee>,
     current_attendee: Option<Attendee>,
-    /// Categories - using SmallVec for stack allocation
-    categories: SmallVec<[String; CATEGORY_INLINE]>,
+    categories: Vec<String>,
     busy_status: Option<u8>,
     sensitivity: Option<u8>,
     reminder: Option<i32>,
@@ -174,8 +157,7 @@ struct EasBuilder {
     response_type: Option<u8>,
     online_meeting_conf_link: Option<String>,
     online_meeting_external_link: Option<String>,
-    /// Exceptions - using SmallVec for stack allocation
-    exceptions: SmallVec<[CalendarException; EXCEPTION_INLINE]>,
+    exceptions: Vec<CalendarException>,
     current_exception: Option<CalendarException>,
 }
 
@@ -836,7 +818,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             online_meeting_conf_link: fields.online_meeting_conf_link,
             online_meeting_external_link: fields.online_meeting_external_link,
             client_uid: fields.client_uid,
-            exceptions: SmallVec::new(),
+            exceptions: Vec::new(),
         };
         derived_deleted.append(
             &mut item
@@ -1417,7 +1399,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         }
                         Some(b"Category") => {
                             if let Some(ex) = current.current_exception.as_mut() {
-                                ex.categories.get_or_insert_with(SmallVec::new).push(value);
+                                ex.categories.get_or_insert_with(Vec::new).push(value);
                             } else {
                                 current.categories.push(value);
                             }
@@ -1529,7 +1511,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     && !attendee.email.is_empty()
                 {
                     if let Some(ex) = current.current_exception.as_mut() {
-                        ex.attendees.get_or_insert_with(SmallVec::new).push(attendee);
+                        ex.attendees.get_or_insert_with(Vec::new).push(attendee);
                     } else {
                         current.attendees.push(attendee);
                     }
@@ -1916,7 +1898,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         timezone: extract_ews_field(xml, b"StartTimeZone"),
         timezone_blob: extract_ews_field(xml, b"MeetingTimeZone"),
         rrule,
-        exdates: SmallVec::new(),
+        exdates: Vec::new(),
         organizer_name,
         organizer_email,
         attendees,
@@ -1932,6 +1914,6 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         online_meeting_conf_link,
         online_meeting_external_link,
         client_uid,
-        exceptions: SmallVec::new(),
+        exceptions: Vec::new(),
     })
 }

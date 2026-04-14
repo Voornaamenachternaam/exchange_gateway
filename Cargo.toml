@@ -109,7 +109,7 @@ ryu = "^1.0.20"
 
 # Windows timezone mapping
 windows-timezones = { version = "^0.5.1", features = ["strum", "chrono-tz"] }
-strum = "^0.28.0"
+strum = "^0.27.2"
 
 # Concurrent data structures (NEW)
 dashmap = "^6.1.0"
