@@ -61,13 +61,14 @@ pub fn xml_escape_attr(s: &str) -> String {
 
 /// Parses an ISO 8601 datetime string to a UTC DateTime.
 ///
-/// Supports multiple formats commonly used in EWS and EAS protocols:
+/// Supports multiple formats commonly used in EWS, EAS, and iCalendar (RFC 5545) protocols:
 /// - `YYYY-MM-DDTHH:MM:SSZ`
 /// - `YYYY-MM-DDTHH:MM:SS.sssZ`
 /// - `YYYY-MM-DDTHH:MM:SS+HH:MM`
 /// - `YYYY-MM-DDTHH:MM:SS-HH:MM`
 /// - `YYYYMMDDTHHMMSSZ`
 /// - `YYYY-MM-DDZ` (date only with Z suffix)
+/// - `YYYYMMDD` (date only, iCalendar UNTIL format)
 ///
 /// Returns `None` if the string cannot be parsed.
 pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
@@ -98,9 +99,12 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
         }
     }
 
-    // Try date only (handles both "YYYY-MM-DD" and "YYYY-MM-DDZ")
-    if let Ok(nd) = chrono::NaiveDate::parse_from_str(val_no_z, "%Y-%m-%d") {
-        return Some(nd.and_hms_opt(0, 0, 0)?.and_utc());
+    // Try date only (handles "YYYY-MM-DD", "YYYY-MM-DDZ", and "YYYYMMDD")
+    let date_formats = ["%Y-%m-%d", "%Y%m%d"];
+    for fmt in date_formats {
+        if let Ok(nd) = chrono::NaiveDate::parse_from_str(val_no_z, fmt) {
+            return Some(nd.and_hms_opt(0, 0, 0)?.and_utc());
+        }
     }
 
     None
@@ -167,6 +171,17 @@ mod tests {
     fn test_parse_datetime_date_only_with_z() {
         let dt = parse_datetime("2024-01-15Z").unwrap();
         assert_eq!(dt.year(), 2024);
+        assert_eq!(dt.hour(), 0);
+        assert_eq!(dt.minute(), 0);
+    }
+
+    #[test]
+    fn test_parse_datetime_icalendar_date() {
+        // YYYYMMDD format used in iCalendar UNTIL
+        let dt = parse_datetime("20240115").unwrap();
+        assert_eq!(dt.year(), 2024);
+        assert_eq!(dt.month(), 1);
+        assert_eq!(dt.day(), 15);
         assert_eq!(dt.hour(), 0);
         assert_eq!(dt.minute(), 0);
     }
