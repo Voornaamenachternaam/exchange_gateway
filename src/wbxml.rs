@@ -1,4 +1,5 @@
 // src/wbxml.rs
+use crate::util::xml_escape_text;
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use std::collections::HashMap;
@@ -959,10 +960,4 @@ fn extract_xmlns_cp<'a, R: std::io::BufRead>(
         }
     }
     None
-}
-
-fn xml_escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }

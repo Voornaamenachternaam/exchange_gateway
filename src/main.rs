@@ -6,37 +6,26 @@ use std::time::Duration;
 use axum::{
     Router,
     extract::{Query, State},
-    http::{StatusCode, header},
+    http::{StatusCode, header, HeaderValue},
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{
-    compression::CompressionLayer, limit::RequestBodyLimitLayer,
-    sensitive_headers::SetSensitiveRequestHeadersLayer, timeout::RequestBodyTimeoutLayer,
+    compression::CompressionLayer,
+    limit::RequestBodyLimitLayer,
+    sensitive_headers::SetSensitiveRequestHeadersLayer,
+    set_header::SetResponseHeaderLayer,
+    timeout::RequestBodyTimeoutLayer,
     trace::TraceLayer,
 };
 use tracing_subscriber::EnvFilter;
 
-mod autodiscover;
-mod caldav;
-mod calendar;
-mod config;
-mod eas;
-mod error;
-mod ews;
-mod ews_folders;
-mod ews_update;
-mod models;
-mod storage;
-mod sync;
-mod timezone;
-mod wbxml;
-
-use crate::config::Config;
-use crate::models::AppState;
-use crate::storage::Storage;
+// Use modules from the library crate instead of re-declaring them
+use exchange_gateway::{
+    autodiscover, config::Config, eas, ews, models::AppState, storage::Storage,
+};
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
@@ -130,16 +119,45 @@ async fn main() -> anyhow::Result<()> {
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         .layer(
             ServiceBuilder::new()
+                // Security: Redact sensitive headers from logs
                 .layer(SetSensitiveRequestHeadersLayer::new([
                     header::AUTHORIZATION,
                     header::HeaderName::from_static("x-gateway-secret"),
                 ]))
+                // Observability (applied first to capture all requests/responses)
                 .layer(TraceLayer::new_for_http())
+                // Security: Request timeout
                 .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
                     REQUEST_TIMEOUT_SECS,
                 )))
+                // Security: Request body size limit
                 .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-                .layer(CompressionLayer::new()),
+                // Performance: Response compression
+                .layer(CompressionLayer::new())
+                // Security headers (applied last so they cover all responses,
+                // including error responses from timeout/limit layers)
+                // Note: X-XSS-Protection is intentionally omitted as it's deprecated
+                // in modern browsers and CSP provides adequate protection
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("x-frame-options"),
+                    HeaderValue::from_static("DENY"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::REFERRER_POLICY,
+                    HeaderValue::from_static("strict-origin-when-cross-origin"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::CONTENT_SECURITY_POLICY,
+                    HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; sandbox"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("private, no-store, no-cache, max-age=0"),
+                )),
         )
         .with_state(app_state);
 

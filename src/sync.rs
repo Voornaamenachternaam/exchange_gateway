@@ -5,6 +5,7 @@ use crate::calendar::{
     parse_ics_event, render_ics,
 };
 use crate::models::AppState;
+use crate::util::{xml_escape, parse_datetime as util_parse_datetime};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -487,12 +488,6 @@ pub async fn apply_meeting_response(
     Ok(())
 }
 
-pub(crate) fn xml_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
 
 fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
     match content_class.to_ascii_lowercase().as_str() {
@@ -506,33 +501,6 @@ fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
         "sms" | "text" => "<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>SMS profile enabled</AirSyncBase:Data></AirSyncBase:Body>".to_string(),
         "rightsmanagement" => "<RightsManagement:RightsManagementSupport>1</RightsManagement:RightsManagementSupport>".to_string(),
         _ => String::new(),
-    }
-}
-
-fn parse_datetime_local(val: &str) -> Option<chrono::DateTime<Utc>> {
-    if val.ends_with('Z') {
-        chrono::NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%SZ")
-            .map(|dt| Utc.from_utc_datetime(&dt))
-            .ok()
-            .or_else(|| {
-                chrono::DateTime::parse_from_rfc3339(val)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&Utc))
-            })
-    } else if val.contains('T') {
-        chrono::NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S")
-            .map(|dt| Utc.from_utc_datetime(&dt))
-            .ok()
-            .or_else(|| {
-                chrono::NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S")
-                    .map(|dt| Utc.from_utc_datetime(&dt))
-                    .ok()
-            })
-    } else {
-        chrono::NaiveDate::parse_from_str(val, "%Y%m%d")
-            .ok()
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .map(|dt| Utc.from_utc_datetime(&dt))
     }
 }
 
@@ -591,7 +559,7 @@ fn map_rrule_to_recurrence_xml(
                 "BYMONTHDAY" => day_of_month = v.parse().unwrap_or(1),
                 "BYMONTH" => month_of_year = v.parse().unwrap_or(1),
                 "UNTIL" => {
-                    if let Some(dt) = parse_datetime_local(v) {
+                    if let Some(dt) = util_parse_datetime(v) {
                         until = Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
                     }
                 }

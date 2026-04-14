@@ -20,6 +20,7 @@
 //! - `storage`: D1-backed persistence layer
 //! - `sync`: Sync state management for EAS and EWS
 //! - `timezone`: Timezone conversion utilities
+//! - `util`: Common utility functions
 //! - `wbxml`: WBXML encoding/decoding for ActiveSync
 
 pub mod autodiscover;
@@ -36,10 +37,12 @@ pub mod protocol_fixtures;
 pub mod storage;
 pub mod sync;
 pub mod timezone;
+pub mod util;
 pub mod wbxml;
 
-pub use autodiscover::{xml_escape, AutodiscoverJsonParams};
+pub use autodiscover::AutodiscoverJsonParams;
 pub use config::Config;
 pub use error::{GatewayError, Result};
 pub use models::AppState;
 pub use storage::Storage;
+pub use util::xml_escape;

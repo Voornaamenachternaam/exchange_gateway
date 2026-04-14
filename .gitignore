@@ -8,3 +8,17 @@
 
 # GitHub App credentials
 gha-creds-*.json
+
+# Production configuration files (contain secrets)
+# Use config.toml.example or examples/ for templates
+/config.toml
+/exchange-gateway.config.toml
+
+# IDE settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Log files
+*.log
