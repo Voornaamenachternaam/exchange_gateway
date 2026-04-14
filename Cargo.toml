@@ -34,7 +34,7 @@ urlencoding = "^2.1.3"
 base64 = "^0.22.1"
 url = "^2.5.8"
 tower = { version = "^0.5.3", features = ["util", "limit", "timeout"] }
-tower-http = { version = "^0.6.8", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full"] }
+tower-http = { version = "^0.6.8", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full", "set-header"] }
 parking_lot = { version = "^0.12.5", features = ["send_guard"] }
 futures = "^0.3.32"
 compact_str = { version = "^0.9.0", features = ["serde", "bytes"] }

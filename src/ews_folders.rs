@@ -1,4 +1,5 @@
 // src/ews_folders.rs
+use crate::util::xml_escape;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,11 +203,4 @@ pub fn validate_folder_request(
         return Some("ErrorFolderNotFound");
     }
     None
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }

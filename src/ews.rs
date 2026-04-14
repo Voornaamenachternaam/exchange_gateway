@@ -9,8 +9,10 @@ use crate::ews_folders::{
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::models::AppState;
+use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
+use crate::util::xml_escape;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -24,9 +26,6 @@ use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-
-const EWS_MSG_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/messages";
-const EWS_TYPE_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
 
 #[derive(Clone, Debug)]
 struct AuthContext {
@@ -424,14 +423,6 @@ fn changekey_for_item(item: &EwsItemRow) -> String {
     }
     let digest = h.finalize();
     digest[..12].iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-fn xml_escape(v: &str) -> String {
-    v.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 fn busy_status_to_ews(value: u8) -> &'static str {
