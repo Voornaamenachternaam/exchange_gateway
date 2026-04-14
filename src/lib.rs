@@ -37,6 +37,7 @@ pub mod protocol_fixtures;
 pub mod storage;
 pub mod sync;
 pub mod timezone;
+pub mod traits;
 pub mod util;
 pub mod wbxml;
 
@@ -45,4 +46,4 @@ pub use config::Config;
 pub use error::{GatewayError, Result};
 pub use models::AppState;
 pub use storage::Storage;
-pub use util::xml_escape;
+pub use util::{xml_escape, xml_escape_owned};

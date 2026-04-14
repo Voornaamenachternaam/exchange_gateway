@@ -4,8 +4,18 @@ use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use uuid::Uuid;
+
+/// Default inline capacity for attendees (most meetings have ≤4 attendees)
+const ATTENDEE_INLINE: usize = 4;
+/// Default inline capacity for exception dates (most recurring events have ≤2 exceptions)
+const EXDATE_INLINE: usize = 2;
+/// Default inline capacity for categories (most events have ≤2 categories)
+const CATEGORY_INLINE: usize = 2;
+/// Default inline capacity for exceptions (most recurring events have ≤2 exceptions)
+const EXCEPTION_INLINE: usize = 2;
 
 #[derive(Clone, Debug, Default)]
 pub struct CalendarItem {
@@ -20,11 +30,14 @@ pub struct CalendarItem {
     pub timezone: Option<String>,
     pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
-    pub exdates: Vec<chrono::DateTime<Utc>>,
+    /// Exception dates for recurring events - stack-allocated for ≤2 entries
+    pub exdates: SmallVec<[chrono::DateTime<Utc>; EXDATE_INLINE]>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
-    pub attendees: Vec<Attendee>,
-    pub categories: Vec<String>,
+    /// Meeting attendees - stack-allocated for ≤4 attendees
+    pub attendees: SmallVec<[Attendee; ATTENDEE_INLINE]>,
+    /// Event categories - stack-allocated for ≤2 categories
+    pub categories: SmallVec<[String; CATEGORY_INLINE]>,
     pub busy_status: Option<u8>,
     pub sensitivity: Option<u8>,
     pub reminder: Option<i32>,
@@ -36,7 +49,8 @@ pub struct CalendarItem {
     pub online_meeting_conf_link: Option<String>,
     pub online_meeting_external_link: Option<String>,
     pub client_uid: Option<String>,
-    pub exceptions: Vec<CalendarException>,
+    /// Calendar exceptions - stack-allocated for ≤2 exceptions
+    pub exceptions: SmallVec<[CalendarException; EXCEPTION_INLINE]>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -55,8 +69,8 @@ pub struct CalendarException {
     pub appointment_reply_time: Option<chrono::DateTime<Utc>>,
     pub meeting_status: Option<u8>,
     pub response_type: Option<u8>,
-    pub attendees: Option<Vec<Attendee>>,
-    pub categories: Option<Vec<String>>,
+    pub attendees: Option<SmallVec<[Attendee; ATTENDEE_INLINE]>>,
+    pub categories: Option<SmallVec<[String; CATEGORY_INLINE]>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -81,11 +95,11 @@ pub struct CalendarPatch {
     pub timezone: Option<String>,
     pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
-    pub exdates: Option<Vec<chrono::DateTime<Utc>>>,
+    pub exdates: Option<SmallVec<[chrono::DateTime<Utc>; EXDATE_INLINE]>>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
-    pub attendees: Option<Vec<Attendee>>,
-    pub categories: Option<Vec<String>>,
+    pub attendees: Option<SmallVec<[Attendee; ATTENDEE_INLINE]>>,
+    pub categories: Option<SmallVec<[String; CATEGORY_INLINE]>>,
     pub busy_status: Option<u8>,
     pub sensitivity: Option<u8>,
     pub reminder: Option<i32>,
@@ -97,7 +111,7 @@ pub struct CalendarPatch {
     pub online_meeting_conf_link: Option<String>,
     pub online_meeting_external_link: Option<String>,
     pub client_uid: Option<String>,
-    pub exceptions: Option<Vec<CalendarException>>,
+    pub exceptions: Option<SmallVec<[CalendarException; EXCEPTION_INLINE]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,12 +155,15 @@ struct EasBuilder {
     uid: Option<String>,
     client_uid: Option<String>,
     recurrence: EasRecurrence,
-    exdates: Vec<chrono::DateTime<Utc>>,
+    /// Exception dates - using SmallVec for stack allocation
+    exdates: SmallVec<[chrono::DateTime<Utc>; EXDATE_INLINE]>,
     organizer_name: Option<String>,
     organizer_email: Option<String>,
-    attendees: Vec<Attendee>,
+    /// Attendees - using SmallVec for stack allocation
+    attendees: SmallVec<[Attendee; ATTENDEE_INLINE]>,
     current_attendee: Option<Attendee>,
-    categories: Vec<String>,
+    /// Categories - using SmallVec for stack allocation
+    categories: SmallVec<[String; CATEGORY_INLINE]>,
     busy_status: Option<u8>,
     sensitivity: Option<u8>,
     reminder: Option<i32>,
@@ -157,7 +174,8 @@ struct EasBuilder {
     response_type: Option<u8>,
     online_meeting_conf_link: Option<String>,
     online_meeting_external_link: Option<String>,
-    exceptions: Vec<CalendarException>,
+    /// Exceptions - using SmallVec for stack allocation
+    exceptions: SmallVec<[CalendarException; EXCEPTION_INLINE]>,
     current_exception: Option<CalendarException>,
 }
 
