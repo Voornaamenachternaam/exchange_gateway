@@ -67,6 +67,7 @@ pub fn xml_escape_attr(s: &str) -> String {
 /// - `YYYY-MM-DDTHH:MM:SS+HH:MM`
 /// - `YYYY-MM-DDTHH:MM:SS-HH:MM`
 /// - `YYYYMMDDTHHMMSSZ`
+/// - `YYYY-MM-DDZ` (date only with Z suffix)
 ///
 /// Returns `None` if the string cannot be parsed.
 pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
@@ -80,23 +81,26 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
         return Some(dt.with_timezone(&Utc));
     }
 
+    // Trim 'Z' suffix once for all subsequent parsing
+    // This handles both standard 'Z' suffix and edge cases with extra 'Z'
+    let val_no_z = val.trim_end_matches('Z');
+
     // Try without timezone (assume UTC)
-    // Note: 'Z' suffix is trimmed before parsing, so formats don't include it
-    let formats = [
+    let datetime_formats = [
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%dT%H:%M:%S",
         "%Y%m%dT%H%M%S",
     ];
 
-    for fmt in formats {
-        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(val.trim_end_matches('Z'), fmt) {
-            return Some(Utc.from_utc_datetime(&ndt));
+    for fmt in datetime_formats {
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(val_no_z, fmt) {
+            return Some(ndt.and_utc());
         }
     }
 
-    // Try date only
-    if let Ok(nd) = chrono::NaiveDate::parse_from_str(val, "%Y-%m-%d") {
-        return Some(Utc.from_utc_datetime(&nd.and_hms_opt(0, 0, 0)?));
+    // Try date only (handles both "YYYY-MM-DD" and "YYYY-MM-DDZ")
+    if let Ok(nd) = chrono::NaiveDate::parse_from_str(val_no_z, "%Y-%m-%d") {
+        return Some(nd.and_hms_opt(0, 0, 0)?.and_utc());
     }
 
     None
@@ -154,6 +158,14 @@ mod tests {
     #[test]
     fn test_parse_datetime_date_only() {
         let dt = parse_datetime("2024-01-15").unwrap();
+        assert_eq!(dt.year(), 2024);
+        assert_eq!(dt.hour(), 0);
+        assert_eq!(dt.minute(), 0);
+    }
+
+    #[test]
+    fn test_parse_datetime_date_only_with_z() {
+        let dt = parse_datetime("2024-01-15Z").unwrap();
         assert_eq!(dt.year(), 2024);
         assert_eq!(dt.hour(), 0);
         assert_eq!(dt.minute(), 0);

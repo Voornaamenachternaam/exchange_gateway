@@ -13,49 +13,22 @@ pub struct AutodiscoverJsonParams {
 
 pub type AdResponse = (StatusCode, Vec<(&'static str, &'static str)>, String);
 
-fn no_cache_headers_xml() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("Content-Type", "application/xml; charset=utf-8"),
-        ("Cache-Control", "private, no-store, no-cache, max-age=0"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        ("X-Frame-Options", "DENY"),
-        (
-            "Content-Security-Policy",
-            "default-src 'none'; frame-ancestors 'none'; sandbox",
-        ),
-        ("X-XSS-Protection", "1; mode=block"),
-    ]
+/// Returns Content-Type header for XML responses.
+/// Other security headers are applied globally via middleware in main.rs.
+fn content_type_xml() -> Vec<(&'static str, &'static str)> {
+    vec![("Content-Type", "application/xml; charset=utf-8")]
 }
 
-fn no_cache_headers_json() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("Content-Type", "application/json; charset=utf-8"),
-        ("Cache-Control", "private, no-store, no-cache, max-age=0"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        ("X-Frame-Options", "DENY"),
-        (
-            "Content-Security-Policy",
-            "default-src 'none'; frame-ancestors 'none'; sandbox",
-        ),
-        ("X-XSS-Protection", "1; mode=block"),
-    ]
+/// Returns Content-Type header for JSON responses.
+/// Other security headers are applied globally via middleware in main.rs.
+fn content_type_json() -> Vec<(&'static str, &'static str)> {
+    vec![("Content-Type", "application/json; charset=utf-8")]
 }
 
-fn no_cache_headers_soap() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("Content-Type", "application/soap+xml; charset=utf-8"),
-        ("Cache-Control", "private, no-store, no-cache, max-age=0"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        ("X-Frame-Options", "DENY"),
-        (
-            "Content-Security-Policy",
-            "default-src 'none'; frame-ancestors 'none'; sandbox",
-        ),
-        ("X-XSS-Protection", "1; mode=block"),
-    ]
+/// Returns Content-Type header for SOAP responses.
+/// Other security headers are applied globally via middleware in main.rs.
+fn content_type_soap() -> Vec<(&'static str, &'static str)> {
+    vec![("Content-Type", "application/soap+xml; charset=utf-8")]
 }
 
 pub fn extract_email_from_body_xml(body: &str) -> Option<String> {
@@ -124,7 +97,7 @@ pub fn handle_autodiscover_json(
         ),
     };
 
-    (StatusCode::OK, no_cache_headers_json(), body)
+    (StatusCode::OK, content_type_json(), body)
 }
 
 pub fn handle_autodiscover_xml(host: &str, _body: &str, email: &str) -> AdResponse {
@@ -199,7 +172,7 @@ pub fn handle_autodiscover_xml(host: &str, _body: &str, email: &str) -> AdRespon
         host = host_escaped,
         email = email_escaped,
     );
-    (StatusCode::OK, no_cache_headers_xml(), xml)
+    (StatusCode::OK, content_type_xml(), xml)
 }
 
 pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
@@ -262,5 +235,5 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
 </s:Envelope>"#,
         settings = settings
     );
-    (StatusCode::OK, no_cache_headers_soap(), xml)
+    (StatusCode::OK, content_type_soap(), xml)
 }
