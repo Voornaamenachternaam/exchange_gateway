@@ -146,8 +146,7 @@ async fn main() -> anyhow::Result<()> {
                     header::HeaderName::from_static("x-frame-options"),
                     HeaderValue::from_static("DENY"),
                 ))
-                // Use if_not_present to preserve handler-level policies
-                .layer(SetResponseHeaderLayer::if_not_present(
+                .layer(SetResponseHeaderLayer::overriding(
                     header::REFERRER_POLICY,
                     HeaderValue::from_static("strict-origin-when-cross-origin"),
                 ))
