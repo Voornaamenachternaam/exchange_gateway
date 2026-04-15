@@ -795,7 +795,6 @@ dependencies = [
  "smallvec",
  "smartstring",
  "strum",
- "strum_macros",
  "subtle",
  "thiserror 2.0.18",
  "tokio",
