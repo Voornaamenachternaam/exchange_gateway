@@ -4,7 +4,7 @@
 //! This module provides shared functionality to avoid code duplication
 //! across the protocol handlers.
 
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 
 /// Escapes special XML characters in a string.
 ///

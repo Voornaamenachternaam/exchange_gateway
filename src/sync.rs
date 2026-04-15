@@ -9,7 +9,7 @@ use crate::util::{xml_escape, parse_datetime as util_parse_datetime};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{Duration, TimeZone, Utc};
+use chrono::{Duration, Utc};
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
