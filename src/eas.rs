@@ -89,6 +89,7 @@ struct EasRequest {
     collection_id: Option<String>,
     device_id: Option<String>,
     policy_key: Option<String>,
+    #[allow(dead_code)] // Parsed from MS-ASProtocolVersion header for future protocol negotiation
     protocol_version: Option<String>,
     window_size: Option<usize>,
     get_changes: bool,
@@ -99,6 +100,7 @@ struct EasRequest {
 struct CommandGrammar {
     namespace: &'static str,
     required_tags: &'static [&'static str],
+    #[allow(dead_code)] // Documents allowed optional tags for protocol completeness; validation not currently required
     optional_tags: &'static [&'static str],
 }
 
