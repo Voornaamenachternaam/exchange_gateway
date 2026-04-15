@@ -632,6 +632,12 @@ fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
 
 pub struct Wbxml;
 
+impl Default for Wbxml {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Wbxml {
     pub fn new() -> Self {
         Wbxml
