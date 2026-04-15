@@ -3,6 +3,7 @@ use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::sync::{self, SyncOptions, filter_type_to_start};
+use crate::util::xml_escape;
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -13,6 +14,7 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use futures_util::future::join_all;
 use lru::LruCache;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -1101,8 +1103,8 @@ async fn handle_settings(
             .map(|email| {
                 format!(
                     "<EmailAddresses><SMTPAddress>{}</SMTPAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
-                    sync::xml_escape(&email),
-                    sync::xml_escape(&primary_email)
+                    xml_escape(&email),
+                    xml_escape(&primary_email)
                 )
             })
             .collect::<String>();
@@ -1119,8 +1121,8 @@ async fn handle_settings(
       </Accounts>
     </Get>
   </UserInformation>"#,
-            sync::xml_escape(&primary_email),
-            sync::xml_escape(username),
+            xml_escape(&primary_email),
+            xml_escape(username),
             email_entries
         ));
     }
@@ -1251,7 +1253,7 @@ async fn handle_item_operations(
         let Some(server_id) = fetch.server_id.or(fetch.long_id) else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><Status>6</Status></Fetch>",
-                sync::xml_escape(&store)
+                xml_escape(&store)
             ));
             continue;
         };
@@ -1264,9 +1266,9 @@ async fn handle_item_operations(
             _ => {
                 responses.push_str(&format!(
                     "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
-                    sync::xml_escape(&store),
-                    sync::xml_escape(&collection_id),
-                    sync::xml_escape(&server_id)
+                    xml_escape(&store),
+                    xml_escape(&collection_id),
+                    xml_escape(&server_id)
                 ));
                 continue;
             }
@@ -1276,26 +1278,26 @@ async fn handle_item_operations(
         let Ok(Ok((ics, _etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
-                sync::xml_escape(&store),
-                sync::xml_escape(&collection_id),
-                sync::xml_escape(&server_id)
+                xml_escape(&store),
+                xml_escape(&collection_id),
+                xml_escape(&server_id)
             ));
             continue;
         };
         let Some(item) = parse_ics_event(&ics) else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
-                sync::xml_escape(&store),
-                sync::xml_escape(&collection_id),
-                sync::xml_escape(&server_id)
+                xml_escape(&store),
+                xml_escape(&collection_id),
+                xml_escape(&server_id)
             ));
             continue;
         };
         responses.push_str(&format!(
             "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
-            sync::xml_escape(&store),
-            sync::xml_escape(&collection_id),
-            sync::xml_escape(&server_id),
+            xml_escape(&store),
+            xml_escape(&collection_id),
+            xml_escape(&server_id),
             sync::render_calendar_app_data(&item)
         ));
     }
@@ -1458,7 +1460,7 @@ async fn handle_resolve_recipients(
             }
         }
     });
-    let freebusy_results = futures::future::join_all(freebusy_futures).await;
+    let freebusy_results = join_all(freebusy_futures).await;
 
     let mut recipient_xml = String::new();
     for (recipient, freebusy) in recipients.iter().zip(freebusy_results.into_iter()) {
@@ -1472,8 +1474,8 @@ async fn handle_resolve_recipients(
         };
         recipient_xml.push_str(&format!(
             "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
-            sync::xml_escape(recipient),
-            sync::xml_escape(recipient),
+            xml_escape(recipient),
+            xml_escape(recipient),
             avail_xml
         ));
     }
@@ -1483,7 +1485,7 @@ async fn handle_resolve_recipients(
         .unwrap_or_else(|| username.to_string());
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
-        sync::xml_escape(&primary),
+        xml_escape(&primary),
         recipients.len(),
         recipient_xml
     );
@@ -1599,7 +1601,7 @@ async fn handle_search(
         .map(|(sid, _, item)| {
             format!(
                 "<Result><Class>Calendar</Class><CollectionId>1</CollectionId><LongId>{}</LongId><Properties>{}</Properties></Result>",
-                sync::xml_escape(sid),
+                xml_escape(sid),
                 sync::render_calendar_app_data(item)
             )
         })
@@ -1626,7 +1628,7 @@ async fn handle_search(
     </Store>
   </Response>
 </Search>"#,
-        sync::xml_escape(&range_xml),
+        xml_escape(&range_xml),
         total,
         results_xml
     );
@@ -1845,8 +1847,8 @@ pub async fn handle(
                 };
                 let payload = format!(
                     r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"><Result><RequestId>{}</RequestId><CalendarId>{}</CalendarId><Status>1</Status>{}</Result></MeetingResponse>"#,
-                    sync::xml_escape(&req_id),
-                    sync::xml_escape(&req_id),
+                    xml_escape(&req_id),
+                    xml_escape(&req_id),
                     instance_xml
                 );
                 xml_or_wbxml_response(&wbxml, wants_wbxml, &payload, &request_id)

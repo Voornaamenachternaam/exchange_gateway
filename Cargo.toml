@@ -108,8 +108,12 @@ itoa = "^1.0.15"
 ryu = "^1.0.20"
 
 # Windows timezone mapping
+# Note: strum version is pinned to 0.27.x (tilde versioning) to match windows-timezones' transitive dependency.
+# This ensures compatibility with the IntoEnumIterator trait that windows-timezones re-exports.
+# Using a different version would cause trait conflicts. When windows-timezones updates its strum dependency,
+# this can be updated accordingly.
 windows-timezones = { version = "^0.5.1", features = ["strum", "chrono-tz"] }
-strum = "^0.28.0"
+strum = "~0.27.2"
 
 # Concurrent data structures (NEW)
 dashmap = "^6.1.0"
