@@ -296,7 +296,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 match verb {
                     ChangeVerb::Delete => item.categories.clear(),
                     ChangeVerb::Append => item.categories.extend(cats),
-                    ChangeVerb::Set => item.categories = cats.into(),
+                    ChangeVerb::Set => item.categories = cats,
                 }
             }
             "calendar:start" => match verb {
