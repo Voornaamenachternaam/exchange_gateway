@@ -1,0 +1,2583 @@
+﻿[MS-OXOSRCH]:  
+
+Search Folder List Configuration Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+2/4/2009 1.04 Minor Revised and edited technical content. 
+
+3/4/2009 1.05 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.0.1 Editorial Revised and edited the technical content. 
+
+2/10/2010 3.0.1 None Version 3.0.1 release 
+
+5/5/2010 3.1.0 Minor Updated the technical content. 
+
+8/4/2010 3.2 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 3.3 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 4.0 None 
+
+technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+4/27/2012 5.1 Minor Clarified the meaning of the technical content. 
+
+7/16/2012 5.2 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 5.3 Minor Clarified the meaning of the technical content. 
+
+2/11/2013 6.0 Major Significantly changed the technical content. 
+
+7/26/2013 6.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 6.1 None 
+
+technical content. 
+
+2 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 6.1 None 
+
+technical content. 
+
+10/30/2014 7.0 Major Significantly changed the technical content. 
+
+3/16/2015 8.0 Major Significantly changed the technical content. 
+
+5/26/2015 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 9.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 9.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 9.0 None 
+
+technical content. 
+
+7/24/2018 10.0 Major Significantly changed the technical content. 
+
+10/1/2018 11.0 Major Significantly changed the technical content. 
+
+4/22/2021 12.0 Major Significantly changed the technical content. 
+
+8/17/2021 13.0 Major Significantly changed the technical content. 
+
+8/20/2024 14.0 Major Significantly changed the technical content. 
+
+5/20/2025 15.0 Major Significantly changed the technical content. 
+
+3 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 8 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 9 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Message Syntax ............................................................................................... 10 
+
+2.2.1 Search Folder Definition Message.................................................................. 10 
+2.2.1.1 Common Properties ............................................................................... 10 
+
+2.2.1.1.1 PidTagMessageClass ........................................................................ 10 
+2.2.1.1.2 PidTagDisplayName ......................................................................... 10 
+
+2.2.1.2 Additional Properties ............................................................................. 10 
+2.2.1.2.1 PidTagSearchFolderId ...................................................................... 10 
+2.2.1.2.2 PidTagSearchFolderTemplateId ......................................................... 11 
+2.2.1.2.3 PidTagSearchFolderTag .................................................................... 11 
+2.2.1.2.4 PidTagSearchFolderLastUsed ............................................................. 11 
+2.2.1.2.5 PidTagSearchFolderExpiration ........................................................... 11 
+2.2.1.2.6 PidTagSearchFolderStorageType ........................................................ 11 
+2.2.1.2.7 PidTagSearchFolderEfpFlags .............................................................. 12 
+2.2.1.2.8 PidTagSearchFolderDefinition ............................................................ 12 
+
+2.2.1.2.8.1 AddressList ............................................................................... 15 
+2.2.1.2.8.1.1 AddressEntry ....................................................................... 16 
+
+2.2.1.2.8.1.1.1 PropertyValue ................................................................ 16 
+2.2.1.2.8.2 Restriction ................................................................................ 17 
+
+2.2.1.2.9 PidTagSearchFolderRecreateInfo ....................................................... 19 
+2.2.2 Search Folder Container .............................................................................. 19 
+
+2.2.2.1 Common Properties ............................................................................... 19 
+2.2.2.1.1 PidTagContainerClass ....................................................................... 19 
+2.2.2.1.2 PidTagExtendedFolderFlags ............................................................... 19 
+
+2.2.3 Search Templates ....................................................................................... 20 
+2.2.3.1 Unread Messages .................................................................................. 20 
+2.2.3.2 Marked for Follow-Up ............................................................................ 21 
+2.2.3.3 Unread or Marked for Follow-Up .............................................................. 21 
+2.2.3.4 Important Mail ...................................................................................... 22 
+2.2.3.5 Conversations ....................................................................................... 22 
+2.2.3.6 From a Specific Person .......................................................................... 22 
+2.2.3.7 Sent Directly to Me ............................................................................... 23 
+2.2.3.8 Sent to a Specific Distribution List ........................................................... 23 
+2.2.3.9 Large Messages .................................................................................... 24 
+2.2.3.10 Old Mail ............................................................................................... 24 
+2.2.3.11 With Attachments ................................................................................. 25 
+2.2.3.12 Mail Received This Week ........................................................................ 25 
+2.2.3.13 With Specific Words............................................................................... 26 
+2.2.3.14 Categorized .......................................................................................... 26 
+2.2.3.15 Custom ................................................................................................ 27 
+
+2.2.4 Search Folder Definition Messages and Search Folder Containers ...................... 27 
+
+4 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details ..................................................................................................... 29 
+3.1 Client Details ................................................................................................... 29 
+
+3.1.1 Abstract Data Model .................................................................................... 29 
+3.1.2 Timers ...................................................................................................... 29 
+3.1.3 Initialization ............................................................................................... 29 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 29 
+
+3.1.4.1 Creating a Search Folder ........................................................................ 29 
+3.1.4.1.1 Obtaining Data ................................................................................ 30 
+3.1.4.1.2 Creating a New Search Folder Container ............................................. 30 
+3.1.4.1.3 Creating a New Definition Message .................................................... 30 
+
+3.1.4.2 Opening a Search Folder ........................................................................ 30 
+3.1.4.3 Modifying a Search Folder ...................................................................... 31 
+3.1.4.4 Deleting a Search Folder ........................................................................ 31 
+3.1.4.5 Current Time Exceeds the Specified Time ................................................. 31 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 31 
+3.1.6 Timer Events .............................................................................................. 31 
+3.1.7 Other Local Events ...................................................................................... 31 
+
+3.2 Server Details .................................................................................................. 31 
+3.2.1 Abstract Data Model .................................................................................... 31 
+3.2.2 Timers ...................................................................................................... 31 
+3.2.3 Initialization ............................................................................................... 32 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 32 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 32 
+3.2.6 Timer Events .............................................................................................. 32 
+3.2.7 Other Local Events ...................................................................................... 32 
+
+4 Protocol Examples ................................................................................................. 33 
+4.1 Search Folder Message Object ........................................................................... 33 
+
+5 Security ................................................................................................................. 37 
+5.1 Security Considerations for Implementers ........................................................... 37 
+5.2 Index of Security Parameters ............................................................................ 37 
+
+6 Appendix A: Product Behavior ............................................................................... 38 
+
+7 Change Tracking .................................................................................................... 40 
+
+8 Index ..................................................................................................................... 41 
+
+ 
+
+5 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Search Folder List Configuration Protocol enables a client to persist a user's search folders on 
+the server. A search folder is a folder that is used to query for items that match specified criteria.  
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+active search folder: A search folder that has a search folder container and is up-to-date 
+with the correct search criteria. 
+
+big-endian: Multiple-byte values that are byte-ordered with the most significant byte stored in the 
+memory location with the lowest address. 
+
+binary large object (BLOB): A discrete packet of data that is stored in a database and is treated 
+as a sequence of uninterpreted bytes. 
+
+Common Views folder: A special folder that contains the data for default views that are standard 
+for a message store and can be used by any user of a client that accesses the message store. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+Deleted Items folder: A special folder that is the default location for objects that have been 
+deleted. 
+
+display name: A text string that is used to identify a principal or other object in the user interface. 
+Also referred to as title. 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+Drafts folder: A special folder that is the default location for Message objects that have been 
+saved but not sent. 
+
+FAI contents table: A table of folder associated information (FAI) Message objects that are 
+stored in a Folder object. 
+
+folder associated information (FAI): A collection of Message objects that are stored in a 
+Folder object and are typically hidden from view by email applications. An FAI Message object is 
+used to store a variety of settings and auxiliary data, including forms, views, calendar options, 
+favorites, and category lists. 
+
+Folder object: A messaging construct that is typically used to organize data into a hierarchy of 
+objects containing Message objects and folder associated information (FAI) Message 
+objects. 
+
+globally unique identifier (GUID): A term used interchangeably with universally unique 
+identifier (UUID) in Microsoft protocol technical documents (TDs). Interchanging the usage of 
+these terms does not imply or require a specific algorithm or mechanism to generate the value. 
+Specifically, the use of this term does not imply or require that the algorithms described in 
+
+6 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[RFC4122] or [C706] have to be used for generating the GUID. See also universally unique 
+identifier (UUID). 
+
+inactive search folder: A search folder that does not have a search folder container. 
+
+journal: A process that generates a Journal-Report for an original-message. 
+
+Junk Email folder: A special folder that is the default location for Message objects that are 
+determined to be junk email by a Junk Email rule. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+network byte order: The order in which the bytes of a multiple-byte number are transmitted on a 
+network, most significant byte first (in big-endian storage). This does not always match the 
+order in which numbers are normally stored in memory for a particular processor. 
+
+Outbox folder: A special folder that contains Message objects that are submitted to be sent. 
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+search criteria: A criteria used to determine which messages are included in a folder with specific 
+characteristics. It is composed of a restriction, which is the filter to be applied, and a search 
+scope, which are the folders that contain the content to search. 
+
+search folder: A Folder object that provides a means of querying for items that match certain 
+criteria. The search folder includes the search folder definition message and the search 
+folder container. 
+
+search folder container: A Folder object that is created according to the specifications in the 
+definition message. It is in the Finder folder of the message database. 
+
+search folder definition message: A folder associated information (FAI) message that 
+persists all the information that defines a search folder. It is in the associated contents table of 
+the Common Views folder in the message database. 
+
+Sent Items folder: A special folder that is the default location for storing copies of Message 
+objects after they are submitted or sent. 
+
+skip block: The block in a binary large object (BLOB) that acts as padding, reserving space that 
+can be used by future versions to insert data. The block consists of a ULONG that describes how 
+many additional ULONGs to skip ahead. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+7 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-NSPI] Microsoft Corporation, "Name Service Provider Interface (NSPI) Protocol". 
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPERM] Microsoft Corporation, "Exchange Access and Operation Permissions Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol". 
+
+[MS-OXOCAL] Microsoft Corporation, "Appointment and Meeting Object Protocol". 
+
+[MS-OXOCFG] Microsoft Corporation, "Configuration Information Protocol". 
+
+[MS-OXOCNTC] Microsoft Corporation, "Contact Object Protocol". 
+
+[MS-OXOJRNL] Microsoft Corporation, "Journal Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXONOTE] Microsoft Corporation, "Note Object Protocol". 
+
+[MS-OXOSFLD] Microsoft Corporation, "Special Folders Protocol". 
+
+[MS-OXOTASK] Microsoft Corporation, "Task-Related Objects Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+1.2.2 Informative References 
+
+[MS-OXCSTOR] Microsoft Corporation, "Store Object Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+8 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.3 Overview 
+
+A search folder provides a means of querying for items that match certain criteria. To the user, a 
+search folder appears in the client as a normal folder that populates itself when opened. A search 
+folder uses one of the standard templates or a custom search created by the user to include specific 
+search criteria. 
+
+This protocol enables a client to persist a user's search folders on the server, thereby allowing the user 
+to access these folders when connecting via a client on another machine. The client maintains search 
+folders within a mailbox by using search folder definition messages. To create a search folder, 
+the client collects the data that is used to define the search criteria, creates a search folder 
+container to contain the results of the search, and creates a search folder definition message to 
+persist the information that defines the search folder. This information includes the search criteria. A 
+search folder definition message is saved as a folder associated information (FAI) message in a 
+hidden folder outside the root mailbox and is not directly visible to the user. 
+
+1.4 Relationship to Other Protocols 
+
+The Search Folder List Configuration Protocol relies on other protocols as follows: 
+
+ It relies on the Message and Attachment Object Protocol, which is described in [MS-OXCMSG], to 
+create and delete messages containing search folder configuration data. 
+
+ It relies on the Folder Object Protocol, which is described in [MS-OXCFOLD], to create search 
+folder containers based on the configuration data. 
+
+ It relies on the Property and Stream Object Protocol, which is specified in [MS-OXCPRPT], to read 
+and write properties of messages containing search folder configuration data. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+This protocol assumes that the client has logged on to the message store, as described in [MS-
+OXCSTOR], with the ability to read and write Message objects, Folder objects, and their properties. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable for creating user-defined queries that are used for searching a mailbox. 
+The queries can be saved for reuse. The saved queries can be modified or deleted. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol uses the same transport as that specified in [MS-OXCMSG], [MS-OXCFOLD], and [MS-
+OXCPRPT]. 
+
+2.2 Message Syntax 
+
+2.2.1 Search Folder Definition Message 
+
+A search folder definition message is stored as an FAI message, as described in [MS-OXCMSG] 
+section 1.3.2, in the FAI contents table, as specified in [MS-OXCFOLD] section 3.1.1.2, of the 
+Common Views folder, as specified in [MS-OXOSFLD] section 2.2.1, within a message store. A 
+search folder definition message is used to persist a search folder within a mailbox, thereby 
+enabling the client to maintain the user's search folders across multiple machines and reliably re-
+create them if needed. A search folder ceases to exist if its search folder definition message is deleted. 
+For more details about how a search folder definition message relates to a search folder and a search 
+folder container, see section 2.2.4. 
+
+A search folder definition message has properties that describe the search criteria. These properties 
+are specified in the following subsections. 
+
+2.2.1.1 Common Properties 
+
+The following subsections provide details about properties that are common to most Message 
+objects, including a search folder definition message. For general details about properties, see 
+[MS-OXPROPS]. The property data types are defined in [MS-OXCDATA] section 2.11.1. 
+
+2.2.1.1.1 PidTagMessageClass 
+
+Type: PtypString 
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) specifies the type of the 
+Message object. The value of this property MUST be "IPM.Microsoft.WunderBar.SFInfo" to indicate 
+that the Message object is a search folder definition message. 
+
+2.2.1.1.2 PidTagDisplayName 
+
+Type: PtypString 
+
+The PidTagDisplayName property ([MS-OXCFOLD] section 2.2.2.2.2.5) specifies the name of the 
+search folder. The client SHOULD use this property value as the display name of the search folder 
+container. 
+
+2.2.1.2 Additional Properties 
+
+The following subsections provide details about properties that are specific to a search folder 
+definition message. For general details about properties, see [MS-OXPROPS]. The property data 
+types are defined in [MS-OXCDATA] section 2.11.1. 
+
+2.2.1.2.1 PidTagSearchFolderId 
+
+Type: PtypBinary 
+
+10 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidTagSearchFolderId property ([MS-OXPROPS] section 2.993) contains a GUID that identifies 
+the search folder. The value of this property MUST NOT change.  
+
+The GUID of the search folder definition message MUST match the GUID of the corresponding 
+search folder container. For details about the relationship between the search folder definition 
+message and the search folder container, see section 2.2.4. 
+
+2.2.1.2.2 PidTagSearchFolderTemplateId 
+
+Type: PtypInteger32 
+
+The PidTagSearchFolderTemplateId property ([MS-OXPROPS] section 2.998) specifies the ID of 
+the template that is being used for the search. For more details about search templates, see section 
+2.2.3. 
+
+2.2.1.2.3 PidTagSearchFolderTag 
+
+Type: PtypInteger32 
+
+The PidTagSearchFolderTag property ([MS-OXPROPS] section 2.997) contains a 4-byte value that 
+marks the current search folder. The value of this property does not have to be unique, but it MUST 
+change with every update of the search folder definition message; otherwise, another client 
+accessing the message store will not be able to determine whether the search folder has changed. 
+
+The tag of the search folder definition message MUST match the tag of the corresponding search 
+folder container. For details about the relationship between the search folder definition message and 
+the search folder container, see section 2.2.4. 
+
+2.2.1.2.4 PidTagSearchFolderLastUsed 
+
+Type: PtypInteger32 
+
+The PidTagSearchFolderLastUsed property ([MS-OXPROPS] section 2.994) specifies the last time 
+the search folder was accessed. It is formatted as the number of minutes since midnight 
+(Coordinated Universal Time (UTC)) January 1, 1601. This property is set to the current time when 
+the search folder definition message is created. 
+
+2.2.1.2.5 PidTagSearchFolderExpiration 
+
+Type: PtypInteger32 
+
+The PidTagSearchFolderExpiration property ([MS-OXPROPS] section 2.992) specifies the time at 
+which the search folder container will be stale and has to be updated or re-created. It is formatted 
+as the number of minutes since midnight (UTC) January 1, 1601. 
+
+2.2.1.2.6 PidTagSearchFolderStorageType 
+
+Type: PtypInteger32 
+
+The PidTagSearchFolderStorageType property ([MS-OXPROPS] section 2.996) contains flags that 
+control the presence and content of certain fields within the PidTagSearchFolderDefinition property 
+(section 2.2.1.2.8 ). These flags are duplicated within the PidTagSearchFolderDefinition property. 
+The specific flags to use depend on the template; section 2.2.3 specifies the correct flags for each 
+template definition. 
+
+The flags are stored as a 4-byte integer. The following table shows the flags in big-endian order. 
+(The flags are in network byte order within the PidTagSearchFolderDefinition property.) 
+
+11 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Flag name Big-endian bit 
+
+B 0x00000040 
+
+C 0x00000020 
+
+D 0x00000010 
+
+E 0x00000008 
+
+F 0x00000004 
+
+G 0x00000002 
+
+H 0x00000001 
+
+J 0x00004000 
+
+K 0x00002000 
+
+L 0x00001000 
+
+ 
+
+2.2.1.2.7 PidTagSearchFolderEfpFlags 
+
+Type: PtypInteger32 
+
+The PidTagSearchFolderEfpFlags property ([MS-OXPROPS] section 2.991) contains flags that 
+control how a folder is displayed. The flag settings MAY match the two bits of the b field of the 
+ExtendedFlags subproperty of the search folder container, as specified in section 2.2.2.1.2. 
+
+2.2.1.2.8 PidTagSearchFolderDefinition 
+
+Type: PtypBinary 
+
+The PidTagSearchFolderDefinition property ([MS-OXPROPS] section 2.990) contains data that 
+specifies the search criteria and search options. The structure of this property is specified as follows. 
+The presence and specific content of some fields are dependent upon the template that is used for the 
+search. The template ID, specified in the PidTagSearchFolderTemplateId property (section 
+2.2.1.2.2), identifies the template to be used. For details about the templates and how they affect the 
+fields of the PidTagSearchFolderDefinition property, see section 2.2.3. 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+Version 
+
+A B C D E F G H I J K L Reserved 
+
+NumericalSearch 
+
+TextSearchLength TextSearchExtendedLength (optional) TextSearch (variable) 
+
+... 
+
+SkipBlock1 (variable) 
+
+12 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+... 
+
+DeepSearch 
+
+FolderList1Length FolderList1ExtendedLength (optional) FolderList1 (variable) 
+
+... 
+
+FolderList2Length 
+
+FolderList2 (variable) 
+
+... 
+
+Addresses (variable) 
+
+... 
+
+SkipBlock2 (variable) 
+
+... 
+
+SearchRestriction (variable) 
+
+... 
+
+AdvancedSearch (variable) 
+
+... 
+
+SkipBlock3 (variable) 
+
+... 
+
+Version (4 bytes): A 4-byte value that specifies the version of the data. The value SHOULD be 
+0x04100000 (network byte order). 
+
+A (1 bit): Unused. This bit MUST be zero (0) when sent and MUST be ignored on receipt. 
+
+B (1 bit): A value that indicates whether the FolderList2 field is present. If this field is set to 1, the 
+FolderList2 field MUST be present. 
+
+C (1 bit): A value that indicates whether the FolderList1 field is present. If this field is set to 1, the 
+FolderList1 field MUST be present. 
+
+D (1 bit): A value that indicates whether the AdvancedSearch field is present. If this field is set to 
+1, the AdvancedSearch field MUST be present. 
+
+E (1 bit): A value that indicates whether the SearchRestriction field is present. If this field is set to 
+1, the SearchRestriction field MUST be present. 
+
+13 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+F (1 bit): A value that indicates whether the Addresses field is present. If this field is set to 1, the 
+Addresses field MUST be present. 
+
+G (1 bit): A value that indicates whether the TextSearch field is present. If this field is set to 1, the 
+TextSearch field MUST be present. 
+
+H (1 bit): A value that indicates whether the NumericalSearch field is used. If this field is set to 1, 
+the NumericalSearch field MUST contain a valid value. 
+
+I (1 bit): Unused. This bit MUST be zero (0) when sent and MUST be ignored on receipt. 
+
+J (1 bit): A value that indicates whether the search folder container is refreshed daily. If this field 
+is set to 1, the search folder container is refreshed daily. In this case, the 
+PidTagSearchFolderExpiration property (section 2.2.1.2.5) is set to a value that is one day in 
+the future. 
+
+K (1 bit): A value that indicates whether the search folder container is refreshed weekly. If this field 
+is set to 1, the search folder container is refreshed weekly. In this case, the 
+PidTagSearchFolderExpiration property is set to a value that is one week in the future. 
+
+L (1 bit): A value that indicates whether the search folder container is refreshed monthly. If this field 
+is set to 1, the search folder container is refreshed monthly. In this case, the 
+PidTagSearchFolderExpiration property (section 2.2.1.2.5) is set to a value that is one month 
+in the future. 
+
+Reserved (20 bits): Unused. This field MUST be set to 0x00000 when sent and MUST be ignored on 
+receipt. 
+
+NumericalSearch (4 bytes): An integer that specifies either the size or the age of the messages to 
+be searched. If the H field is set to zero (0), this field MUST be set to 0x00000000 when sent and 
+MUST be ignored on receipt. 
+
+The value of this field has the following format (in big-endian order) for specifying age: 
+
+ The upper two bytes specify the units as follows: 
+
+ 0x0000: Days 
+
+ 0x0001: Weeks 
+
+ 0x0002: Months 
+
+ The lower two bytes specify the amount. 
+
+For example, the value 0x0001002A specifies an age of 42 weeks. 
+
+TextSearchLength (1 byte): An integer that specifies the size, in characters, of the TextSearch 
+field. If the TextSearch field is longer than 254 characters, this field MUST be set to 255. If the G 
+field is set to zero (0), this field MUST be set to zero (0). 
+
+TextSearchExtendedLength (2 bytes): An integer that specifies the size of the TextSearch field 
+when its size is greater than 254 characters. This field MUST NOT be present if the value of the 
+TextSearchLength field is less than 255. 
+
+TextSearch (variable): A string that specifies search criteria. The particular criteria specified depend 
+on the template used. The size of the string, in characters, is specified by the TextSearchLength 
+field or the TextSearchExtendedLength field. The string MUST NOT be longer than 65,535 
+characters. If the G field is set to zero (0), this field MUST NOT be present. 
+
+SkipBlock1 (variable): A skip block that specifies the number of bytes to skip ahead. This is for 
+future versions to insert new data. If there is no data to skip, the value of this field MUST be zero 
+
+14 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+(0), and its size is 4 bytes. If there is data to skip, the size of this field MUST be 4 bytes plus the 
+size of the data to be skipped. 
+
+DeepSearch (4 bytes): A Boolean value that specifies whether the search includes subfolders. If the 
+search includes subfolders, this field is set to TRUE (0x00000001); otherwise, this field is set to 
+FALSE (0x00000000). 
+
+FolderList1Length (1 byte): An integer that specifies the size, in characters, of the FolderList1 
+field. If the FolderList1 field is longer than 254 characters, this field MUST be set to 255. If the C 
+field is set to zero (0), this field MUST be set to zero (0). 
+
+FolderList1ExtendedLength (2 bytes): An integer that specifies the size of the FolderList1 field 
+when its size is greater than 254 characters. This field MUST NOT be present if the value of the 
+FolderList1Length field is less than 255. 
+
+FolderList1 (variable): A string that contains the names of the folders to be searched. The size of 
+the string, in characters, is specified by the FolderList1Length field or the 
+FolderList1ExtendedLength field. The string MUST NOT be longer than 65,535 characters. If 
+the C field is set to zero (0), this field MUST NOT be present. 
+
+FolderList2Length (4 bytes): An integer that specifies the size, in bytes, of the FolderList2 field. If 
+the B field is set to zero (0), this field MUST be set to zero (0). 
+
+FolderList2 (variable): An EntryList structure, as specified in [MS-OXCDATA] section 2.3.1, that 
+contains a list of the folders to be searched. If the B field is set to zero (0), this field MUST NOT be 
+present. 
+
+Addresses (variable): An AddressList structure, as specified in section 2.2.1.2.8.1, that contains a 
+list of addresses to be included in the search. If the F field is set to zero (0), this field MUST NOT 
+be present. 
+
+SkipBlock2 (variable): A skip block that specifies the number of bytes to skip ahead. This is for 
+future versions to insert new data. If there is no data to skip, the value of this field MUST be zero 
+(0), and its size is 4 bytes. If there is data to skip, the size of this field MUST be 4 bytes plus the 
+size of the data to be skipped. 
+
+SearchRestriction (variable): A Restriction structure, as specified in section 2.2.1.2.8.2, that 
+explicitly defines the search criteria. If the E field is set to zero (0), this field MUST NOT be 
+present. 
+
+AdvancedSearch (variable): A low-order 4-byte integer followed by a high-order 4-byte integer, 
+forming a 64-bit value that specifies the number of data bytes contained in this field. The total 
+length of this field is 8 plus the length of the data. The data is implementation-specific. If the D 
+field is set to zero (0), this field MUST NOT be present. 
+
+SkipBlock3 (variable): A skip block that specifies the number of bytes to skip ahead. This is for 
+future versions to insert new data. If there is no data to skip, the value of this field MUST be zero 
+(0), and its size will be 4 bytes. If there is data to skip, the size of this field MUST be 4 bytes plus 
+the size of the data to be skipped. 
+
+2.2.1.2.8.1 AddressList 
+
+The AddressList structure contains a list of addresses. 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+AddressCount 
+
+15 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Addresses (variable) 
+
+... 
+
+AddressCount (4 bytes): An unsigned integer that indicates the number of AddressEntry 
+structures in the Addresses field. 
+
+Addresses (variable): An array of AddressEntry structures, as specified in section 2.2.1.2.8.1.1. 
+
+2.2.1.2.8.1.1 AddressEntry 
+
+The AddressEntry structure contains properties that represent an addressee. 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+PropertyCount 
+
+Pad 
+
+Values (variable) 
+
+... 
+
+PropertyCount (4 bytes): An unsigned integer that indicates the number of PropertyValue 
+structures in the Values field. 
+
+Pad (4 bytes): Ignored. This field can be any value. 
+
+Values (variable): This field contains an array of PropertyValue structures (section 
+2.2.1.2.8.1.1.1). This field MUST include the properties in the following list. Other properties can 
+be included. 
+
+ PidTagDisplayName ([MS-OXCFOLD] section 2.2.2.2.2.5) 
+
+ PidTagAddressType ([MS-OXOABK] section 2.2.3.13) 
+
+ PidTagEntryId ([MS-OXCPERM] section 2.2.4) 
+
+ PidTagObjectType ([MS-OXCPRPT] section 2.2.1.7) 
+
+ PidTagDisplayType ([MS-OXOABK] section 2.2.3.11) 
+
+ PidTagDisplayTypeEx ([MS-OXOABK] section 2.2.3.12) 
+
+ PidTagEmailAddress ([MS-OXOABK] section 2.2.3.14) 
+
+ PidTagRecipientType ([MS-OXOMSG] section 2.2.3.1) 
+
+2.2.1.2.8.1.1.1 PropertyValue 
+
+The PropertyValue structure represents a single property of an addressee. 
+
+16 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+PropertyType PropertyId 
+
+Value (variable) 
+
+... 
+
+PropertyType (2 bytes): An integer that specifies the type of data in the Value field. The data can 
+be any of the following types. For details about these types, see [MS-OXCDATA] section 2.11.1. 
+
+ PtypInteger32 
+
+ PtypErrorCode 
+
+ PtypBoolean 
+
+ PtypString 
+
+ PtypString8 
+
+ PtypTime 
+
+ PtypBinary 
+
+ PtypMultipleString8 
+
+ PtypMultipleBinary 
+
+PropertyId (2 bytes): An integer that identifies the data in the Value field. 
+
+Value (variable): The data that is the value of the property. The format of the data depends on the 
+type that is specified in the PropertyType field. 
+
+2.2.1.2.8.2 Restriction 
+
+The Restriction structure represents a filter that defines the search criteria in a search folder. 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+RestrictionType 
+
+RestrictionData (variable) 
+
+... 
+
+RestrictionType (4 bytes): An integer that specifies the type of structure in the RestrictionData 
+field. It can have one of the following values. 
+
+RestrictionType 
+RestrictionType name value RestrictionData specification 
+
+AndRestriction 0x00000000 Variable size, a 32-bit count of subrestrictions, followed 
+by the subrestrictions in Restriction format. An object 
+satisfies this filter if and only if all subrestrictions are 
+
+17 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+RestrictionType 
+RestrictionType name value RestrictionData specification 
+
+satisfied. 
+
+OrRestriction 0x00000001 Variable size, a 32-bit count of subrestrictions, followed 
+by the subrestrictions in Restriction format. An object 
+satisfies this filter if at least one subrestriction is 
+satisfied. 
+
+NotRestriction 0x00000002 Variable size, a subrestriction in Restriction format. An 
+object satisfies this filter if and only if the subrestriction 
+is not satisfied. 
+
+ContentRestriction 0x00000003 Variable size, a 32-bit ulFuzzyLevel field, a specified in 
+[MS-NSPI], followed by a 32-bit PropertyTag structure 
+([MS-OXCDATA] section 2.9), followed by the 
+comparand in PropertyValue format (section 
+2.2.1.2.8.1.1.1). An object satisfies this filter if and only 
+if the given property is equivalent to the given 
+comparand at the specified value of the ulFuzzyLevel 
+field. 
+
+PropertyRestriction 0x00000004 Variable size, a 32-bit RelOp field, with the three high-
+order bytes set to zeroes, followed by a 32-bit 
+PropertyTag structure, followed by the comparand in 
+PropertyValue format. An object satisfies this filter if 
+and only if the RelOp value describes the given 
+property's relationship to the comparand, as specified in 
+[MS-OXCDATA] section 2.12.5.1. 
+
+ComparePropertiesRestriction 0x00000005 12 bytes, a 32-bit RelOp field, with the three high-order 
+bytes set to zeroes, followed by two 32-bit 
+PropertyTag structures. An object satisfies this filter if 
+and only if the RelOp value describes the first 
+property's relationship to the second property, as 
+specified in [MS-OXCDATA] section 2.12.6.1. 
+
+BitMaskRestriction 0x00000006 12 bytes, a 32-bit BitmapRelOp field, with the three 
+high-order bytes set to zeroes, followed by a 32-bit 
+PropertyTag structure, followed by the comparand as a 
+32-bit mask. An object satisfies this filter if and only if 
+the bitwise AND of the property with the comparand 
+satisfies the BitmapRelOp value, as specified in [MS-
+OXCDATA] section 2.12.7.1. 
+
+ExistRestriction 0x00000008 4 bytes, a 32-bit PropertyTag structure. An object 
+satisfies this filter if and only if the given property is set 
+on the object. 
+
+CommentRestriction 0x0000000A Variable size, a 32-bit count of annotations, followed by 
+a subrestriction in Restriction format, followed by the 
+annotations in PropertyValue format. An object 
+satisfies this filter if and only if the object satisfies the 
+subrestriction. The annotations SHOULD be left intact 
+and ignored. 
+
+CountRestriction 0x0000000B Variable size, a subrestriction in Restriction format. An 
+object satisfies this filter if and only if the object 
+satisfies the subrestriction. 
+
+RestrictionData (variable): The contents of this field depend on the value of the RestrictionType 
+field. It contains data that is formatted as specified in the table in the description of RestrictionType 
+field in this section. 
+
+18 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.2.9 PidTagSearchFolderRecreateInfo 
+
+Type: PtypBinary 
+
+This property SHOULD NOT be used. 
+
+2.2.2 Search Folder Container 
+
+Although the search folder definition message persists, a search folder container only exists if 
+the search folder is an active search folder. If a search folder is inactive, the search folder 
+container will not exist. For more details about active and inactive search folders, and the 
+relationship between search folder definition messages and search folder containers, see section 2.2.4. 
+
+A search folder container is created and modified as described in sections 3.1.4.1 and 3.1.4.3. A 
+search folder container uses search criteria, a feature that is not unique to this protocol. These 
+folders also require the use of several common properties. 
+
+2.2.2.1 Common Properties 
+
+ The following subsections provide details about properties that are common to most Folder objects, 
+including a search folder container. For general details about properties, see [MS-OXPROPS]. The 
+property data types are defined in [MS-OXCDATA] section 2.11.1. 
+
+2.2.2.1.1 PidTagContainerClass 
+
+Type: PtypString 
+
+The PidTagContainerClass property ([MS-OXCFOLD] section 2.2.2.2.2.3) MUST be set to "IPF.Note" 
+for the Folder object to be recognized as a search folder container. 
+
+2.2.2.1.2 PidTagExtendedFolderFlags 
+
+Type: PtypBinary 
+
+The PidTagExtendedFolderFlags property ([MS-OXPROPS] section 2.692) is a binary large object 
+(BLOB) that contains subproperties of a Folder object. These subproperties control folder 
+configuration that is shared between client and server. Each subproperty is formatted as specified in 
+[MS-OXOCFG] section 2.2.7.1. 
+
+The PidTagExtendedFolderFlags property of a search folder container MUST include at least the 
+SearchFolderTag, SearchFolderID, and ExtendedFlags subproperties with the settings as 
+specified in the following table. 
+
+Subproperty name Id field Cb field Data field 
+
+SearchFolderTag 0x03 0x04 A 4-byte value that matches the 
+value of the 
+PidTagSearchFolderTag 
+property (section 2.2.1.2.3) of the 
+search folder definition 
+message. 
+
+SearchFolderID 0x02 0x10 A GUID that matches the GUID 
+stored in the 
+PidTagSearchFolderId property 
+(section 2.2.1.2.1) of the search 
+folder definition message. 
+
+ExtendedFlags 0x01 0x04 A 4-byte value, as specified in 
+
+19 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Subproperty name Id field Cb field Data field 
+
+[MS-OXOCFG] section 2.2.7.1.2. 
+The two bits of the b field are set 
+to 10 if the value of the 
+PidTagSearchFolderTemplateId 
+property (section 2.2.1.2.2) is 
+0x00000003 or 0x00000004; 
+otherwise, the two bits of the b 
+field are set to 01. 
+
+ 
+
+2.2.3 Search Templates 
+
+Search criteria are specified by a template. The PidTagSearchFolderTemplateId property (section 
+2.2.1.2.2) on the message that defines the search folder identifies its corresponding template. In 
+addition to defining search criteria, a template also defines folders to exclude from the search, defines 
+items to exclude from the search, and specifies the value of the PidTagSearchFolderStorageType 
+property (section 2.2.1.2.6). For more details about the folders that are excluded from the search, see 
+[MS-OXOSFLD]. For more details about the item types that are excluded from the search, see the 
+following: 
+
+ Appointments - [MS-OXOCAL] 
+
+ Contacts - [MS-OXOCNTC] 
+
+ Distribution lists - [MS-OXOABK] 
+
+ Journal items - [MS-OXOJRNL] 
+
+ Sticky notes - [MS-OXONOTE] 
+
+ Tasks - [MS-OXOTASK] 
+
+The flags set in the PidTagSearchFolderStorageType property and in the 
+PidTagSearchFolderDefinition property (section 2.2.1.2.8) vary according to template. The fields 
+required in the binary data of PidTagSearchFolderDefinition also vary according to template. The 
+following subsections define the templates, including their requirements for 
+PidTagSearchFolderStorageType flags and PidTagSearchFolderDefinition fields.<1><2> 
+
+2.2.3.1 Unread Messages 
+
+The template for a search that finds unread messages has the following characteristics and settings: 
+
+ Template ID: 2 
+
+ Folders excluded: Sync Issues folder, as defined in [MS-OXOSFLD] section 2.2.1, Deleted Items 
+folder, Junk E-mail folder, Outbox folder, Drafts folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000048 (flags 
+B and E) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+20 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This search will include all mailbox folders, except the ones specifically 
+excluded by this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes unread 
+messages. 
+
+2.2.3.2 Marked for Follow-Up 
+
+The template for a search that finds messages marked for follow-up has the following characteristics 
+and settings: 
+
+ Template ID: 3 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder<3> 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000048 (flags 
+B and E) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+marked for follow-up. 
+
+2.2.3.3 Unread or Marked for Follow-Up 
+
+The template for a search that finds both unread messages and messages marked for follow-up has 
+the following characteristics and settings: 
+
+ Template ID: 4 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000048 (flags 
+B and E) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes unread 
+messages and messages marked for follow-up. 
+
+21 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.3.4 Important Mail 
+
+The template for a search that finds messages marked as important has the following characteristics 
+and settings: 
+
+ Template ID: 5 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder, Drafts folder<4> 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000048 (flags 
+B and E) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure, as specified in section 2.2.1.2.8.2, that 
+describes messages marked as important. 
+
+2.2.3.5 Conversations 
+
+The template for a search that finds messages sent to and received from specified people has the 
+following characteristics and settings: 
+
+ Template ID: 6 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder, Drafts folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x0000004E (flags 
+B, E, F, and G) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+sent to and received from people who are specified by the Addresses field. 
+
+ Addresses: An AddressList structure (section 2.2.1.2.8.1) that contains the addresses by 
+which to filter conversations. 
+
+ TextSearch: A list of the names of the people by which to filter conversations. 
+
+2.2.3.6 From a Specific Person 
+
+The template for a search that finds messages received from specified people has the following 
+characteristics and settings: 
+
+22 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Template ID: 7 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder, Drafts folder, Sent Items folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x0000004E (flags 
+B, E, F, and G) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+received from people who are specified by the Addresses field. 
+
+ Addresses: An AddressList structure (section 2.2.1.2.8.1) that contains the addresses by 
+which to filter received messages. 
+
+ TextSearch: A list of the names of the people by which to filter received messages. 
+
+2.2.3.7 Sent Directly to Me 
+
+The template for a search that finds messages sent to the user has the following characteristics and 
+settings: 
+
+ Template ID: 8 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder, Drafts folder, Sent Items folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000048 (flags 
+B and E) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+sent to the user. 
+
+2.2.3.8 Sent to a Specific Distribution List 
+
+The template for a search that finds messages sent to specified distribution lists has the following 
+characteristics and settings: 
+
+ Template ID: 9 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder 
+
+23 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x0000004E (flags 
+B, E, F, and G) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+sent to the distribution lists specified by the Addresses field. 
+
+ Addresses: An AddressList structure (section 2.2.1.2.8.1) that contains the distribution lists 
+by which to filter sent messages. 
+
+ TextSearch: A list of the names of the distribution lists by which to filter sent messages. 
+
+2.2.3.9 Large Messages 
+
+The template for a search that finds large messages has the following characteristics and settings: 
+
+ Template ID: 10 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x0000004B (flags 
+B, E, G, and H) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+larger than the size specified by the NumericalSearch field. 
+
+ TextSearch: A string that specifies search criteria. 
+
+ NumericalSearch: An integer that specifies the minimum size, in kilobytes, of the messages 
+to search for. 
+
+2.2.3.10 Old Mail 
+
+The template for a search that finds messages older than a specified age has the following 
+characteristics and settings: 
+
+ Template ID: 11 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+24 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00004049 (flags 
+B, E, H, and J) to indicate daily refresh, 0x00002049 (flags B, E, H, and K) to indicate weekly 
+refresh, or 0x00001049 (flags B, E, H, and L) to indicate monthly refresh. 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+older than the age specified by the NumericalSearch field. 
+
+ NumericalSearch: An integer that specifies the age of the messages to search for. 
+
+2.2.3.11 With Attachments 
+
+The template for a search that finds messages having attachments has the following characteristics 
+and settings: 
+
+ Template ID: 12 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder, Drafts folder <5> 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000048 (flags 
+B and E) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+having file attachments. 
+
+2.2.3.12 Mail Received This Week 
+
+The template for a search that finds messages received during the current week has the following 
+characteristics and settings: 
+
+ Template ID: 13 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Drafts folder, Outbox folder, Sent Items folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00002048 (flags 
+B, E, and K) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+25 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+received on or after the first day of the current week but no later than seven days after the 
+first day of the week. The first day of the week is determined by computer locale settings but 
+can potentially be overridden by the user. 
+
+2.2.3.13 With Specific Words 
+
+The template for a search that finds messages containing certain words has the following 
+characteristics and settings: 
+
+ Template ID: 14 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder, Outbox folder, Drafts folder <6> 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x0000004A (flags 
+B, E, and G) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+containing certain words. 
+
+ TextSearch: A string that specifies the words for which to search. 
+
+2.2.3.14 Categorized 
+
+The template for a search that finds categorized messages has the following characteristics and 
+settings: 
+
+ Template ID: 15 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1), Deleted Items folder, 
+Junk E-mail folder 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000048 (flags 
+B and E) to indicate any category or 0x0000004A (flags B, E, and G) to indicate specific 
+categories. 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ FolderList2: An EntryList structure ([MS-OXCDATA] section 2.3.1) that contains the folders 
+to be searched. This will include all mailbox folders, except the ones specifically excluded by 
+this template. 
+
+26 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ SearchRestriction: A Restriction structure (section 2.2.1.2.8.2) that describes messages 
+having a category. If the G flag is set in the PidTagSearchFolderStorageType property, the 
+Restriction structure describes messages that have a category matching the string contained 
+in the TextSearch field. 
+
+ TextSearch: A string that specifies the categories for which to search. This field is present 
+only if the G flag is set. 
+
+2.2.3.15 Custom 
+
+The template for a custom search has the following characteristics and settings: 
+
+ Template ID: 1 
+
+ Folders excluded: Sync Issues folder ([MS-OXOSFLD] section 2.2.1) 
+
+ Items excluded: Appointments, contacts, distribution lists, journal items, sticky notes, tasks 
+
+ Value of the PidTagSearchFolderStorageType property (section 2.2.1.2.6): 0x00000010 (flag 
+D) 
+
+ The affected fields of the PidTagSearchFolderDefinition property (section 2.2.1.2.8) are as 
+follows: 
+
+ AdvancedSearch: Implementation-specific data based on user-specified options. 
+
+2.2.4 Search Folder Definition Messages and Search Folder Containers 
+
+A search folder exists only if it has a search folder definition message. Each search folder 
+definition message has a GUID, which is stored in the PidTagSearchFolderId property (section 
+2.2.1.2.1). This GUID is fixed and MUST NOT change. A search folder container also has a GUID, 
+which is stored in the SearchFolderID subproperty of the PidTagExtendedFolderFlags property 
+(section 2.2.2.1.2). A search folder definition message is associated with a search folder container 
+only if their GUIDs match. If both the search folder container and the search folder definition message 
+exist with matching GUIDs, the search folder is active. If the search folder container does not exist, 
+the search folder is inactive. The client can make an inactive search folder active by creating the 
+search folder container as specified in section 3.1.4.1.2. 
+
+Any update of a search folder definition message requires the search folder container to be 
+synchronized with its search folder definition message. A search folder container is synchronized with 
+its search folder definition message only if the folder's 4-byte tag, which is stored in the 
+SearchFolderTag subproperty (section 2.2.2.1.2), is equal to the value of the 
+PidTagSearchFolderTag property (section 2.2.1.2.3). For details about how a client can modify a 
+search folder, see section 3.1.4.3. 
+
+The relationship between a search folder definition message and its search folder container is 
+summarized in the following table. 
+
+Search folder definition 
+Item message Search folder container Explanation 
+
+GUID The The Data field of the The GUIDs MUST match 
+PidTagSearchFolderId SearchFolderID to tie the search folder 
+property (section subproperty (section definition message to the 
+2.2.1.2.1) contains the 2.2.2.1.2) contains the search folder container. 
+GUID. GUID. 
+
+Tag The The Data field of the The tags MUST match to 
+PidTagSearchFolderTag SearchFolderTag synchronize the search 
+
+27 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Search folder definition 
+Item message Search folder container Explanation 
+
+property (section subproperty (section folder container with the 
+2.2.1.2.3) contains the 2.2.2.1.2) contains the current search folder 
+tag. tag. definition message. 
+
+ 
+
+28 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+This section specifies a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+All data necessary for the Search Folder List Configuration Protocol is persisted in the search folder 
+definition message, the properties of which are specified in section 2.2.1. The data is used to create 
+and maintain search folder containers, as specified in section 2.2.2. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+For this protocol, there is no specific initialization, because all messages use the existing connection 
+assumed in section 1.5. 
+
+To display the list of existing search folders to the user at start-up, the client does the following: 
+
+ Return the FAI messages that are in the Common Views folder of the message store. Each 
+Message object with the PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) set to 
+"IPM.Microsoft.Wunderbar.SFInfo" is a search folder definition message. 
+
+ Load the Folder objects that are in the Finder folder, as defined in [MS-OXOSFLD] section 2.2.1. 
+Each folder with the PidTagFolderType property ([MS-OXCFOLD] section 2.2.2.2.2.7) set to 
+FOLDER_SEARCH (0x00000002) and PidTagContainerClass ([MS-OXPROPS] section 2.643) set 
+to "IPF.Note" is a search folder container. 
+
+ Examine the PidTagExtendedFolderFlags property (section 2.2.2.1.2) of each search folder 
+container. If the GUID of the search folder container matches the value of the 
+PidTagSearchFolderId property (section 2.2.1.2.1) of the search folder definition message, that 
+Folder object is associated with that search folder definition message. 
+
+ Delete any search folder container that does not have a corresponding search folder definition 
+message. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Creating a Search Folder 
+
+To create a search folder, the client completes three steps: 
+
+1. Obtain data to define the search criteria. 
+
+2. Create the search folder container to contain the search results. 
+
+3. Create the search folder definition message to persist the search folder. 
+
+29 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The details for each of these steps are specified in the following subsections. 
+
+3.1.4.1.1 Obtaining Data 
+
+The client SHOULD do the following: 
+
+ Obtain a name for the search folder. The manner in which the client obtains the name is 
+implementation-dependent. 
+
+ Identify which template to use for the search folder. The manner in which the client identifies the 
+template is implementation-dependent. For details about search templates, see section 2.2.3. 
+
+ Obtain specific data needed by the chosen template. The manner in which the client obtains the 
+data for the template is implementation-dependent. 
+
+3.1.4.1.2 Creating a New Search Folder Container 
+
+The client creates a search folder container in the Finder folder ([MS-OXOSFLD] section 2.2.1) of 
+the message store. The new search folder container MUST have the PidTagContainerClass (section 
+2.2.2.1.1) and PidTagExtendedFolderFlags (section 2.2.2.1.2) properties. 
+
+To create a search folder container, the client creates a folder as specified in [MS-OXCFOLD] section 
+3.1.4.2, with the FolderType field of the RopCreateFolder remote operation (ROP) ([MS-
+OXCROPS] section 2.2.4.2) set to 0x02. The DisplayName field of the RopCreateFolder ROP is set 
+to the name of the search folder. After the search folder container is created, the client sets the 
+search criteria by using the RopSetSearchCriteria ROP ([MS-OXCROPS] section 2.2.4.4), as 
+specified in [MS-OXCFOLD] section 3.1.4.4. 
+
+The GUIDs of the search folder container and the search folder definition message MUST match, 
+and the 4-byte tags of the search folder container and the search folder definition message MUST 
+match. For details, see section 2.2.4. 
+
+3.1.4.1.3 Creating a New Definition Message 
+
+The client creates a new search folder definition message in the FAI contents table of the 
+Common Views folder of the message store. To create a search folder definition message, the 
+client creates an FAI message by using the RopCreateMessage ROP ([MS-OXCROPS] section 
+2.2.6.2), as specified in [MS-OXCMSG]. The new search folder definition message MUST have the 
+properties that are specified in section 2.2.1.1 and section 2.2.1.2. 
+
+The GUIDs of the search folder container and the search folder definition message MUST match, 
+and the 4-byte tags of the search folder container and the search folder definition message MUST 
+match. For details, see section 2.2.4. 
+
+3.1.4.2 Opening a Search Folder 
+
+If the search folder is not active, the client MUST create the folder in the Finder folder ([MS-
+OXOSFLD] section 2.2.1) of the message store, as specified in section 3.1.4.1. 
+
+If the current date/time is later than the value of the PidTagSearchFolderExpiration property 
+(section 2.2.1.2.5), the client SHOULD re-create the search criteria and update the search folder 
+definition message and the search folder container. 
+
+After the Folder object is updated, or if the search folder was active already, the client can open the 
+search folder as specified in [MS-OXCFOLD] section 3.1.4.1. When the search folder is opened, the 
+client SHOULD set the value of the PidTagSearchFolderLastUsed property (section 2.2.1.2.4) to the 
+current time. 
+
+30 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3 Modifying a Search Folder 
+
+Any changes to the search folder MUST be made to the search folder definition message in the 
+FAI contents table of the Common Views folder. The search folder container (if one exists) 
+MUST be updated or deleted. If it is deleted, it MUST be updated or re-created when the search folder 
+is accessed. In addition to any change: 
+
+ The PidTagSearchFolderTag property (section 2.2.1.2.3) of the Message object and the 
+SearchFolderTag subproperty (section 2.2.2.1.2) of the search folder container MUST be 
+updated. These new values MUST be equal. 
+
+ The PidTagSearchFolderLastUsed property (section 2.2.1.2.4) is set to the current time. 
+
+3.1.4.4 Deleting a Search Folder 
+
+To delete a search folder, the client MUST delete the Message object from the FAI contents table 
+of the Common Views folder and delete the Folder object from the Finder folder ([MS-OXOSFLD] 
+section 2.2.1). For details about deleting a Folder object, see [MS-OXCFOLD] section 3.1.4.3. 
+
+If the GUID of a search folder container does not match the GUID of any search folder definition 
+message, that search folder container is deleted. For more details about the relationship between the 
+search folder container and the search folder definition message, see section 2.2.4. 
+
+3.1.4.5 Current Time Exceeds the Specified Time 
+
+When the current time passes the time specified in the PidTagSearchFolderExpiration property 
+(section 2.2.1.2.5), the client SHOULD delete (mark inactive) the Folder objects that are in the 
+Finder folder ([MS-OXOSFLD] section 2.2.1). 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+In the event that messages with potentially conflicting changes arrive close to one another, this 
+protocol follows the standard messaging behavior specified in [MS-OXCMSG] and [MS-OXCFOLD]. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+The server processes a client's requests regarding a search folder and a search folder definition 
+message and in all other ways operates within the server role as specified in [MS-OXCFOLD] and 
+[MS-OXCMSG].  
+
+3.2.1 Abstract Data Model 
+
+None. 
+
+3.2.2 Timers 
+
+None. 
+
+31 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to requests from the client as specified in [MS-OXCFOLD] section 3.2.5 and [MS-
+OXCMSG] section 3.2.5. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+32 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Search Folder Message Object 
+
+This example shows the search folder definition message for a search folder that contains unread 
+messages. To create this search folder definition message, the client creates a Message object 
+having the property values shown in the following tables. For information about how to create a 
+Message object, see [MS-OXCMSG]. 
+
+Property name Value 
+
+PidTagMessageClass (section IPM.Microsoft.WunderBar.SFInfo 
+2.2.1.1.1) 
+
+PidTagDisplayName (section Unread Mail 
+2.2.1.1.2) 
+
+PidTagSearchFolderLastUsed 214089600 
+(section 2.2.1.2.4) (08:00:00.000  January 21, 2008) 
+
+PidTagSearchFolderExpiration 214089641 
+(section 2.2.1.2.5) (08:41:00.000  January 21, 2008) 
+
+PidTagSearchFolderTemplateId 2 
+(section 2.2.1.2.2) (Unread Messages template, as described in section 2.2.3.1) 
+
+PidTagSearchFolderId (section cb: 16 lpb: 
+2.2.1.2.1) 757154C8C1DFC14C91DE09C2044D2D1C 
+
+PidTagSearchFolderDefinition cb: 922 lpb: 
+(section 2.2.1.2.8) 04100000480000000000000000000000
+
+0001000000003E00000001000000BCCD
+87182E000000C4CD8718000000000A19
+D6BCC8B44A4CBF5DF63A922E170C0100
+14E20014EE879243A1A829B0620DBD89
+0000020DEFA800000000000000000000
+02000000000000000700000002000000
+03000000020001001E001A001E001A00
+100049504D2E4170706F696E746D656E
+74000200000003000000020001001E00
+1A001E001A000C0049504D2E436F6E74
+61637400020000000300000002000100
+1E001A001E001A000D0049504D2E4469
+73744C69737400020000000300000002
+0001001E001A001E001A000D0049504D
+2E416374697669747900020000000300
+0000020001001E001A001E001A000F00
+49504D2E537469636B794E6F74650002
+00000003000000000001001E001A001E
+001A00090049504D2E5461736B000200
+000003000000020001001E001A001E00
+1A000A0049504D2E5461736B2E000000
+00000200000000000000080000000400
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A8
+29B0620DBD890000020DEFAE00000400
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C01004A0BB9D92C2CA846B335
+575CBBF0549200000164000200000400
+
+33 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property name Value 
+
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A8
+29B0620DBD890000020DD13300000400
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A8
+29B0620DBD890000020DEFAC00000400
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A8
+29B0620DBD8900000210B4D200000400
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A8
+29B0620DBD8900000210B4D300000400
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A8
+29B0620DBD8900000210B4D400000400
+0000050000000201090E0201090E2E00
+000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A8
+29B0620DBD8900000210B4D100000100
+00000200000006000000000000000300
+070E010000000600000001000000030097100100000000000000 
+
+PidTagSearchFolderStorageType 72 
+(section 2.2.1.2.6) (0x48, Flags B and E) 
+
+PidTagSearchFolderTag (section 1045439171 
+2.2.1.2.3) 
+
+PidTagSearchFolderEfpFlags 0 
+(section 2.2.1.2.7) 
+
+The value of the PidTagSearchFolderDefinition property is interpreted as described in section 
+2.2.1.2.8: 
+
+Field name Value 
+
+Version 0x00001004 
+
+A 0 
+
+B 1 
+
+(The FolderList2 field contains data.) 
+
+C 0 
+
+D 0 
+
+E 1 
+
+(The SearchRestriction field exists and contains data that defines the search 
+criteria.) 
+
+F 0 
+
+G 0 
+
+H 0 
+
+34 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Field name Value 
+
+I 0 
+
+J 0 
+
+K 0 
+
+L 0 
+
+Reserved  0x00000 
+
+NumericalSearch 0x00000000 
+
+TextSearchLength 0x00 
+
+SkipBlock1 0x00000000 
+
+DeepSearch 0x00000001 
+
+FolderList1Length 0x00 
+
+FolderList2Length 0x0000003E 
+
+FolderList2 01000000BCCD87182E000000C4CD8718000000000A19D6BCC8B44A4CBF5DF63A
+922E170C010014E20014EE879243A1A829B0620DBD890000020DEFA80000 
+
+EntryList structure ([MS-OXCDATA] section 2.3.1): 
+
+ EntryCount: 0x00000001 
+
+ Pad: 0x1887CDBC 
+
+ EntryLength: 0x0000002E, 0x1887CDC4 
+
+ EntryIDs: 000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E2
+0014EE879243A1A829B0620DBD890000020DEFA80000 
+
+SkipBlock2 0x00000000 
+
+SearchRestriction 000000000200000000000000070000000200000003000000020001001E001A00
+1E001A00100049504D2E4170706F696E746D656E740002000000030000000200
+01001E001A001E001A000C0049504D2E436F6E74616374000200000003000000
+020001001E001A001E001A000D0049504D2E446973744C697374000200000003
+000000020001001E001A001E001A000D0049504D2E4163746976697479000200
+000003000000020001001E001A001E001A000F0049504D2E537469636B794E6F
+7465000200000003000000000001001E001A001E001A00090049504D2E546173
+6B000200000003000000020001001E001A001E001A000A0049504D2E5461736B
+2E000000000002000000000000000800000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E20014EE87
+9243A1A829B0620DBD890000020DEFAE000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C01004A0BB9D92C2C
+A846B335575CBBF05492000001640002000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E20014EE87
+9243A1A829B0620DBD890000020DD133000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E20014EE87
+9243A1A829B0620DBD890000020DEFAC000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E20014EE87
+9243A1A829B0620DBD8900000210B4D2000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E20014EE87
+9243A1A829B0620DBD8900000210B4D3000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E20014EE87
+9243A1A829B0620DBD8900000210B4D4000004000000050000000201090E0201
+090E2E00000000000A19D6BCC8B44A4CBF5DF63A922E170C010014E20014EE87
+9243A1A829B0620DBD8900000210B4D100000100000002000000060000000000
+
+35 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Field name Value 
+
+00000300070E0100000006000000010000000300971001000000 
+
+(The Restriction structure, as described in section 2.2.1.2.8.2) 
+
+SkipBlock3 0x00000000 
+
+ 
+
+36 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no security considerations beyond those specified in [MS-OXCMSG] and [MS-OXCFOLD]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+37 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.3: The Mail Received This Week template is not supported in Office Outlook 2007, 
+Outlook 2010, Outlook 2013, Outlook 2016, and Outlook 2019. 
+
+<2> Section 2.2.3: The Categorized template is not supported in Office Outlook 2003. 
+
+<3> Section 2.2.3.2: In Office Outlook 2003, the following folders are excluded by the Marked for 
+Followup template: Sync Issues folder, Deleted Items folder, and Junk E-mail folder. 
+
+<4> Section 2.2.3.4: In Office Outlook 2003, the following folders are excluded by the Important Mail 
+template: Sync Issues folder, Deleted Items folder, Junk E-mail folder, Drafts folder, Outbox folder, 
+and Sent Items folder. 
+
+<5> Section 2.2.3.11: In Office Outlook 2003, the following folders are excluded by the With 
+Attachments template: Sync Issues folder, Deleted Items folder, Junk E-mail folder, Drafts folder, 
+Outbox folder, and Sent Items folder. 
+
+38 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+<6> Section 2.2.3.13: In Office Outlook 2003, the following folders are excluded by the With Specific 
+Words template: Sync Items folder, Deleted Items folder, Junk E-mail folder, Drafts folder, Outbox 
+folder, and Sent Items folder. 
+
+39 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+40 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A    current time exceeds PidTagSearchFolderExpiration 
+ 31 
+Abstract data model    deleting a search folder 31 
+   client 29    modifying a search folder 31 
+   server 31    opening a search folder 30 
+Additional properties - search folder definition  
+
+message 10 I 
+Applicability 9  
+ Implementer - security considerations 37 
+C Important Mail search template 22 
+ Index of security parameters 37 
+Capability negotiation 9 Informative references 8 
+Categorized search template 26 Initialization 
+Change tracking 40    client 29 
+Client    server 32 
+   abstract data model 29 Introduction 6 
+   initialization 29  
+   message processing 31 L 
+   other local events 31  
+   sequencing rules 31 Large Messages search template 24 
+   timer events 31  
+   timers 29 M 
+Client - higher layer triggered events  
+   creating a search folder 29 Mail Received This Week search template 25 
+   current time exceeds PidTagSearchFolderExpiration Marked for Followup search template 21 
+
+31 Message processing 
+   deleting a search folder 31    client 31 
+   modifying a search folder 31    server 32 
+   opening a search folder 30 Messages 
+Common properties    Search Folder Container 19 
+   search folder container 19    Search Folder Definition Message 10 
+   search folder definition message 10    Search Folder Definition Messages and Search 
+Conversations search template 22 Folder Containers 27 
+Custom search template 27    Search Templates 20 
+    transport 10 
+D  
+ N 
+Data model - abstract  
+   client 29 Normative references 8 
+   server 31  
+ O 
+E  
+ Old Mail search template 24 
+Examples Other local events 
+   search folder message object 33    client 31 
+    server 32 
+F Overview (synopsis) 8 
+  
+Fields - vendor-extensible 9 P 
+From a Specific Person search template 22  
+ Parameters - security index 37 
+G Preconditions 9 
+ Prerequisites 9 
+Glossary 6 Product behavior 38 
+  
+H R 
+  
+Higher-layer triggered events References 7 
+   server 32    informative 8 
+Higher-layer triggered events - client    normative 8 
+   creating a search folder 29 Relationship to other protocols 9 
+
+41 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    modifying a search folder 31 
+S    opening a search folder 30 
+ Triggered events - higher-layer 
+Search folder container common properties 19    server 32 
+Search Folder Container message 19  
+Search folder definition message U 
+   additional properties 10  
+   common properties 10 Unread Messages search template 20 
+Search Folder Definition Message message 10 Unread or Marked for Followup search template 21 
+Search Folder Definition Messages and Search Folder  
+
+Containers message 27 V 
+Search folder message object example 33  
+Search templates Vendor-extensible fields 9 
+   Categorized 26 Versioning 9 
+   Conversations 22  
+   Custom 27 W 
+   From a Specific Person 22  
+   Important Mail 22 With Attachments search template 25 
+   Large Messages 24 With Specific Words search template 26 
+   Mail Received This Week 25 
+   Marked for Followup 21  
+   Old Mail 24 
+   Sent Directly to Me 23 
+   Sent to a Specific Distribution List 23 
+   Unread Messages 20 
+   Unread or Marked for Followup 21 
+   With Attachments 25 
+   With Specific Words 26 
+Search Templates message 20 
+Security 
+   implementer considerations 37 
+   parameter index 37 
+Sent Directly to Me search template 23 
+Sent to a Specific Distribution List search template 
+
+23 
+Sequencing rules 
+   client 31 
+   server 32 
+Server 
+   abstract data model 31 
+   higher-layer triggered events 32 
+   initialization 32 
+   message processing 32 
+   other local events 32 
+   overview 31 
+   sequencing rules 32 
+   timer events 32 
+   timers 31 
+Standards assignments 9 
+ 
+T 
+ 
+Timer events 
+   client 31 
+   server 32 
+Timers 
+   client 29 
+   server 31 
+Tracking changes 40 
+Transport 10 
+Triggered events - client 
+   creating a search folder 29 
+   current time exceeds PidTagSearchFolderExpiration 
+
+31 
+   deleting a search folder 31 
+
+42 / 42 
+
+[MS-OXOSRCH] - v20250520 
+Search Folder List Configuration Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

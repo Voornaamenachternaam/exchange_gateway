@@ -1,0 +1,2471 @@
+﻿[MS-OXWOOF]:  
+
+Out of Office (OOF) Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 Major Initial Availability. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.0.1 Editorial Revised and edit technical content. 
+
+9/3/2008 1.0.2 Editorial Updated references. 
+
+12/3/2008 1.0.3 Editorial Updated IP notice. 
+
+2/4/2009 1.0.4 Editorial Revised and edited technical content. 
+
+3/4/2009 1.0.5 Editorial Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.1.0 Minor Updated the technical content. 
+
+2/10/2010 4.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 4.1.0 Minor Updated the technical content. 
+
+8/4/2010 5.0 Major Significantly changed the technical content. 
+
+11/3/2010 6.0 Major Significantly changed the technical content. 
+
+3/18/2011 7.0 Major Significantly changed the technical content. 
+
+8/5/2011 7.1 Minor Clarified the meaning of the technical content. 
+
+10/7/2011 8.0 Major Significantly changed the technical content. 
+
+1/20/2012 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 9.0 None 
+
+technical content. 
+
+7/16/2012 9.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 9.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 9.2 None 
+
+technical content. 
+
+7/26/2013 9.3 Minor Clarified the meaning of the technical content. 
+
+11/18/2013 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 10.0 None 
+
+technical content. 
+
+4/30/2014 10.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 10.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 10.1 None 
+
+technical content. 
+
+2 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+3/16/2015 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 11.0 None 
+
+technical content. 
+
+7/24/2018 12.0 Major Significantly changed the technical content. 
+
+10/1/2018 13.0 Major Significantly changed the technical content. 
+
+4/22/2021 14.0 Major Significantly changed the technical content. 
+
+8/17/2021 15.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 15.0 None 
+
+technical content. 
+
+8/20/2024 16.0 Major Significantly changed the technical content. 
+
+5/20/2025 17.0 Major Significantly changed the technical content. 
+
+3 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 8 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 9 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ................................................................................... 10 
+1.9 Standards Assignments ..................................................................................... 10 
+
+2 Messages ............................................................................................................... 11 
+2.1 Transport ........................................................................................................ 11 
+2.2 Common Message Syntax ................................................................................. 11 
+
+2.2.1 Namespaces .............................................................................................. 11 
+2.2.2 Messages ................................................................................................... 11 
+2.2.3 Elements ................................................................................................... 11 
+
+2.2.3.1 t:Mailbox Element ................................................................................. 12 
+2.2.4 Complex Types ........................................................................................... 12 
+
+2.2.4.1 t:ArrayOfEventIDType Complex Type ...................................................... 12 
+2.2.4.2 t:UserOofSettings Complex Type............................................................. 12 
+
+2.2.5 Simple Types ............................................................................................. 14 
+2.2.5.1 t:ExternalAudience Simple Type .............................................................. 15 
+2.2.5.2 t:OofState Simple Type ......................................................................... 15 
+
+2.2.6 Attributes .................................................................................................. 16 
+2.2.7 Groups ...................................................................................................... 16 
+2.2.8 Attribute Groups ......................................................................................... 16 
+
+3 Protocol Details ..................................................................................................... 17 
+3.1 ExchangeServicePortType Server Details ............................................................. 17 
+
+3.1.1 Abstract Data Model .................................................................................... 17 
+3.1.2 Timers ...................................................................................................... 17 
+3.1.3 Initialization ............................................................................................... 17 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 17 
+
+3.1.4.1 GetUserOofSettings Operation ................................................................ 17 
+3.1.4.1.1 Messages ....................................................................................... 18 
+
+3.1.4.1.1.1 tns:GetUserOofSettingsSoapIn .................................................... 19 
+3.1.4.1.1.2 tns:GetUserOofSettingsSoapOut .................................................. 19 
+
+3.1.4.1.2 Elements ........................................................................................ 20 
+3.1.4.1.2.1 m:GetUserOofSettingsRequest Element ........................................ 20 
+3.1.4.1.2.2 m:GetUserOofSettingsResponse Element ...................................... 20 
+3.1.4.1.2.3 t:OofSettings Element ................................................................ 20 
+
+3.1.4.1.3 Complex Types ............................................................................... 20 
+3.1.4.1.3.1 tns:GetUserOofSettingsResponse Complex Type ............................ 21 
+3.1.4.1.3.2 tns:GetUserOofSettingsRequest Complex Type .............................. 21 
+
+3.1.4.2 SetUserOofSettings Operation ................................................................ 22 
+3.1.4.2.1 Messages ....................................................................................... 23 
+
+3.1.4.2.1.1 tns:SetUserOofSettingsSoapIn .................................................... 23 
+3.1.4.2.1.2 tns:SetUserOofSettingsSoapOut .................................................. 24 
+
+3.1.4.2.2 Elements ........................................................................................ 24 
+3.1.4.2.2.1 m:SetUserOofSettingsRequest Element ........................................ 25 
+3.1.4.2.2.2 m:SetUserOofSettingsResponse Element ...................................... 25 
+3.1.4.2.2.3 t:UserOofSettings Element .......................................................... 25 
+
+4 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3 Complex Types ............................................................................... 25 
+3.1.4.2.3.1 tns:SetUserOofSettingsResponse Complex Type ............................ 25 
+3.1.4.2.3.2 tns:SetUserOofSettingsRequest Complex Type .............................. 26 
+
+3.1.5 Timer Events .............................................................................................. 27 
+3.1.6 Other Local Events ...................................................................................... 27 
+
+4 Protocol Examples ................................................................................................. 28 
+4.1 GetUserOofSettings Request .............................................................................. 28 
+4.2 GetUserOofSettings Response ............................................................................ 28 
+4.3 SetUserOofSettings Request .............................................................................. 29 
+4.4 SetUserOofSettings Successful Response ............................................................ 29 
+4.5 SetUserOofSettings Failure Response ................................................................. 29 
+
+5 Security ................................................................................................................. 31 
+5.1 Security Considerations for Implementers ........................................................... 31 
+5.2 Index of Security Parameters ............................................................................ 31 
+
+6 Appendix A: Full WSDL .......................................................................................... 32 
+
+7 Appendix B: Full XML Schema ................................................................................ 34 
+7.1 Messages Schema ............................................................................................ 34 
+7.2 Types Schema ................................................................................................. 35 
+
+8 Appendix C: Product Behavior ............................................................................... 37 
+
+9 Change Tracking .................................................................................................... 38 
+
+10 Index ..................................................................................................................... 39 
+
+ 
+
+5 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Out of Office (OOF) Web Service Protocol defines the interaction between a client and a server for 
+configuring response messages that are sent automatically in response to e-mail messages that are 
+sent to people who are out of the office. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+external OOF message: An OOF message that is sent to external users. 
+
+external user: Any user who is located outside the enterprise network boundary, including remote 
+users, federated users, and public instant messaging (IM) users. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+internal users: Users who are within an organization. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+meeting: An event with attendees. 
+
+OOF message: A message that is sent in response to incoming messages and indicates that the 
+user is currently Out of Office (OOF). 
+
+OOF settings: A set of values that determine whether an OOF message is sent, to whom it is sent, 
+the contents of the message, and how calendar events will be handled in that period. 
+
+Out of Office (OOF): One of the possible values for the free/busy status on an appointment. It 
+indicates that the user will not be in the office during the appointment. 
+
+response message: A Traversal Using Relay NAT (TURN) message that is sent from a protocol 
+server to a protocol client in response to a request message. It is sent when the request 
+message is handled successfully by the protocol server. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+
+6 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP fault: A container for error and status information within a SOAP message. See [SOAP1.2-
+1/2007] section 5.4 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+
+7 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2/2] Biron, P., and Malhotra, A., Eds., "XML Schema Part 2: Datatypes Second Edition", 
+W3C Recommendation, October 2004, https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+This protocol enables a protocol client to manage the messages that users configure to be sent by the 
+server automatically in response to incoming e-mail when the users are away from the office or 
+otherwise unable to respond immediately. The protocol client can set messages for both internal and 
+external e-mail correspondents, start and stop sending OOF messages, and schedule the messages 
+so that they are enabled for a specific duration. 
+
+8 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+This protocol defines the interaction between a client and a server that configures OOF settings and 
+OOF messages for users. The conditions under which the OOF messages are sent are determined by 
+the OOF settings. 
+
+Additionally, the protocol client can configure how calendar events are handled during the period of 
+time that a user is way: automatically decline incoming meetings, decline existing meetings, and 
+create an OOF event in the user’s calendar. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use either the Autodiscover Publishing and Lookup SOAP-
+Based Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and 
+Lookup Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each 
+operation. 
+
+This protocol uses the SOAP protocol as described in [SOAP1.1] to specify the structure of information 
+exchanged between the client and the server. The protocol uses the XML protocol as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2] to describe the message content sent to and from the server. 
+
+The OOF Web Service Protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over 
+HTTPS, as described in [RFC2818], as shown in the following layering diagram. 
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], is a required argument for forming the HTTP request to the 
+web server that hosts this protocol. The operations that this protocol uses cannot be accessed unless 
+the correct endpoint that services the target mailbox is identified for the HTTP Web requests that 
+target the OOF Web Service Protocol operations. 
+
+1.6 Applicability Statement 
+
+The OOF Web Service Protocol is applicable to SOAP-based clients, as described in [SOAP1.1]. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as specified in section 2.1. 
+
+9 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Protocol Versions: This protocol has a single WSDL port type version. The version of the server 
+responding to the request is identified by using the t:ServerVersionInfo element, as described in 
+[MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the web server that hosts it to 
+perform authentication. 
+
+ Localization: This protocol includes text strings in various messages. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+10 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+Messages are transported by using SOAP version 1.1. For details, see [SOAP1.1]. 
+
+This protocol relies on the web server that hosts the application to perform authentication. The 
+protocol supports SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use secure 
+communications over HTTPS, as specified in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and Web Services 
+Description Language (WSDL) as defined in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces by using the mechanisms 
+specified in [XMLNS]. Although this specification associates a specific XML namespace prefix for each 
+XML namespace that is used, the choice of any particular XML namespace prefix is implementation-
+specific and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/WSDL/soap [SOAP1.1]  
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1]  
+
+targetNamespace http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl  http://schemas.xmlsoap.org/WSDL/ [WSDL]  
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+The following table summarizes the set of common XML schema element definitions defined by this 
+specification. XML schema element definitions that are specific to a particular operation are described 
+with the operation. 
+
+Element Description 
+
+t:Mailbox Identifies a user's mailbox by using an e-mail address. 
+
+ 
+
+11 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.3.1 t:Mailbox Element 
+
+The Mailbox element identifies a user's mailbox by using an e-mail address. 
+
+ <xs:element name="Mailbox" 
+  type="t:EmailAddress" 
+ /> 
+
+For details about the t:EmailAddress complex type, see [MS-OXWSCDATA] section 2.2.4.30. 
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions defined by 
+this specification. XML schema complex type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Complex type Description 
+
+t:ArrayOfEventIDType Specifies the array containing event IDs. 
+
+t:UserOofSettings Specifies the OOF settings. 
+
+ 
+
+2.2.4.1 t:ArrayOfEventIDType Complex Type 
+
+The ArrayOfEventIDType complex type specifies the array containing event IDs. 
+
+ <xs:complexType name="ArrayOfEventIDType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="EventToDeleteID" type="xs:string" /> 
+    </xs:choice> 
+  </xs:complexType> 
+
+The following table lists the child elements of the t:ArrayOfEventIDType complex type. 
+
+Element Type Description 
+
+EventToDeleteID xs:string ID of an event. 
+([XMLSCHEMA2/2]) 
+
+ 
+
+2.2.4.2 t:UserOofSettings Complex Type 
+
+The UserOofSetting complex type specifies the OOF settings. 
+
+ <xs:complexType name="UserOofSettings"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="OofState" type="t:OofState" /> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ExternalAudience" type="t:ExternalAudience"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Duration" type="t:Duration" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="InternalReply" type="t:ReplyBody" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ExternalReply" type="t:ReplyBody" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DeclineMeetingReply" type="t:ReplyBody" /> 
+
+12 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element minOccurs="0" maxOccurs="1" name="DeclineEventsForScheduledOOF" 
+type="xs:boolean" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DeclineAllEventsForScheduledOOF" 
+type="xs:boolean" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="CreateOOFEvent" type="xs:boolean" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="OOFEventSubject" type="xs:string" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="AutoDeclineFutureRequestsWhenOOF" 
+type="xs:boolean" /> 
+    <xs:element minOccurs="0" maxOccurs="1" name="EventsToDeleteIDs" 
+type="t:ArrayOfEventIDType" /> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists the child elements of the t:UserOofSettings complex type. 
+
+Element Type Description 
+
+OofState t:OofState (section Indicates the user's Out of Office 
+2.2.5.2) (OOF) status. 
+
+This element MUST be present. 
+
+ExternalAudience t:ExternalAudience Indicates how external users are 
+(section 2.2.5.1) handled. 
+
+This element MUST be present. 
+
+Duration t:Duration ([MS- Indicates the duration for which the 
+OXWSCDATA] section OOF status is enabled if the OOF state 
+2.2.4.28) in the OofState element is set to 
+
+"Scheduled". The start and end times 
+for this period of time SHOULD<1> be 
+specified in Coordinated Universal 
+Time (UTC). 
+
+This element can be present. It MUST 
+be present if the OofState element is 
+set to"Scheduled" when calling the 
+SetUserOofSettings operation 
+(section 3.1.4.1). 
+
+InternalReply t:ReplyBody ([MS- Contains the body of the response OOF 
+OXWSCDATA] section message that is sent to internal 
+2.2.4.63) users. 
+
+This element can be present. 
+
+ExternalReply t:ReplyBody Contains the body of the response OOF 
+message that is sent to external users. 
+
+This element can be present. 
+
+DeclineMeetingReply t:ReplyBody ([MS- Sets the body of the response that is 
+OXWSCDATA] section sent when incoming or existing 
+2.2.4.63) meetings are automatically declined. 
+
+This element can be present. 
+
+DeclineEventsForScheduledOOF xs:boolean Indicates whether some existing 
+([XMLSCHEMA2]) meetings that will occur during the 
+
+scheduled OOF duration ought to be 
+automatically declined. True indicates 
+some existing meetings that will occur 
+during the scheduled OOF duration are 
+declined and removed from the 
+calendar. 
+
+The specific meetings will be listed by 
+
+13 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+the EventsToDeleteIDs element. 
+
+This element can be present. 
+
+DeclineAllEventsForScheduledOOF xs:boolean Indicates whether all existing meetings 
+([XMLSCHEMA2]) that will occur during the scheduled 
+
+OOF duration ought to be automatically 
+declined. True indicates all existing 
+meetings that will occur during the 
+scheduled OOF duration are declined 
+and removed from the calendar. 
+
+This element can be present. 
+
+CreateOOFEvent xs:boolean Indicates whether an Out of Office 
+([XMLSCHEMA2]) (OOF) appointment ought to be created 
+
+in the user’s calendar. 
+
+The subject for this event can be 
+specified by the OOFEventSubject 
+element. 
+
+This element can be present. 
+
+OOFEventSubject xs:string Specifies the subject of the Out of 
+([XMLSCHEMA2]) Office (OOF) appointment.  
+
+This element can be present. 
+
+AutoDeclineFutureRequestsWhenOOF xs:boolean Indicates whether incoming meetings 
+([XMLSCHEMA2]) that will occur during the scheduled 
+
+OOF duration ought to be automatically 
+declined. True indicate new meeting 
+requests that are received during the 
+scheduled time period are automatically 
+declined. 
+
+This element can be present. 
+
+EventsToDeleteIDs t:ArrayOfEventIDType Array containing the IDs for existing 
+(section 2.2.4.1) meetings that ought to be declined. 
+
+This element can be present. 
+
+ 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions defined by 
+this specification. XML schema simple type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Simple type Description 
+
+t:ExternalAudience Specifies a value that indicates to whom external OOF messages are to be sent. 
+
+t:OofState Specifies the state of the user's mailbox with respect to OOF. 
+
+ 
+
+2.2.5.1 t:ExternalAudience Simple Type 
+
+The ExternalAudience simple type specifies a value that indicates to whom external OOF 
+messages are to be sent. 
+
+14 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:simpleType name="ExternalAudience"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="None" 
+     /> 
+    <xs:enumeration 
+      value="Known" 
+     /> 
+    <xs:enumeration 
+      value="All" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the ExternalAudience simple type. 
+
+Value Description 
+
+None Specifies that mail sent from external users will not get an OOF message. 
+
+Known Specifies that mail sent from external users who are known to the recipient will receive an OOF message 
+in response to the mail they sent. A known user is one who appears in the  recipient's list of contacts in 
+any of the contacts folders in his or her mailbox. 
+
+All Specifies that the external OOF message will be sent to all external users. 
+
+ 
+
+2.2.5.2 t:OofState Simple Type 
+
+The OofState simple type specifies the state of the user's mailbox with respect to OOF. 
+
+ <xs:simpleType name="OofState"> 
+ <xs:restriction base="xs:string"> 
+ <xs:enumeration value="Disabled" /> 
+ <xs:enumeration value="Enabled" /> 
+ <xs:enumeration value="Scheduled" /> 
+ </xs:restriction> 
+ </xs:simpleType> 
+
+The following table lists the values that are defined by the OofState simple type. 
+
+Value  Description  
+
+Disabled Specifies that OOF behavior is disabled. 
+
+Enabled  Specifies that the OOF state is enabled; this indicates that OOF messages will be sent.  
+
+Scheduled Specifies that the OOF status is set to Enabled for the time period defined by the Duration element. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+15 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+16 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+This protocol specifies a way of getting OOF settings and configuring them for a mailbox. 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol specifies a single port type with two operations to manipulate the OOF settings. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that specified in this 
+document. 
+
+This protocol provides operations for sending OOF settings for a mailbox, and for retrieving those 
+settings. The server maintains the OOF settings for the mailbox, modifies them as requested, and uses 
+them to respond to incoming messages appropriately.  
+
+The client application is not required to maintain the state of the OOF settings on the server and can 
+request the OOF settings at any time. If more than one client is changing the OOF settings at any one 
+time, there is no requirement that the server lock the existing OOF settings for changes. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of WSDL operations defined by this specification. 
+
+Operation Description 
+
+GetUserOofSettings Gets a user's OOF settings and OOF messages from his or her mailbox. 
+
+SetUserOofSettings Sets a user's OOF settings and OOF messages in his or her mailbox. 
+
+ 
+
+3.1.4.1 GetUserOofSettings Operation 
+
+The GetUserOofSettings operation retrieves the OOF settings and OOF messages from a user's 
+mailbox. 
+
+The following is the WSDL port type specification for this operation. 
+
+17 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <wsdl:operation name="GetUserOofSettings"> 
+    <wsdl:input message="tns:GetUserOofSettingsSoapIn" /> 
+    <wsdl:output message="tns:GetUserOofSettingsSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for this operation.<2> 
+
+ <wsdl:operation name="GetUserOofSettings"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetUserOofSettings"/
+> 
+   <wsdl:input> 
+      <soap:header message="tns:GetUserOofSettingsSoapIn" part="Impersonation" 
+use="literal"/> 
+      <soap:body parts="GetUserOofSettingsRequest" use="literal"/> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="GetUserOofSettingsResult" use="literal"/> 
+      <soap:header message="tns:GetUserOofSettingsSoapOut" part="ServerVersion" 
+use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+For a successful request, the GetUserOofSettings operation MUST return a 
+GetUserOofSettingsResponse element with the ResponseClass attribute of the 
+ResponseMessage element set to "Success". The ResponseCode element of the 
+ResponseMessage element MUST be set to "NoError".  
+
+If the mailbox that is specified in the request does not belong to the user who is making the request, 
+the server MUST return a SOAP fault. The following XML specifies the SOAP body that MUST be 
+returned. 
+
+ <soap:Body> 
+    <soap:Fault> 
+      <faultcode>soap:Client</faultcode> 
+      <faultstring>Microsoft.Exchange.Data.Storage.AccessDeniedException: User is not mailbox 
+owner. User = *UserID*, MailboxGuid = *MailboxID* ---> User is not mailbox owner. 
+</faultstring> 
+      <faultactor>https://CAS01.example.com/EWS/Exchange.asmx</faultactor> 
+      <detail> 
+        <ErrorCode xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">-
+2146233088</ErrorCode> 
+      </detail> 
+    </soap:Fault> 
+  </soap:Body> 
+ 
+
+The faultstring element MUST contain the User ID of the user who is making the request and the 
+Mailbox ID of the mailbox for which the attempt was made to change the OOF message.  
+
+3.1.4.1.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to the 
+GetUserOofSettings operation. 
+
+Message Description 
+
+GetUserOofSettingsSoapIn Specifies the request that retrieves a user's OOF settings. 
+
+18 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Message Description 
+
+GetUserOofSettingsSoapOut Specifies the response from a GetUserOofSettings operation. 
+
+ 
+
+3.1.4.1.1.1 tns:GetUserOofSettingsSoapIn 
+
+The GetUserOofSettingsSoapIn WSDL message specifies the SOAP message that represents a 
+request to get the OOF settings for a mailbox. 
+
+ <wsdl:message name="GetUserOofSettingsSoapIn">  
+  <wsdl:part name="GetUserOofSettingsRequest" element="tns:GetUserOofSettingsRequest"/>  
+  <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetUserOofSettingsSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetUserOofSettings. 
+
+The following table lists and describes the parts of the GetUserOofSettingsSoapIn WSDL message. 
+
+Part name Element/type Description 
+
+GetUserOofSettingsRequest m:GetUserOofSettingsRequest Specifies the SOAP body of the 
+(section 3.1.4.1.2.1)  request to get the OOF settings for a 
+
+mailbox. 
+
+Impersonation t:ExchangeImpersonation  ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.3)  identifies the user who the client 
+
+application is impersonating. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.9) identifies the schema version for the 
+
+GetUserOofSettings operation 
+request.<3> 
+
+ 
+
+3.1.4.1.1.2 tns:GetUserOofSettingsSoapOut 
+
+The GetUserOofSettingsSoapOut WSDL message specifies the SOAP message that represents a 
+response to a request to get the OOF settings for a mailbox. 
+
+ <wsdl:message name="GetUserOofSettingsSoapOut">  
+  <wsdl:part name="GetUserOofSettingsResult" element="tns:GetUserOofSettingsResponse"/>  
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/>  
+ </wsdl:message> 
+
+The GetUserOofSettingsSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetUserOofSettings. 
+
+The GetUserOofSettingsSoapOut WSDL message contains two parts, as described in the following 
+table. 
+
+19 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+GetUserOofSettingsResult m:GetUserOofSettingsResponse Specifies the SOAP body the 
+(section 3.1.4.1.2.2) response to the request for mailbox 
+
+OOF settings. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that 
+section 2.2.3.10) identifies the server version for the 
+
+response. 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to the 
+GetUserOofSettings operation. 
+
+Element Description 
+
+GetUserOofSettingsRequest Specifies the root element in a GetUserOofSettings operation request. 
+
+GetUserOofSettingsResponse Specifies the root element in a GetUserOofSettings operation response. 
+
+OofSettings Specifies the OOF settings for a mailbox. 
+
+ 
+
+3.1.4.1.2.1 m:GetUserOofSettingsRequest Element 
+
+The GetUserOofSettingsRequest element specifies the root element in a GetUserOofSettings 
+request. 
+
+ <xs:element name="GetUserOofSettingsRequest" 
+  type="tns:GetUserOofSettingsRequest" 
+ /> 
+ 
+
+3.1.4.1.2.2 m:GetUserOofSettingsResponse Element 
+
+The GetUserOofSettingsResponse element specifies the root element in a GetUserOofSettings 
+operation response. 
+
+ <xs:element name="GetUserOofSettingsResponse" 
+  type="tns:GetUserOofSettingsResponse" 
+ /> 
+ 
+
+3.1.4.1.2.3 t:OofSettings Element 
+
+The OofSettings element specifies the OOF settings for a mailbox. 
+
+ <xs:element name="OofSettings" 
+  type="t:UserOofSettings" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+20 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table summarizes the XML schema complex type definitions that are specific to the 
+GetUserOofSettings operation. 
+
+Complex type Description 
+
+GetUserOofSettingsRequest Contains the arguments that are used to get a user's OOF settings. 
+
+GetUserOofSettingsResponse Contains the response message from the GetUserOofSettings operation. 
+
+ 
+
+3.1.4.1.3.1 tns:GetUserOofSettingsResponse Complex Type 
+
+The GetUserOofSettingsResponse complex type contains the response message from the 
+GetUserOofSettings operation and the OOF settings for the user, as specified in the 
+GetUserOofSettings operation request. 
+
+ <xs:complexType name="GetUserOofSettingsResponse"> 
+  <xs:sequence> 
+    <xs:element name="ResponseMessage" 
+      type="m:ResponseMessageType" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element 
+      maxOccurs="1" 
+      minOccurs="0" 
+      ref="t:OofSettings" 
+     /> 
+    <xs:element name="AllowExternalOof" 
+      type="t:ExternalAudience" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetUserOofSettingsResponse complex type. 
+
+Element Type Description 
+
+ResponseMessage m:ResponseMessageType ([MS- Provides descriptive information about the 
+OXWSCDATA] section 2.2.4.65) response status. 
+
+This element MUST be present. 
+
+t:OofSettings t:OofSettings (section 3.1.4.1.2.3) Contains the OOF settings. 
+
+This element can be present. 
+
+AllowExternalOof t:ExternalAudience (section 2.2.5.1) Contains a value that identifies the 
+recipients to whom external OOF 
+messages are sent. 
+
+This element can be present. 
+
+ 
+
+3.1.4.1.3.2 tns:GetUserOofSettingsRequest Complex Type 
+
+21 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The GetUserOofSettingsRequest complex type contains the arguments that are used to get a user's 
+OOF settings. This complex type extends the BaseRequestType complex type, as specified in [MS-
+OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetUserOofSettingsRequest"> 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          maxOccurs="1" 
+          minOccurs="1" 
+          ref="t:Mailbox" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetUserOofSettingsRequest complex type. 
+
+Element Type Description 
+
+t:Mailbox t:Mailbox (section 2.2.3.1) Specifies the user for whom OOF settings are to be retrieved. 
+
+This element MUST be present. 
+
+The sender MUST be the owner of the mailbox specified in the request. 
+
+3.1.4.2 SetUserOofSettings Operation 
+
+The SetUserOofSettings operation specifies how to set a mailbox user's OOF settings and 
+response message. 
+
+The following is the WSDL port type specification for this operation. 
+
+ <wsdl:operation name="SetUserOofSettings"> 
+  <wsdl:input message="tns:SetUserOofSettingsSoapIn"/> 
+  <wsdl:output message="tns:SetUserOofSettingsSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for this operation.<4> 
+
+ <wsdl:operation name="SetUserOofSettings"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SetUserOofSettings"/
+> 
+  <wsdl:input> 
+    <soap:body parts="SetUserOofSettingsRequest" use="literal"/> 
+    <soap:header message="tns:SetUserOffSettingsSoapOut" part="Impersonation" use="literal"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body parts="SetUserOofSettingsResult" use="literal"/> 
+    <soap:header message="tns:SetUserOofSettingsSoapOut" part="ServerVersion" use="literal"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+22 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+For a successful request, the SetUserOofSettings operation MUST return a 
+SetUserOofSettingsResponse element with the ResponseClass attribute of the 
+ResponseMessage element set to "Success". The ResponseCode element of the 
+ResponseMessage element MUST be set to "NoError". 
+
+If the request is unsuccessful, the SetUserOofSettings operation MUST return a 
+SetUserOofSettingsResponse element with the ResponseClass attribute of the 
+ResponseMessage element set to "Error". The ResponseCode element of the ResponseMessage 
+element MUST be set to one of the error values listed in the following table. 
+
+Error value Description 
+
+ErrorInvalidScheduledOofDuration Occurs if the specified duration end time is not greater than the start 
+time, or if the end time does not occur in the future, or if the Duration 
+element is not set when the OofState element is set to "Scheduled". 
+
+ErrorInvalidUserOofSettings Occurs when the request is missing an internal or external reply. 
+
+If the mailbox that is specified in the request does not belong to the user who is making the request, 
+the server MUST return a SOAP fault. The following XML specifies the SOAP body that MUST be 
+returned in such cases. 
+
+ <soap:Body> 
+    <soap:Fault> 
+      <faultcode>soap:Client</faultcode> 
+      <faultstring>Microsoft.Exchange.Data.Storage.AccessDeniedException: User is not mailbox 
+owner. User = *UserID*, MailboxGuid = *MailboxID* ---> User is not mailbox owner. 
+</faultstring> 
+      <faultactor>https://CAS01.example.com/EWS/Exchange.asmx</faultactor> 
+      <detail> 
+
+        <ErrorCode xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">-
+2146233088</ErrorCode> 
+      </detail> 
+    </soap:Fault> 
+  </soap:Body> 
+ 
+
+The faultstring element MUST contain the User ID of the user who is making the request and the 
+Mailbox ID of the mailbox for which the attempt was made to change the OOF message. 
+
+3.1.4.2.1 Messages 
+
+The following table summarizes the WSDL message definitions that are specific to the 
+SetUserOofSettings operation. 
+
+Message Description 
+
+SetUserOofSettingsSoapIn Specifies the request that sets a user's OOF settings. 
+
+SetUserOofSettingsSoapOut Specifies the response from the SetUserOofSettings operation. 
+
+ 
+
+3.1.4.2.1.1 tns:SetUserOofSettingsSoapIn 
+
+The SetUserOofSettingsSoapIn WSDL message specifies the SOAP message that represents a 
+request to set the OOF settings for a mailbox. 
+
+23 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <wsdl:message name="SetUserOofSettingsSoapIn">  
+    <wsdl:part name="SetUserOofSettingsRequest" element="tns:SetUserOofSettingsRequest"/>  
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The SetUserOofSettingsSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/SetUserOofSettings. 
+
+The parts of the SetUserOofSettingsSoapIn WSDL message are listed and described in the following 
+table. 
+
+Part name Element/type Description 
+
+SetUserOofSettingsRequest m:SetUserOofSettingsRequest Specifies the SOAP body of the 
+(section 3.1.4.2.2.1)  request to set OOF settings for a 
+
+mailbox. 
+
+Impersonation t:ExchangeImpersonation  ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.3) identifies the user who the client 
+
+application is impersonating.  
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.9) identifies the schema version for the 
+
+SetUserOofSettings operation 
+request.<5> 
+
+ 
+
+3.1.4.2.1.2 tns:SetUserOofSettingsSoapOut 
+
+The SetUserOofSettingsSoapOut WSDL message specifies the SOAP message that represents 
+the response from a request to set the OOF settings for a mailbox. 
+
+ <wsdl:message name="SetUserOofSettingsSoapOut">  
+  <wsdl:part name="SetUserOofSettingsResult" element="tns:SetUserOofSettingsResponse"/>  
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/>  
+ </wsdl:message> 
+
+The SetUserOofSettingsSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/SetUserOofSettings. 
+
+The parts of the SetUserOofSettingsSoapOut WSDL message are listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+SetUserOofSettingsResult m:SetUserOofSettingsResponse Specifies the SOAP body of the 
+(section 3.1.4.2.2.2) response that contains the 
+
+requested OOF settings. 
+
+ServerVersion t:ServerVersionInfo [MS-OXWSCDATA] Specifies a SOAP header that 
+section 2.2.3.10) identifies the server version for the 
+
+response. 
+
+ 
+
+3.1.4.2.2 Elements 
+
+24 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+SetUserOofSettingsRequest Specifies the base element for a SetUserOofSettings operation request. 
+
+SetUserOofSettingsResponse Specifies the base element for a SetUserOofSettings operation response. 
+
+UserOofSettings Specifies the OOF settings for a mailbox. 
+
+ 
+
+3.1.4.2.2.1 m:SetUserOofSettingsRequest Element 
+
+The SetUserOofSettingsRequest element specifies the base element for a SetUserOofSettings 
+operation request. 
+
+ <xs:element name="SetUserOofSettingsRequest" 
+  type="tns:SetUserOofSettingsRequest" 
+ /> 
+ 
+
+3.1.4.2.2.2 m:SetUserOofSettingsResponse Element 
+
+The SetUserOofSettingsResponse element specifies the base element for a SetUserOofSettings 
+operation response. 
+
+ <xs:element name="SetUserOofSettingsResponse" 
+  type="tns:SetUserOofSettingsResponse" 
+ /> 
+ 
+
+3.1.4.2.2.3 t:UserOofSettings Element 
+
+The UserOofSettings element specifies the OOF settings for a mailbox. 
+
+ <xs:element name="UserOofSettings" 
+  type="t:UserOofSettings" 
+ /> 
+ 
+
+3.1.4.2.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to the 
+SetUserOofSettings operation. 
+
+Complex type Description 
+
+SetUserOofSettingsRequest Specifies the arguments that are used to set a mailbox user's OOF settings. 
+
+SetUserOofSettingsResponse Contains the response message from the SetUserOofSettings operation. 
+
+ 
+
+3.1.4.2.3.1 tns:SetUserOofSettingsResponse Complex Type 
+
+25 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The SetUserOofSettingsResponse complex type specifies the result of a 
+SetUserOofSettingsRequest complex type message attempt. 
+
+ <xs:complexType name="SetUserOofSettingsResponse"> 
+  <xs:sequence> 
+    <xs:element name="ResponseMessage" 
+      type="m:ResponseMessageType" 
+      minOccurs="0" 
+      maxOccurs="1" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SetUserOofSettingsResponse complex type. 
+
+Element Type Description 
+
+ResponseMessage m:ResponseMessageType Provides descriptive information about the response status. 
+
+This element can be present. 
+
+ 
+
+3.1.4.2.3.2 tns:SetUserOofSettingsRequest Complex Type 
+
+The SetUserOofSettingsRequest complex type specifies the arguments that are used to set a 
+mailbox user's OOF settings. This complex type extends the BaseRequestType complex type, as 
+specified in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="SetUserOofSettingsRequest"> 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          maxOccurs="1" 
+          minOccurs="1" 
+          ref="t:Mailbox" 
+         /> 
+        <xs:element 
+          maxOccurs="1" 
+          minOccurs="1" 
+          ref="t:UserOofSettings" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SetUserOofSettingsRequest complex type. 
+
+Element Type Description 
+
+t:Mailbox t:mailbox (section 2.2.3.1) Specifies the mailbox user. 
+
+This element MUST be present. 
+
+26 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+t:UserOofSettings t:UserOofSettings (section 2.2.4.2) Specifies the OOF settings. 
+
+This element MUST be present. 
+
+ 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+27 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 GetUserOofSettings Request 
+
+The following example shows how to get a specified user's OOF settings. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <soap:Body> 
+    <GetUserOofSettingsRequest 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <Mailbox xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+        <Address>user@example.com</Address> 
+      </Mailbox> 
+    </GetUserOofSettingsRequest> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.2 GetUserOofSettings Response 
+
+The following example shows a successful response to a GetUserOofSettings operation request. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="1" MajorBuildNumber="240" 
+MinorBuildNumber="5" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <GetUserOofSettingsResponse 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseMessage ResponseClass="Success"> 
+        <ResponseCode>NoError</ResponseCode> 
+      </ResponseMessage> 
+      <OofSettings xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+        <OofState>Enabled</OofState> 
+        <ExternalAudience>All</ExternalAudience> 
+        <Duration> 
+          <StartTime>2008-02-01T00:00:00</StartTime> 
+          <EndTime>2008-02-02T00:00:00</EndTime> 
+        </Duration> 
+        <InternalReply> 
+          <Message>I am out of office. This is my internal reply.</Message> 
+        </InternalReply> 
+        <ExternalReply> 
+          <Message>I am out of office. This is my external reply.</Message> 
+        </ExternalReply> 
+        <DeclineMeetingReply> 
+          <Message /> 
+        </DeclineMeetingReply> 
+        <DeclineEventsForScheduledOOF>false</DeclineEventsForScheduledOOF> 
+        <DeclineAllEventsForScheduledOOF>false</DeclineAllEventsForScheduledOOF> 
+        <CreateOOFEvent>false</CreateOOFEvent> 
+        <AutoDeclineFutureRequestsWhenOOF>true</AutoDeclineFutureRequestsWhenOOF>      
+</OofSettings> 
+      <AllowExternalOof>All</AllowExternalOof> 
+    </GetUserOofSettingsResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+28 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4.3 SetUserOofSettings Request 
+
+The following example shows how to set a specified user's OOF settings. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <soap:Body> 
+    <SetUserOofSettingsRequest 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <Mailbox xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+        <Address>u1@example.com</Address> 
+        <RoutingType>SMTP</RoutingType> 
+      </Mailbox> 
+      <UserOofSettings xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+        <OofState>Enabled</OofState> 
+        <ExternalAudience>All</ExternalAudience> 
+        <InternalReply> 
+          <Message>I am out of office. This is my internal reply.</Message> 
+        </InternalReply> 
+        <ExternalReply> 
+          <Message>I am out of office. This is my external reply.</Message> 
+        </ExternalReply> 
+        <DeclineMeetingReply> 
+          <Message>I will be out of office. Cannot attent your meeting.</Message> 
+        </DeclineMeetingReply> 
+        <DeclineEventsForScheduledOOF>false</DeclineEventsForScheduledOOF> 
+        <DeclineAllEventsForScheduledOOF>false</DeclineAllEventsForScheduledOOF> 
+        <CreateOOFEvent>true</CreateOOFEvent> 
+        <OOFEventSubject>Out of Office</OOFEventSubject> 
+        <AutoDeclineFutureRequestsWhenOOF>true</AutoDeclineFutureRequestsWhenOOF> 
+      </UserOofSettings>  
+    </SetUserOofSettingsRequest> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.4 SetUserOofSettings Successful Response 
+
+The following example shows a successful response to a SetUserOofSettings operation request. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="1" MajorBuildNumber="240" 
+MinorBuildNumber="5" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <SetUserOofSettingsResponse 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseMessage ResponseClass="Success"> 
+        <ResponseCode>NoError</ResponseCode> 
+      </ResponseMessage> 
+    </SetUserOofSettingsResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.5 SetUserOofSettings Failure Response 
+
+The following example shows an unsuccessful response to a SetUserOofSettings operation request. 
+
+29 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="1" MajorBuildNumber="240" 
+MinorBuildNumber="5" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <SetUserOofSettingsResponse 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseMessage ResponseClass="Error"> 
+        <MessageText>The scheduled Out of Office duration is not valid.</MessageText> 
+        <ResponseCode>ErrorInvalidScheduledOofDuration</ResponseCode> 
+        <DescriptiveLinkKey>0</DescriptiveLinkKey> 
+        <MessageXml> 
+          <ExceptionType 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/errors">Microsoft.Exchange.InfoWor
+ker.Common.OOF.InvalidScheduledOofDuration</ExceptionType> 
+          <ExceptionCode 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/errors">158</ExceptionCode> 
+        </MessageXml> 
+      </ResponseMessage> 
+    </SetUserOofSettingsResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+30 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+31 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document. The contents of each file are included in this section.  
+
+File name Description Section 
+
+MS-OXWOOF.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWOOF- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWOOF-types.xsd Contains the XML schema type definitions that are used in this protocol. 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWOOF-messages.xsd or MS-
+OXWOOF-types.xsd schemas have to be placed in the common folder with these files. 
+
+This section contains the contents of the MS-OXWOOF.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:s="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2007_SP1" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:include schemaLocation="MS-OXWOOF-messages.xsd"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:message name="GetUserOofSettingsSoapIn"> 
+    <wsdl:part name="GetUserOofSettingsRequest" element="tns:GetUserOofSettingsRequest"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetUserOofSettingsSoapOut"> 
+    <wsdl:part name="GetUserOofSettingsResult" element="tns:GetUserOofSettingsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="SetUserOofSettingsSoapIn"> 
+    <wsdl:part name="SetUserOofSettingsRequest" element="tns:SetUserOofSettingsRequest"/> 
+      <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="SetUserOofSettingsSoapOut"> 
+    <wsdl:part name="SetUserOofSettingsResult" element="tns:SetUserOofSettingsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="GetUserOofSettings"> 
+      <wsdl:input message="tns:GetUserOofSettingsSoapIn"/> 
+      <wsdl:output message="tns:GetUserOofSettingsSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="SetUserOofSettings"> 
+      <wsdl:input message="tns:SetUserOofSettingsSoapIn"/> 
+      <wsdl:output message="tns:SetUserOofSettingsSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+
+32 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/> 
+    <wsdl:operation name="GetUserOofSettings"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetUserOofSettings"/
+> 
+      <wsdl:input> 
+        <soap:header message="tns:GetUserOofSettingsSoapIn" part="Impersonation" 
+use="literal"/> 
+        <soap:body parts="GetUserOofSettingsRequest" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetUserOofSettingsResult" use="literal"/> 
+        <soap:header message="tns:GetUserOofSettingsSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="SetUserOofSettings"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SetUserOofSettings"/
+> 
+      <wsdl:input> 
+        <soap:header message="tns:SetUserOofSettingsSoapIn" part="Impersonation" 
+use="literal"/> 
+        <soap:body parts="SetUserOofSettingsRequest" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="SetUserOofSettingsResult" use="literal"/> 
+        <soap:header message="tns:SetUserOofSettingsSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+33 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWOOF-messages.xsd or MS-
+OXWOOF-types.xsd schemas have to be placed in the common folders along with the files listed in the 
+table.  
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWOOF-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWOOF-messages.xsd references the files listed in the following table. For this messages schema 
+file to operate correctly, the two referenced files have to be present in the folder that contains the 
+WSDL and messages schema files for this protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCDATA-messages.xsd  [MS-OXWSCDATA] section 7.2 
+
+MS-OXWOOF-types.xsd 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWOOF-types.xsd"/> 
+  <xs:complexType name="GetUserOofSettingsRequest"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" maxOccurs="1" ref="t:Mailbox"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetUserOofSettingsRequest" type="tns:GetUserOofSettingsRequest"/> 
+  <xs:complexType name="GetUserOofSettingsResponse"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ResponseMessage" 
+type="m:ResponseMessageType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" ref="t:OofSettings"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="AllowExternalOof" 
+type="t:ExternalAudience"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:element name="GetUserOofSettingsResponse" type="tns:GetUserOofSettingsResponse"/> 
+  <xs:complexType name="SetUserOofSettingsRequest"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+
+34 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:element minOccurs="1" maxOccurs="1" ref="t:Mailbox"/> 
+          <xs:element minOccurs="1" maxOccurs="1" ref="t:UserOofSettings"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="SetUserOofSettingsRequest" type="tns:SetUserOofSettingsRequest"/> 
+  <xs:complexType name="SetUserOofSettingsResponse"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ResponseMessage" 
+type="m:ResponseMessageType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:element name="SetUserOofSettingsResponse" type="tns:SetUserOofSettingsResponse"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWOOF-types.xsd file and information about additional 
+files that this schema file requires to operate correctly. 
+
+MS-OXWOOF-types.xsd references the file listed in the following table. For this types schema file to 
+operate correctly, this referenced file has to be present in the folder that contains the WSDL, types 
+schema, and messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+ <xs:include schemaLocation="MS-OXWSCDATA-types.xsd" /> 
+  <xs:element name="Mailbox" type="t:EmailAddress"/> 
+  <xs:simpleType name="OofState"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Disabled"/> 
+      <xs:enumeration value="Enabled"/> 
+      <xs:enumeration value="Scheduled"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="ExternalAudience"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="None"/> 
+      <xs:enumeration value="Known"/> 
+      <xs:enumeration value="All"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="ArrayOfEventIDType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="EventToDeleteID" type="xs:string" /> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="UserOofSettings"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="OofState" type="t:OofState"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ExternalAudience" 
+type="t:ExternalAudience"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Duration" type="t:Duration"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="InternalReply" type="t:ReplyBody"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ExternalReply" type="t:ReplyBody"/> 
+
+35 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="0" maxOccurs="1" name="DeclineMeetingReply" type="t:ReplyBody" 
+/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DeclineEventsForScheduledOOF" 
+type="xs:boolean" /> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DeclineAllEventsForScheduledOOF" 
+type="xs:boolean" /> 
+  <xs:element minOccurs="0" maxOccurs="1" name="CreateOOFEvent" type="xs:boolean" /> 
+  <xs:element minOccurs="0" maxOccurs="1" name="OOFEventSubject" type="xs:string" /> 
+  <xs:element minOccurs="0" maxOccurs="1" name="AutoDeclineFutureRequestsWhenOOF" 
+type="xs:boolean" /> 
+  <xs:element minOccurs="0" maxOccurs="1" name="EventsToDeleteIDs" 
+type="t:ArrayOfEventIDType" /> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:element name="OofSettings" type="t:UserOofSettings"/> 
+  <xs:element name="UserOofSettings" type="t:UserOofSettings"/> 
+ </xs:schema> 
+
+36 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.4.2: Exchange 2007 does not require that the <Duration> element be specified in 
+UTC. 
+
+<2> Section 3.1.4.1:  Exchange 2007, Exchange 2010, and Microsoft Exchange Server 2010 Service 
+Pack 1 (SP1) do not include the Impersonation header as part of the WSDL input element. 
+
+<3> Section 3.1.4.1.1.1:  Exchange 2007, Exchange 2010, and Exchange 2010 SP1 do not use the 
+RequestVersion header. The RequestVersion header was introduced in Microsoft Exchange Server 
+2010 Service Pack 2 (SP2). 
+
+<4> Section 3.1.4.2:  Exchange 2007 and Exchange 2010 do not include the Impersonation header 
+as part of the WSDL input element. The Impersonation header was introduced in Exchange 2010 SP2. 
+
+<5> Section 3.1.4.2.1.1:  Exchange 2007, Exchange 2010, and Exchange 2010 SP1 do not use the 
+RequestVersion header. The RequestVersion header was introduced in Exchange 2010 SP2. 
+
+37 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+38 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A Messages 
+    attribute groups 16 
+Abstract data model    attributes 16 
+   server 17    complex types 12 
+Applicability 9    elements 11 
+Attribute groups 16    enumerated 11 
+Attributes 16    groups 16 
+    namespaces 11 
+
+C    simple types 14 
+
+    syntax 11 
+
+Capability negotiation 9    t:ArrayOfEventIDType Complex Type complex type 
+
+Change tracking 38 12 
+
+Complex types 12    t:ExternalAudience Simple Type simple type 15 
+
+   t:ArrayOfEventIDType Complex Type 12    t:Mailbox Element element 12 
+
+   t:UserOofSettings Complex Type 12    t:OofState Simple Type simple type 15 
+
+    t:UserOofSettings Complex Type complex type 12 
+
+D    transport 11 
+
+  
+
+Data model - abstract N 
+   server 17  
+
+ Namespaces 11 
+
+E Normative references 8 
+
+  
+
+Elements O 
+   t:Mailbox Element 12  
+
+Events Operations 
+
+   local - server 27    GetUserOofSettings Operation 17 
+
+   timer - server 27    SetUserOofSettings Operation 22 
+
+ Overview (synopsis) 8 
+
+F  
+
+ P 
+Fields - vendor-extensible 10  
+
+Full WSDL 32 Parameters - security index 31 
+
+Full XML schema 34 Preconditions 9 
+
+   Messages Schema 34 Prerequisites 9 
+
+   Types Schema 35 Product behavior 37 
+
+ Protocol Details 
+
+G    overview 17 
+
+  
+
+Glossary 6 R 
+Groups 16  
+
+ References 7 
+
+I    informative 8 
+
+    normative 8 
+
+Implementer - security considerations 31 Relationship to other protocols 9 
+
+Index of security parameters 31  
+
+Informative references 8 S 
+Initialization  
+
+   server 17 Security 
+
+Introduction 6    implementer considerations 31 
+
+    parameter index 31 
+
+L Sequencing rules 
+
+    server 17 
+
+Local events Server 
+
+   server 27    abstract data model 17 
+
+    GetUserOofSettings Operation operation 17 
+   initialization 17 
+
+M 
+   local events 27 
+
+ 
+   message processing 17 
+
+Message processing 
+   sequencing rules 17 
+
+   server 17 
+   SetUserOofSettings Operation operation 22 
+
+39 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   timer events 27 
+   timers 17 
+Simple types 14 
+   t:ExternalAudience Simple Type 15 
+   t:OofState Simple Type 15 
+Standards assignments 10 
+Syntax 
+   messages - overview 11 
+ 
+T 
+ 
+t:ArrayOfEventIDType Complex Type complex type 
+
+12 
+t:ExternalAudience Simple Type simple type 15 
+t:Mailbox Element element 12 
+t:OofState Simple Type simple type 15 
+t:UserOofSettings Complex Type complex type 12 
+Timer events 
+   server 27 
+Timers 
+   server 17 
+Tracking changes 38 
+Transport 11 
+Types 
+   complex 12 
+   simple 14 
+ 
+V 
+ 
+Vendor-extensible fields 10 
+Versioning 9 
+ 
+W 
+ 
+WSDL 32 
+ 
+X 
+ 
+XML schema 34 
+   Messages Schema 34 
+   Types Schema 35 
+
+ 
+
+40 / 40 
+
+[MS-OXWOOF] - v20250520 
+Out of Office (OOF) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

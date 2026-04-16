@@ -1,0 +1,2291 @@
+﻿[MS-OXWSGNI]:  
+
+Nonindexable Item Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/16/2012 0.1 New Released new document. 
+
+10/8/2012 1.0 Major Significantly changed the technical content. 
+
+2/11/2013 2.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 2.0 None 
+
+technical content. 
+
+7/31/2014 2.1 Minor Clarified the meaning of the technical content. 
+
+10/30/2014 2.2 Minor Clarified the meaning of the technical content. 
+
+5/26/2015 3.0 Major Significantly changed the technical content. 
+
+9/14/2015 4.0 Major Significantly changed the technical content. 
+
+6/13/2016 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 5.0 None 
+
+technical content. 
+
+7/24/2018 6.0 Major Significantly changed the technical content. 
+
+10/1/2018 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 7.0 None 
+
+technical content. 
+
+5/20/2025 8.0 Major Significantly changed the technical content. 
+
+2 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 5 
+
+1.1 Glossary ........................................................................................................... 5 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 6 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Common Message Syntax ................................................................................... 9 
+
+2.2.1 Namespaces ................................................................................................ 9 
+2.2.2 Messages ..................................................................................................... 9 
+2.2.3 Elements ..................................................................................................... 9 
+2.2.4 Complex Types ........................................................................................... 10 
+
+2.2.4.1 NonEmptyArrayOfLegacyDNsType ........................................................... 10 
+2.2.5 Simple Types ............................................................................................. 10 
+2.2.6 Attributes .................................................................................................. 10 
+2.2.7 Groups ...................................................................................................... 10 
+2.2.8 Attribute Groups ......................................................................................... 10 
+
+3 Protocol Details ..................................................................................................... 11 
+3.1 ExchangeServicePortType Server Details ............................................................. 11 
+
+3.1.1 Abstract Data Model .................................................................................... 11 
+3.1.2 Timers ...................................................................................................... 11 
+3.1.3 Initialization ............................................................................................... 11 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 11 
+
+3.1.4.1 GetNonIndexableItemDetails .................................................................. 11 
+3.1.4.1.1 Messages ....................................................................................... 12 
+
+3.1.4.1.1.1 GetNonIndexableItemDetailsSoapIn ............................................. 12 
+3.1.4.1.1.2 GetNonIndexableItemDetailsSoapOut ........................................... 13 
+
+3.1.4.1.2 Elements ........................................................................................ 14 
+3.1.4.1.2.1 GetNonIndexableItemDetails ....................................................... 14 
+3.1.4.1.2.2 GetNonIndexableItemDetailsResponse.......................................... 14 
+
+3.1.4.1.3 Complex Types ............................................................................... 14 
+3.1.4.1.3.1 GetNonIndexableItemDetailsType ................................................ 15 
+3.1.4.1.3.2 GetNonIndexableItemDetailsResponseMessageType ....................... 15 
+3.1.4.1.3.3 ArrayOfNonIndexableItemDetailsType .......................................... 16 
+3.1.4.1.3.4 NonIndexableItemDetailType ...................................................... 16 
+3.1.4.1.3.5 NonIndexableItemDetailResultType .............................................. 17 
+
+3.1.4.1.4 Simple Types .................................................................................. 17 
+3.1.4.1.4.1 ItemIndexErrorType ................................................................... 17 
+
+3.1.4.1.5 Attributes ....................................................................................... 18 
+3.1.4.1.6 Groups ........................................................................................... 18 
+3.1.4.1.7 Attribute Groups.............................................................................. 18 
+
+3.1.4.2 GetNonIndexableItemStatistics ............................................................... 18 
+3.1.4.2.1 Messages ....................................................................................... 19 
+
+3.1.4.2.1.1 GetNonIndexableItemStatisticsSoapIn .......................................... 19 
+3.1.4.2.1.2 GetNonIndexableItemStatisticsSoapOut ........................................ 20 
+
+3.1.4.2.2 Elements ........................................................................................ 21 
+
+3 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.2.1 GetNonIndexableItemStatistics .................................................... 21 
+3.1.4.2.2.2 GetNonIndexableItemStatisticsResponse ...................................... 21 
+
+3.1.4.2.3 Complex Types ............................................................................... 21 
+3.1.4.2.3.1 GetNonIndexableItemStatisticsType ............................................. 22 
+3.1.4.2.3.2 GetNonIndexableItemStatisticsResponseMessageType .................... 22 
+3.1.4.2.3.3 ArrayOfNonIndexableItemStatisticsType ....................................... 23 
+3.1.4.2.3.4 NonIndexableItemStatisticType ................................................... 23 
+
+3.1.4.2.4 Simple Types .................................................................................. 23 
+3.1.4.2.5 Attributes ....................................................................................... 23 
+3.1.4.2.6 Groups ........................................................................................... 23 
+3.1.4.2.7 Attribute Groups.............................................................................. 23 
+
+3.1.5 Timer Events .............................................................................................. 24 
+3.1.6 Other Local Events ...................................................................................... 24 
+
+4 Protocol Examples ................................................................................................. 25 
+4.1 Getting Details for Nonindexable Items ............................................................... 25 
+4.2 Getting Statistics for Nonindexable Items ............................................................ 26 
+
+5 Security ................................................................................................................. 28 
+5.1 Security Considerations for Implementers ........................................................... 28 
+5.2 Index of Security Parameters ............................................................................ 28 
+
+6 Appendix A: Full WSDL .......................................................................................... 29 
+
+7 Appendix B: Full XML Schema ................................................................................ 31 
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema ............ 31 
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema ................... 32 
+
+8 Appendix C: Product Behavior ............................................................................... 34 
+
+9 Change Tracking .................................................................................................... 35 
+
+10 Index ..................................................................................................................... 36 
+
+ 
+
+4 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Nonindexable Item Web Service Protocol enables a client to use a web service to retrieve 
+mailbox items that cannot be indexed. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, which 
+provides a message construct that can be exchanged over a variety of underlying protocols. The 
+framework has been designed to be independent of any particular programming model and 
+other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See [SOAP1.2-
+1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+web service: A unit of application logic that provides data and services to other applications and 
+can be called by using standard Internet transport protocols such as HTTP, Simple Mail Transfer 
+Protocol (SMTP), or File Transfer Protocol (FTP). Web services can perform functions that range 
+from simple requests to complicated business processes. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+
+5 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL operation: A single action or function of a web service. The execution of a WSDL operation 
+typically requires the exchange of messages between the service requestor and the service 
+provider. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSEDISC] Microsoft Corporation, "Electronic Discovery (eDiscovery) Web Service Protocol". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+6 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[WSIBASIC] Ballinger, K., Ehnebuske, D., Gudgin, M., et al., Eds., "Basic Profile Version 1.0", Final 
+Material, April 2004, http://www.ws-i.org/Profiles/BasicProfile-1.0-2004-04-16.html 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1/2] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema 
+Part 1: Structures Second Edition", W3C Recommendation, October 2004, 
+https://www.w3.org/TR/2004/REC-xmlschema-1-20041028/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2/2] Biron, P., and Malhotra, A., Eds., "XML Schema Part 2: Datatypes Second Edition", 
+W3C Recommendation, October 2004, https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+The Nonindexable Item Web Service Protocol enables the client to use web services to retrieve 
+details and statistics for mailbox items that could not be indexed. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses SOAP, as described in [SOAP1.1], to specify the structure information that is 
+exchanged between the client and the server. This protocol uses the XML schema, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content that is sent to and from the 
+server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following layering diagram. 
+
+7 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+This protocol uses the mailbox search and mailbox hold information provided by the Electronic 
+Discovery (eDiscovery) Web Service Protocol, as described in [MS-OXWSEDISC]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The operations that this protocol defines cannot be accessed unless the correct endpoint is identified 
+in the HTTP web requests that target this protocol. This endpoint URL is returned by either the 
+Autodiscover Publishing Lookup SOAP-Based Web Service Protocol, as described in [MS-OXWSADISC], 
+or the Autodiscover Publishing and Lookup Protocol, as described in [MS-OXDSCLI].  
+
+1.6 Applicability Statement 
+This protocol is applicable to environments that use web services to implement retrieval of mailbox 
+items that could not be indexed. This protocol is applicable to all SOAP-based clients, as described in 
+[SOAP1.1].  
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP, as described in section 2.1. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. The 
+RequestServerVersion element, as described in [MS-OXWSCDATA] section 2.2.3.9, identifies 
+the WSDL port type version of the request. The ServerVersionInfo element, as described in 
+[MS-OXWSCDATA] section 2.2.3.10, identifies the version of the server responding to the request. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol uses date/time formats in various types, as described in section 3.1.4. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The Web Services Description Language (WSDL) in this specification provides a base 
+description of the protocol. The schema in this specification provides a base description of the 
+message syntax. The text that specifies the WSDL and schema might specify restrictions that reflect 
+actual protocol behavior. For example, the schema definition might allow for an element to be empty, 
+null, or not present but the behavior of the protocol as specified restricts the same elements to being 
+non-empty, not null, or present. 
+
+2.1 Transport 
+
+This protocol uses SOAP 1.1, as specified in [SOAP1.1]. 
+
+This protocol uses SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use secure 
+communications by means of HTTPS, as defined in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and WSDL, as defined in 
+[WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+wsi http://ws-i.org/schemas/conformanceClaim/ [WSIBASIC] 
+
+[XMLSCHEMA1/2] 
+xs http://www.w3.org/2001/XMLSchema 
+
+[XMLSCHEMA2/2] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+9 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions defined by 
+this specification. XML schema complex type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Complex type Description 
+
+The NonEmptyArrayOfLegacyDNsType complex type specifies an 
+NonEmptyArrayOfLegacyDNsType 
+
+array of legacy distinguished names. 
+
+ 
+
+2.2.4.1 NonEmptyArrayOfLegacyDNsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The NonEmptyArrayOfLegacyDNsType complex type specifies an array of legacy distinguished 
+names. 
+
+ <xs:complexType name="NonEmptyArrayOfLegacyDNsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="LegacyDN" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+LegacyDN: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents a 
+single legacy distinguished name. 
+
+2.2.5 Simple Types 
+
+This specification does not define any common XML schema simple type definitions. 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+10 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+In the following sections, the schema definition might be less restrictive than the processing rules 
+imposed by the protocol. The WSDL in this specification matches the WSDL that shipped with the 
+product and provides a base description of the schema. The text that introduces the WSDL specifies 
+additional restrictions that reflect actual Microsoft product behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null and present. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol defines the ExchangeServicePortType port type with two operations, the 
+GetNonIndexableItemDetails WSDL operation and the GetNonIndexableItemStatistics WSDL 
+operation, that enable the retrieval of details and statistics for mailbox items that could not be 
+indexed. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of operations as defined by this specification. 
+
+Operation Description 
+
+The GetNonIndexableItemDetails WSDL operation retrieves details for 
+GetNonIndexableItemDetails 
+
+items in a mailbox that could not be indexed. 
+
+The GetNonIndexableItemStatistics WSDL operation retrieves statistics 
+GetNonIndexableItemStatistics 
+
+for items that could not be indexed. 
+
+ 
+
+3.1.4.1 GetNonIndexableItemDetails 
+
+The GetNonIndexableItemDetails WSDL operation retrieves details for items in a mailbox that 
+could not be indexed. 
+
+The following is the WSDL port type specification of the GetNonIndexableItemDetails WSDL 
+operation. 
+
+11 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <wsdl:operation name="GetNonIndexableItemDetails" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:GetNonIndexableItemDetailsSoapIn"/> 
+  <wsdl:output message="tns:GetNonIndexableItemDetailsSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the GetNonIndexableItemDetails WSDL 
+operation. 
+
+ <wsdl:operation name="GetNonIndexableItemDetails" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemD
+etails" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:GetNonIndexableItemDetailsSoapIn" part="RequestVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetNonIndexableItemDetailsSoapIn" part="ManagementRole" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="GetNonIndexableItemDetailsResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetNonIndexableItemDetailsSoapOut" part="ServerVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The client sends a GetNonIndexableItemDetailsSoapIn request WSDL message, and the server 
+responds with a GetNonIndexableItemDetailsSoapOut response. 
+
+3.1.4.1.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+Specifies the request to retrieve details for items that could not be 
+GetNonIndexableItemDetailsSoapIn 
+
+indexed. 
+
+Specifies the response to the 
+GetNonIndexableItemDetailsSoapOut 
+
+GetNonIndexableItemDetailsSoapIn request. 
+
+ 
+
+3.1.4.1.1.1 GetNonIndexableItemDetailsSoapIn 
+
+The GetNonIndexableItemDetailsSoapIn WSDL message specifies the request to retrieve 
+nonindexable item details. 
+
+The following is the GetNonIndexableItemDetailsSoapIn WSDL message specification. 
+
+ <wsdl:message name="GetNonIndexableItemDetailsSoapIn" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:GetNonIndexableItemDetails"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+
+12 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </wsdl:message> 
+
+The GetNonIndexableItemDetailsSoapIn WSDL message is the input message for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemDetails. 
+
+The parts of the GetNonIndexableItemDetailsSoapIn WSDL message are described in the 
+following table. 
+
+Part name Element/type Description 
+
+GetNonIndexableItemDetails Specifies the SOAP body of the request to retrieve 
+request 
+
+ details for items that could not be indexed. 
+
+RequestServerVersion Specifies a SOAP header that identifies the schema 
+RequestVersion ([MS-OXWSCDATA] section version for the GetNonIndexableItemDetails WSDL 
+
+2.2.3.9) operation request.  
+
+ManagementRole 
+Specifies a SOAP header that identifies a user or 
+
+ManagementRole ([MS-OXWSCDATA] section application role. 
+2.2.3.7) 
+
+ 
+
+3.1.4.1.1.2 GetNonIndexableItemDetailsSoapOut 
+
+The GetNonIndexableItemDetailsSoapOut WSDL message specifies the response to the 
+GetNonIndexableItemDetailsSoapIn request. 
+
+The following is the GetNonIndexableItemDetailsSoapOut WSDL message specification. 
+
+ <wsdl:message name="GetNonIndexableItemDetailsSoapOut" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="GetNonIndexableItemDetailsResult" 
+element="tns:GetNonIndexableItemDetailsResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetNonIndexableItemDetailsSoapOut WSDL message is the output message for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemDetails. 
+
+The parts of the GetNonIndexableItemDetailsSoapOut WSDL message are described in the 
+following table. 
+
+Part name Element/type Description 
+
+Specifies the SOAP body 
+GetNonIndexableItemDetailsResponse of the response that 
+
+GetNonIndexableItemDetailsResult 
+ contains the requested 
+
+information. 
+
+Specifies a SOAP 
+ServerVersionInfo header that identifies 
+
+ServerVersion 
+([MS-OXWSCDATA] section 2.2.3.10) the server version for the 
+
+response. 
+
+13 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+A successful GetNonIndexableItemDetails WSDL operation request returns a 
+GetNonIndexableItemDetailsResponse element with the ResponseClass attribute set to 
+"Success". The ResponseCode element of the GetNonIndexableItemDetailsResponse element is 
+set to "NoError".  
+
+If the GetNonIndexableItemDetails WSDL operation request is not successful, it returns a 
+GetNonIndexableItemDetailsResponse element with the ResponseClass attribute set to "Error". 
+The ResponseCode element of the GetNonIndexableItemDetailsResponse element is set to one 
+of the common errors defined in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+The input data for the GetNonIndexableItemDetails WSDL 
+GetNonIndexableItemDetails 
+
+operation. 
+
+The result data for the GetNonIndexableItemDetails WSDL 
+GetNonIndexableItemDetailsResponse 
+
+operation. 
+
+ 
+
+3.1.4.1.2.1 GetNonIndexableItemDetails 
+
+The GetNonIndexableItemDetails element specifies the input data for the 
+GetNonIndexableItemDetails WSDL operation. 
+
+ <xs:element name="GetNonIndexableItemDetails" type="tns:GetNonIndexableItemDetailsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.1.2.2 GetNonIndexableItemDetailsResponse 
+
+The GetNonIndexableItemDetailsResponse element specifies the result data for the 
+GetNonIndexableItemDetails WSDL operation. 
+
+ <xs:element name="GetNonIndexableItemDetailsResponse" 
+type="tns:GetNonIndexableItemDetailsResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+Specifies an array of NonIndexableItemDetails 
+ArrayOfNonIndexableItemDetailsType 
+
+elements. 
+
+Specifies the response message for a 
+GetNonIndexableItemDetailsResponseMessageType 
+
+GetNonIndexableItemDetails WSDL operation. 
+
+14 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+Specifies a request to retrieve details for items in a 
+GetNonIndexableItemDetailsType 
+
+mailbox that could not be indexed. 
+
+Specifies the results of the 
+NonIndexableItemDetailResultType 
+
+GetNonIndexableItemDetails WSDL operation. 
+
+Specifies a detail for an item that could not be 
+NonIndexableItemDetailType 
+
+indexed. 
+
+ 
+
+3.1.4.1.3.1 GetNonIndexableItemDetailsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetNonIndexableItemDetailsType complex type specifies a request to retrieve details for 
+items in a mailbox that could not be indexed. This type extends the BaseRequestType complex 
+type, as specified in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetNonIndexableItemDetailsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="1" name="Mailboxes" type="t:NonEmptyArrayOfLegacyDNsType"/> 
+        <xs:element minOccurs="0" name="PageSize" type="xs:int"/> 
+        <xs:element minOccurs="0" name="PageItemReference" type="xs:string"/> 
+        <xs:element minOccurs="0" name="PageDirection" type="t:SearchPageDirectionType"/> 
+        <xs:element minOccurs="0" name="SearchArchiveOnly" type="xs:boolean"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+Mailboxes: An element of type NonEmptyArrayofLegacyDNsType, as defined in section 2.2.4.1, 
+that represents a list of mailboxes in the format of legacy distinguished names. 
+
+PageSize: An element of type int, as defined in [XMLSCHEMA2] section 3.3.17, that represents the 
+number of items to be returned in a single page for a search result. 
+
+PageItemReference: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that 
+represents the item reference. 
+
+PageDirection: An element of type SearchPageDirectionType, as defined in [MS-OXWSEDISC] 
+section 3.1.4.4.4.4, that represents the search direction, either previous or next. 
+
+SearchArchiveOnly: An element of type boolean, as defined in [XMLSCHEMA2] section 3.2.2, that 
+specifies whether only the archive is searched.  
+
+3.1.4.1.3.2 GetNonIndexableItemDetailsResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetNonIndexableItemDetailsResponseMessageType complex type specifies the response 
+message for a GetNonIndexableItemDetails WSDL operation. 
+
+This type extends the ResponseMessageType complex type, as specified in [MS-OXWSCDATA] 
+section 2.2.4.65. 
+
+15 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:complexType name="GetNonIndexableItemDetailsResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" name="NonIndexableItemDetailsResult" 
+type="t:NonIndexableItemDetailResultType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+NonIndexableItemDetailsResult: An element of type NonIndexableItemDetailResultType, as 
+defined in section 3.1.4.1.3.5, that specifies the results of the GetNonIndexableItemDetails WSDL 
+operation.  
+
+3.1.4.1.3.3 ArrayOfNonIndexableItemDetailsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfNonIndexableItemDetailsType complex type specifies an array of 
+NonIndexableItemDetailType complex types, as specified in section 3.1.4.1.3.4. 
+
+ <xs:complexType name="ArrayOfNonIndexableItemDetailsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="NonIndexableItemDetail" 
+type="t:NonIndexableItemDetailType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+NonIndexableItemDetail: An element of type NonIndexableItemDetailType that represents a 
+single detail for an item that could not be indexed. 
+
+3.1.4.1.3.4 NonIndexableItemDetailType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The NonIndexableItemDetailType complex type specifies a detail for an item that could not be 
+indexed. 
+
+ <xs:complexType name="NonIndexableItemDetailType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ItemId" type="t:ItemIdType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ErrorCode" type="t:ItemIndexErrorType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ErrorDescription" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="IsPartiallyIndexed" type="xs:boolean"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="IsPermanentFailure" type="xs:boolean"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="SortValue" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="AttemptCount" type="xs:int"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="LastAttemptTime" type="xs:dateTime"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="AdditionalInfo" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+ItemId: An element of type ItemIdType, as defined in [MS-OXWSCORE] section 2.2.4.25, that 
+represents the identifier of the item that could not be indexed. 
+
+16 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ErrorCode: An element of type ItemIndexErrorType, as defined in section 3.1.4.1.4.1. This 
+element is for internal use only. 
+
+ErrorDescription: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that 
+represents the description of the error returned. 
+
+IsPartiallyIndexed: An element of type boolean, as defined in [XMLSCHEMA2] section 3.2.2, that 
+indicates whether the item is partially indexed. 
+
+IsPermanentFailure: An element of type boolean that indicates whether a previous attempt to 
+index the item was unsuccessful. 
+
+SortValue: An element of type string that contains a value used for sorting. 
+
+AttemptCount: An element of type int, as defined in [XMLSCHEMA2] section 3.3.17, that represents 
+the number of attempts that have been made to index the item. 
+
+LastAttemptTime: An element of type dateTime, as defined in [XMLSCHEMA2] section 3.2.7, that 
+represents a time and date at which the last attempt to index the item was made. 
+
+AdditionalInfo: An element of type string that represents additional information. 
+
+3.1.4.1.3.5 NonIndexableItemDetailResultType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The NonIndexableItemDetailResultType complex type specifies the results of the 
+GetNonIndexableItemDetails WSDL operation. 
+
+ <xs:complexType name="NonIndexableItemDetailResultType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" name="Items" type="t:ArrayOfNonIndexableItemDetailsType"/> 
+    <xs:element minOccurs="0" name="FailedMailboxes" 
+type="t:ArrayOfFailedSearchMailboxesType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Items: An element of type ArrayOfNonIndexableItemDetailsType, as defined in section 
+3.1.4.1.3.3, that contains an array of details for items that could not be indexed.  
+
+FailedMailboxes: An element of type ArrayOfFailedSearchMailboxesType, as defined in [MS-
+OXWSEDISC] section 2.2.4.1, that contains an array of mailboxes that failed the search. 
+
+3.1.4.1.4 Simple Types 
+
+The following table summarizes the XML schema simple type definitions that are specific to this 
+operation. 
+
+Simple type Description 
+
+ItemIndexErrorType This type is for internal use only. 
+
+ 
+
+3.1.4.1.4.1 ItemIndexErrorType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+17 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The ItemIndexErrorType simple type is for internal use only. 
+
+ <xs:simpleType name="ItemIndexErrorType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="None"/> 
+    <xs:enumeration value="GenericError"/> 
+    <xs:enumeration value="Timeout"/> 
+    <xs:enumeration value="StaleEvent"/> 
+    <xs:enumeration value="MailboxOffline"/> 
+    <xs:enumeration value="AttachmentLimitReached"/> 
+    <xs:enumeration value="MarsWriterTruncation"/> 
+    <xs:enumeration value="DocumentParserFailure"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the ItemIndexErrorType simple type. 
+
+Value Meaning 
+
+None This value is for internal use only. 
+
+GenericError This value is for internal use only. 
+
+Timeout This value is for internal use only. 
+
+StaleEvent This value is for internal use only. 
+
+MailboxOffline This value is for internal use only. 
+
+AttachmentLimitReached This value is for internal use only. 
+
+MarsWriterTruncation This value is for internal use only. 
+
+DocumentParserFailure This value is for internal use only. 
+
+ 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.4.2 GetNonIndexableItemStatistics 
+
+The GetNonIndexableItemStatistics WSDL operation retrieves statistics for items that could not be 
+indexed. 
+
+The following is the WSDL port type specification of the GetNonIndexableItemStatistics WSDL 
+operation. 
+
+ <wsdl:operation name="GetNonIndexableItemStatistics" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:GetNonIndexableItemStatisticsSoapIn"/> 
+
+18 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <wsdl:output message="tns:GetNonIndexableItemStatisticsSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the GetNonIndexableItemStatistics WSDL 
+operation. 
+
+ <wsdl:operation name="GetNonIndexableItemStatistics" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemS
+tatistics" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:GetNonIndexableItemStatisticsSoapIn" part="RequestVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetNonIndexableItemStatisticsSoapIn" part="ManagementRole" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="GetNonIndexableItemStatisticsResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetNonIndexableItemStatisticsSoapOut" part="ServerVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The client sends a GetNonIndexableItemStatisticsSoapIn request WSDL message, and the 
+server responds with a GetNonIndexableItemStatisticsSoapOut response. 
+
+3.1.4.2.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+Specifies the request to retrieve statistics for items that could not 
+GetNonIndexableItemStatisticsSoapIn 
+
+be indexed. 
+
+Specifies the response to the 
+GetNonIndexableItemStatisticsSoapOut 
+
+GetNonIndexableItemStatisticsSoapIn request. 
+
+ 
+
+3.1.4.2.1.1 GetNonIndexableItemStatisticsSoapIn 
+
+The GetNonIndexableItemStatisticsSoapIn WSDL message specifies the request to retrieve 
+statistics for items that could not be indexed. 
+
+The following is the GetNonIndexableItemStatisticsSoapIn WSDL message specification. 
+
+ <wsdl:message name="GetNonIndexableItemStatisticsSoapIn" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:GetNonIndexableItemStatistics"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+ </wsdl:message> 
+
+19 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The GetNonIndexableItemStatisticsSoapIn WSDL message is the input message for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemStatistics. 
+
+The parts of the GetNonIndexableItemStatisticsSoapIn WSDL message are described in the 
+following table. 
+
+Part name Element/type Description 
+
+GetNonIndexableItemStatistics Specifies the SOAP body of the request to retrieve 
+request 
+
+ statistics. 
+
+RequestServerVersion Specifies a SOAP header that identifies the schema 
+RequestVersion ([MS-OXWSCDATA] section version for the GetNonIndexableItemStatistics 
+
+2.2.3.9) WSDL operation request.  
+
+ManagementRole 
+Specifies a SOAP header that identifies a user or 
+
+ManagementRole ([MS-OXWSCDATA] section application role. 
+2.2.3.7) 
+
+ 
+
+3.1.4.2.1.2 GetNonIndexableItemStatisticsSoapOut 
+
+The GetNonIndexableItemStatisticsSoapOut WSDL message specifies the response to the 
+GetNonIndexableItemStatisticsSoapIn request. 
+
+The following is the GetNonIndexableItemStatisticsSoapOut WSDL message specification. 
+
+ <wsdl:message name="GetNonIndexableItemStatisticsSoapOut" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="GetNonIndexableItemStatisticsResult" 
+element="tns:GetNonIndexableItemStatisticsResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetNonIndexableItemStatisticsSoapOut WSDL message is the output message for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemStatistics. 
+
+The parts of the GetNonIndexableItemStatisticsSoapOut WSDL message are described in the 
+following table. 
+
+Part name Element/type Description 
+
+Specifies the SOAP 
+body of the 
+
+GetNonIndexableItemStatisticsResponse response that 
+GetNonIndexableItemStatisticsResult 
+
+ contains the 
+requested 
+information. 
+
+Specifies a SOAP 
+
+ServerVersionInfo header that 
+ServerVersion identifies the server 
+
+([MS-OXWSCDATA] section 2.2.3.10) version for the 
+response. 
+
+ 
+
+20 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+A successful GetNonIndexableItemStatistics WSDL operation request returns a 
+GetNonIndexableItemStatisticsResponse element with the ResponseClass attribute set to 
+"Success". The ResponseCode element of the GetNonIndexableItemStatisticsResponse element 
+is set to "NoError".  
+
+If the GetNonIndexableItemStatistics WSDL operation request is not successful, it returns a 
+GetNonIndexableItemStatisticsResponse element with the ResponseClass attribute set to 
+"Error". The ResponseCode element of the GetNonIndexableItemStatisticsResponse element is 
+set to one of the common errors defined in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.2.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+The input data for the GetNonIndexableItemStatistics WSDL 
+GetNonIndexableItemStatistics 
+
+operation. 
+
+The result data for the GetNonIndexableItemStatistics WSDL 
+GetNonIndexableItemStatisticsResponse 
+
+operation. 
+
+ 
+
+3.1.4.2.2.1 GetNonIndexableItemStatistics 
+
+The GetNonIndexableItemStatistics element specifies the input data for the 
+GetNonIndexableItemStatistics WSDL operation. 
+
+ <xs:element name="GetNonIndexableItemStatistics" type="tns:GetNonIndexableItemStatisticsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.2.2.2 GetNonIndexableItemStatisticsResponse 
+
+The GetNonIndexableItemStatisticsResponse element specifies the result data for the 
+GetNonIndexableItemStatistics WSDL operation. 
+
+ <xs:element name="GetNonIndexableItemStatisticsResponse" 
+type="tns:GetNonIndexableItemStatisticsResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.2.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+Specifies an array of statistics for items that could 
+ArrayOfNonIndexableItemStatisticsType 
+
+not be indexed. 
+
+Specifies the response message for a 
+GetNonIndexableItemStatisticsResponseMessageType GetNonIndexableItemStatistics WSDL 
+
+operation. 
+
+GetNonIndexableItemStatisticsType Specifies a request to retrieve statistics for items 
+
+21 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+that could not be indexed. 
+
+Specifies a statistic for an item that could not be 
+NonIndexableItemStatisticType 
+
+indexed. 
+
+ 
+
+3.1.4.2.3.1 GetNonIndexableItemStatisticsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetNonIndexableItemStatisticsType complex type specifies a request to retrieve statistics for 
+items that could not be indexed. This type extends the BaseRequestType complex type, as specified 
+in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetNonIndexableItemStatisticsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="1" name="Mailboxes" type="t:NonEmptyArrayOfLegacyDNsType"/> 
+        <xs:element minOccurs="0" name="SearchArchiveOnly" type="xs:boolean"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+Mailboxes: An element of type NonEmptyArrayOfLegacyDNsType, as defined in section 2.2.4.1, 
+that specifies the mailboxes that were not indexed although items were requested. 
+
+SearchArchiveOnly: An element of type boolean, as defined in [XMLSCHEMA2] section 3.2.2, that 
+specifies whether only the archive is searched.  
+
+3.1.4.2.3.2 GetNonIndexableItemStatisticsResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetNonIndexableItemStatisticsResponseMessageType complex type specifies the response 
+message for a GetNonIndexableItemStatistics WSDL operation. This type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetNonIndexableItemStatisticsResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" maxOccurs="1" name="NonIndexableItemStatistics" 
+type="t:ArrayOfNonIndexableItemStatisticsType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+NonIndexableItemStatistics: An element of type ArrayOfNonIndexableItemStatisticsType, as 
+defined in section 3.1.4.2.3.3, that represents an array of statistics for items that could not be 
+indexed. 
+
+22 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3.3 ArrayOfNonIndexableItemStatisticsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfNonIndexableItemStatisticsType complex type specifies an array of statistics for 
+items that could not be indexed. 
+
+ <xs:complexType name="ArrayOfNonIndexableItemStatisticsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="NonIndexableItemStatistic" 
+type="t:NonIndexableItemStatisticType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+NonIndexableItemStatistic: An element of type NonIndexableItemStatisticType, as defined in 
+section 3.1.4.2.3.4, that represents a single statistic for an item that could not be indexed. 
+
+3.1.4.2.3.4 NonIndexableItemStatisticType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The NonIndexableItemStatisticType complex type specifies a statistic for an item that could not be 
+indexed. 
+
+ <xs:complexType name="NonIndexableItemStatisticType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ItemCount" type="xs:long"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ErrorMessage" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Mailbox: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents the 
+mailbox on which indexing failed. 
+
+ItemCount: An element of type long, as defined in [XMLSCHEMA2] section 3.3.16, that represents 
+the number of items that could not be indexed. 
+
+ErrorMessage: An element of type string that contains the error message.  
+
+3.1.4.2.4 Simple Types 
+
+None. 
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+None. 
+
+3.1.4.2.7 Attribute Groups 
+
+None. 
+
+23 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+24 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+ 
+
+4.1 Getting Details for Nonindexable Items 
+
+This example of the GetNonIndexableItemDetails operation, as described in section 3.1.4.1, shows 
+how the client retrieves from the server the details for items that could not be indexed. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+          xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013" /> 
+  </soap:Header> 
+  <soap:Body > 
+    <m:GetNonIndexableItemDetails> 
+      <m:Mailboxes> 
+        <t:LegacyDN>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=35181a742f0e47e392c8201a60d13ecf-Steve</t:LegacyDN> 
+      </m:Mailboxes> 
+      <m:SearchArchiveOnly>false</m:SearchArchiveOnly> 
+    </m:GetNonIndexableItemDetails> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The server sends the following successful response to the client. The response shows that the 
+document had a parsing error. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15"  
+                         MinorVersion="0"  
+                         MajorBuildNumber="526"  
+                         MinorBuildNumber="0"  
+                         Version="Exchange2013"  
+             xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types"  
+             xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+          xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetNonIndexableItemDetailsResponse ResponseClass="Success"  
+             xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+        <NonIndexableItemDetailsResult> 
+          <Items xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+            <NonIndexableItemDetail> 
+              <ItemId 
+Id="AQMkAGVmNDAyODMwLTNkMzMALTRhMGQtYTRlOS1kODU3NjkwMAE2MGQARgAAA2L1bNf8ooZNtO4guk3auRYHALkzP
+vMoJY1FjWrkRuQQcK0AAAMLAAAAuTM+8ygljUWNauRG5BBwrQAAAY2fUAAAAA==" ChangeKey="CQAAAA=="/> 
+              <ErrorCode>DocumentParserFailure</ErrorCode> 
+              <ErrorDescription>The document parser encountered a processing 
+error.</ErrorDescription> 
+               <IsPartiallyIndexed>false</IsPartiallyIndexed> 
+               <IsPermanentFailure>true</IsPermanentFailure> 
+             <SortValue>502511175756</SortValue> 
+             <AttemptCount>0</AttemptCount> 
+             <LastAttemptTime>2012-11-15T01:56:11Z</LastAttemptTime> 
+
+25 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+             <AdditionalInfo> 301002 Error parsing document 
+'exchange://localhost/Attachment/d987b1f4-9aa7-42b3-aa8c-9515a35dfa1a/1f3047d4-c287-41e4-
+910c-feb70c1a59f0/ef402830-3d33-4a0d-a4e9-d8576900060d/85b83861-0026-418f-8464-
+be2036696333/502511175756.0/binaryfile.abc'. Document has an undetectable format and will not 
+be parsed.</AdditionalInfo> 
+          </NonIndexableItemDetail> 
+        </Items> 
+      </NonIndexableItemDetailsResult> 
+    </GetNonIndexableItemDetailsResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+4.2 Getting Statistics for Nonindexable Items 
+
+This example of the GetNonIndexableItemStatistics operation, as described in section 3.1.4.2, 
+shows how the client retrieves the statistics for an item that could not be indexed from the server. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013" /> 
+  </soap:Header> 
+  <soap:Body > 
+    <m:GetNonIndexableItemStatistics> 
+      <m:Mailboxes> 
+        <t:LegacyDN>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=35181a742f0e47e392c8201a60d13ecf-Steve</t:LegacyDN> 
+      </m:Mailboxes> 
+      <m:SearchArchiveOnly>false</m:SearchArchiveOnly> 
+    </m:GetNonIndexableItemStatistics> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The server sends the following successful results of the request to the client. The response shows that 
+two items in the mailbox could not be indexed. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15"  
+                         MinorVersion="0"  
+                         MajorBuildNumber="526"  
+                         MinorBuildNumber="0" 
+                         Version="Exchange2013"  
+           xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types"  
+           xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+           xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+          xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetNonIndexableItemStatisticsResponse ResponseClass="Success"  
+       xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <NonIndexableItemStatistics> 
+        <NonIndexableItemStatistic 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=35181a742f0e47e392c8201a60d13ecf-Steve</Mailbox> 
+          <ItemCount>2</ItemCount> 
+        </NonIndexableItemStatistic> 
+
+26 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      </NonIndexableItemStatistics> 
+    </GetNonIndexableItemStatisticsResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+27 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+28 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+For ease of implementation, the full WSDL is provided in this appendix. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <wsdl:definitions xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:types> 
+    <xs:schema elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2016" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:include schemaLocation="MS-OXWSGNI-messages.xsd"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="GetNonIndexableItemStatistics"> 
+      <wsdl:input message="tns:GetNonIndexableItemStatisticsSoapIn"/> 
+      <wsdl:output message="tns:GetNonIndexableItemStatisticsSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetNonIndexableItemDetails"> 
+      <wsdl:input message="tns:GetNonIndexableItemDetailsSoapIn"/> 
+      <wsdl:output message="tns:GetNonIndexableItemDetailsSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="GetNonIndexableItemStatistics"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemS
+tatistics"/> 
+      <wsdl:input> 
+        <soap:header message="tns:GetNonIndexableItemStatisticsSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:GetNonIndexableItemStatisticsSoapIn" part="ManagementRole" 
+use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="GetNonIndexableItemStatisticsResult"/> 
+        <soap:header message="tns:GetNonIndexableItemStatisticsSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetNonIndexableItemDetails"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetNonIndexableItemD
+etails"/> 
+      <wsdl:input> 
+        <soap:header message="tns:GetNonIndexableItemDetailsSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:GetNonIndexableItemDetailsSoapIn" part="ManagementRole" 
+use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="GetNonIndexableItemDetailsResult"/> 
+        <soap:header message="tns:GetNonIndexableItemDetailsSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+
+29 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </wsdl:binding> 
+  <wsdl:message name="GetNonIndexableItemDetailsSoapIn"> 
+    <wsdl:part name="request" element="tns:GetNonIndexableItemDetails"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetNonIndexableItemDetailsSoapOut"> 
+    <wsdl:part name="GetNonIndexableItemDetailsResult" 
+element="tns:GetNonIndexableItemDetailsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetNonIndexableItemStatisticsSoapIn"> 
+    <wsdl:part name="request" element="tns:GetNonIndexableItemStatistics"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetNonIndexableItemStatisticsSoapOut"> 
+    <wsdl:part name="GetNonIndexableItemStatisticsResult" 
+element="tns:GetNonIndexableItemStatisticsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+ </wsdl:definitions> 
+
+30 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+Schema name Prefix Section 
+
+http://schemas.microsoft.com/exchange/services/2006/types t 7.2 
+
+http://schemas.microsoft.com/exchange/services/2006/messages tns 7.1 
+
+ 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema 
+
+This section contains the MS-OXWSGNI-messages.xsd and information about additional files that this 
+schema file requires to operate correctly. 
+
+MS-OXWSGNI-messages.xsd includes the files listed in the following table. To operate correctly, these 
+files have to be present in the folder that contains the WSDL, types schema, and messages schema 
+files for this protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+MS-OXWSGNI-types.xsd 7.2 
+
+ 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2016" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import schemaLocation="MS-OXWSGNI-types.xsd" 
+namespace="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:complexType name="GetNonIndexableItemStatisticsType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" name="Mailboxes" type="t:NonEmptyArrayOfLegacyDNsType"/> 
+          <xs:element minOccurs="0" name="SearchArchiveOnly" type="xs:boolean"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetNonIndexableItemStatistics" 
+type="tns:GetNonIndexableItemStatisticsType"/> 
+  <xs:complexType name="GetNonIndexableItemStatisticsResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" maxOccurs="1" name="NonIndexableItemStatistics" 
+type="t:ArrayOfNonIndexableItemStatisticsType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetNonIndexableItemStatisticsResponse" 
+type="tns:GetNonIndexableItemStatisticsResponseMessageType"/> 
+  <xs:complexType name="GetNonIndexableItemDetailsType"> 
+
+31 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" name="Mailboxes" type="t:NonEmptyArrayOfLegacyDNsType"/> 
+          <xs:element minOccurs="0" name="PageSize" type="xs:int"/> 
+          <xs:element minOccurs="0" name="PageItemReference" type="xs:string"/> 
+          <xs:element minOccurs="0" name="PageDirection" type="t:SearchPageDirectionType"/> 
+          <xs:element minOccurs="0" name="SearchArchiveOnly" type="xs:boolean"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetNonIndexableItemDetails" type="tns:GetNonIndexableItemDetailsType"/> 
+  <xs:complexType name="GetNonIndexableItemDetailsResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="NonIndexableItemDetailsResult" 
+type="t:NonIndexableItemDetailResultType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetNonIndexableItemDetailsResponse" 
+type="tns:GetNonIndexableItemDetailsResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema 
+
+This section contains the MS-OXWSGNI-types.xsd and information about additional files that this 
+schema file requires to operate correctly. 
+
+MS-OXWSGNI-types.xsd includes the files listed in the following table. To operate correctly, these files 
+have to be present in the folder that contains the WSDL, types schema, and messages schema for 
+this protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCORE-types.xsd [MS-OXWSCORE] section 7.2 
+
+MS-OXWSEDISC-types.xsd [MS-OXWSEDISC] section 7.2 
+
+ 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+version="Exchange2016" id="types" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSCORE-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSEDISC-types.xsd"/> 
+  <xs:complexType name="ArrayOfNonIndexableItemDetailsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="NonIndexableItemDetail" 
+type="t:NonIndexableItemDetailType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfNonIndexableItemStatisticsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="NonIndexableItemStatistic" 
+type="t:NonIndexableItemStatisticType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+32 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:simpleType name="ItemIndexErrorType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="None"/> 
+      <xs:enumeration value="GenericError"/> 
+      <xs:enumeration value="Timeout"/> 
+      <xs:enumeration value="StaleEvent"/> 
+      <xs:enumeration value="MailboxOffline"/> 
+      <xs:enumeration value="AttachmentLimitReached"/> 
+      <xs:enumeration value="MarsWriterTruncation"/> 
+      <xs:enumeration value="DocumentParserFailure"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="NonEmptyArrayOfLegacyDNsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="LegacyDN" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="NonIndexableItemStatisticType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ItemCount" type="xs:long"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ErrorMessage" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="NonIndexableItemDetailType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ItemId" type="t:ItemIdType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ErrorCode" type="t:ItemIndexErrorType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ErrorDescription" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsPartiallyIndexed" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsPermanentFailure" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="SortValue" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="AttemptCount" type="xs:int"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="LastAttemptTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="AdditionalInfo" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="NonIndexableItemDetailResultType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" name="Items" type="t:ArrayOfNonIndexableItemDetailsType"/> 
+      <xs:element minOccurs="0" name="FailedMailboxes" 
+type="t:ArrayOfFailedSearchMailboxesType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+ </xs:schema> 
+
+33 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Lync Server 2013 
+
+ Microsoft Skype for Business Server 2015 
+
+ Microsoft Skype for Business Server 2019 
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Exchange Server Subscription Edition 
+
+ Microsoft Skype for Business Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+34 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+35 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A L 
+  
+Abstract data model Local events 
+   server 11    server 24 
+Applicability 8  
+Attribute groups 10 M 
+Attributes 10  
+ Message processing 
+C    server 11 
+ Messages 
+Capability negotiation 8    attribute groups 10 
+Change tracking 35    attributes 10 
+Client    complex types 10 
+   overview 11    elements 9 
+Complex types 10    enumerated 9 
+   NonEmptyArrayOfLegacyDNsType 10    groups 10 
+    namespaces 9 
+D    NonEmptyArrayOfLegacyDNsType complex type 10 
+    overview 9 
+Data model - abstract    simple types 10 
+   server 11    syntax 9 
+    transport 9 
+
+E  
+
+ N 
+Events  
+   local - server 24 Namespaces 9 
+   timer - server 24 NonEmptyArrayOfLegacyDNsType complex type 10 
+Examples Normative references 6 
+   getting details for nonindexable items 25  
+   getting statistics for nonindexable items 26 O 
+ExchangeServicePortType  
+   port type 11 Operations 
+    GetNonIndexableItemDetails 11 
+F    GetNonIndexableItemStatistics 18 
+ Overview (synopsis) 7 
+Fields - vendor-extensible 8  
+Full WSDL 29 P 
+Full XML schema 31  
+   Parameters - security index 28 
+
+http://schemas.microsoft.com/exchange/service Port types 
+s/2006/messages Schema 31    ExchangeServicePortType 11 
+
+   Preconditions 8 
+http://schemas.microsoft.com/exchange/service Prerequisites 8 
+s/2006/types Schema 32 Product behavior 34 
+
+ Protocol Details 
+G    overview 11 
+  
+Getting details for nonindexable items example 25 R 
+Getting statistics for nonindexable items example 26  
+Glossary 5 References 6 
+Groups 10    informative 7 
+    normative 6 
+I Relationship to other protocols 7 
+  
+Implementer - security considerations 28 S 
+Index of security parameters 28  
+Informative references 7 Security 
+Initialization    implementer considerations 28 
+   server 11    parameter index 28 
+Introduction 5 Sequencing rules 
+    server 11 
+
+36 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Server 
+   abstract data model 11 
+   ExchangeServicePortType port type 11 
+   GetNonIndexableItemDetails operation 11 
+   GetNonIndexableItemStatistics operation 18 
+   initialization 11 
+   local events 24 
+   message processing 11 
+   overview 11 
+   sequencing rules 11 
+   timer events 24 
+   timers 11 
+Simple types 10 
+Standards assignments 8 
+Syntax 
+   messages - overview 9 
+ 
+T 
+ 
+Timer events 
+   server 24 
+Timers 
+   server 11 
+Tracking changes 35 
+Transport 9 
+Types 
+   complex 10 
+   simple 10 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+ 
+W 
+ 
+WSDL 29 
+ 
+X 
+ 
+XML schema 31 
+   
+
+http://schemas.microsoft.com/exchange/service
+s/2006/messages Schema 31 
+
+   
+http://schemas.microsoft.com/exchange/service
+s/2006/types Schema 32 
+
+ 
+
+37 / 37 
+
+[MS-OXWSGNI] - v20250520 
+Nonindexable Item Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

@@ -1,0 +1,3473 @@
+﻿[MS-ASTASK]:  
+
+Exchange ActiveSync: Tasks Class Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+12/3/2008 1.0.0 Major Initial Release. 
+
+4/10/2009 2.0.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 5.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 6.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 7.0 Major Significantly changed the technical content. 
+
+11/3/2010 7.1 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 7.2 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 8.0 Major Significantly changed the technical content. 
+
+10/7/2011 9.0 Major Significantly changed the technical content. 
+
+1/20/2012 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 10.0 None 
+
+technical content. 
+
+7/16/2012 10.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 10.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 10.2 None 
+
+technical content. 
+
+7/26/2013 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 11.0 None 
+
+technical content. 
+
+4/30/2014 12.0 Major Significantly changed the technical content. 
+
+7/31/2014 12.1 Minor Clarified the meaning of the technical content. 
+
+10/30/2014 12.2 Minor Clarified the meaning of the technical content. 
+
+5/26/2015 13.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/30/2015 13.0 None 
+
+technical content. 
+
+9/14/2015 14.0 Major Significantly changed the technical content. 
+
+6/9/2016 15.0 Major Significantly changed the technical content. 
+
+2/28/2017 16.0 Major Significantly changed the technical content. 
+
+3/28/2017 16.0 None No changes to the meaning, language, or formatting of the 
+
+2 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+9/19/2017 17.0 Major Significantly changed the technical content. 
+
+12/12/2017 18.0 Major Significantly changed the technical content. 
+
+7/24/2018 19.0 Major Significantly changed the technical content. 
+
+10/1/2018 20.0 Major Significantly changed the technical content. 
+
+12/11/2018 20.1 Minor Clarified the meaning of the technical content. 
+
+11/16/2021 20.2 Minor Clarified the meaning of the technical content. 
+
+5/20/2025 21.0 Major Significantly changed the technical content. 
+
+3 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Namespaces ................................................................................................ 9 
+2.2.2 Elements ..................................................................................................... 9 
+
+2.2.2.1 Body ................................................................................................... 12 
+2.2.2.1.1 Body (AirSyncBase Namespace) ........................................................ 12 
+2.2.2.1.2 Body (Tasks Namespace) ................................................................. 12 
+
+2.2.2.2 BodySize .............................................................................................. 13 
+2.2.2.3 BodyTruncated ..................................................................................... 14 
+2.2.2.4 CalendarType ....................................................................................... 14 
+2.2.2.5 Categories ........................................................................................... 16 
+2.2.2.6 Category .............................................................................................. 17 
+2.2.2.7 Complete ............................................................................................. 17 
+2.2.2.8 DateCompleted ..................................................................................... 18 
+2.2.2.9 DayOfMonth ......................................................................................... 18 
+2.2.2.10 DayOfWeek .......................................................................................... 19 
+2.2.2.11 DeadOccur ........................................................................................... 20 
+2.2.2.12 DueDate .............................................................................................. 21 
+2.2.2.13 FirstDayOfWeek .................................................................................... 22 
+2.2.2.14 Importance .......................................................................................... 23 
+2.2.2.15 Interval ............................................................................................... 23 
+2.2.2.16 IsLeapMonth ........................................................................................ 24 
+2.2.2.17 MonthOfYear ........................................................................................ 25 
+2.2.2.18 Occurrences ......................................................................................... 26 
+2.2.2.19 OrdinalDate .......................................................................................... 26 
+2.2.2.20 Recurrence ........................................................................................... 27 
+2.2.2.21 Regenerate .......................................................................................... 28 
+2.2.2.22 ReminderSet ........................................................................................ 29 
+2.2.2.23 ReminderTime ...................................................................................... 29 
+2.2.2.24 Sensitivity ............................................................................................ 30 
+2.2.2.25 Start ................................................................................................... 31 
+2.2.2.26 StartDate ............................................................................................. 31 
+2.2.2.27 Subject ................................................................................................ 32 
+2.2.2.28 SubOrdinalDate .................................................................................... 33 
+2.2.2.29 Type .................................................................................................... 33 
+2.2.2.30 Until .................................................................................................... 34 
+2.2.2.31 UtcDueDate .......................................................................................... 35 
+2.2.2.32 UtcStartDate ........................................................................................ 35 
+2.2.2.33 WeekOfMonth ....................................................................................... 36 
+
+3 Protocol Details ..................................................................................................... 38 
+
+4 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1 Client Details ................................................................................................... 38 
+3.1.1 Abstract Data Model .................................................................................... 38 
+3.1.2 Timers ...................................................................................................... 38 
+3.1.3 Initialization ............................................................................................... 38 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 38 
+
+3.1.4.1 Synchronizing Task Data Between Client and Server ................................. 38 
+3.1.4.2 Searching a Server for Task Data ............................................................ 38 
+3.1.4.3 Requesting Details for Specific Tasks ....................................................... 38 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 38 
+3.1.5.1 ItemOperations Command Request ......................................................... 39 
+3.1.5.2 Search Command Request ..................................................................... 39 
+3.1.5.3 Sync Command Request ........................................................................ 39 
+
+3.1.6 Timer Events .............................................................................................. 39 
+3.1.7 Other Local Events ...................................................................................... 39 
+
+3.2 Server Details .................................................................................................. 39 
+3.2.1 Abstract Data Model .................................................................................... 39 
+3.2.2 Timers ...................................................................................................... 40 
+3.2.3 Initialization ............................................................................................... 40 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 40 
+
+3.2.4.1 Synchronizing Task Data Between Client and Server ................................. 40 
+3.2.4.2 Searching for Task Data ......................................................................... 40 
+3.2.4.3 Requesting Details for Specific Tasks ....................................................... 40 
+
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 40 
+3.2.5.1 ItemOperations Command Response ....................................................... 40 
+3.2.5.2 Search Command Response ................................................................... 41 
+3.2.5.3 Sync Command Response ...................................................................... 41 
+
+3.2.5.3.1 Importance Element ........................................................................ 41 
+3.2.5.3.2 ReminderSet Element ...................................................................... 41 
+3.2.5.3.3 Start Element ................................................................................. 41 
+3.2.5.3.4 Occurrences and Until Elements ........................................................ 41 
+
+3.2.6 Timer Events .............................................................................................. 42 
+3.2.7 Other Local Events ...................................................................................... 42 
+
+4 Protocol Examples ................................................................................................. 43 
+4.1 Synchronizing Tasks Between Client and Server ................................................... 43 
+4.2 Synchronizing Tasks on the Client ...................................................................... 44 
+4.3 Fetching Task Data with the ItemOperations Command ........................................ 45 
+4.4 Searching for Tasks .......................................................................................... 46 
+
+5 Security ................................................................................................................. 48 
+5.1 Security Considerations for Implementers ........................................................... 48 
+5.2 Index of Security Parameters ............................................................................ 48 
+
+6 Appendix A: Full XML Schema ................................................................................ 49 
+
+7 Appendix B: Product Behavior ............................................................................... 52 
+
+8 Change Tracking .................................................................................................... 53 
+
+9 Index ..................................................................................................................... 54 
+
+ 
+
+5 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Exchange ActiveSync: Tasks Class Protocol enables the communication of task data between a 
+mobile device and the server in the ActiveSync protocol. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+recurrence pattern: Information for a repeating event, such as the start and end time, the 
+number of occurrences, and how occurrences are spaced, such as daily, weekly, or monthly. 
+
+recurring task: A series of Task objects that are described by a recurrence pattern. 
+
+reminder: A generally user-visible notification that a specified time has been reached. A reminder 
+is most commonly related to the beginning of a meeting or the due time of a task but it can be 
+applied to any object type. 
+
+Wireless Application Protocol (WAP) Binary XML (WBXML): A compact binary representation 
+of XML that is designed to reduce the transmission size of XML documents over narrowband 
+communication channels. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML element: An XML structure that typically consists of a start tag, an end tag, and the 
+information between those tags. Elements can have attributes and can contain other elements. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+XML schema definition (XSD): The World Wide Web Consortium (W3C) standard language that 
+is used in defining XML schemas. Schemas are useful for enforcing structure and constraining 
+the types of data that can be used validly within other XML documents. XML schema definition 
+refers to the fully specified and currently recommended standard for use in authoring XML 
+schemas. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+6 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol". 
+
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol". 
+
+[MS-ASDTYPE] Microsoft Corporation, "Exchange ActiveSync: Data Types". 
+
+[MS-ASEMAIL] Microsoft Corporation, "Exchange ActiveSync: Email Class Protocol". 
+
+[MS-ASHTTP] Microsoft Corporation, "Exchange ActiveSync: HTTP Protocol". 
+
+[MS-ASWBXML] Microsoft Corporation, "Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[XML10/5] Bray, T., Paoli, J., Sperberg-McQueen, C.M., et al., Eds., "Extensible Markup Language 
+(XML) 1.0 (Fifth Edition)", W3C Recommendation, November 2008, http://www.w3.org/TR/2008/REC-
+xml-20081126/ 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1/2] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema 
+Part 1: Structures Second Edition", W3C Recommendation, October 2004, 
+https://www.w3.org/TR/2004/REC-xmlschema-1-20041028/ 
+
+[XMLSCHEMA2/2] Biron, P., and Malhotra, A., Eds., "XML Schema Part 2: Datatypes Second Edition", 
+W3C Recommendation, October 2004, https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+This protocol describes an XML representation of task list data that is used for client and server 
+communication as described in [MS-ASCMD]. The task list data is included in protocol command 
+requests when task list data is sent from the client to the server, and is included in protocol command 
+responses when task list data is returned from the server to the client. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol describes the XML representation of tasks that are used by the command requests and 
+responses that are described in [MS-ASCMD]. The protocol governing the transmission of these 
+
+7 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+commands between the client and the server is described in [MS-ASCMD]. The Wireless Application 
+Protocol (WAP) Binary XML (WBXML), as described in [MS-ASWBXML], is used to transmit the 
+XML markup that constitutes the request body and the response body. 
+
+All data types in this document conform to the data type definitions that are described in [MS-
+ASDTYPE]. Common XML schema elements used by other classes are defined in [MS-ASAIRS]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+This protocol describes a set of XML elements that are used to communicate task data when using 
+the commands described in [MS-ASCMD]. This set of elements is applicable when communicating task 
+data such as the task name, start and due dates, and recurrence options and exceptions between a 
+mobile device and a server. These elements are not applicable when communicating calendar, note, 
+contact, or document data between a mobile device and a server. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol consists of a series of XML elements that are embedded inside of a command request 
+or command response, as specified in [MS-ASCMD].  
+
+The XML markup that constitutes the request body or the response body that is transmitted between 
+the client and the server uses Wireless Application Protocol (WAP) Binary XML (WBXML), as 
+specified in [MS-ASWBXML].  
+
+2.2 Message Syntax 
+
+The XML schema for the Tasks namespace is described in section 6. 
+
+The markup that is used by this protocol MUST be well-formed XML, as specified in [XML10/5]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and is not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+airsyncbase AirSyncBase [MS-ASAIRS] 
+
+tasks Tasks  
+
+airsync AirSync [MS-ASCMD] section 2.2.1.21 
+
+email Email [MS-ASEMAIL] 
+
+itemoperations ItemOperations [MS-ASCMD] section 2.2.1.10 
+
+search Search [MS-ASCMD] section 2.2.1.16 
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1/2] 
+
+ 
+
+2.2.2 Elements 
+
+Elements of the Tasks class are defined in two namespaces: Tasks and AirSyncBase. All Tasks 
+class elements are specified in this document; however, elements defined in the AirSyncBase 
+namespace are further specified in [MS-ASAIRS]. 
+
+The elements are defined in the Tasks namespace, except where indicated by the presence of a 
+namespace prefix, as defined in section 2.2.1. A prefix is used for an element in the Tasks namespace 
+only where necessary to disambiguate the element from another one of the same name. 
+
+The following elements are top-level elements of the Task class: 
+
+ airsyncbase:Body (section 2.2.2.1.1) 
+
+ tasks:Body (section 2.2.2.1.2) 
+
+9 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ BodySize (section 2.2.2.2) 
+
+ BodyTruncated (section 2.2.2.3) 
+
+ Categories (section 2.2.2.5) 
+
+ Complete (section 2.2.2.7) 
+
+ DateCompleted (section 2.2.2.8) 
+
+ DueDate (section 2.2.2.12) 
+
+ Importance (section 2.2.2.14) 
+
+ Recurrence (section 2.2.2.20) 
+
+ ReminderSet (section 2.2.2.22) 
+
+ ReminderTime (section 2.2.2.23) 
+
+ Sensitivity (section 2.2.2.24) 
+
+ StartDate (section 2.2.2.26) 
+
+ Subject (section 2.2.2.27) 
+
+ UtcDueDate (section 2.2.2.31) 
+
+ UtcStartDate (section 2.2.2.32) 
+
+Except where otherwise specified in the following sections, each top-level element of the Task class is 
+used in ActiveSync command requests and responses as follows: 
+
+ As an optional child element of the itemoperations:Schema element ([MS-ASCMD] section 
+2.2.3.158) in ItemOperations command requests ([MS-ASCMD] section 2.2.1.10) 
+
+ As an optional child element of the itemoperations:Properties element ([MS-ASCMD] section 
+2.2.3.139.2) in ItemOperations command responses ([MS-ASCMD] section 2.2.1.10) 
+
+ As an optional child element of the search:Properties element ([MS-ASCMD] section 
+2.2.3.139.3) in Search command responses ([MS-ASCMD] section 2.2.1.16) 
+
+ As an optional child element of the airsync:ApplicationData element ([MS-ASCMD] section 
+2.2.3.11) in Sync command requests ([MS-ASCMD] section 2.2.1.21) 
+
+ As an optional child element of the airsync:ApplicationData element ([MS-ASCMD] section 
+2.2.3.11) in Sync command responses ([MS-ASCMD] section 2.2.1.21) 
+
+The following table summarizes the set of common XML schema element definitions defined in or 
+used by this specification. XML schema element definitions that are specific to one or more particular 
+operations are specified further in sections 3.1.5.1, 3.1.5.2, 3.1.5.3, 3.2.5.1, 3.2.5.2, and 3.2.5.3. 
+
+Element name Description 
+
+airsyncbase:Body Specifies details about the body of a task item. 
+
+Body Contains the body of a task item that is retrieved from the server. 
+
+BodySize Specifies the full size, in characters, of the task item body. 
+
+BodyTruncated Indicates whether the body of the task item was truncated when sent from 
+the server. 
+
+10 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Description 
+
+Subject  The subject of the task item. 
+
+Importance The importance or priority of the task item. 
+
+UtcStartDate The Coordinated Universal Time (UTC) start date of the task item. 
+
+StartDate The local start date of the task item. 
+
+UtcDueDate The UTC due date of the task item. 
+
+DueDate The local due date of the task item. 
+
+Categories A collection of user-selected labels assigned to the task. 
+
+Category (section 2.2.2.6) One of the user-selected labels that has been applied to the task item. 
+
+Recurrence  When and how often this task recurs. 
+
+Type (section 2.2.2.29) The recurrence type. 
+
+Start (section 2.2.2.25) The start time of a series of recurrence items. 
+
+Until (section 2.2.2.30) The end time of a series of recurrence items. 
+
+Occurrences (section 2.2.2.18) The number of occurrences before the series ends. 
+
+Interval (section 2.2.2.15) The interval between recurrences. 
+
+DayOfWeek (section 2.2.2.10) The day of the week for the recurrence. 
+
+DayOfMonth (section 2.2.2.9) The day of the month for the recurrence. 
+
+WeekOfMonth (section The week of the month for the recurrence. 
+2.2.2.33) 
+
+MonthOfYear (section 2.2.2.17) The month of the year for the recurrence. 
+
+Regenerate (section 2.2.2.21) Whether the task item regenerates after each task instance is complete. 
+
+DeadOccur (section 2.2.2.11) Whether the task is a recurring instance. 
+
+CalendarType (section 2.2.2.4) The calendar system used by this recurrence. 
+
+IsLeapMonth (section 2.2.2.16) Whether this recurrence takes place during a leap month. 
+
+FirstDayOfWeek (section Specifies which day is considered the first day of the calendar week for this 
+2.2.2.13) recurrence. 
+
+Complete Whether the task has been completed. 
+
+DateCompleted The date on which the task item was completed. 
+
+Sensitivity The sensitivity of the task item. 
+
+ReminderTime The time and date at which the reminder for the task item will appear. 
+
+ReminderSet Whether a reminder for the task item has been set to appear. 
+
+OrdinalDate (section 2.2.2.19) The time at which the client set the flag. 
+
+SubOrdinalDate (section A value that can be used for sorting. 
+2.2.2.28) 
+
+11 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.2.1 Body 
+
+The Body element is defined in the Tasks namespace, as specified in section 2.2.2.1.2, for use by 
+protocol version 2.5. It is defined in the AirSyncBase namespace, as specified in section 2.2.2.1.1, 
+for use by protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1.  
+
+2.2.2.1.1 Body (AirSyncBase Namespace) 
+
+The airsyncbase:Body element is a container ([MS-ASDTYPE] section 2.2) element that specifies 
+details about the body of a task item. It is defined as an element in the AirSyncBase namespace and 
+is used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+For more details about the airsyncbase:Body element, see [MS-ASAIRS] section 2.2.2.9. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+The tasks:Body element (section 2.2.2.1.2) is used instead of the airsyncbase:Body element with 
+protocol version 2.5.  
+
+2.2.2.1.2 Body (Tasks Namespace) 
+
+The Body element is an optional element that contains the body of a task item that is retrieved from 
+the server. This element is defined in the Tasks namespace as a child of the 
+airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) in Sync command requests and 
+responses ([MS-ASCMD] section 2.2.1.21). 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+A client can use the airsync:Truncation element, as specified in [MS-ASCMD] section 2.2.3.185, to 
+request truncation of a task item body. This conserves space and reduces data traffic when 
+synchronizing task items. The server sets the BodyTruncated element (section 2.2.2.3) in the Sync 
+response to indicate whether the body of the task item has actually been truncated. The untruncated 
+size of the task item body is specified by the BodySize element (section 2.2.2.2). 
+
+12 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+When the client requests truncation, only the first part (or none) of each task item body is included in 
+a synchronization. A complete task item body cannot be retrieved after a task item has been 
+synchronized with a truncated task item body.  
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1  
+
+16.0  
+
+16.1  
+
+ 
+
+The airsyncbase:Body element (section 2.2.2.1.1) is used instead of the tasks:Body element with 
+protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1.  
+
+2.2.2.2 BodySize 
+
+The BodySize element is an optional element that specifies the full size, in characters, of the task 
+item body. This element is defined in the Tasks namespace as a child of the 
+airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) in Sync command responses 
+([MS-ASCMD] section 2.2.1.21). 
+
+The value of this element is an integer data type, as specified in as specified in [MS-ASDTYPE] 
+section 2.6. 
+
+This element is present only when the BodyTruncated element (section 2.2.2.3) is set to 1. When 
+the task item body is truncated, the BodySize element is included to specify the original size of the 
+body prior to truncation. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0  
+
+12.1  
+
+13 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+14.0  
+
+14.1  
+
+16.0  
+
+16.1  
+
+ 
+
+2.2.2.3 BodyTruncated 
+
+The BodyTruncated element is an optional element that indicates whether the body of the task item 
+was truncated when sent from the server. This element is defined in the Tasks namespace as a child 
+of the airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) in Sync command 
+responses ([MS-ASCMD] section 2.2.1.21). 
+
+The value of this element is a boolean data type, as specified in [MS-ASDTYPE] section 2.1. 
+
+A value of 1 indicates that the task item body has been truncated by the server; a value of 0 (zero) 
+indicates that the task item body has not been truncated. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1  
+
+16.0  
+
+16.1  
+
+ 
+
+2.2.2.4 CalendarType 
+
+The CalendarType element is a child element of the Recurrence element (section 2.2.2.20) that 
+specifies the calendar system used by the task recurrence. It is defined as an element in the Tasks 
+namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request has a maximum of one CalendarType child element per Recurrence element 
+when the Type element (section 2.2.2.29) is set to a value of 2, 3, 5, or 6. If the CalendarType 
+element is included in other instances, the server responds with a status 6 error (conversion error). 
+
+14 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+A command response has a minimum of one CalendarType child element per Recurrence element 
+when the Type element is set to a value of 2, 3, 5, or 6; otherwise, this element is optional in 
+command responses. 
+
+The value of the CalendarType element MUST be one of the values listed in the following table. 
+
+Value Meaning 
+
+0 Default 
+
+1 Gregorian 
+
+2 Gregorian (United States) 
+
+3 Japanese Emperor Era 
+
+4 Taiwan 
+
+5 Korean Tangun Era 
+
+6 Hijri (Arabic Lunar) 
+
+7 Thai 
+
+8 Hebrew Lunar 
+
+9 Gregorian (Middle East French) 
+
+10 Gregorian (Arabic) 
+
+11 Gregorian (Transliterated English) 
+
+12 Gregorian (Transliterated French) 
+
+14 Japanese Lunar 
+
+15 Chinese Lunar 
+
+16 Saka Era – This value is not supported; MUST NOT be used.  
+
+17 Chinese Lunar (Eto) – This value is not supported; MUST NOT be used. 
+
+18 Korean Lunar (Eto) – This value is not supported; MUST NOT be used.  
+
+19 Japanese Rokuyou Lunar – This value is not supported; MUST NOT be used.  
+
+20 Korean Lunar 
+
+23 Um al-Qura – This value is not supported; MUST NOT be used.  
+
+ 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+15 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.5 Categories 
+
+The Categories element is a container ([MS-ASDTYPE] section 2.2) element that specifies a 
+collection of user-managed labels assigned to the task. It is defined as an element in the Tasks 
+namespace and is used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+A command request or response has a maximum of one Categories element per command. 
+
+The Categories element can have the following child element: 
+
+Category (section 2.2.2.6): This element is optional. 
+
+If a Categories element contains no Category child elements in a request or response, then the 
+categories for the specified task will be removed. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+16 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.6 Category 
+
+The Category element is an optional child element of the Categories element (section 2.2.2.5) that 
+specifies a category that is assigned to the task item, such as Business, Holiday, Personal, or Waiting. 
+It is defined as an element in the Tasks namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+A Categories element SHOULD contain no more than 300 Category child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.7 Complete 
+
+The Complete element is a required element that specifies whether the task has been completed. It is 
+defined as an element in the Tasks namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+The value of the Complete element MUST be one of the following values. 
+
+Value Meaning 
+
+0 False (not completed) 
+
+1 True (completed) 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+17 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.8 DateCompleted 
+
+The DateCompleted element specifies the date and time at which the task was completed. It is 
+defined as an element in the Tasks namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The DateCompleted element MUST be included in the response if the Complete element (section 
+2.2.2.7) value is 1. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.9 DayOfMonth 
+
+The DayOfMonth element is an optional child element of the Recurrence element (section 2.2.2.20) 
+that specifies the day of the month for the task recurrence. It is defined as an element in the Tasks 
+namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+18 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The value of the DayOfMonth element MUST be between 1 and 31. 
+
+A command request or response has a minimum of one DayOfMonth element per Recurrence 
+element if the value of the Type element (section 2.2.2.29) is either 2 or 5. 
+
+A command request or response has a maximum of one DayOfMonth element per Recurrence 
+element. 
+
+The DayOfMonth element MUST only be included in requests or responses when the Type element 
+value is 2 or 5. When a request is issued with the DayOfMonth element in other instances, the server 
+responds with a status 6 error (conversion error). 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.10 DayOfWeek 
+
+The DayOfWeek element is an optional child element of the Recurrence element (section 2.2.2.11) 
+that specifies the day of the week for the task recurrence. It is defined as an element in the Tasks 
+namespace. 
+
+A command request or response has a minimum of one DayOfWeek element per Recurrence 
+element when the Type element value is 1, 3, or 6. 
+
+If a request is issued with the DayOfWeek element when the Type element value is 2 or 5, the 
+server responds with a status 6 error (conversion error). If the Type element value is 0 (zero), the 
+DayOfWeek element is not a required child element of the Recurrence element.<1> 
+
+A command request or response has a maximum of one DayOfWeek element per Recurrence 
+element. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+The value of the DayOfWeek element MUST be either one of the following values, or the sum of more 
+than one of the following values (in which case this task recurs on more than one day). 
+
+19 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+1 Sunday 
+
+2 Monday 
+
+4 Tuesday 
+
+8 Wednesday 
+
+16 Thursday 
+
+32 Friday 
+
+64 Saturday 
+
+127 Specifies the last day of the month when the value of the WeekOfMonth element (section 2.2.2.33) is 
+5. 
+
+ 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.11 DeadOccur 
+
+The DeadOccur element is an optional child element of the Recurrence element (section 2.2.2.20) 
+that specifies whether the task is an instance of a recurring task. It is defined as an element in the 
+Tasks namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request or response has a maximum of one DeadOccur child element per Recurrence 
+element. 
+
+Clients set this value to any non-zero value (up to 255) to mark a task as a recurring task. When 
+clients make command requests, the value MUST be set to a non-zero value (up to 255) when 
+marking a task as complete. 
+
+20 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The default value of the DeadOccur element is 0 (zero). 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.12 DueDate 
+
+The DueDate element specifies the local due date of the task item. It is defined as an element in the 
+Tasks namespace and is used in ActiveSync command requests and responses as specified in section 
+2.2.2. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+21 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.13 FirstDayOfWeek 
+
+The FirstDayOfWeek element is a child element of the Recurrence element (section 2.2.2.20) that 
+specifies which day is considered the first day of the calendar week for this recurrence. It is defined as 
+an element in the Tasks namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request has a maximum of one FirstDayOfWeek child element per Recurrence 
+element. 
+
+A command response has a maximum of one FirstDayOfWeek child element per Recurrence 
+element. The server MUST return a FirstDayOfWeek element when the value of the Type element 
+(section 2.2.2.29) is 1. 
+
+This element disambiguates recurrences across localities that define a different starting day for the 
+calendar week. If this element is not included in the client’s request, then the server SHOULD identify 
+the first day of the week for this recurrence according to the preconfigured options of the user when 
+creating the task item. 
+
+The value of the FirstDayOfWeek element MUST be one of the values defined in the following table. 
+If the client uses the Sync command request ([MS-ASCMD] section 2.2.1.21) to transmit a value not 
+included in this table, then the server MUST return protocol status error 6. Sync command status 
+values are specified in [MS-ASCMD] section 2.2.3.177.17. 
+
+Value Meaning 
+
+0 Sunday 
+
+1 Monday 
+
+2 Tuesday 
+
+3 Wednesday 
+
+4 Thursday 
+
+5 Friday 
+
+6 Saturday 
+
+ 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+22 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.14 Importance 
+
+The Importance element specifies the importance or priority of the task item. It is defined as an 
+element in the Tasks namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+The value of the Importance element SHOULD be one of the following: 
+
+Value Meaning 
+
+0 Low 
+
+1 Normal (Default) 
+
+2 High 
+
+If the Importance element is set to a value other than 0 (zero), 1, or 2 in a command request, the 
+server will process the request successfully (that is, will not return an error code in the response) and 
+return the same value that is set in the request. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.15 Interval 
+
+The Interval element is an optional child element of the Recurrence element (section 2.2.2.20) that 
+specifies the interval between task recurrences. It is defined as an element in the Tasks namespace. 
+
+23 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+A command request or response has a maximum of one Interval element per Recurrence element. 
+
+The value of the Interval element is an unsignedShort, as specified in [XMLSCHEMA2/2] section 
+3.3.23. The maximum value of this element is 999. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.16 IsLeapMonth 
+
+The IsLeapMonth element is an optional child element of the Recurrence element (section 2.2.2.20) 
+that specifies whether the recurrence patterns occur within the leap month of the current year. It is 
+defined as an element in the Tasks namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request has a maximum of one IsLeapMonth child element per Recurrence element. 
+
+A command response has a maximum of one IsLeapMonth child element per Recurrence element. 
+
+This element is applied when the CalendarType element (section 2.2.2.4) specifies a calendar system 
+that incorporates an embolismic (leap) month. Examples include lunisolar calendar systems such as 
+Hebrew Lunar and Chinese Lunar. This element has no effect when specified in conjunction with the 
+Gregorian calendar. 
+
+The value of the IsLeapMonth element MUST be one of the following values. 
+
+Value Meaning 
+
+0 False 
+
+1 True 
+
+The default value of the IsLeapMonth element is 0. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+
+24 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.17 MonthOfYear 
+
+The MonthofYear element is an optional child element of the Recurrence element (section 2.2.2.20) 
+that specifies the month of the year for the task recurrence. It is defined as an element in the Tasks 
+namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request or response has a minimum of one MonthofYear child element per Recurrence 
+element if the value of the Type element (section 2.2.2.29) is either 5 or 6. 
+
+A command request or response has a maximum of one MonthofYear child element per Recurrence 
+element. 
+
+The value of the MonthofYear element MUST be between 1 and 12. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+25 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.18 Occurrences 
+
+The Occurrences element is an optional child element of the Recurrence element (section 2.2.2.20) 
+that specifies the number of occurrences before the series ends. It is defined as an element in the 
+Tasks namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request or response has a maximum of one Occurrences child element per Recurrence 
+element.  
+
+The Occurrences element and the Until element (section 2.2.2.30) are mutually exclusive. It is 
+recommended that only one of these elements be included as a child element of the Recurrence 
+element in a Sync command request ([MS-ASCMD] section 2.2.1.21). For more details about the 
+Occurrences element, see section 3.2.5.3.4. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.19 OrdinalDate 
+
+The OrdinalDate element is a child element of the email:Flag element, as defined in [MS-ASEMAIL] 
+section 2.2.2.34, that specifies the time at which the client set the flag. It is defined as an element in 
+the Tasks namespace. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+26 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.20 Recurrence 
+
+The Recurrence element is a container ([MS-ASDTYPE] section 2.2) element that specifies when 
+and how often the task recurs. It is defined as an element in the Tasks namespace and is used in 
+ActiveSync command requests and responses as specified in section 2.2.2. 
+
+A command request or response has a maximum of one Recurrence element per command. 
+
+The Recurrence element can have the following child elements: 
+
+ Type (section 2.2.2.29): This element is required. 
+
+ Start (section 2.2.2.25): This element is required. 
+
+ Until (section 2.2.2.30): This element is optional. 
+
+ Occurrences (section 2.2.2.18): This element is optional. 
+
+ Interval (section 2.2.2.15): This element is optional. 
+
+ DayOfWeek (section 2.2.2.10): This element is optional. 
+
+ DayOfMonth (section 2.2.2.9): This element is optional. 
+
+ WeekOfMonth (section 2.2.2.33): This element is optional. 
+
+ MonthOfYear (section 2.2.2.17): This element is optional. 
+
+ Regenerate (section 2.2.2.21): This element is optional. 
+
+ DeadOccur (section 2.2.2.11): This element is optional. 
+
+ CalendarType (section 2.2.2.4): This element is optional. 
+
+ IsLeapMonth (section 2.2.2.16): This element is optional. 
+
+ FirstDayOfWeek (section 2.2.2.13): This element is required in server’s responses for weekly 
+recurrences. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+27 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.21 Regenerate 
+
+The Regenerate element is an optional child element of the Recurrence element (section 2.2.2.20) 
+that specifies whether this task item regenerates after it is completed. It is defined as an element in 
+the Tasks namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request or response has a maximum of one Regenerate child element per Recurrence 
+element. 
+
+The value of the Regenerate element MUST be one of the following values. 
+
+Value Meaning 
+
+0 False (do not regenerate) 
+
+1 True (regenerate) 
+
+Valid patterns include Daily, Weekly, Monthly, and Yearly patterns. 
+
+If the Regenerate element is not included in a response, then the client MUST assume that the 
+default value is 0 (zero) (do not regenerate). 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+28 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.22 ReminderSet 
+
+The ReminderSet element specifies whether a reminder for the task item has been set to appear. It 
+is defined as an element in the Tasks namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+The value of the ReminderSet element MUST be one of the following values. 
+
+Value Meaning 
+
+0 False (no reminder is set) (Default) 
+
+1 True (a reminder is set) 
+
+If the ReminderSet element contains a value other than 0 (zero) or 1 in a command request, the 
+server responds with a status value of 6 in the command response. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.23 ReminderTime 
+
+The ReminderTime element specifies the time and date at which the reminder for the task item will 
+appear. It is defined as an element in the Tasks namespace and is used in ActiveSync command 
+requests and responses as specified in section 2.2.2. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+29 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.24 Sensitivity 
+
+The Sensitivity element specifies the sensitivity level of the task. It is defined as an element in the 
+Tasks namespace and is used in ActiveSync command requests and responses as specified in section 
+2.2.2. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+The value of the Sensitivity element MUST be one of the following values. 
+
+Value Meaning 
+
+0 Normal 
+
+1 Personal 
+
+2 Private 
+
+3 Confidential 
+
+The default value of the Sensitivity element is 0 (zero) (normal). 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+30 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.25 Start 
+
+The Start element is a required child element of the Recurrence element (section 2.2.2.20) that 
+specifies the local start date for the recurrence.<2> It is defined as an element in the Tasks 
+namespace. 
+
+A command request or response has a minimum of one Start child element per Recurrence element. 
+For details about status errors returned when this requirement is not met, see section 3.2.5.3.3. 
+
+A command request or response has a maximum of one Start child element per Recurrence 
+element.  
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.26 StartDate 
+
+The StartDate element specifies the local start date of the task item. It is defined as an element in 
+the Tasks namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+31 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.27 Subject 
+
+The Subject element is an element that specifies the subject of the task item. It is defined as an 
+element in the Tasks namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+The Subject element is an optional element in a Sync command request ([MS-ASCMD] section 
+2.2.1.21). 
+
+The Subject element is an optional element in a Sync command response ([MS-ASCMD] section 
+2.2.1.21). 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+32 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.2.28 SubOrdinalDate 
+
+The SubOrdinalDate element is an optional child element of the email:Flag element, as defined in  
+[MS-ASEMAIL] section 2.2.2.34, that specifies a value that can be used for sorting. It is defined as an 
+element in the Tasks namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. It can 
+contain any string value and can be used for sorting if there are duplicate OrdinalDate element 
+values. For details about the OrdinalDate element, see section 2.2.2.19. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.29 Type 
+
+The Type element is a required child element of the Recurrence element (section 2.2.2.20) that 
+specifies the type of the recurrence item. It is defined as an element in the Tasks namespace. 
+
+A command request or response has a minimum of one Type child element per Recurrence element. 
+
+A command request or response has a maximum of one Type child element per Recurrence element. 
+
+If a client does not include this element in a Sync command request ([MS-ASCMD] section 2.2.1.21) 
+whenever a Recurrence element is present, then the server MUST respond with status error 6. Status 
+errors for the Sync command are specified in [MS-ASCMD] section 2.2.3.177.17. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+The value of the Type element MUST be one of the following values. 
+
+Value Meaning 
+
+0 Recurs daily. 
+
+1 Recurs weekly. 
+
+33 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+2 Recurs monthly. 
+
+3 Recurs monthly on the nth day. 
+
+5 Recurs yearly. 
+
+6 Recurs yearly on the nth day. 
+
+ 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.30 Until 
+
+The Until element is an optional child element of the Recurrence element (section 2.2.2.20) that 
+specifies the end time of a series of recurrence items. It is defined as an element in the Tasks 
+namespace. 
+
+A command request or response has a maximum of one Until child element per Recurrence element. 
+
+The Occurrences element (section 2.2.2.18) and the Until element are mutually exclusive. It is 
+recommended that only one of these elements be included as a child element of the Recurrence 
+element (section 2.2.2.20) in a Sync command request ([MS-ASCMD] section 2.2.1.21). For more 
+details about the Until element, see section 3.2.5.3.4. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+34 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.31 UtcDueDate 
+
+The UtcDueDate element specifies the UTC due date of the task item. It is defined as an element in 
+the Tasks namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.32 UtcStartDate 
+
+The UtcStartDate element specifies the UTC start date of the task item. It is defined as an element 
+in the Tasks namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+35 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.33 WeekOfMonth 
+
+The WeekOfMonth element is an optional child element of the Recurrence element (section 
+2.2.2.20) that specifies the week of the month for the task recurrence. It is defined as an element in 
+the Tasks namespace. 
+
+The value of this element is an unsignedbyte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A command request or response has a minimum of one WeekOfMonth child element per 
+Recurrence element when the value of the Type element (section 2.2.2.29) is either 3 or 6. 
+
+A command request or response has a maximum of one WeekOfMonth child element per 
+Recurrence element. 
+
+The value of the WeekOfMonth element MUST be between 1 and 5. A value of 5 designates the last 
+week of the month. 
+
+The WeekOfMonth element MUST only be included in requests or responses when the Type element 
+value is either 3 or 6. When a client’s request is issued with the WeekOfMonth element in other 
+instances, the server responds with a status 6 error (conversion error). 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+36 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+37 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+Task class: A structured XML text block that adheres to the XSD specified in section 2.2. It is 
+returned by the server to the client as part of a full XML response to the client’s command requests 
+that are specified in section 3.1.5. 
+
+Command request: A WBXML-formatted message that adheres to the command schemas specified 
+in [MS-ASCMD]. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Synchronizing Task Data Between Client and Server 
+
+A client initiates synchronization of Task class data with the server by sending a Sync command 
+request ([MS-ASCMD] section 2.2.1.21) to the server. 
+
+3.1.4.2 Searching a Server for Task Data 
+
+A client searches for Task class data on the server by sending a Search command request ([MS-
+ASCMD] section 2.2.1.16) to the server. 
+
+3.1.4.3 Requesting Details for Specific Tasks 
+
+A client requests Task class data for one or more individual task items by sending an 
+ItemOperations command request ([MS-ASCMD] section 2.2.1.10) to the server that contains one or 
+more itemoperations:Fetch elements ([MS-ASCMD] section 2.2.3.67.1). 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+The following sections specify how various elements of the Task class are used in the context of 
+specific ActiveSync commands. Command details are specified in [MS-ASCMD]. 
+
+38 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.5.1 ItemOperations Command Request 
+
+A client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) that contains 
+one or more itemoperations:Fetch elements ([MS-ASCMD] section 2.2.3.67.1) to retrieve data from 
+the server for one or more specific Task items.  
+
+The client can restrict the elements returned in the ItemOperations command response ([MS-
+ASCMD] section 2.2.1.10) by including the airsyncbase:Attachments element ([MS-ASAIRS] section 
+2.2.2.8) and the airsyncbase:Body element ([MS-ASAIRS] section 2.2.2.9) as child elements of the 
+itemoperations:Schema element ([MS-ASCMD] section 2.2.3.158) in the ItemOperations 
+command request.  
+
+For more details about the ItemOperations command, see [MS-ASCMD] section 2.2.1.10. 
+
+3.1.5.2 Search Command Request 
+
+A client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve Task class 
+items that match the criteria specified by the client. 
+
+Elements that belong to the Task class, as specified in section 2.2, MUST NOT be included in a 
+Search command request.  
+
+For more details about the Search command, see [MS-ASCMD] section 2.2.1.16. 
+
+3.1.5.3 Sync Command Request 
+
+A client uses the Sync command request ([MS-ASCMD] section 2.2.1.21) to synchronize its Task 
+class items for a specified user with the tasks currently stored by the server. 
+
+Any of the elements that belong to the Task class, as specified in section 2.2, can be included in a 
+Sync command request. 
+
+Top-level Task class elements, as specified in section 2.2, MUST be transmitted as child elements of 
+the airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) within either an airsync:Add 
+element ([MS-ASCMD] section 2.2.3.7.2) or an airsync:Change element ([MS-ASCMD] section 
+2.2.3.24). 
+
+For more details about the Sync command, see [MS-ASCMD] section 2.2.1.21. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+39 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Task class: A structured XML text block that adheres to the XSD specified in section 2.2. It is 
+returned by the server to the client as part of a full XML response to the client’s command requests 
+specified in section 3.1.5. 
+
+Command response: A WBXML-formatted message that adheres to the command schemas 
+specified in [MS-ASCMD]. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+3.2.4.1 Synchronizing Task Data Between Client and Server 
+
+Synchronization of Task class data between client and server is initiated by the client, as specified in 
+section 3.1.4.1. The server responds with a Sync command response ([MS-ASCMD] section 2.2.1.21). 
+
+3.2.4.2 Searching for Task Data 
+
+Searching for Task class data is initiated by the client, as specified in section 3.1.4.2. The server 
+responds with a Search command response ([MS-ASCMD] section 2.2.1.16). 
+
+3.2.4.3 Requesting Details for Specific Tasks 
+
+Retrieval of Task class data for one or more individual task items is initiated by the client, as specified 
+in section 3.1.4.3. The server responds with an ItemOperations command response ([MS-ASCMD] 
+section 2.2.1.10). 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The following sections specify how various elements of the Task class are used in the context of 
+specific ActiveSync commands. Command details are specified in [MS-ASCMD]. 
+
+3.2.5.1 ItemOperations Command Response 
+
+When a client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) to retrieve 
+data from the server for one or more specific Task items, as specified in section 3.1.5.1, the server 
+responds with an ItemOperations command response ([MS-ASCMD] section 2.2.1.10). 
+
+Any of the elements that belong to the Task class, as specified in section 2.2, can be included in an 
+ItemOperations command response. If an itemoperations:Schema element ([MS-ASCMD] section 
+2.2.3.158) is included in the ItemOperations command request, then the elements returned in the 
+ItemOperations command response MUST be restricted to the elements that were included as child 
+elements of the itemoperations:Schema element in the command request. 
+
+Top-level Task class elements, as specified in section 2.2, MUST be returned as child elements of the 
+itemoperations:Properties element ([MS-ASCMD] section 2.2.3.139) in the ItemOperations 
+command response. 
+
+For more information about the ItemOperations command, see [MS-ASCMD] section 2.2.1.10. 
+
+40 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.5.2 Search Command Response 
+
+When a client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve Task 
+class items from the server that match the criteria specified by the client, as specified in section 
+3.1.5.2, the server responds with a Search command response ([MS-ASCMD] section 2.2.1.16). 
+
+Any of the elements that belong to the Task class, as specified in section 2.2, can be included in a 
+Search command response. 
+
+Top-level Task class elements, as specified in section 2.2, are returned as child elements of the 
+search:Properties element ([MS-ASCMD] section 2.2.3.139) in the Search command response. 
+
+If elements that belong to the Task class are included in a Search command request, the server 
+MUST return a Status value of 2 in the Store element, as specified in [MS-ASCMD] section 
+2.2.3.177.13. 
+
+For more details about the Search command, see [MS-ASCMD] section 2.2.1.16. 
+
+3.2.5.3 Sync Command Response 
+
+When a client uses the Sync command request ([MS-ASCMD] section 2.2.1.21) to synchronize its 
+Task class items for a specified user with the tasks currently stored by the server, as specified in 
+section 3.1.5.3, the server responds with a Sync command response ([MS-ASCMD] section 2.2.1.21). 
+
+Any of the elements that belong to the Task class, as specified in section 2.2, can be included in a 
+Sync command response. 
+
+Top-level Task class elements, as specified in section 2.2, are returned as child elements of the 
+airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) within either an airsync:Add 
+element ([MS-ASCMD] section 2.2.3.7.2) or an airsync:Change element ([MS-ASCMD] section 
+2.2.3.24) in the Sync command response. 
+
+3.2.5.3.1 Importance Element 
+
+If the Importance element (section 2.2.2.5) is not included as a child element of the 
+airsync:Change element in a Sync command request, the server MUST NOT delete the element from 
+its message store, but rather keep its value unchanged. 
+
+3.2.5.3.2 ReminderSet Element 
+
+If the ReminderSet element (section 2.2.2.16) was previously set on a task but is not included as a 
+child element of the airsync:Change element in a Sync command request, the server MUST NOT 
+delete the element from its message store but rather keep its value unchanged. 
+
+3.2.5.3.3 Start Element 
+
+If a client does not include the Start element, as specified in section 2.2.2.25, in a Sync command 
+request ([MS-ASCMD] section 2.2.1.21) whenever a Recurrence element is present, then the server 
+MUST respond with status error 6. Status errors for the Sync command are specified in [MS-ASCMD] 
+section 2.2.3.177.17. 
+
+3.2.5.3.4 Occurrences and Until Elements 
+
+If both the Occurrences element, as specified in section 2.2.2.18, and the Until element, as specified 
+in section 2.2.2.30, are included in a Sync command request ([MS-ASCMD] section 2.2.1.21), the 
+server MUST respect the value of the Occurrences element and ignore the Until element. 
+
+41 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+42 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Synchronizing Tasks Between Client and Server 
+
+The following example demonstrates a client’s request to create a new task on the server, and the 
+server’s response. In this example, the client sends a Sync command request ([MS-ASCMD] section 
+2.2.1.21) to the server that contains information for a task that was created on the client, and the 
+server responds with a Sync command response ([MS-ASCMD] section 2.2.1.21). 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns:tasks="Tasks:" xmlns:airsyncbase="AirSyncBase:" xmlns="AirSync:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>301865454</SyncKey> 
+      <CollectionId>11</CollectionId> 
+      <DeletesAsMoves>1</DeletesAsMoves> 
+      <GetChanges>1</GetChanges> 
+      <WindowSize>100</WindowSize> 
+      <Commands> 
+        <Add> 
+          <ClientId>4717a10e-492d-45af-9fe3-227f74385b13</ClientId> 
+          <ApplicationData> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>2</airsyncbase:Type> 
+              <airsyncbase:Data>&lt;strong&gt;Must&lt;/strong&gt; complete TPS reports using 
+the new cover sheet.</airsyncbase:Data> 
+            </airsyncbase:Body> 
+            <tasks:Subject>TPS Reports for August 2009</tasks:Subject> 
+            <tasks:Importance>2</tasks:Importance> 
+            <tasks:Categories> 
+              <tasks:Category>Business</tasks:Category> 
+              <tasks:Category>Reports</tasks:Category> 
+            </tasks:Categories> 
+            <tasks:Complete>0</tasks:Complete> 
+            <tasks:DueDate>2009-09-03T13:00:00.000Z</tasks:DueDate> 
+            <tasks:UtcDueDate>2009-09-03T20:00:00.000Z</tasks:UtcDueDate> 
+            <tasks:ReminderSet>1</tasks:ReminderSet> 
+            <tasks:ReminderTime>2009-09-02T09:00:00.000Z</tasks:ReminderTime> 
+            <tasks:Sensitivity>1</tasks:Sensitivity> 
+            <tasks:StartDate>2009-09-03T09:00:00.000Z</tasks:StartDate> 
+            <tasks:UtcStartDate>2009-09-03T16:00:00.000Z</tasks:UtcStartDate> 
+          </ApplicationData> 
+        </Add> 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>1010751843</SyncKey> 
+      <CollectionId>11</CollectionId> 
+      <Status>1</Status> 
+      <Responses> 
+        <Add> 
+          <ClientId>4717a10e-492d-45af-9fe3-227f74385b13</ClientId> 
+          <ServerId>11:1</ServerId> 
+
+43 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <Status>1</Status> 
+        </Add> 
+      </Responses> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+4.2 Synchronizing Tasks on the Client 
+
+The following example demonstrates a client’s request to synchronize its task data with the server, 
+and the server’s response. In this example, the client does not submit any changes in the Sync 
+command request ([MS-ASCMD] section 2.2.1.21), and the server responds with a Sync command 
+response ([MS-ASCMD] section 2.2.1.21) that includes three changes: a new task, a changed task, 
+and a deleted task. Elements of the Task class are included in the Sync command response as child 
+elements of the airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) under an 
+airsync:Add element ([MS-ASCMD] section 2.2.3.7.2), an airsync:Change element ([MS-ASCMD] 
+section 2.2.3.24), and an airsync:Delete element ([MS-ASCMD] section 2.2.3.42.2). 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>761975125</SyncKey> 
+      <CollectionId>19</CollectionId> 
+      <DeletesAsMoves>1</DeletesAsMoves> 
+      <GetChanges>1</GetChanges> 
+      <WindowSize>100</WindowSize> 
+      <GetChanges/> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync:" xmlns:airsyncbase="AirSyncBase:" xmlns:tasks="Tasks:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>457669362</SyncKey> 
+      <CollectionId>19</CollectionId> 
+      <Status>1</Status> 
+      <Commands> 
+        <Change> 
+          <ServerId>19:1</ServerId> 
+          <ApplicationData> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>3</airsyncbase:Type> 
+              <airsyncbase:EstimatedDataSize>5731</airsyncbase:EstimatedDataSize> 
+              <airsyncbase:Truncated>1</airsyncbase:Truncated> 
+            </airsyncbase:Body> 
+            <tasks:Subject>Finish Q4 sales roll-up</tasks:Subject> 
+            <tasks:Importance>1</tasks:Importance> 
+            <tasks:UtcStartDate>2008-10-02T07:00:00.000Z</tasks:UtcStartDate> 
+            <tasks:StartDate>2008-10-02T00:00:00.000Z</tasks:StartDate> 
+            <tasks:UtcDueDate>2008-10-10T07:00:00.000Z</tasks:UtcDueDate> 
+            <tasks:DueDate>2008-10-10T00:00:00.000Z</tasks:DueDate> 
+            <tasks:Complete>0</tasks:Complete> 
+            <tasks:Sensitivity>0</tasks:Sensitivity> 
+            <tasks:ReminderTime>2008-10-10T19:30:00.000Z</tasks:ReminderTime> 
+            <tasks:ReminderSet>1</tasks:ReminderSet> 
+
+44 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          </ApplicationData> 
+        </Change> 
+        <Add> 
+          <ServerId>19:3</ServerId> 
+          <ApplicationData> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>1</airsyncbase:Type> 
+              <airsyncbase:EstimatedDataSize>0</airsyncbase:EstimatedDataSize> 
+              <airsyncbase:Truncated>1</airsyncbase:Truncated> 
+            </airsyncbase:Body> 
+            <tasks:Subject>Email management team about next round of 
+quarterlies</tasks:Subject> 
+            <tasks:Importance>1</tasks:Importance> 
+            <tasks:UtcStartDate>2008-10-02T07:00:00.000Z</tasks:UtcStartDate> 
+            <tasks:StartDate>2008-10-02T00:00:00.000Z</tasks:StartDate> 
+            <tasks:UtcDueDate>2008-10-02T07:00:00.000Z</tasks:UtcDueDate> 
+            <tasks:DueDate>2008-10-02T00:00:00.000Z</tasks:DueDate> 
+            <tasks:Complete>0</tasks:Complete> 
+            <tasks:Sensitivity>0</tasks:Sensitivity> 
+            <tasks:ReminderSet>0</tasks:ReminderSet> 
+          </ApplicationData> 
+        </Add> 
+        <Delete> 
+          <ServerId>19:2</ServerId> 
+        </Delete> 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+4.3 Fetching Task Data with the ItemOperations Command 
+
+The following example demonstrates a client’s request to retrieve information from the server for a 
+particular task, and the server’s response. The client sends an ItemOperations command request 
+([MS-ASCMD] section 2.2.1.10) to the server, and the server responds with an ItemOperations 
+command response ([MS-ASCMD] section 2.2.1.10). This example assumes that the server has 
+assigned a Collection ID of 11 to the Tasks collection. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:airsync="AirSync:" 
+ xmlns:airsyncbase="AirSyncBase:" xmlns="ItemOperations:"> 
+  <Fetch> 
+    <Store>Mailbox</Store> 
+    <airsync:CollectionId>11</airsync:CollectionId> 
+    <airsync:ServerId>11:1</airsync:ServerId> 
+    <Options> 
+      <airsyncbase:BodyPreference> 
+        <airsyncbase:Type>1</airsyncbase:Type> 
+        <airsyncbase:TruncationSize>256</airsyncbase:TruncationSize> 
+        <airsyncbase:AllOrNone>0</airsyncbase:AllOrNone> 
+      </airsyncbase:BodyPreference> 
+    </Options> 
+  </Fetch> 
+ </ItemOperations> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:airsync="AirSync:" xmlns:tasks="Tasks:" 
+xmlns:airsyncbase="AirSyncBase:" xmlns="ItemOperations:"> 
+  <Status>1</Status> 
+
+45 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <Response> 
+    <Fetch> 
+      <Status>1</Status> 
+      <airsync:CollectionId>11</airsync:CollectionId> 
+      <airsync:ServerId>11:1</airsync:ServerId> 
+      <airsync:Class>Tasks</airsync:Class> 
+      <Properties> 
+        <airsyncbase:Body> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+          <airsyncbase:EstimatedDataSize>0</airsyncbase:EstimatedDataSize> 
+        </airsyncbase:Body> 
+        <tasks:Subject>Complete This Week's Test Run </tasks:Subject> 
+        <tasks:Importance>2</tasks:Importance> 
+        <tasks:UtcStartDate>2009-11-18T08:00:00.000Z</tasks:UtcStartDate> 
+        <tasks:StartDate>2009-11-18T00:00:00.000Z</tasks:StartDate> 
+        <tasks:UtcDueDate>2009-11-27T08:00:00.000Z</tasks:UtcDueDate> 
+        <tasks:DueDate>2009-11-27T00:00:00.000Z</tasks:DueDate> 
+        <tasks:Complete>0</tasks:Complete> 
+        <tasks:Sensitivity>2</tasks:Sensitivity> 
+        <tasks:ReminderTime>2009-11-27T16:00:00.000Z</tasks:ReminderTime> 
+        <tasks:ReminderSet>1</tasks:ReminderSet> 
+      </Properties> 
+    </Fetch> 
+  </Response> 
+ </ItemOperations> 
+
+4.4 Searching for Tasks 
+
+The following example demonstrates a client’s request to find all tasks on the server that contain the 
+word "Test", and the server’s response. The client sends a Search command request ([MS-ASCMD] 
+section 2.2.1.16) to the server, and the server responds with a Search command response ([MS-
+ASCMD] section 2.2.1.16). This example assumes that the server has assigned a Collection ID of 11 to 
+the Tasks collection. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Search xmlns="Search:" xmlns:airsync="AirSync:" 
+ > 
+ <Store> 
+  <Name>Mailbox</Name> 
+    <Query> 
+      <And> 
+        <airsync:Class>Tasks</airsync:Class> 
+        <airsync:CollectionId>11</airsync:CollectionId> 
+        <FreeText>Test</FreeText> 
+      </And> 
+    </Query> 
+    <Options> 
+      <RebuildResults /> 
+      <Range>0-4</Range> 
+    </Options> 
+  </Store> 
+ </Search> 
+
+Response: 
+
+ <Search xmlns:A0="AirSync:" xmlns:tasks="Tasks:" xmlns:airsyncbase="AirSyncBase:" 
+xmlns="Search:"> 
+  <Status>1 Success</Status> 
+  <Response> 
+    <Store> 
+      <Status>1 Success</Status> 
+
+46 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <Result> 
+        <A0:Class>Tasks</A0:Class> 
+        
+<LongId>RgAAAADl9NP3UFJNRpgIYBWT6lSUBwDqXN0OYiDySoYnY1igrbIlAAAAAAAqAADqXN0OYiDySoYnY1igrbIlA
+AAAAGHBAAAT</LongId> 
+        <A0:CollectionId>11</A0:CollectionId> 
+        <Properties> 
+          <airsyncbase:Body> 
+            <airsyncbase:Type>1</airsyncbase:Type> 
+            <airsyncbase:EstimatedDataSize>0</airsyncbase:EstimatedDataSize> 
+            <airsyncbase:Truncated>1</airsyncbase:Truncated> 
+          </airsyncbase:Body> 
+          <tasks:Subject>Complete This Week's Test Run </tasks:Subject> 
+          <tasks:Importance>2</tasks:Importance> 
+          <tasks:UtcStartDate>2009-11-18T08:00:00.000Z</tasks:UtcStartDate> 
+          <tasks:StartDate>2009-11-18T00:00:00.000Z</tasks:StartDate> 
+          <tasks:UtcDueDate>2009-11-27T08:00:00.000Z</tasks:UtcDueDate> 
+          <tasks:DueDate>2009-11-27T00:00:00.000Z</tasks:DueDate> 
+          <tasks:Complete>0</tasks:Complete> 
+          <tasks:Sensitivity>2</tasks:Sensitivity> 
+          <tasks:ReminderTime>2009-11-27T16:00:00.000Z</tasks:ReminderTime> 
+          <tasks:ReminderSet>1</tasks:ReminderSet> 
+        </Properties> 
+      </Result> 
+      <Range>0-0</Range> 
+      <Total>1</Total> 
+    </Store> 
+  </Response> 
+ </Search> 
+
+47 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None 
+
+48 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full XML Schema 
+
+For ease of implementation, the following is the full XML schema for this protocol. This schema is 
+valid for protocol versions 2.5, 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns="Tasks"  
+    targetNamespace="Tasks" elementFormDefault="qualified"  
+    attributeFormDefault="unqualified"> 
+  <xs:element name="Subject" type="xs:string"/> 
+  <xs:element name="Body" type="xs:string"/> 
+  <xs:element name="BodySize" type="xs:integer"/> 
+  <xs:element name="BodyTruncated" type="xs:boolean"/> 
+  <xs:element name="Importance" type="xs:unsignedByte"/> 
+  <xs:element name="UtcStartDate" type="xs:dateTime"/> 
+  <xs:element name="StartDate" type="xs:dateTime"/> 
+  <xs:element name="UtcDueDate" type="xs:dateTime"/> 
+  <xs:element name="DueDate" type="xs:dateTime"/> 
+  <xs:element name="Categories"> 
+    <xs:complexType> 
+      <xs:sequence minOccurs="0"> 
+        <xs:element name="Category" type="xs:string" maxOccurs="300"/> 
+      </xs:sequence> 
+    </xs:complexType> 
+  </xs:element> 
+  <xs:element name="Recurrence"> 
+    <xs:complexType> 
+      <xs:all> 
+        <xs:element minOccurs="1" name="Type"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="0"/> 
+              <xs:maxInclusive value="6"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element name="Start" type="xs:dateTime" minOccurs="0"/> 
+        <xs:element name="Until" type="xs:dateTime" minOccurs="0"/> 
+        <xs:element name="Occurrences" type="xs:unsignedByte" minOccurs="0"/>  
+        <xs:element minOccurs="0" name="Interval"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedShort"> 
+              <xs:minInclusive value="0"/> 
+              <xs:maxInclusive value="999"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element minOccurs="0" name="DayOfWeek"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="1"/> 
+              <xs:maxInclusive value="254"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element minOccurs="0" name="DayOfMonth"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="1"/> 
+              <xs:maxInclusive value="31"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element minOccurs="0" name="WeekOfMonth"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="1"/> 
+
+49 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+              <xs:maxInclusive value="5"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element minOccurs="0" name="MonthOfYear"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="1"/> 
+              <xs:maxInclusive value="12"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element name="Regenerate" type="xs:unsignedByte" minOccurs="0"/> 
+        <xs:element name="DeadOccur" type="xs:unsignedByte" minOccurs="0"/>  
+        <xs:element minOccurs="0" name="CalendarType"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="0"/> 
+              <xs:maxInclusive value="23"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element minOccurs="0" name="IsLeapMonth"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="0"/> 
+              <xs:maxInclusive value="1"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+        <xs:element name="FirstDayOfWeek" minOccurs="0"> 
+          <xs:simpleType> 
+            <xs:restriction base="xs:unsignedByte"> 
+              <xs:minInclusive value="0"/> 
+              <xs:maxInclusive value="6"/> 
+            </xs:restriction> 
+          </xs:simpleType> 
+        </xs:element> 
+      </xs:all> 
+    </xs:complexType> 
+  </xs:element> 
+  <xs:element name="Complete" type="xs:unsignedByte"/> 
+  <xs:element name="DateCompleted" type="xs:dateTime"/>  
+  <xs:element name="Sensitivity"> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:unsignedByte"> 
+        <xs:minInclusive value="0"/> 
+        <xs:maxInclusive value="3"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:element> 
+  <xs:element name="ReminderTime" type="xs:dateTime"/> 
+  <xs:element name="ReminderSet" type="xs:unsignedByte"/> 
+  <xs:element name="OrdinalDate" type="xs:dateTime"/> 
+  <xs:element name="SubOrdinalDate" type="xs:string"/> 
+  <xs:group name="AllProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element ref="Subject"/> 
+        <xs:element ref="Body"/> 
+        <xs:element ref="BodySize"/> 
+        <xs:element ref="BodyTruncated"/> 
+        <xs:element ref="Importance"/> 
+        <xs:element ref="UtcStartDate"/> 
+        <xs:element ref="StartDate"/> 
+        <xs:element ref="UtcDueDate"/> 
+        <xs:element ref="DueDate"/> 
+        <xs:element ref="Categories"/> 
+        <xs:element ref="Recurrence"/> 
+
+50 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element ref="Complete"/> 
+        <xs:element ref="DateCompleted"/> 
+        <xs:element ref="Sensitivity"/> 
+        <xs:element ref="ReminderTime"/> 
+        <xs:element ref="ReminderSet"/> 
+        <xs:element ref="OrdinalDate"/> 
+        <xs:element ref="SubOrdinalDate"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+ </xs:schema> 
+
+51 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 Service Pack 1 (SP1) 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.2.10:  When the Type element value is 0, Exchange 2007 SP1 responds with a 
+status 6 if DayOfWeek is set in the request. 
+
+<2> Section 2.2.2.25:  Microsoft Exchange Server 2010 Service Pack 1 (SP1), the initial release 
+version of Exchange 2013, Exchange 2016, and Exchange 2019 do not return the Start element when 
+protocol version is 14.0. 
+
+52 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+7 Appendix B: Product Behavior Updated list of supported products. Major 
+
+53 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Index
+A    fetching task data with the ItemOperations 
+ command 45 
+Abstract data model    searching for tasks 46 
+   client 38    synchronizing tasks between client and server 43 
+   server 39    synchronizing tasks on the client 44 
+Applicability 8  
+ F 
+C  
+ Fields - vendor-extensible 8 
+Capability negotiation 8 Full XML schema 49 
+Change tracking 53  
+Client G 
+   abstract data model 38  
+   initialization 38 Glossary 6 
+   message processing 38  
+   other local events 39 I 
+   sequencing rules 38  
+   timer events 39 Implementer - security considerations 48 
+   timers 38 Index of security parameters 48 
+ Informative references 7 
+D Initialization 
+    client 38 
+Data model - abstract    server 40 
+   client 38 Introduction 6 
+   server 39  
+ M 
+E  
+ Message processing 
+Elements    client 38 
+   Body 12    server 40 
+   CalendarType 14 Messages 
+   Categories 16    Elements 9 
+   Category 17    Namespaces 9 
+   Complete 17    syntax 9 
+   DateCompleted 18    transport 9 
+   DayOfMonth 18  
+   DayOfWeek 19 N 
+   DeadOccur 20  
+   DueDate 21 Namespaces message 9 
+   FirstDayOfWeek 22 Normative references 7 
+   Importance 23  
+   Interval 23 O 
+   IsLeapMonth 24  
+   MonthOfYear 25 Other local events 
+   Occurrences 26    client 39 
+   Recurrence 27    server 42 
+   Regenerate 28 Overview (synopsis) 7 
+   ReminderSet 29  
+   ReminderTime 29 P 
+   Sensitivity 30  
+   Start 31 Parameters - security index 48 
+   StartDate 31 Preconditions 8 
+   Subject 32 Prerequisites 8 
+   Type 33 Product behavior 52 
+   Until 34  
+   UtcDueDate 35 
+
+R 
+   UtcStartDate 35 
+
+ 
+   WeekOfMonth 36 
+
+References 7 
+Elements message 9 
+
+   informative 7 
+Examples 
+
+   normative 7 
+Relationship to other protocols 7 
+
+54 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+S 
+ 
+Security 
+   implementer considerations 48 
+   parameter index 48 
+Sequencing rules 
+   client 38 
+   server 40 
+Server 
+   abstract data model 39 
+   initialization 40 
+   message processing 40 
+   other local events 42 
+   sequencing rules 40 
+   timer events 42 
+   timers 40 
+Standards assignments 8 
+ 
+T 
+ 
+Timer events 
+   client 39 
+   server 42 
+Timers 
+   client 38 
+   server 40 
+Tracking changes 53 
+Transport 9 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+ 
+X 
+ 
+XML schema 49 
+
+ 
+
+55 / 55 
+
+[MS-ASTASK] - v20250520 
+Exchange ActiveSync: Tasks Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

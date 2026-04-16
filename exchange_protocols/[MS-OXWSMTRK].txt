@@ -1,0 +1,3163 @@
+﻿[MS-OXWSMTRK]:  
+
+Message Tracking Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0 Major Initial Availability. 
+
+11/4/2009 1.1.0 Minor Updated the technical content. 
+
+2/10/2010 1.2.0 Minor Updated the technical content. 
+
+5/5/2010 2.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 2.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 2.1 None 
+
+technical content. 
+
+3/18/2011 2.2 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 3.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 3.0 None 
+
+technical content. 
+
+1/20/2012 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 4.0 None 
+
+technical content. 
+
+7/16/2012 4.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 4.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 4.2 None 
+
+technical content. 
+
+7/26/2013 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 5.0 None 
+
+technical content. 
+
+4/30/2014 6.0 Major Significantly changed the technical content. 
+
+7/31/2014 6.1 Minor Clarified the meaning of the technical content. 
+
+10/30/2014 7.0 Major Significantly changed the technical content. 
+
+5/26/2015 8.0 Major Significantly changed the technical content. 
+
+9/14/2015 9.0 Major Significantly changed the technical content. 
+
+6/13/2016 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 10.0 None 
+
+technical content. 
+
+7/24/2018 11.0 Major Significantly changed the technical content. 
+
+10/1/2018 12.0 Major Significantly changed the technical content. 
+
+2/15/2022 12.0 None No changes to the meaning, language, or formatting of the 
+
+2 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/17/2022 12.0 None 
+
+technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Common Message Syntax ................................................................................. 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Messages ................................................................................................... 10 
+2.2.3 Elements ................................................................................................... 10 
+2.2.4 Complex Types ........................................................................................... 11 
+
+2.2.4.1 t:TrackingPropertyType Complex Type ..................................................... 11 
+2.2.4.2 t:ArrayOfTrackingPropertiesType Complex Type ........................................ 12 
+
+2.2.5 Simple Types ............................................................................................. 12 
+2.2.6 Attributes .................................................................................................. 12 
+2.2.7 Groups ...................................................................................................... 13 
+2.2.8 Attribute Groups ......................................................................................... 13 
+
+3 Protocol Details ..................................................................................................... 14 
+3.1 ExchangeServicePortType Server Details ............................................................. 14 
+
+3.1.1 Abstract Data Model .................................................................................... 14 
+3.1.2 Timers ...................................................................................................... 14 
+3.1.3 Initialization ............................................................................................... 14 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 14 
+
+3.1.4.1 FindMessageTrackingReport Operation ..................................................... 14 
+3.1.4.1.1 Messages ....................................................................................... 15 
+
+3.1.4.1.1.1 tns:FindMessageTrackingReportSoapIn Message ............................ 15 
+3.1.4.1.1.2 tns:FindMessageTrackingReportSoapOut Message .......................... 16 
+
+3.1.4.1.2 Elements ........................................................................................ 16 
+3.1.4.1.2.1 FindMessageTrackingReport Element ............................................ 16 
+3.1.4.1.2.2 FindMessageTrackingReportResponse Element............................... 17 
+
+3.1.4.1.3 Complex Types ............................................................................... 17 
+3.1.4.1.3.1 m:FindMessageTrackingReportRequestType Complex Type ............. 17 
+3.1.4.1.3.2 m:FindMessageTrackingReportResponseMessageType Complex Type 19 
+3.1.4.1.3.3 t:ArrayOfFindMessageTrackingSearchResultType Complex Type....... 20 
+3.1.4.1.3.4 t:FindMessageTrackingSearchResultType Complex Type ................. 21 
+
+3.1.4.1.4 Simple Types .................................................................................. 23 
+3.1.4.1.5 Attributes ....................................................................................... 23 
+3.1.4.1.6 Groups ........................................................................................... 23 
+3.1.4.1.7 Attribute Groups.............................................................................. 23 
+
+3.1.4.2 GetMessageTrackingReport Operation...................................................... 23 
+3.1.4.2.1 Messages ....................................................................................... 23 
+
+3.1.4.2.1.1 tns:GetMessageTrackingReportSoapIn Message ............................. 24 
+3.1.4.2.1.2 tns:GetMessageTrackingReportSoapOut Message ........................... 24 
+
+3.1.4.2.2 Elements ........................................................................................ 25 
+3.1.4.2.2.1 GetMessageTrackingReport Element ............................................. 25 
+
+4 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.2.2 GetMessageTrackingReportResponse Element ............................... 25 
+3.1.4.2.3 Complex Types ............................................................................... 25 
+
+3.1.4.2.3.1 m:GetMessageTrackingReportRequestType Complex Type .............. 26 
+3.1.4.2.3.2 m:GetMessageTrackingReportResponseMessageType Complex Type 27 
+3.1.4.2.3.3 t:ArrayOfRecipientTrackingEventType Complex Type ...................... 28 
+3.1.4.2.3.4 t:MessageTrackingReportType Complex Type ................................ 29 
+3.1.4.2.3.5 t:RecipientTrackingEventType Complex Type ................................. 30 
+3.1.4.2.3.6 t:ArrayOfArraysOfTrackingPropertiesType Complex Type ................ 31 
+
+3.1.4.2.4 Simple Types .................................................................................. 32 
+3.1.4.2.4.1 t:MessageTrackingReportTemplateType Simple Type ...................... 32 
+3.1.4.2.4.2 t:MessageTrackingDeliveryStatusType Simple Type ........................ 32 
+3.1.4.2.4.3 t:MessageTrackingEventDescriptionType Simple Type .................... 33 
+3.1.4.2.4.4 t:MessageTrackingScopeType Simple Type .................................... 36 
+
+3.1.4.2.5 Attributes ....................................................................................... 36 
+3.1.4.2.6 Groups ........................................................................................... 36 
+3.1.4.2.7 Attribute Groups.............................................................................. 36 
+
+3.1.5 Timer Events .............................................................................................. 36 
+3.1.6 Other Local Events ...................................................................................... 37 
+
+4 Protocol Examples ................................................................................................. 38 
+
+5 Security ................................................................................................................. 39 
+5.1 Security Considerations for Implementers ........................................................... 39 
+5.2 Index of Security Parameters ............................................................................ 39 
+
+6 Appendix A: Full WSDL .......................................................................................... 40 
+
+7 Appendix B: Full XML Schema ................................................................................ 42 
+7.1 Messages Schema ............................................................................................ 42 
+7.2 Types Schema ................................................................................................. 43 
+
+8 Appendix C: Product Behavior ............................................................................... 46 
+
+9 Change Tracking .................................................................................................... 48 
+
+10 Index ..................................................................................................................... 49 
+
+ 
+
+5 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Message Tracking Web Service Protocol enables clients to find and return information about 
+messages delivered by a server. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Augmented Backus-Naur Form (ABNF): A modified version of Backus-Naur Form (BNF), 
+commonly used by Internet specifications. ABNF notation balances compactness and simplicity 
+with reasonable representational power. ABNF differs from standard BNF in its definitions and 
+uses of naming rules, repetition, alternatives, order-independence, and value ranges. For more 
+information, see [RFC5234]. 
+
+blind carbon copy (Bcc) recipient: An addressee on a Message object that is not visible to 
+recipients of the Message object. 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+email address: A string that identifies a user and enables the user to receive Internet messages. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, using 
+a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+
+6 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+7 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+The Message Tracking Web Service Protocol provides clients with message delivery information about 
+the server. Clients can use this protocol to search for a particular message on the server and then 
+retrieve information from the resulting report.  
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP Protocol, as described in [SOAP1.1], to specify the structure information 
+exchanged between the client and server. This protocol uses the XML Protocol, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content sent to and from the server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following layering diagram. 
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+8 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], is required to form the HTTP request to the web server that 
+hosts this protocol. The operations that this protocol defines cannot be accessed unless the correct 
+endpoint is identified in the HTTP web requests that target this protocol. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client applications that track message delivery. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses multiple transports with SOAP 1.1, as specified in 
+section 2.1. 
+
+ Protocol Versions: This protocol has only one WSDL port type version. The WSDL version of 
+the request is identified by using the t:RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the t:ServerVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes text strings in various messages. Localization considerations 
+for such strings are specified in section 3.1.4. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1. For details, see [SOAP1.1]. 
+
+This protocol relies on the web server that hosts the application to perform authentication. The 
+protocol SHOULD use secure communications by means of HTTPS, as defined in [RFC2818]. The 
+protocol MAY use HTTP, as described in [RFC2616], for transport.<1> 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and WSDL as defined in 
+[WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces by using the mechanisms 
+specified in [XMLNS]. Although this specification associates a specific XML namespace prefix for 
+each XML namespace that is used, the choice of any particular XML namespace prefix is 
+implementation-specific and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+10 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions that are 
+defined by this specification. XML schema complex type definitions that are specific to a particular 
+operation are defined with the operation. 
+
+Complex type name Description 
+
+TrackingPropertyType Specifies a name/value pair of string that is used to create properties 
+for message tracking reports. 
+
+ArrayOfTrackingPropertiesType Specifies a list of one or more tracking properties. 
+
+ 
+
+2.2.4.1 t:TrackingPropertyType Complex Type 
+
+The TrackingPropertyType complex type specifies a name/value pair of strings that is used to 
+create properties for message tracking reports.<2> 
+
+ <xs:complexType name="TrackingPropertyType"> 
+  <xs:sequence> 
+    <xs:element name="Name" 
+      type="xs:string" 
+     /> 
+    <xs:element name="Value" 
+      type="xs:string" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists and describes the child elements of the TrackingPropertyType complex 
+type. 
+
+Element name Type Description 
+
+Name xs:string Defines a name for a particular message tracking 
+([XMLSCHEMA2]) report property. 
+
+Value xs:string Defines a value for the message tracking report 
+property. 
+
+The following table lists and describes the valid values of the TrackingPropertyType complex type. 
+
+Name Value Usage Description 
+
+ExpandTree unlimited Used in Specifies 
+FindMessageTrackingReport whether to 
+operation. expand 
+
+recipient 
+tree before 
+searching 
+the 
+recipients. 
+
+SearchAsRecip unlimited Used in Specifies 
+FindMessageTrackingReport whether to 
+
+11 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Name Value Usage Description 
+
+operation. search 
+starting from 
+recipients. 
+
+GetAdditionRecords unlimited Used in Specifies 
+GetMessageTrackingReport whether to 
+operation. get 
+
+additional 
+records. 
+
+SearchForModerationResult unlimited Used in Specifies 
+FindMessageTrackingReport whether to 
+operation. get 
+
+moderation 
+results. 
+
+ 
+
+2.2.4.2 t:ArrayOfTrackingPropertiesType Complex Type 
+
+The ArrayOfTrackingPropertiesType complex type specifies a list of one or more tracking 
+properties.<3> 
+
+ <xs:complexType name="ArrayOfTrackingPropertiesType"> 
+  <xs:choice 
+    maxOccurs="unbounded" 
+    minOccurs="0" 
+  > 
+    <xs:element name="TrackingPropertyType" 
+      type="t:TrackingPropertyType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+
+The following table lists and describes the child elements of the ArrayOfTrackingPropertiesType 
+complex type. 
+
+Element name Type Description 
+
+TrackingPropertyType t:TrackingPropertyType (section Specifies a name/value pair of strings that is 
+2.2.4.1) used to create properties for message 
+
+tracking reports. 
+
+ 
+
+2.2.5 Simple Types 
+
+This specification does not define any common XML schema simple type definitions. 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+12 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+13 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results that are returned by the transport are passed directly 
+back to the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+The Message Tracking Web Service Protocol defines a single port type with two operations. These 
+operations enable client implementations to find and get message tracking reports. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+The Message Tracking Web Service Protocol is used to find and get message tracking reports on a 
+primary account's mailbox on the server. The server maintains the reports and retrieves them as 
+requested. 
+
+The client is not required to maintain the state of message tracking reports on the server and can 
+retrieve the current report at any time. If more than one client is receiving a particular report, there is 
+no requirement that the server lock the existing set of reports. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of WSDL operations as defined by this specification. 
+
+Operation name Description 
+
+FindMessageTrackingReport (section 3.1.4.1) Finds messages that meet the specified criteria. 
+
+GetMessageTrackingReport (section 3.1.4.2) Gets tracking information about the specified messages. 
+
+ 
+
+3.1.4.1 FindMessageTrackingReport Operation 
+
+The FindMessageTrackingReport operation finds messages that meet the specified criteria.  
+
+The following is the WSDL port type specification for this operation. 
+
+14 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <wsdl:operation name="FindMessageTrackingReport" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+   <wsdl:input message="tns:FindMessageTrackingReportSoapIn" /> 
+   <wsdl:output message="tns:FindMessageTrackingReportSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for this operation. 
+
+ <wsdl:operation name="FindMessageTrackingReport"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindMessageTrackingR
+eport" /> 
+            <wsdl:input> 
+                <soap:body parts="request" use="literal"/> 
+                <soap:header message="tns:FindMessageTrackingReportSoapIn" 
+part="RequestVersion" use="literal"/> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="FindMessageTrackingReportResult" use="literal" /> 
+                <soap:header message="tns:FindMessageTrackingReportSoapOut" 
+part="ServerVersion" use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+
+For any valid FindMessageTrackingReport operation request, the server MUST return a 
+FindMessageTrackingReportResponse element with the ResponseClass attribute set to 
+"Success", and the ResponseCode element MUST be set to "NoError". If the sender in the 
+FindMessageTrackingReport operation request has not sent any emails or is not found, the 
+FindMessageTrackingReportResponse element MUST only contain an ExecutedSearchScope 
+element and an empty MessageTrackingSearchResults element.  
+
+3.1.4.1.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to the 
+FindMessageTrackingReport operation. 
+
+Message name Description 
+
+FindMessageTrackingReportSoapIn Specifies the SOAP message that requests the report. 
+
+FindMessageTrackingReportSoapOut Specifies the SOAP message that is returned by the server in 
+response. 
+
+ 
+
+3.1.4.1.1.1 tns:FindMessageTrackingReportSoapIn Message 
+
+The FindMessageTrackingReportSoapIn WSDL message specifies the 
+FindMessageTrackingReport operation request to find a message tracking report on the server. 
+
+ <wsdl:message name="FindMessageTrackingReportSoapIn"> 
+   <wsdl:part name="request" element="tns:FindMessageTrackingReport"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The FindMessageTrackingReportSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindMessageTrackingReport. 
+
+15 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The parts of the FindMessageTrackingReportSoapIn WSDL message are listed and described in 
+the following table. 
+
+Part name Element/type Description 
+
+request tns:FindMessageTrackingReport Specifies the request. 
+(section 3.1.4.1.2.1) 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies the schema version for the 
+OXWSCDATA] section 2.2.3.9) FindMessageTrackingReport operation 
+
+request (section 3.1.4.1). 
+
+ 
+
+3.1.4.1.1.2 tns:FindMessageTrackingReportSoapOut Message 
+
+The FindMessageTrackingReportSoapOut WSDL message specifies the server response to the 
+FindMessageTrackingReport operation request to find a message tracking report on the server. 
+
+ <wsdl:message name="FindMessageTrackingReportSoapOut"> 
+   <wsdl:part name="FindMessageTrackingReportResult" 
+element="tns:FindMessageTrackingReportResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The FindMessageTrackingReportSoapOut WSDL message is the output response for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindMessageTrackingReport. 
+
+The parts of the FindMessageTrackingReportSoapOut WSDL message are described and described 
+in the following table. 
+
+Part name Element/type Description 
+
+FindMessageTrackingReportResult tns:FindMessageTrackingReportResponse Specifies the 
+(section 3.1.4.1.2.2) response message. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] section Specifies the 
+2.2.3.10) server version for 
+
+the response. 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to the 
+FindMessageTrackingReport operation. 
+
+Element name Description 
+
+FindMessageTrackingReport Specifies a request to find a message tracking report. 
+
+FindMessageTrackingReportResponse Specifies the response body content from a request to find a 
+message tracking report. 
+
+ 
+
+3.1.4.1.2.1 FindMessageTrackingReport Element 
+
+16 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The FindMessageTrackingReport element specifies a request that includes the search criteria for 
+identifying a message to track. 
+
+ <xs:element name="FindMessageTrackingReport" 
+  type="m:FindMessageTrackingReportRequestType" 
+ /> 
+ 
+
+3.1.4.1.2.2 FindMessageTrackingReportResponse Element 
+
+The FindMessageTrackingReportResponse element specifies the response to a 
+FindMessageTrackingReport operation request (section 3.1.4.1). 
+
+ <xs:element name="FindMessageTrackingReportResponse" 
+  type="m:FindMessageTrackingReportResponseMessageType" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to the 
+FindMessageTrackingReport operation. 
+
+Complex type name Description 
+
+FindMessageTrackingReportRequestType Specifies the criteria for finding a tracking report. 
+
+FindMessageTrackingReportResponseMessageType Specifies the response for the 
+FindMessageTrackingReport operation. 
+
+ArrayOfFindMessageTrackingSearchResultType Specifies an array of search results. 
+
+FindMessageTrackingSearchResultType Specifies information about the message that was 
+found by using the FindMessageTrackingReport 
+operation. 
+
+ 
+
+3.1.4.1.3.1 m:FindMessageTrackingReportRequestType Complex Type 
+
+The FindMessageTrackingReportRequestType complex type specifies the criteria for finding a 
+tracking report. The FindMessageTrackingReportRequestType complex type extends the 
+BaseRequestType complex type ([MS-OXWSCDATA] section 2.2.4.17). 
+
+ <xs:complexType name="FindMessageTrackingReportRequestType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:all> 
+        <xs:element name="Scope" 
+          type="t:NonEmptyStringType" 
+         /> 
+        <xs:element name="Domain" 
+          type="t:NonEmptyStringType" 
+         /> 
+        <xs:element name="Sender" 
+          type="t:EmailAddressType" 
+          minOccurs="0" 
+         /> 
+
+17 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="PurportedSender" 
+          type="t:EmailAddressType" 
+          maxOccurs="0" 
+         /> 
+        <xs:element name="Recipient" 
+          type="t:EmailAddressType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Subject" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="StartDateTime" 
+          type="xs:dateTime" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="EndDateTime" 
+          type="xs:dateTime" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="MessageId" 
+          type="t:NonEmptyStringType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="FederatedDeliveryMailbox" 
+          type="t:EmailAddressType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="DiagnosticsLevel" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="ServerHint" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Properties" 
+          type="t:ArrayOfTrackingPropertiesType" 
+          minOccurs="0" 
+         /> 
+      </xs:all> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists and describes the child elements of the 
+FindMessageTrackingReportRequestType complex type. 
+
+Element name Type Description 
+
+Scope t:NonEmptyStringType ([MS- Specifies where to perform the 
+OXWSCDATA] section 2.2.5.20) search.<4> 
+
+Domain t:NonEmptyStringType Specifies the domain to search for. 
+
+Sender t:EmailAddressType ([MS- Specifies the email address of the 
+OXWSCDATA] section 2.2.4.31) person who is sending the message. 
+
+PurportedSender t:EmailAddressType Specifies the email address of the 
+person who is purportedly sending 
+the message.<5> 
+
+Recipient t:EmailAddressType Specifies the email addresses of the 
+
+18 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+people who are receiving the 
+message. 
+
+Subject xs:string ([XMLSCHEMA2]) Specifies the subject filter to search 
+for. 
+
+StartDateTime xs:dateTime ([XMLSCHEMA2]) Specifies the start date and time for 
+the search period. Only messages 
+sent after this date and time will be 
+found and returned. 
+
+EndDateTime xs:dateTime Specifies the end date and time for 
+the search period.  Only messages 
+sent before this date and time will be 
+found and returned. 
+
+MessageId t:NonEmptyStringType Specifies message identifier to 
+search for. 
+
+FederatedDeliveryMailbox t:EmailAddressType Specifies the mailbox to which a 
+cross-premise message was sent. 
+
+DiagnosticsLevel xs:string Specifies how detailed the tracing 
+report should be. 
+
+ServerHint xs:string Specifies the starting point for 
+tracking a message in a remote site 
+or forest.<6> 
+
+Properties t:ArrayOfTrackingPropertiesType Specifies a list of one or more 
+(section 2.2.4.2) tracking properties.<7> 
+
+ 
+
+3.1.4.1.3.2 m:FindMessageTrackingReportResponseMessageType Complex Type 
+
+The FindMessageTrackingReportResponseMessageType complex type specifies the response for 
+the FindMessageTrackingReport operation (section 3.1.4.1). The 
+FindMessageTrackingReportResponseMessageType complex type extends the 
+ResponseMessageType complex type ([MS-OXWSCDATA] section 2.2.4.65). 
+
+ <xs:complexType name="FindMessageTrackingReportResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="Diagnostics" 
+          type="t:ArrayOfStringsType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="MessageTrackingSearchResults" 
+          type="t:ArrayOfFindMessageTrackingSearchResultType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="ExecutedSearchScope" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Errors" 
+          type="t:ArrayOfArraysOfTrackingPropertiesType" 
+          minOccurs="0" 
+         /> 
+
+19 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="Properties" 
+          type="t:ArrayOfTrackingPropertiesType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists and describes the child elements of the 
+FindMessageTrackingReportResponseMessageType complex type. 
+
+Element name Type Description 
+
+Diagnostics t:ArrayOfStringsType ([MS-OXWSCDATA] section Specifies timing 
+2.2.4.13) and performance 
+
+information that 
+will be used to 
+produce various 
+statistical reports. 
+
+MessageTrackingSearchResults t:ArrayOfFindMessageTrackingSearchResultType Specifies an array 
+(section 3.1.4.1.3.3) of matching 
+
+records. 
+
+ExecutedSearchScope xs:string ([XMLSCHEMA2]) Specifies the 
+scope of the 
+search that was 
+performed to get 
+the search 
+results.<8> 
+
+Errors t:ArrayOfArraysOfTrackingPropertiesType Specifies a 
+(section 3.1.4.2.3.6) property bag for 
+
+storing errors that 
+are returned 
+through the web 
+service.<9> 
+
+Properties t:ArrayOfTrackingPropertiesType (section 2.2.4.2) Specifies a list of 
+one or more 
+tracking 
+properties.<10> 
+
+ 
+
+3.1.4.1.3.3 t:ArrayOfFindMessageTrackingSearchResultType Complex Type 
+
+The ArrayOfFindMessageTrackingSearchResultType complex type specifies an array of search 
+results. 
+
+ <xs:complexType name="ArrayOfFindMessageTrackingSearchResultType"> 
+  <xs:choice 
+    minOccurs="0" 
+    maxOccurs="unbounded" 
+  > 
+    <xs:element name="MessageTrackingSearchResult" 
+      type="t:FindMessageTrackingSearchResultType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+
+20 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+The following table lists and describes the child elements of the 
+ArrayOfFindMessageTrackingSearchResultType complex type. 
+
+Element name Type Description 
+
+MessageTrackingSearchResul t:FindMessageTrackingSearchResultTyp Specifies a message that was 
+t e (section 3.1.4.1.3.4) found by using the 
+
+FindMessageTrackingRepor
+t operation (section 3.1.4.1). 
+
+ 
+
+3.1.4.1.3.4 t:FindMessageTrackingSearchResultType Complex Type 
+
+The FindMessageTrackingSearchResultType complex type specifies information about the 
+message that was found by using the FindMessageTrackingReport operation (section 3.1.4.1). 
+
+ <xs:complexType name="FindMessageTrackingSearchResultType"> 
+  <xs:all> 
+    <xs:element name="Subject" 
+      type="xs:string" 
+     /> 
+    <xs:element name="Sender" 
+      type="t:EmailAddressType" 
+     /> 
+    <xs:element name="PurportedSender" 
+      type="t:EmailAddressType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="Recipients" 
+      type="t:ArrayOfRecipientsType" 
+     /> 
+    <xs:element name="SubmittedTime" 
+      type="xs:dateTime" 
+     /> 
+    <xs:element name="MessageTrackingReportId" 
+      type="t:NonEmptyStringType" 
+     /> 
+    <xs:element name="PreviousHopServer" 
+      type="t:NonEmptyStringType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="FirstHopServer" 
+      type="t:NonEmptyStringType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="Properties" 
+      type="t:ArrayOfTrackingPropertiesType" 
+      minOccurs="0" 
+     /> 
+  </xs:all> 
+ </xs:complexType> 
+
+The following table lists and describes the child elements of the 
+FindMessageTrackingSearchResultType complex type. 
+
+Element name Type Description 
+
+Subject xs:string ([XMLSCHEMA2]) Specifies the subject of the 
+
+21 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+message that was found. 
+
+Sender t:EmailAddressType ([MS- Specifies the email address of 
+OXWSCDATA] section 2.2.4.31) the sender for the message 
+
+that was found. 
+
+PurportedSender t:EmailAddressType Specifies the email address of 
+the person who is purportedly 
+sending the message.<11> 
+
+Recipients t:ArrayOfRecipientsType ([MS- Specifies the email addresses 
+OXWSCDATA] section 2.2.4.11) of the recipients for the 
+
+message that was found. 
+
+SubmittedTime xs:dateTime ([XMLSCHEMA2]) Specifies the time that the 
+message entered the server. 
+
+MessageTrackingReportId t:NonEmptyStringType ([MS- Specifies the message by its 
+OXWSCDATA] section 2.2.5.20) message ID, the organization 
+
+where the message was found, 
+the server on which the 
+message was submitted, and 
+an internal ID that uniquely 
+identifies the message. 
+
+1. PreviousHopServer t:NonEmptyStringType Specifies the previous server 
+name (if available) that 
+submitted the message. 
+
+FirstHopServer t:NonEmptyStringType Specifies the name of the 
+server in the forest that first 
+accepted the message.<12> 
+
+Properties t:ArrayOfTrackingPropertiesType Specifies a list of one or more 
+(section 2.2.4.2) tracking properties.<13> 
+
+The following Augmented Backus-Naur Form (ABNF) specifies the string structure of 
+MessageTrackingReportId element. 
+
+ MessageTrackingReportId = messageId %x2C server %x2C internalId %x2C senderRecip 
+%x2C domain 
+ messageId = messageIdTag %x3D messageIdValue 
+ server = serverTag %x3D serverValue 
+ internalId = internalIdTag %x3D internalIdValue 
+ senderRecip = senderTag / recipentTag %x3D senderRecipValue 
+ domain = domainTag %x3D domainValue 
+ messageIdTag = %x4D.65.73.73.61.67.65.2D.49.64 
+ serverTag = %x53.65.72.76.65.72 
+ internalIdTag  = %x49.6E.74.65.72.6E.61.6C.2D.49.64 
+ senderTag = %x53.65.6E.64.65.72 
+ recipentTag = %x52.65.63.69.70.69.65.6E.74 
+ domain = %x44.6F.6D.61.69.6E 
+
+The messageIdValue rule specifies the uniquely identifier of the message. 
+
+The serverValue rule specifies the server on which the message was submitted. 
+
+The internalIdValue rule specifies the internal ID that uniquely identifies the message. 
+
+The senderRecipValue rule specifies the GUID of the user who is doing the tracking.  
+
+The domainValue rule specifies the domain/organization where the message was found. 
+
+22 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.4 Simple Types 
+
+None. 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.4.2 GetMessageTrackingReport Operation 
+
+The GetMessageTrackingReport operation gets tracking information about the specified messages. 
+
+The following is the WSDL port type specification for this operation. 
+
+ <wsdl:operation name="GetMessageTrackingReport" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+     <wsdl:input message="tns:GetMessageTrackingReportSoapIn" /> 
+     <wsdl:output message="tns:GetMessageTrackingReportSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for this operation. 
+
+ <wsdl:operation name="GetMessageTrackingReport"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetMessageTrackingRe
+port" /> 
+   <wsdl:input> 
+      <soap:body parts="request" use="literal"/> 
+      <soap:header message="tns:GetMessageTrackingReportSoapIn" part="RequestVersion" 
+use="literal"/> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="GetMessageTrackingReportResult" use="literal" /> 
+      <soap:header message="tns:GetMessageTrackingReportSoapOut" part="ServerVersion" 
+use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+For a successful GetMessageTrackingReport operation request, the server MUST return a 
+GetMessageTrackingReportResponse element with the ResponseClass attribute set to "Success", 
+and the ResponseCode element MUST be set to "NoError".  
+
+If the GetMessageTrackingReport operation request asks for a RecipientPath report and provides 
+a recipient to whom the tracking email was not sent, the server MUST return a 
+GetMessageTrackingReportResponse element with MessageTrackingReport only including 
+SubmitTime as "0001-01-01T00:00:00" and an empty RecipientTrackingEvents element. 
+
+3.1.4.2.1 Messages 
+
+The following table lists the XML schema message definitions that are specific to the 
+GetMessageTrackingReport operation. 
+
+23 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Message name Description 
+
+GetMessageTrackingReportSoapIn Specifies the SOAP message that retrieves the message tracking 
+report. 
+
+GetMessageTrackingReportSoapOut Specifies the SOAP message that is returned by the server in response. 
+
+ 
+
+3.1.4.2.1.1 tns:GetMessageTrackingReportSoapIn Message 
+
+The GetMessageTrackingReportSoapIn WSDL message specifies the 
+GetMessageTrackingReport operation request to retrieve a message tracking report from the 
+server. 
+
+ <wsdl:message name="GetMessageTrackingReportSoapIn"> 
+   <wsdl:part name="request" element="tns:GetMessageTrackingReport"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetMessageTrackingReportSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetMessageTrackingReport. 
+
+The parts of the GetMessageTrackingReportSoapIn WSDL message are listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+request tns:GetMessageTrackingReport (section Specifies the request. 
+3.1.4.1.2.1) 
+
+RequestVersion t:RequestServerVersion ([MS-OXWSCDATA] section Specifies the schema version for 
+2.2.3.9) the request. 
+
+ 
+
+3.1.4.2.1.2 tns:GetMessageTrackingReportSoapOut Message 
+
+The GetMessageTrackingReportSoapOut WSDL message specifies the server response to the 
+GetMessageTrackingReport operation request to retrieve a message tracking report from the 
+server. 
+
+ <wsdl:message name="GetMessageTrackingReportSoapOut"> 
+   <wsdl:part name="GetMessageTrackingReportResult" 
+element="tns:GetMessageTrackingReportResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetMessageTrackingReportSoapOut WSDL message is the output message for the SOAP 
+action http://schemas.microsoft.com/exchange/services/2006/messages/GetMessageTrackingReport. 
+
+The parts of the GetMessageTrackingReportSoapOut WSDL message are listed and described in 
+the following table. 
+
+Part name Element/ Description 
+
+GetMessageTrackingReportResult tns:GetMessageTrackingReportResponse Specifies the 
+
+24 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/ Description 
+
+(section 3.1.4.2.3.2) response message. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] section Specifies the server 
+2.2.3.10) version for the 
+
+response. 
+
+ 
+
+3.1.4.2.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to the 
+GetMessageTrackingReport operation. 
+
+Element name Description 
+
+GetMessageTrackingReport Specifies a request for a tracking report. 
+
+GetMessageTrackingReportResponse Specifies the content of a response to a request for a tracking report. 
+
+ 
+
+3.1.4.2.2.1 GetMessageTrackingReport Element 
+
+The GetMessageTrackingReport element specifies the request to get a tracking report. 
+
+ <xs:element name="GetMessageTrackingReport" 
+  type="m:GetMessageTrackingReportRequestType" 
+ /> 
+ 
+
+3.1.4.2.2.2 GetMessageTrackingReportResponse Element 
+
+The GetMessageTrackingReportResponse element specifies the response for getting a report. 
+
+ <xs:element name="GetMessageTrackingReportResponse" 
+  type="m:GetMessageTrackingReportResponseMessageType" 
+ /> 
+ 
+
+3.1.4.2.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to the 
+GetMessageTrackingReport operation. 
+
+Complex type name Description 
+
+GetMessageTrackingReportRequestType Specifies details for the type of tracking report to 
+retrieve. 
+
+GetMessageTrackingReportResponseMessageType Specifies the response for getting a tracking report. 
+
+ArrayOfRecipientTrackingEventType Specifies an array of one or more events for a 
+message. 
+
+MessageTrackingReportType Specifies the information to be included in the tracking 
+report. 
+
+25 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type name Description 
+
+RecipientTrackingEventType Specifies details for a specific event in the tracking 
+report. 
+
+ArrayOfArraysOfTrackingPropertiesType Specifies a property bag for storing errors that are 
+returned through the web service. 
+
+ 
+
+3.1.4.2.3.1 m:GetMessageTrackingReportRequestType Complex Type 
+
+The GetMessageTrackingReportRequestType complex type specifies details for the type of report 
+to retrieve. The GetMessageTrackingReportRequestType complex type extends the 
+BaseRequestType complex type ([MS-OXWSCDATA] section 2.2.4.17). 
+
+ <xs:complexType name="GetMessageTrackingReportRequestType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:all> 
+        <xs:element name="Scope" 
+          type="t:NonEmptyStringType" 
+         /> 
+        <xs:element name="ReportTemplate" 
+          type="t:MessageTrackingReportTemplateType" 
+         /> 
+        <xs:element name="RecipientFilter" 
+          type="t:EmailAddressType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="MessageTrackingReportId" 
+          type="t:NonEmptyStringType" 
+         /> 
+        <xs:element name="ReturnQueueEvents" 
+          type="xs:boolean" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="DiagnosticsLevel" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Properties" 
+          type="t:ArrayOfTrackingPropertiesType" 
+          minOccurs="0" 
+         /> 
+      </xs:all> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists and describes the child elements of the 
+GetMessageTrackingReportRequestType complex type. 
+
+Element name Type Description 
+
+Scope t:NonEmptyStringType ([MS- Specifies where to perform the 
+OXWSCDATA] section 2.2.5.20) search.<14> 
+
+ReportTemplate t:MessageTrackingReportTemplateType Specifies the type of tracking 
+(section 3.1.4.2.1.1) report to retrieve. 
+
+26 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+RecipientFilter t:EmailAddressType ([MS-OXWSCDATA] Specifies a recipient address to 
+section 2.2.4.31) use with the specified tracking 
+
+report. If the ReportTemplate 
+element is set to "RecipientPath", 
+this element MUST be present. 
+
+MessageTrackingReportId t:NonEmptyStringType Specifies an identity string that 
+was obtained from the 
+FindMessageTrackingReport 
+operation (section 3.1.4.1). 
+
+ReturnQueueEvents xs:boolean ([XMLSCHEMA2]) Specifies that the person who is 
+running the task has a privileged 
+role. 
+
+DiagnosticsLevel xs:string ([XMLSCHEMA2]) Specifies timing and performance 
+information that will be used to 
+derive the tracking report. 
+
+Properties t:ArrayOfTrackingPropertiesType Specifies a list of one or more 
+(section 2.2.4.2) tracking properties.<15> 
+
+The following table lists and describes the values of the DiagnosticsLevel element. 
+
+Value 
+name Description 
+
+None Diagnostics logging is disabled. 
+
+Basic Basic diagnostics are collected and returned in web response. 
+
+Verbose Basic diagnostics plus verbose logging (Such as the result that was returned through web service). 
+The traces are returned in web response. 
+
+Etw Turn on event tracing for windows, in addition to Verbose diagnostics. The verbose traces are 
+returned in the web response. The event tracing for windows are written locally on the server and 
+will not be returned in the web response. 
+
+The values of the DiagnosticsLevel element are case sensitive. If the value is set as the any value 
+except above 4 values, the server will treat it as None. 
+
+3.1.4.2.3.2 m:GetMessageTrackingReportResponseMessageType Complex Type 
+
+The GetMessageTrackingReportResponseMessageType complex type specifies the response for 
+getting a tracking report. The GetMessageTrackingReportResponseMessageType complex type 
+extends the ResponseMessageType complex type ([MS-OXWSCDATA] section 2.2.4.65). 
+
+ <xs:complexType name="GetMessageTrackingReportResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="MessageTrackingReport" 
+          type="t:MessageTrackingReportType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Diagnostics" 
+
+          type="t:ArrayOfStringsType" 
+          minOccurs="0" 
+
+27 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+         /> 
+        <xs:element name="Errors" 
+          type="t:ArrayOfArraysOfTrackingPropertiesType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Properties" 
+          type="t:ArrayOfTrackingPropertiesType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists and describes the child elements of the 
+GetMessageTrackingReportResponseMessageType complex type. 
+
+Element name Type Description 
+
+MessageTrackingReport t:MessageTrackingReportType (section Specifies the tracking report 
+3.1.4.2.3.4) that was requested.<16> 
+
+Diagnostics t:ArrayOfStringsType ([MS-OXWSCDATA] Specifies timing and 
+section 2.2.4.13) performance information that 
+
+will be used to derive the 
+tracking report. 
+
+Errors t:ArrayOfArraysOfTrackingPropertiesType Specifies possible issues that 
+(section 3.1.4.2.3.6) will be used to derive the 
+
+tracking report.<17> 
+
+Properties t:ArrayOfTrackingPropertiesType (section Specifies a list of one or more 
+2.2.4.2) tracking properties. <18> 
+
+ 
+
+3.1.4.2.3.3 t:ArrayOfRecipientTrackingEventType Complex Type 
+
+The ArrayOfRecipientTrackingEventType complex type specifies an array of one or more events 
+for a message. 
+
+ <xs:complexType name="ArrayOfRecipientTrackingEventType"> 
+  <xs:choice 
+    minOccurs="0" 
+    maxOccurs="unbounded" 
+  > 
+    <xs:element name="RecipientTrackingEvent" 
+      type="t:RecipientTrackingEventType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists and describes the child elements of the 
+ArrayOfRecipientTrackingEventType complex type. 
+
+Element name Type Description 
+
+RecipientTrackingEvent t:RecipientTrackingEventType (section Specifies an event for a 
+
+28 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+3.1.4.2.3.5) message. 
+
+ 
+
+3.1.4.2.3.4 t:MessageTrackingReportType Complex Type 
+
+The MessageTrackingReportType complex type specifies the information to be included in a 
+tracking report. 
+
+ <xs:complexType name="MessageTrackingReportType"> 
+  <xs:all> 
+    <xs:element name="Sender" 
+      type="t:EmailAddressType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="PurportedSender" 
+      type="t:EmailAddressType" 
+      maxOccurs="0" 
+     /> 
+    <xs:element name="Subject" 
+      type="xs:string" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="SubmitTime" 
+      type="xs:dateTime" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="OriginalRecipients" 
+      type="t:ArrayOfEmailAddressesType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="RecipientTrackingEvents" 
+      type="t:ArrayOfRecipientTrackingEventType" 
+     /> 
+    <xs:element name="Properties" 
+      type="t:ArrayOfTrackingPropertiesType" 
+      minOccurs="0" 
+     /> 
+  </xs:all> 
+ </xs:complexType> 
+ 
+
+The following table lists and describes the child elements of the MessageTrackingReportType 
+complex type. 
+
+Element name Type Description 
+
+Sender t:EmailAddressType ([MS-OXWSCDATA] Specifies the email address for 
+section 2.2.4.31) the sender of a message. 
+
+PurportedSender t:EmailAddressType  Specifies the email address of 
+the person who is purportedly 
+sending the message.<19> 
+
+Subject xs:string ([XMLSCHEMA2]) Specifies the subject of the 
+message. 
+
+SubmitTime xs:dateTime ([XMLSCHEMA2]) Specifies the time at which the 
+message was sent to the server. 
+
+OriginalRecipients t:ArrayOfEmailAddressesType ([MS- Specifies the email addresses of 
+
+29 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+OXWSCDATA] section 2.2.4.7) the message recipients. 
+
+RecipientTrackingEvents t:ArrayOfRecipientTrackingEventType Specifies the type of events to 
+(section 3.1.4.2.3.3) report. 
+
+Properties t:ArrayOfTrackingPropertiesType (section Specifies a list of one or more 
+2.2.4.2) tracking properties.<20> 
+
+ 
+
+3.1.4.2.3.5 t:RecipientTrackingEventType Complex Type 
+
+The RecipientTrackingEventType complex type specifies details for a particular event in a tracking 
+report. 
+
+ <xs:complexType name="RecipientTrackingEventType"> 
+  <xs:all> 
+    <xs:element name="Date" 
+      type="xs:dateTime" 
+     /> 
+    <xs:element name="Recipient" 
+      type="t:EmailAddressType" 
+     /> 
+    <xs:element name="DeliveryStatus" 
+      type="xs:string" 
+     /> 
+    <xs:element name="EventDescription" 
+      type="xs:string" 
+     /> 
+    <xs:element name="EventData" 
+      type="t:ArrayOfStringsType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="Server" 
+      type="t:NonEmptyStringType" 
+     /> 
+    <xs:element name="InternalId" 
+      type="xs:nonNegativeInteger" 
+     /> 
+    <xs:element name="BccRecipient" 
+      type="xs:boolean" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="HiddenRecipient" 
+      type="xs:boolean" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="UniquePathId" 
+      type="t:NonEmptyStringType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="RootAddress" 
+      type="t:NonEmptyStringType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="Properties" 
+      type="t:ArrayOfTrackingPropertiesType" 
+      minOccurs="0" 
+     /> 
+  </xs:all> 
+ </xs:complexType> 
+ 
+
+30 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table lists and describes the child elements of the RecipientTrackingEventType 
+complex type. 
+
+Element name Type Description 
+
+Date xs:dateTime ([XMLSCHEMA2]) Specifies the time at which a particular event 
+occurred. 
+
+Recipient t:EmailAddressType ([MS-OXWSCDATA] Specifies the recipient for whom the event 
+section 2.2.4.31) occurred. 
+
+DeliveryStatus xs:string ([XMLSCHEMA2]) Specifies the status for the message.<21> 
+
+EventDescription xs:string Specifies the processing step for the 
+event.<22> 
+
+EventData t:ArrayOfStringsType ([MS- Specifies data that is associated with the 
+OXWSCDATA] section 2.2.4.13) processing step for the event. 
+
+Server t:NonEmptyStringType ([MS- Specifies the server where the event occurred. 
+OXWSCDATA] section 2.2.5.20) 
+
+InternalId xs:nonNegativeInteger Specifies an integer value for the event. 
+([XMLSCHEMA2]) 
+
+BccRecipient xs: boolean ([XMLSCHEMA2]) Specifies that the recipient was addressed as a 
+blind carbon copy (Bcc) recipient. 
+
+HiddenRecipient xs:boolean Specifies that the recipient was added by an 
+organization policy that should be hidden from 
+unprivileged users. 
+
+UniquePathId t:NonEmptyStringType Specifies a string that is different for each path. 
+
+RootAddress t:NonEmptyStringType Specifies the first address that starts the event 
+for a RecipientTrackingEventType 
+event.<23> 
+
+Properties t:ArrayOfTrackingPropertiesType Specifies a list of one or more tracking 
+(section 2.2.4.2) properties.<24> 
+
+ 
+
+3.1.4.2.3.6 t:ArrayOfArraysOfTrackingPropertiesType Complex Type 
+
+The ArrayOfArraysOfTrackingPropertiesType complex type specifies a property bag for storing 
+errors that are returned through the web service.<25> 
+
+ <xs:complexType name="ArrayOfArraysOfTrackingPropertiesType"> 
+  <xs:choice 
+    maxOccurs="unbounded" 
+    minOccurs="0" 
+  > 
+    <xs:element name="ArrayOfTrackingPropertiesType" 
+      type="t:ArrayOfTrackingPropertiesType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists and describes the child elements of the 
+ArrayOfArraysOfTrackingPropertiesType complex type. 
+
+31 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+ArrayOfTrackingPropertiesType t:ArrayOfTrackingPropertiesType Specifies a list of one or 
+(section 2.2.4.2) more tracking properties. 
+
+ 
+
+3.1.4.2.4 Simple Types 
+
+The following table lists the XML schema simple type definitions that are specific to the 
+GetMessageTrackingReport operation. 
+
+Simple type name Description 
+
+MessageTrackingReportTemplateType Specifies the type of report to display. 
+
+MessageTrackingDeliveryStatusType Specifies the message delivery status. 
+
+MessageTrackingEventDescriptionType Specifies the status of the message for an event in the tracking 
+report. 
+
+MessageTrackingScopeType Specifies where to search for tracking reports. 
+
+ 
+
+3.1.4.2.4.1 t:MessageTrackingReportTemplateType Simple Type 
+
+The MessageTrackingReportTemplateType simple type specifies the type of report to display. 
+
+ <xs:simpleType name="MessageTrackingReportTemplateType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Summary" 
+     /> 
+    <xs:enumeration 
+      value="RecipientPath" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table lists and describes the enumeration values that are defined by the 
+MessageTrackingReportTemplateType simple type. 
+
+Value name Description 
+
+Summary Specifies that the report will display all the recipients of the message and the message delivery 
+status for each recipient. 
+
+RecipientPath Specifies that for a single recipient, the report will display a full history of all events that have 
+occurred for that recipient. 
+
+ 
+
+3.1.4.2.4.2 t:MessageTrackingDeliveryStatusType Simple Type 
+
+The MessageTrackingDeliveryStatusType simple type specifies the status for message 
+delivery.<26> 
+
+32 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:simpleType name="MessageTrackingDeliveryStatusType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Unsuccessful" 
+     /> 
+    <xs:enumeration 
+      value="Pending" 
+     /> 
+    <xs:enumeration 
+      value="Delivered" 
+     /> 
+    <xs:enumeration 
+      value="Transferred" 
+     /> 
+    <xs:enumeration 
+      value="Read" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table lists and describes the enumeration values that are defined by the 
+MessageTrackingDeliveryStatusType simple type. 
+
+Value name Description 
+
+Unsuccessful Specifies that a particular message was not delivered. 
+
+Pending Specifies that the message is waiting for approval from a moderator. 
+
+Delivered Specifies that the message was delivered to all of the specified recipients. 
+
+Transferred Specifies that the message was transferred to a server outside the search scope. 
+
+Read Specifies that the message was delivered and read by the recipients. 
+
+ 
+
+3.1.4.2.4.3 t:MessageTrackingEventDescriptionType Simple Type 
+
+The MessageTrackingEventDescriptionType element specifies the status of the message for an 
+event in the tracking report.<27> 
+
+ <xs:simpleType name="MessageTrackingEventDescriptionType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Submitted" 
+     /> 
+    <xs:enumeration 
+      value="Resolved" 
+     /> 
+    <xs:enumeration 
+      value="Expanded" 
+     /> 
+    <xs:enumeration 
+      value="Delivered" 
+     /> 
+    <xs:enumeration 
+      value="MovedToFolderByInboxRule" 
+     /> 
+    <xs:enumeration 
+
+33 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      value="RulesCc" 
+     /> 
+    <xs:enumeration 
+      value="FailedGeneral" 
+     /> 
+    <xs:enumeration 
+      value="FailedModeration" 
+     /> 
+    <xs:enumeration 
+      value="FailedTransportRules" 
+     /> 
+    <xs:enumeration 
+      value="SmtpSend" 
+     /> 
+    <xs:enumeration 
+      value="SmtpSendCrossSite" 
+     /> 
+    <xs:enumeration 
+      value="SmtpSendCrossForest" 
+     /> 
+    <xs:enumeration 
+      value="SmtpReceive" 
+     /> 
+    <xs:enumeration 
+      value="Forwarded" 
+     /> 
+    <xs:enumeration 
+      value="Pending" 
+     /> 
+    <xs:enumeration 
+      value="PendingModeration" 
+     /> 
+    <xs:enumeration 
+      value="ApprovedModeration" 
+     /> 
+    <xs:enumeration 
+      value="QueueRetry" 
+     /> 
+    <xs:enumeration 
+      value="QueueRetryNoRetryTime" 
+     /> 
+    <xs:enumeration 
+      value="MessageDefer" 
+     /> 
+    <xs:enumeration 
+      value="TransferredToForeignOrg" 
+     /> 
+    <xs:enumeration 
+      value="TransferredToPartnerOrg" 
+     /> 
+    <xs:enumeration 
+      value="TransferredToLegacyExchangeServer" 
+     /> 
+    <xs:enumeration 
+      value="DelayedAfterTransferToPartnerOrg" 
+     /> 
+    <xs:enumeration 
+      value="Read" 
+     /> 
+    <xs:enumeration 
+      value="NotRead" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table lists and describes the enumeration values that are defined by the 
+MessageTrackingEventDescriptionType simple type. 
+
+34 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value name Description 
+
+Submitted Specifies that a particular message was submitted by the client. 
+
+Resolved Specifies that the recipients for the message were successfully 
+resolved. 
+
+Expanded Specifies that a distribution list was expanded to deliver the 
+message to the members of the list. 
+
+Delivered Specifies that the message was delivered to each recipient's 
+mailbox. 
+
+MovedToFolderByInboxRule Specifies that the message was delivered to a different folder because 
+of an Inbox rule. 
+
+RulesCc Specifies that another recipient was copied on the message because 
+of a transport rule. 
+
+FailedGeneral Specifies that the message failed during delivery. 
+
+FailedModeration Specifies that the delivery of the message failed because it was 
+rejected by the moderator. 
+
+FailedTransportRules Specifies that the delivery of the message failed because of a 
+transport rule. 
+
+SmtpSend Specifies that the message was sent over SMTP to the Internet and 
+cannot be tracked further. 
+
+SmtpSendCrossSite Specifies that the message was sent to a hub in a different site. 
+
+SmtpSendCrossForest Specifies that the message was sent to a hub in a different trusted 
+forest. 
+
+SmtpReceive Specifies that the hub received a message over SMTP from a server 
+on the Internet, or from a server that does not support tracking. 
+
+Forwarded Specifies that the message was forwarded to another recipient. 
+
+Pending Specifies that the message has not been delivered yet. 
+
+PendingModeration Specifies that the message was sent to a moderator and is waiting for 
+an approval message. 
+
+ApprovedModeration Specifies that the message was approved by the moderator. 
+
+QueueRetry Specifies that the message is in a transport queue and that the 
+EventData XML element contains a string that represents the next 
+time that the message will be retried. 
+
+QueueRetryNoRetryTime Specifies that the message is in a transport queue and that the retry 
+time could not be retrieved. 
+
+MessageDefer Specifies that the delivery of the message has been deferred for an 
+unknown reason. 
+
+TransferredToForeignOrg Specifies that the message was transferred to another organization or 
+to a server in the organization that does not support tracking. 
+
+TransferredToPartnerOrg Specifies that the message was transferred to a cross-premise 
+organization. 
+
+TransferredToLegacyExchangeServer Specifies that the message was transferred to an earlier version of 
+the server, or to another server with a different schema. 
+
+35 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value name Description 
+
+DelayedAfterTransferToPartnerOrg Specifies that the delivery of the message has been delayed during 
+the transfer to a trusted organization. 
+
+Read Specifies that the message is marked as read. 
+
+NotRead Specifies that the message is marked as not read. 
+
+ 
+
+3.1.4.2.4.4 t:MessageTrackingScopeType Simple Type 
+
+The MessageTrackingScopeType simple type specifies where to search for tracking reports.<28> 
+
+ <xs:simpleType name="MessageTrackingScopeType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Organization" 
+     /> 
+    <xs:enumeration 
+      value="Forest" 
+     /> 
+    <xs:enumeration 
+      value="Site" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table lists and describes the enumeration values that are defined by the 
+MessageTrackingScopeType simple type. 
+
+Value name Description 
+
+Organization Specifies that a particular search will cover all forests in the organization. 
+
+Forest Specifies that the search will cover all servers in the forest. 
+
+Site Specifies that the search will cover the local site of the server that executes it.  
+
+ 
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+None. 
+
+3.1.4.2.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+36 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.6 Other Local Events 
+
+None. 
+
+37 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+None. 
+
+38 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+39 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+described in this document. 
+
+ 
+
+File name Description Section 
+
+MS-OXWSMTRK.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSMTRK- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWSMTRK-types.xsd Contains the XML schema type definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSMTRK-types.xsd or MS-
+OXWSMTRK-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table.  
+
+This section contains the contents of the MS-OXWSMTRK.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:include schemaLocation="MS-OXWSMTRK-messages.xsd" /> 
+      <!-- Add global elements and types from messages.xsd --> 
+    </xs:schema> 
+    <xs:schema id="types" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+      <!-- Add global elements and types from types.xsd --> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:message name="FindMessageTrackingReportSoapIn"> 
+        <wsdl:part name="request" element="tns:FindMessageTrackingReport"/> 
+        <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    </wsdl:message> 
+  <wsdl:message name="FindMessageTrackingReportSoapOut"> 
+    <wsdl:part name="FindMessageTrackingReportResult" 
+element="tns:FindMessageTrackingReportResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetMessageTrackingReportSoapIn"> 
+    <wsdl:part name="request" element="tns:GetMessageTrackingReport"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+
+40 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <wsdl:message name="GetMessageTrackingReportSoapOut"> 
+    <wsdl:part name="GetMessageTrackingReportResult" 
+element="tns:GetMessageTrackingReportResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+        <wsdl:operation name="FindMessageTrackingReport"> 
+            <wsdl:input message="tns:FindMessageTrackingReportSoapIn"/> 
+            <wsdl:output message="tns:FindMessageTrackingReportSoapOut"/> 
+        </wsdl:operation> 
+         
+        <wsdl:operation name="GetMessageTrackingReport"> 
+            <wsdl:input message="tns:GetMessageTrackingReportSoapIn"/> 
+            <wsdl:output message="tns:GetMessageTrackingReportSoapOut"/> 
+        </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+        <wsdl:operation name="FindMessageTrackingReport"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindMessageTrackingR
+eport" /> 
+            <wsdl:input> 
+                <soap:body parts="request" use="literal"/> 
+                <soap:header message="tns:FindMessageTrackingReportSoapIn" 
+part="RequestVersion" use="literal"/> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="FindMessageTrackingReportResult" use="literal" /> 
+                <soap:header message="tns:FindMessageTrackingReportSoapOut" 
+part="ServerVersion" use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+ 
+        <wsdl:operation name="GetMessageTrackingReport"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetMessageTrackingRe
+port" /> 
+            <wsdl:input> 
+                <soap:body parts="request" use="literal"/> 
+                <soap:header message="tns:GetMessageTrackingReportSoapIn" 
+part="RequestVersion" use="literal"/> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="GetMessageTrackingReportResult" use="literal" /> 
+                <soap:header message="tns:GetMessageTrackingReportSoapOut" 
+part="ServerVersion" use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+41 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSMTRK-types.xsd or MS-
+OXWSMTRK-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWSMTRK-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSMTRK-messages.xsd includes the file listed in the following table. To operate correctly, this 
+file has to be present in the folder that contains the WSDL, types schema, and messages schema files 
+for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSMTRK-types.xsd"/> 
+  <xs:complexType name="FindMessageTrackingReportRequestType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:all> 
+          <xs:element name="Scope" type="t:NonEmptyStringType"/> 
+          <xs:element name="Domain" type="t:NonEmptyStringType"/> 
+          <xs:element name="Sender" type="t:EmailAddressType" minOccurs="0"/> 
+          <xs:element name="PurportedSender" type="t:EmailAddressType" minOccurs="0"/> 
+          <xs:element name="Recipient" type="t:EmailAddressType" minOccurs="0"/> 
+          <xs:element name="Subject" type="xs:string" minOccurs="0"/> 
+          <xs:element name="StartDateTime" type="xs:dateTime" minOccurs="0"/> 
+          <xs:element name="EndDateTime" type="xs:dateTime" minOccurs="0"/> 
+          <xs:element name="MessageId" type="t:NonEmptyStringType" minOccurs="0"/> 
+          <xs:element name="FederatedDeliveryMailbox" type="t:EmailAddressType" 
+minOccurs="0"/> 
+          <xs:element name="DiagnosticsLevel" type="xs:string" minOccurs="0"/> 
+          <xs:element name="ServerHint" type="xs:string" minOccurs="0"/> 
+          <xs:element name="Properties" type="t:ArrayOfTrackingPropertiesType" 
+minOccurs="0"/> 
+        </xs:all> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="FindMessageTrackingReport" 
+type="m:FindMessageTrackingReportRequestType"/> 
+
+42 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:complexType name="FindMessageTrackingReportResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="Diagnostics" type="t:ArrayOfStringsType" minOccurs="0"/> 
+          <xs:element name="MessageTrackingSearchResults" 
+type="t:ArrayOfFindMessageTrackingSearchResultType" minOccurs="0"/> 
+          <xs:element name="ExecutedSearchScope" type="xs:string" minOccurs="0"/> 
+          <xs:element name="Errors" type="t:ArrayOfArraysOfTrackingPropertiesType" 
+minOccurs="0"/> 
+          <xs:element name="Properties" type="t:ArrayOfTrackingPropertiesType" 
+minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="FindMessageTrackingReportResponse" 
+type="m:FindMessageTrackingReportResponseMessageType"/> 
+  <xs:complexType name="GetMessageTrackingReportRequestType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:all> 
+          <xs:element name="Scope" type="t:NonEmptyStringType"/> 
+          <xs:element name="ReportTemplate" type="t:MessageTrackingReportTemplateType"/> 
+          <xs:element name="RecipientFilter" type="t:EmailAddressType" minOccurs="0"/> 
+          <xs:element name="MessageTrackingReportId" type="t:NonEmptyStringType"/> 
+          <xs:element name="ReturnQueueEvents" type="xs:boolean" minOccurs="0"/> 
+          <xs:element name="DiagnosticsLevel" type="xs:string" minOccurs="0"/> 
+          <xs:element name="Properties" type="t:ArrayOfTrackingPropertiesType" 
+minOccurs="0"/> 
+        </xs:all> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetMessageTrackingReport" type="m:GetMessageTrackingReportRequestType"/> 
+  <xs:complexType name="GetMessageTrackingReportResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="MessageTrackingReport" type="t:MessageTrackingReportType" 
+minOccurs="0"/> 
+          <xs:element name="Diagnostics" type="t:ArrayOfStringsType" minOccurs="0"/> 
+          <xs:element name="Errors" type="t:ArrayOfArraysOfTrackingPropertiesType" 
+minOccurs="0"/> 
+          <xs:element name="Properties" type="t:ArrayOfTrackingPropertiesType" 
+minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetMessageTrackingReportResponse" 
+type="m:GetMessageTrackingReportResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSMTRK-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSMTRK-types.xsd includes the file listed in the following table. To operate correctly, this file 
+has to be present in the folder that contains the WSDL, types schema, and messages schema files for 
+this protocol. 
+
+43 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+  <xs:complexType name="ArrayOfFindMessageTrackingSearchResultType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="MessageTrackingSearchResult" 
+type="t:FindMessageTrackingSearchResultType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="FindMessageTrackingSearchResultType"> 
+    <xs:all> 
+      <xs:element name="Subject" type="xs:string"/> 
+      <xs:element name="Sender" type="t:EmailAddressType"/> 
+      <xs:element name="PurportedSender" type="t:EmailAddressType" minOccurs="0"/> 
+      <xs:element name="Recipients" type="t:ArrayOfRecipientsType"/> 
+      <xs:element name="SubmittedTime" type="xs:dateTime"/> 
+      <xs:element name="MessageTrackingReportId" type="t:NonEmptyStringType"/> 
+      <xs:element name="PreviousHopServer" type="t:NonEmptyStringType" minOccurs="0"/> 
+      <xs:element name="FirstHopServer" type="t:NonEmptyStringType" minOccurs="0"/> 
+      <xs:element name="Properties" type="t:ArrayOfTrackingPropertiesType" minOccurs="0"/> 
+    </xs:all> 
+  </xs:complexType> 
+  <xs:simpleType name="MessageTrackingReportTemplateType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Summary"/> 
+      <xs:enumeration value="RecipientPath"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="RecipientTrackingEventType"> 
+    <xs:all> 
+      <xs:element name="Date" type="xs:dateTime"/> 
+      <xs:element name="Recipient" type="t:EmailAddressType"/> 
+      <xs:element name="DeliveryStatus" type="xs:string"/> 
+      <xs:element name="EventDescription" type="xs:string"/> 
+      <xs:element name="EventData" type="t:ArrayOfStringsType" minOccurs="0"/> 
+      <xs:element name="Server" type="t:NonEmptyStringType"/> 
+      <xs:element name="InternalId" type="xs:nonNegativeInteger"/> 
+      <xs:element name="BccRecipient" type="xs:boolean" minOccurs="0"/> 
+      <xs:element name="HiddenRecipient" type="xs:boolean" minOccurs="0"/> 
+      <xs:element name="UniquePathId" type="t:NonEmptyStringType" minOccurs="0"/> 
+      <xs:element name="RootAddress" type="t:NonEmptyStringType" minOccurs="0"/> 
+      <xs:element name="Properties" type="t:ArrayOfTrackingPropertiesType" minOccurs="0"/> 
+    </xs:all> 
+  </xs:complexType> 
+  <xs:complexType name="MessageTrackingReportType"> 
+    <xs:all> 
+      <xs:element name="Sender" type="t:EmailAddressType" minOccurs="0"/> 
+      <xs:element name="PurportedSender" type="t:EmailAddressType" minOccurs="0"/> 
+      <xs:element name="Subject" type="xs:string" minOccurs="0"/> 
+      <xs:element name="SubmitTime" type="xs:dateTime" minOccurs="0"/> 
+      <xs:element name="OriginalRecipients" type="t:ArrayOfEmailAddressesType" 
+minOccurs="0"/> 
+      <xs:element name="RecipientTrackingEvents" type="t:ArrayOfRecipientTrackingEventType"/> 
+      <xs:element name="Properties" type="t:ArrayOfTrackingPropertiesType" minOccurs="0"/> 
+    </xs:all> 
+  </xs:complexType> 
+  <xs:complexType name="TrackingPropertyType"> 
+    <xs:sequence> 
+      <xs:element name="Name" type="xs:string"/> 
+      <xs:element name="Value" type="xs:string" minOccurs="0"/> 
+
+44 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfTrackingPropertiesType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="TrackingPropertyType" type="t:TrackingPropertyType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfArraysOfTrackingPropertiesType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="ArrayOfTrackingPropertiesType" 
+type="t:ArrayOfTrackingPropertiesType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfRecipientTrackingEventType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="RecipientTrackingEvent" type="t:RecipientTrackingEventType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+ </xs:schema> 
+
+45 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.1:  Microsoft Exchange Server 2010 Service Pack 1 (SP1) uses HTTP for transport. 
+
+<2> Section 2.2.4.1:  Exchange 2010 does not include the TrackingPropertyType complex type. 
+
+<3> Section 2.2.4.2:  Exchange 2010 does not include the ArrayOfTrackingPropertiesType 
+complex type. 
+
+<4> Section 3.1.4.1.3.1: In Exchange 2010, the type for the Scope element is 
+MessageTrackingScopeType. 
+
+<5> Section 3.1.4.1.3.1: Exchange 2010 does not include the PurportedSender element. 
+
+<6> Section 3.1.4.1.3.1: Exchange 2010 does not include the ServerHint element. 
+
+<7> Section 3.1.4.1.3.1: Exchange 2010 does not include the Properties element. 
+
+<8> Section 3.1.4.1.3.2: Exchange 2010 does not include the ExecuteSearchScope element. 
+
+<9> Section 3.1.4.1.3.2: Exchange 2010 does not include the Errors element. 
+
+<10> Section 3.1.4.1.3.2: Exchange 2010 does not include the Properties element. 
+
+<11> Section 3.1.4.1.3.4: Exchange 2010 does not include the PurportedSender element. 
+
+<12> Section 3.1.4.1.3.4: Exchange 2010 does not include the FirstHopServer element. 
+
+<13> Section 3.1.4.1.3.4: Exchange 2010 does not include the Properties element. 
+
+<14> Section 3.1.4.2.3.1: In Exchange 2010, the Scope element is of type 
+MessageTrackingScopeType. 
+
+<15> Section 3.1.4.2.3.1: Exchange 2010 does not include the Properties element. 
+
+<16> Section 3.1.4.2.3.2: In Exchange 2010, the MessageTrackingReport element does not have a 
+value for the minOccurs attribute. 
+
+46 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+<17> Section 3.1.4.2.3.2: Exchange 2010 does not include the Errors element. 
+
+<18> Section 3.1.4.2.3.2: Exchange 2010 does not include the Properties element. 
+
+<19> Section 3.1.4.2.3.4: Exchange 2010 does not include the PurportedSender element. 
+
+<20> Section 3.1.4.2.3.4: Exchange 2010 does not include the Properties element. 
+
+<21> Section 3.1.4.2.3.5: In Exchange 2010, the DeliveryStatus element is of type 
+MessageTrackingDeliveryStatusType. 
+
+<22> Section 3.1.4.2.3.5: In Exchange 2010, the EventDescription element is of type 
+MessageTrackingEventDescriptionType. 
+
+<23> Section 3.1.4.2.3.5: Exchange 2010 does not include the RootAddress element. 
+
+<24> Section 3.1.4.2.3.5: Exchange 2010 does not include the Properties element. 
+
+<25> Section 3.1.4.2.3.6: Exchange 2010 does not include the 
+ArrayOfArraysOfTrackingPropertiesType complex type. 
+
+<26> Section 3.1.4.2.4.2:  Only the initial release version of Exchange 2010 supports the 
+MessageTrackingDeliveryStatusType simple type. 
+
+<27> Section 3.1.4.2.4.3:  Only the initial release version of Exchange 2010 supports the 
+MessageTrackingEventDescriptionType simple type.  
+
+<28> Section 3.1.4.2.4.4: Only the initial release version of Exchange 2010 supports the 
+MessageTrackingScopeType simple type. 
+
+47 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+48 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A    attributes 12 
+    complex types 11 
+Abstract data model    elements 10 
+   server 14    enumerated 10 
+Applicability 9    groups 13 
+Attribute groups 13    namespaces 10 
+Attributes 12    simple types 12 
+    syntax 10 
+
+C    t:ArrayOfTrackingPropertiesType Complex Type 
+
+ complex type 12 
+
+Capability negotiation 9    t:TrackingPropertyType Complex Type complex 
+
+Change tracking 48 type 11 
+
+Complex types 11    transport 10 
+
+   t:ArrayOfTrackingPropertiesType Complex Type 12  
+
+   t:TrackingPropertyType Complex Type 11 N 
+  
+
+D Namespaces 10 
+
+ Normative references 7 
+
+Data model - abstract  
+
+   server 14 O 
+  
+
+E Operations 
+
+    FindMessageTrackingReport Operation 14 
+
+Events    GetMessageTrackingReport Operation 23 
+
+   local - server 37 Overview (synopsis) 8 
+
+   timer - server 36  
+
+ P 
+F  
+
+ Parameters - security index 39 
+
+Fields - vendor-extensible 9 Preconditions 8 
+
+Full WSDL 40 Prerequisites 8 
+
+Full XML schema 42 Product behavior 46 
+
+   Messages Schema 42 Protocol Details 
+
+   Types Schema 43    overview 14 
+
+  
+
+G R 
+  
+
+Glossary 6 References 7 
+
+Groups 13    informative 8 
+
+    normative 7 
+
+I Relationship to other protocols 8 
+
+  
+
+Implementer - security considerations 39 S 
+Index of security parameters 39  
+
+Informative references 8 Security 
+
+Initialization    implementer considerations 39 
+
+   server 14    parameter index 39 
+
+Introduction 6 Sequencing rules 
+
+    server 14 
+
+L Server 
+
+    abstract data model 14 
+
+Local events    FindMessageTrackingReport Operation operation 
+
+   server 37 14 
+
+    GetMessageTrackingReport Operation operation 23 
+   initialization 14 
+
+M 
+   local events 37 
+
+ 
+   message processing 14 
+
+Message processing 
+   sequencing rules 14 
+
+   server 14 
+   timer events 36 
+
+Messages 
+   timers 14 
+
+   attribute groups 13 
+Simple types 12 
+
+49 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Standards assignments 9 
+Syntax 
+   messages - overview 10 
+ 
+T 
+ 
+t:ArrayOfTrackingPropertiesType Complex Type 
+
+complex type 12 
+t:TrackingPropertyType Complex Type complex type 
+
+11 
+Timer events 
+   server 36 
+Timers 
+   server 14 
+Tracking changes 48 
+Transport 10 
+Types 
+   complex 11 
+   simple 12 
+ 
+V 
+ 
+Vendor-extensible fields 9 
+Versioning 9 
+ 
+W 
+ 
+WSDL 40 
+ 
+X 
+ 
+XML schema 42 
+   Messages Schema 42 
+   Types Schema 43 
+
+ 
+
+50 / 50 
+
+[MS-OXWSMTRK] - v20250520 
+Message Tracking Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

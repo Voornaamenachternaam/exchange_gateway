@@ -1,0 +1,4828 @@
+﻿[MS-ASCNTC]:  
+
+Exchange ActiveSync: Contact Class Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+12/3/2008 1.0.0 Major Initial Release. 
+
+4/10/2009 2.0.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 5.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 6.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 7.0 Major Significantly changed the technical content. 
+
+11/3/2010 7.1 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 7.2 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 8.0 Major Significantly changed the technical content. 
+
+10/7/2011 8.1 Minor Clarified the meaning of the technical content. 
+
+1/20/2012 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 9.0 None 
+
+technical content. 
+
+7/16/2012 10.0 Major Significantly changed the technical content. 
+
+10/8/2012 10.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 10.1 None 
+
+technical content. 
+
+7/26/2013 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 11.0 None 
+
+technical content. 
+
+4/30/2014 12.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 12.0 None 
+
+technical content. 
+
+10/30/2014 12.1 Minor Clarified the meaning of the technical content. 
+
+5/26/2015 13.0 Major Significantly changed the technical content. 
+
+6/30/2015 14.0 Major Significantly changed the technical content. 
+
+9/14/2015 15.0 Major Significantly changed the technical content. 
+
+6/9/2016 16.0 Major Significantly changed the technical content. 
+
+2/28/2017 17.0 Major Significantly changed the technical content. 
+
+4/18/2017 17.0 None No changes to the meaning, language, or formatting of the 
+
+2 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+7/24/2018 18.0 Major Significantly changed the technical content. 
+
+10/1/2018 19.0 Major Significantly changed the technical content. 
+
+12/11/2018 19.1 Minor Clarified the meaning of the technical content. 
+
+4/29/2022 20.0 Major Significantly changed the technical content. 
+
+5/20/2025 21.0 Major Significantly changed the technical content. 
+
+3 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 7 
+
+1.1 Glossary ........................................................................................................... 7 
+1.2 References ........................................................................................................ 8 
+
+1.2.1 Normative References ................................................................................... 8 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 9 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Message Syntax ............................................................................................... 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Elements ................................................................................................... 10 
+
+2.2.2.1 AccountName ....................................................................................... 13 
+2.2.2.2 Alias .................................................................................................... 14 
+2.2.2.3 Anniversary .......................................................................................... 14 
+2.2.2.4 AssistantName ...................................................................................... 15 
+2.2.2.5 AssistantPhoneNumber .......................................................................... 16 
+2.2.2.6 Birthday ............................................................................................... 16 
+2.2.2.7 Body ................................................................................................... 17 
+
+2.2.2.7.1 Body (AirSyncBase Namespace) ........................................................ 17 
+2.2.2.7.2 Body (Contacts Namespace) ............................................................. 17 
+
+2.2.2.8 BodySize .............................................................................................. 18 
+2.2.2.9 BodyTruncated ..................................................................................... 19 
+2.2.2.10 BusinessAddressCity .............................................................................. 20 
+2.2.2.11 BusinessAddressCountry ........................................................................ 20 
+2.2.2.12 BusinessAddressPostalCode .................................................................... 21 
+2.2.2.13 BusinessAddressState ............................................................................ 21 
+2.2.2.14 BusinessAddressStreet .......................................................................... 22 
+2.2.2.15 BusinessFaxNumber .............................................................................. 23 
+2.2.2.16 BusinessPhoneNumber .......................................................................... 23 
+2.2.2.17 Business2PhoneNumber ......................................................................... 24 
+2.2.2.18 CarPhoneNumber .................................................................................. 24 
+2.2.2.19 Categories ........................................................................................... 25 
+2.2.2.20 Category .............................................................................................. 26 
+2.2.2.21 Children ............................................................................................... 26 
+2.2.2.22 Child ................................................................................................... 27 
+2.2.2.23 CompanyMainPhone .............................................................................. 27 
+2.2.2.24 CompanyName ..................................................................................... 28 
+2.2.2.25 CustomerId .......................................................................................... 29 
+2.2.2.26 Department .......................................................................................... 29 
+2.2.2.27 Email1Address ...................................................................................... 30 
+2.2.2.28 Email2Address ...................................................................................... 31 
+2.2.2.29 Email3Address ...................................................................................... 31 
+2.2.2.30 FileAs .................................................................................................. 32 
+2.2.2.31 FirstName ............................................................................................ 33 
+2.2.2.32 GovernmentId ...................................................................................... 33 
+2.2.2.33 HomeAddressCity .................................................................................. 34 
+2.2.2.34 HomeAddressCountry ............................................................................ 34 
+2.2.2.35 HomeAddressPostalCode ........................................................................ 35 
+
+4 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.36 HomeAddressState ................................................................................ 36 
+2.2.2.37 HomeAddressStreet .............................................................................. 36 
+2.2.2.38 HomeFaxNumber .................................................................................. 37 
+2.2.2.39 HomePhoneNumber............................................................................... 37 
+2.2.2.40 Home2PhoneNumber ............................................................................. 38 
+2.2.2.41 IMAddress ............................................................................................ 39 
+2.2.2.42 IMAddress2 .......................................................................................... 39 
+2.2.2.43 IMAddress3 .......................................................................................... 40 
+2.2.2.44 JobTitle ................................................................................................ 40 
+2.2.2.45 LastName ............................................................................................ 41 
+2.2.2.46 ManagerName ...................................................................................... 42 
+2.2.2.47 MiddleName ......................................................................................... 42 
+2.2.2.48 MMS .................................................................................................... 43 
+2.2.2.49 MobilePhoneNumber .............................................................................. 43 
+2.2.2.50 NickName ............................................................................................ 44 
+2.2.2.51 OfficeLocation ....................................................................................... 45 
+2.2.2.52 OtherAddressCity .................................................................................. 45 
+2.2.2.53 OtherAddressCountry ............................................................................ 46 
+2.2.2.54 OtherAddressPostalCode ........................................................................ 46 
+2.2.2.55 OtherAddressState ................................................................................ 47 
+2.2.2.56 OtherAddressStreet ............................................................................... 48 
+2.2.2.57 PagerNumber ....................................................................................... 48 
+2.2.2.58 Picture ................................................................................................. 49 
+2.2.2.59 RadioPhoneNumber ............................................................................... 49 
+2.2.2.60 Spouse ................................................................................................ 50 
+2.2.2.61 Suffix .................................................................................................. 51 
+2.2.2.62 Title .................................................................................................... 51 
+2.2.2.63 WebPage ............................................................................................. 52 
+2.2.2.64 WeightedRank ...................................................................................... 52 
+2.2.2.65 YomiCompanyName .............................................................................. 53 
+2.2.2.66 YomiFirstName ..................................................................................... 54 
+2.2.2.67 YomiLastName ...................................................................................... 54 
+
+3 Protocol Details ..................................................................................................... 56 
+3.1 Client Details ................................................................................................... 56 
+
+3.1.1 Abstract Data Model .................................................................................... 56 
+3.1.2 Timers ...................................................................................................... 56 
+3.1.3 Initialization ............................................................................................... 56 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 56 
+
+3.1.4.1 Synchronizing Contact Data Between Client and Server ............................. 56 
+3.1.4.2 Searching a Server for Contact Data ........................................................ 56 
+3.1.4.3 Requesting Details for Specific Contacts ................................................... 56 
+3.1.4.4 Refreshing the Recipient Information Cache ............................................. 56 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 57 
+3.1.5.1 ItemOperations Command Request ......................................................... 57 
+3.1.5.2 Search Command Request ..................................................................... 57 
+3.1.5.3 Sync Command Request ........................................................................ 57 
+
+3.1.5.3.1 Omitting Ghosted Properties from a Sync Change Request ................... 57 
+3.1.5.4 Truncating the Contact Notes Field .......................................................... 58 
+
+3.1.6 Timer Events .............................................................................................. 58 
+3.1.7 Other Local Events ...................................................................................... 58 
+
+3.2 Server Details .................................................................................................. 58 
+3.2.1 Abstract Data Model .................................................................................... 58 
+3.2.2 Timers ...................................................................................................... 58 
+3.2.3 Initialization ............................................................................................... 59 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 59 
+
+3.2.4.1 Synchronizing Contact Data Between Client and Server ............................. 59 
+3.2.4.2 Searching for Contact Data .................................................................... 59 
+
+5 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.4.3 Retrieving Details for Specific Contacts .................................................... 59 
+3.2.4.4 Refreshing the Recipient Information Cache ............................................. 59 
+
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 59 
+3.2.5.1 ItemOperations Command Response ....................................................... 59 
+3.2.5.2 Search Command Response ................................................................... 60 
+3.2.5.3 Sync Command Response ...................................................................... 60 
+
+3.2.5.3.1 Omitting Ghosted Properties from a Sync Change Request ................... 60 
+3.2.6 Timer Events .............................................................................................. 60 
+3.2.7 Other Local Events ...................................................................................... 60 
+
+4 Protocol Examples ................................................................................................. 61 
+
+5 Security ................................................................................................................. 63 
+5.1 Security Considerations for Implementers ........................................................... 63 
+5.2 Index of Security Parameters ............................................................................ 63 
+
+6 Appendix A: Full XML Schema ................................................................................ 64 
+6.1 Contacts Namespace Schema ............................................................................ 64 
+6.2 Contacts2 Namespace Schema .......................................................................... 68 
+
+7 Appendix B: Product Behavior ............................................................................... 70 
+
+8 Change Tracking .................................................................................................... 71 
+
+9 Index ..................................................................................................................... 72 
+
+ 
+
+6 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Exchange ActiveSync: Contact Class Protocol enables the communication of contact (2) data 
+between a mobile device and the server in the ActiveSync protocol.  
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+alias: An alternate name that can be used to reference an object or element. 
+
+base64 encoding: A binary-to-text encoding scheme whereby an arbitrary sequence of bytes is 
+converted to a sequence of printable ASCII characters, as described in [RFC4648]. 
+
+contact: (1) A presence entity (presentity) whose presence information can be tracked.   
+
+(2) An object of the contact class that represents a company or person whom a user can 
+contact.   
+
+Contacts folder: A Folder object that contains Contact objects. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+distinguished name (DN): A name that uniquely identifies an object by using the relative 
+distinguished name (RDN) for the object, and the names of container objects and domains that 
+contain the object. The distinguished name (DN) identifies the object and its location in a tree. 
+
+Folder object: A messaging construct that is typically used to organize data into a hierarchy of 
+objects containing Message objects and folder associated information (FAI) Message objects. 
+
+ghosted: A property that is not deleted by the server if the element is not included in a Sync 
+<Change> request message. 
+
+recipient information cache: An information store that contains a list of the contacts with whom 
+a user has interacted most often and most recently, and with whom the user is likely to interact 
+again. 
+
+Wireless Application Protocol (WAP) Binary XML (WBXML): A compact binary representation 
+of XML that is designed to reduce the transmission size of XML documents over narrowband 
+communication channels. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML element: An XML structure that typically consists of a start tag, an end tag, and the 
+information between those tags. Elements can have attributes and can contain other elements. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+7 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol". 
+
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol". 
+
+[MS-ASDTYPE] Microsoft Corporation, "Exchange ActiveSync: Data Types". 
+
+[MS-ASHTTP] Microsoft Corporation, "Exchange ActiveSync: HTTP Protocol". 
+
+[MS-ASWBXML] Microsoft Corporation, "Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1/2] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema 
+Part 1: Structures Second Edition", W3C Recommendation, October 2004, 
+https://www.w3.org/TR/2004/REC-xmlschema-1-20041028/ 
+
+[XML] World Wide Web Consortium, "Extensible Markup Language (XML) 1.0 (Fourth Edition)", W3C 
+Recommendation 16 August 2006, edited in place 29 September 2006, 
+http://www.w3.org/TR/2006/REC-xml-20060816/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+This protocol describes an XML representation of contacts (2) that are used for client and server 
+communication as described in [MS-ASCMD]. The contact data is included in protocol command 
+requests when contact data is sent from the client to the server, and is included in protocol command 
+responses when contact data is returned from the server to the client. 
+
+8 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.4 Relationship to Other Protocols 
+
+This protocol describes the XML representation of contacts (2) that are used by the command 
+requests and command responses that are described in [MS-ASCMD]. The protocol governing the 
+transmission of these commands between the client and the server is described in [MS-ASCMD]. The 
+Wireless Application Protocol (WAP) Binary XML (WBXML), as described in [MS-ASWBXML], is 
+used to transmit the XML markup that constitutes the request body and the response body. 
+
+Some elements in the Contact class support being ghosted. The use of ghosted properties is 
+described in [MS-ASCMD] section 2.2.3.179. 
+
+All data types in this document conform to the data type definitions that are described in [MS-
+ASDTYPE]. Common XML schema elements used by other classes are defined in [MS-ASAIRS]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+This protocol describes a set of XML elements that are used to communicate contact (2) data when 
+using the commands described in [MS-ASCMD]. This set of elements is applicable when 
+communicating contact information between a mobile device and a server. These elements are not 
+applicable when communicating other types of information that are supported by the ActiveSync 
+protocol. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol consists of a series of XML elements that are embedded inside of a command request or 
+command response, as specified in [MS-ASCMD]. 
+
+The XML markup that constitutes the request body or the response body that is transmitted between 
+the client and the server uses Wireless Application Protocol (WAP) Binary XML (WBXML), as 
+specified in [MS-ASWBXML]. 
+
+2.2 Message Syntax 
+
+The XML schemas for the Contacts and Contacts2 namespaces are described in section 6. 
+
+The markup that is used by this protocol MUST be well-formed XML, as specified in [XML]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+airsyncbase AirSyncBase [MS-ASAIRS] 
+
+contacts Contacts  
+
+contacts2 Contacts2  
+
+airsync AirSync [MS-ASCMD] section 2.2.1.21 
+
+itemoperations ItemOperations [MS-ASCMD] section 2.2.1.10 
+
+search Search [MS-ASCMD] section 2.2.1.16 
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1/2]  
+
+ 
+
+2.2.2 Elements 
+
+Elements of the Contact class are defined in three namespaces: Contacts, Contacts2, and 
+AirSyncBase. All Contact class elements are specified in this document; however, elements defined 
+in the AirSyncBase namespace are further specified in [MS-ASAIRS]. 
+
+The elements are defined in the Contacts namespace, except where indicated by the presence of a 
+namespace prefix, as defined in section 2.2.1. A prefix is used for an element in the Contacts 
+namespace only where necessary to disambiguate the element from another one of the same name.  
+
+Except where otherwise specified in the following sections, each element of the Contact class is used 
+in ActiveSync command requests and responses as follows: 
+
+ As an optional child element of the itemoperations:Schema element ([MS-ASCMD] section 
+2.2.3.158) in ItemOperations command requests ([MS-ASCMD] section 2.2.1.10) 
+
+10 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ As an optional child element of the itemoperations:Properties element ([MS-ASCMD] section 
+2.2.3.139.2) in ItemOperations command responses ([MS-ASCMD] section 2.2.1.10) 
+
+ As an optional child element of the search:Properties element ([MS-ASCMD] section 
+2.2.3.139.3) in Search command responses ([MS-ASCMD] section 2.2.1.16) 
+
+ As an optional child element of the airsync:ApplicationData element ([MS-ASCMD] section 
+2.2.3.11) in Sync command requests ([MS-ASCMD] section 2.2.1.21) 
+
+ As an optional child element of the airsync:ApplicationData element ([MS-ASCMD] section 
+2.2.3.11) in Sync command responses ([MS-ASCMD] section 2.2.1.21) 
+
+The following table summarizes the set of common XML schema element definitions defined or used 
+by this specification. XML schema element definitions that are specific to one or more particular 
+operations are specified further in sections 3.1.5.1, 3.1.5.2, 3.1.5.3, 3.2.5.1, 3.2.5.2, and 3.2.5.3. 
+
+ 
+
+Element name Description 
+
+Anniversary (section 2.2.2.3) The wedding anniversary date for the contact. 
+
+AssistantName (section 2.2.2.4) The name of the contact's assistant. 
+
+AssistantPhoneNumber (section 2.2.2.5) The phone number of the contact's assistant. 
+
+Birthday (section 2.2.2.6) The birth date of the contact. 
+
+Business2PhoneNumber (section 2.2.2.17) The second business telephone number for the contact. 
+
+BusinessAddressCity (section 2.2.2.10) The business city of the contact. 
+
+BusinessPhoneNumber (section 2.2.2.16) The business telephone number for the contact. 
+
+WebPage (section 2.2.2.63) The Web site or personal Web page for the contact. 
+
+BusinessAddressCountry (section 2.2.2.11) The business country/region for the contact. 
+
+Department (section 2.2.2.26) The department name for the contact. 
+
+Email1Address (section 2.2.2.27) The first e-mail address for the contact. 
+
+Email2Address (section 2.2.2.28) The second e-mail address for the contact. 
+
+Email3Address (section 2.2.2.29) The third e-mail address for the contact. 
+
+BusinessFaxNumber (section 2.2.2.15) The business fax number for the contact. 
+
+FileAs (section 2.2.2.30) The filing string for the contact. 
+
+Alias (section 2.2.2.2) The user's alias. 
+
+WeightedRank (section 2.2.2.64) The rank this entry possesses in the recipient information 
+cache. 
+
+FirstName (section 2.2.2.31) The contact's first name. 
+
+MiddleName (section 2.2.2.47) The contact's middle name. 
+
+HomeAddressCity (section 2.2.2.33) The home city for the contact. 
+
+HomeAddressCountry (section 2.2.2.34) The home country/region for the contact. 
+
+HomeFaxNumber (section 2.2.2.38) The home fax number for the contact. 
+
+11 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Description 
+
+HomePhoneNumber (section 2.2.2.39) The home phone number for the contact. 
+
+Home2PhoneNumber (section 2.2.2.40) The second home phone number for the contact. 
+
+HomeAddressPostalCode (section 2.2.2.35) The home postal code for the contact. 
+
+HomeAddressState (section 2.2.2.36) The home state for the contact. 
+
+HomeAddressStreet (section 2.2.2.37) The home street address for the contact. 
+
+MobilePhoneNumber (section 2.2.2.49) The mobile phone number for the contact. 
+
+Suffix (section 2.2.2.61) The suffix for the contact's name. 
+
+CompanyName (section 2.2.2.24) The company name for the contact. 
+
+OtherAddressCity (section 2.2.2.52) The city of the contact's alternative address. 
+
+OtherAddressCountry (section 2.2.2.53) The country/region of the contact's alternative address. 
+
+CarPhoneNumber (section 2.2.2.18) The car telephone number for the contact. 
+
+OtherAddressPostalCode (section 2.2.2.54) The postal code of the contact's alternative address. 
+
+OtherAddressState (section 2.2.2.55) The state of the contact's alternative address. 
+
+OtherAddressStreet (section 2.2.2.56) The street address of the contact's alternative address. 
+
+PagerNumber (section 2.2.2.57) The pager number for the contact. 
+
+Title (section 2.2.2.62) The contact's business title. 
+
+BusinessAddressPostalCode (section The business postal code for the contact. 
+2.2.2.12) 
+
+LastName (section 2.2.2.45) The contact's last name. 
+
+Spouse (section 2.2.2.60) The name of the contact's spouse/partner. 
+
+BusinessAddressState (section 2.2.2.13) The business state for the contact. 
+
+BusinessAddressStreet (section 2.2.2.14) The business street address for the contact. 
+
+JobTitle (section 2.2.2.44) The contact's job title.  
+
+YomiFirstName (section 2.2.2.66) The Japanese phonetic rendering of the first name of the 
+contact. 
+
+YomiLastName (section 2.2.2.67) The Japanese phonetic rendering of the last name of the 
+contact. 
+
+YomiCompanyName (section 2.2.2.65) The Japanese phonetic rendering of the company name for the 
+contact. 
+
+OfficeLocation (section 2.2.2.51) The office location for the contact. 
+
+RadioPhoneNumber (section 2.2.2.59) The radio telephone number for the contact. 
+
+contacts2:CustomerId (section 2.2.2.25) The customer identifier (ID) for the contact. 
+
+contacts2:GovernmentId (section 2.2.2.32) The government-assigned identifier (ID) for the contact. 
+
+contacts2:IMAddress (section 2.2.2.41) The instant messaging address for the contact. 
+
+12 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Description 
+
+contacts2:IMAddress2 (section 2.2.2.42) The alternative instant messaging address for the contact. 
+
+contacts2:IMAddress3 (section 2.2.2.43) The tertiary instant messaging address for the contact. 
+
+contacts2:ManagerName (section 2.2.2.46) The distinguished name (DN) of the manager for the contact. 
+
+contacts2:CompanyMainPhone (section The main telephone number for the contact's company. 
+2.2.2.23) 
+
+contacts2:AccountName (section 2.2.2.1) The account name and/or number for the contact. 
+
+contacts2:NickName (section 2.2.2.50) The nickname for the contact. 
+
+contacts2:MMS (section 2.2.2.48) The Multimedia Messaging Service (MMS) address for the 
+contact. 
+
+Picture (section 2.2.2.58) The file, which is encoded with base64 encoding, containing 
+the picture of the contact. 
+
+Categories (section 2.2.2.19) A collection of user labels assigned to the contact. 
+
+Category (section 2.2.2.20) A category that is assigned to the contact. 
+
+Children (section 2.2.2.21) A collection of the contact's children. 
+
+Child (section 2.2.2.22) One of the contact’s children. 
+
+airsyncbase:Body (section 2.2.2.7.1) Specifies details about the notes for a contact. 
+
+contacts:Body (section 2.2.2.7.2) Contains the notes for a contact that is retrieved from the 
+server. 
+
+BodySize (section 2.2.2.8) Specifies the full size, in characters, of the contact notes. 
+
+BodyTruncated (section 2.2.2.9) Indicates whether the contact notes were truncated when sent 
+from the server. 
+
+ 
+
+2.2.2.1 AccountName 
+
+The contacts2:AccountName element specifies the account name and/or number for the contact. It 
+is defined as an element in the Contacts2 namespace and is used in ActiveSync command requests 
+and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+13 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.2 Alias 
+
+The Alias element specifies the user's alias. It is defined as an element in the Contacts namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+The Alias element MAY only be returned in a recipient information cache response. For more details 
+about the interaction with the recipient information cache, see [MS-ASCMD] section 2.2.3.186.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.3 Anniversary 
+
+The Anniversary element specifies the wedding anniversary date for the contact. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a dateTime data type in Coordinated Universal Time (UTC) format, as 
+specified in [MS-ASDTYPE] section 2.3. The time portion of the dateTime value might be 11:59 and 
+SHOULD be ignored, so that synchronizing between different time zones does not change the date. 
+
+14 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.4 AssistantName 
+
+The AssistantName element specifies the name of the contact’s assistant. It is defined as an element 
+in the Contacts namespace and is used in ActiveSync command requests and responses as specified 
+in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+15 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.2.5 AssistantPhoneNumber 
+
+The AssistantPhoneNumber element specifies the phone number of the contact's assistant. It is 
+defined as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.6 Birthday 
+
+The Birthday element specifies the birth date of the contact. It is defined as an element in the 
+Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a dateTime data type in Coordinated Universal Time (UTC) format, as 
+specified in [MS-ASDTYPE] section 2.3. The time portion of the dateTime value might be 11:59 and 
+SHOULD be ignored, so that synchronizing between different time zones does not change the date. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+16 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.7 Body 
+
+The Body element is defined in the Contacts namespace, as specified in section 2.2.2.7.2, for use by 
+protocol version 2.5. It is defined in the AirSyncBase namespace, as specified in section 2.2.2.7.1, 
+for use by protocol versions 12.0, 12.1, 14.0, 14.1, and 16.0.  
+
+2.2.2.7.1 Body (AirSyncBase Namespace) 
+
+The airsyncbase:Body element is a container ([MS-ASDTYPE] section 2.2) element that specifies 
+the notes for the contact. It is defined as an element in the AirSyncBase namespace and is used in 
+ActiveSync command requests and responses as specified in section 2.2.2. For more details about the 
+airsyncbase:Body element, see [MS-ASAIRS] section 2.2.2.9. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+The contacts:Body element (section 2.2.2.7.2) is used instead of the airsyncbase:Body element 
+with protocol version 2.5. 
+
+2.2.2.7.2 Body (Contacts Namespace) 
+
+17 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The Body element is an optional element that contains the notes for a contact that is retrieved from 
+the server. This element is defined in the Contacts namespace as a child of the 
+airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) in Sync command requests and 
+responses ([MS-ASCMD] section 2.2.1.21). 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+A client can use the airsync:Truncation element, as specified in [MS-ASCMD] section 2.2.3.185, to 
+request truncation of the contact notes. This conserves space and reduces data traffic when 
+synchronizing contacts. The server sets the BodyTruncated element (section 2.2.2.9) in the Sync 
+response to indicate whether the contact notes have actually been truncated. The untruncated size of 
+the contact notes is specified by the BodySize element (section 2.2.2.8). 
+
+When the client requests truncation, only the first part (or none) of each contact's notes is included in 
+a synchronization. The complete notes for a contact cannot be retrieved after a contact has been 
+synchronized with truncated notes. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1  
+
+16.0  
+
+16.1  
+
+ 
+
+The airsyncbase:Body element (section 2.2.2.7.1) is used instead of the contacts:Body element 
+with all protocol versions except 2.5. 
+
+2.2.2.8 BodySize 
+
+The BodySize element is an optional element that specifies the full size, in characters, of the contact 
+notes. This element is defined in the Contacts namespace as a child of the airsync:ApplicationData 
+element ([MS-ASCMD] section 2.2.3.11) in Sync command responses ([MS-ASCMD] section 
+2.2.1.21). 
+
+The value of this element is an integer data type, as specified in as specified in [MS-ASDTYPE] 
+section 2.6. 
+
+This element is present only when the BodyTruncated element (section 2.2.2.9) is set to 1. When 
+the contact notes are truncated, the BodySize element is included to specify the original size of the 
+contact notes prior to truncation. 
+
+Protocol Versions 
+
+18 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1  
+
+16.0  
+
+16.1  
+
+ 
+
+2.2.2.9 BodyTruncated 
+
+The BodyTruncated element is an optional element that indicates whether the contact notes were 
+truncated when sent from the server. This element is defined in the Contacts namespace as a child of 
+the airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) in Sync command responses 
+([MS-ASCMD] section 2.2.1.21). 
+
+The value of this element is an unsignedByte data type, as specified in [MS-ASDTYPE] section 2.8. 
+
+A value of 1 indicates that the contact notes have been truncated by the server; a value of 0 (zero) 
+indicates that the contact notes have not been truncated. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1  
+
+16.0  
+
+16.1  
+
+ 
+
+19 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.10 BusinessAddressCity 
+
+The BusinessAddressCity element specifies the business city of the contact. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.11 BusinessAddressCountry 
+
+The BusinessAddressCountry element specifies the business country/region of the contact. It is 
+defined as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+20 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.12 BusinessAddressPostalCode 
+
+The BusinessAddressPostalCode element specifies the business postal code for the contact. It is 
+defined as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.13 BusinessAddressState 
+
+The BusinessAddressState element specifies the business state for the contact. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+21 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.14 BusinessAddressStreet 
+
+The BusinessAddressStreet element specifies the business street address for the contact. It is 
+defined as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+22 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.15 BusinessFaxNumber 
+
+The BusinessFaxNumber element specifies the business fax number for the contact. It is defined as 
+an element in the Contacts namespace and is used in ActiveSync command requests and responses 
+as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.16 BusinessPhoneNumber 
+
+The BusinessPhoneNumber element specifies the primary business phone number for the contact. 
+It is defined as an element in the Contacts namespace and is used in ActiveSync command requests 
+and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+23 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.17 Business2PhoneNumber 
+
+The Business2PhoneNumber element specifies the secondary business telephone number for the 
+contact. It is defined as an element in the Contacts namespace and is used in ActiveSync command 
+requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.18 CarPhoneNumber 
+
+The CarPhoneNumber element specifies the car telephone number for the contact. It is defined as 
+an element in the Contacts namespace and is used in ActiveSync command requests and responses 
+as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+24 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.19 Categories 
+
+The Categories element is a container ([MS-ASDTYPE] section 2.2) element that specifies a 
+collection of user labels assigned to the contact. It is defined as an element in the Contacts 
+namespace and is used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The Categories element has the following child element: 
+
+ Category (section 2.2.2.20): At least one instance of this element is required. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+25 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.2.20 Category 
+
+The Category element is a required child element of the Categories element (section 2.2.2.19) that 
+specifies a category that is assigned to the contact. It is defined as an element in the Contacts 
+namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+A command request or response has a minimum of one Category element per Categories element. 
+It can have up to 300 elements per Categories element. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.21 Children 
+
+The Children element is a container ([MS-ASDTYPE] section 2.2) element that specifies a collection 
+of the contact's children. It is defined as an element in the Contacts namespace and is used in 
+ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The Children element has the following child element: 
+
+ Child (section 2.2.2.22): This element is optional. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+26 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.22 Child 
+
+The Child element is an optional child element of the Children element that specifies a child of the 
+contact. It is defined as an element in the Contacts namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+A command request or response has zero or more Child elements per Children element. It can have 
+up to 300 elements per Children element. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.23 CompanyMainPhone 
+
+The contacts2:CompanyMainPhone element specifies the main telephone number for the contact's 
+company. It is defined as an element in the Contacts2 namespace and is used in ActiveSync 
+command requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+27 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.24 CompanyName 
+
+The CompanyName element specifies the company name for the contact. It is defined as an element 
+in the Contacts namespace and is used in ActiveSync command requests and responses as specified 
+in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+28 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.2.25 CustomerId 
+
+The contacts2:CustomerId element specifies the customer identifier (ID) for the contact. It is 
+defined as an element in the Contacts2 namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.26 Department 
+
+The Department element specifies the department name for the contact. It is defined as an element 
+in the Contacts namespace and is used in ActiveSync command requests and responses as specified 
+in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+29 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.27 Email1Address 
+
+The Email1Address element specifies the first e-mail address for the contact. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.3. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+The Email1Address element is one of the Contact class elements that is returned in a recipient 
+information cache response. For more details about interacting with the recipient information cache, 
+see [MS-ASCMD] section 2.2.3.186.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+30 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.28 Email2Address 
+
+The Email2Address element specifies the second e-mail address for the contact. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.3. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.29 Email3Address 
+
+The Email3Address element specifies the third e-mail address for the contact. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.3. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+31 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.30 FileAs 
+
+The FileAs element specifies how a contact is filed in the Contacts folder or the recipient 
+information cache folder. It is defined as an element in the Contacts namespace and is used in 
+ActiveSync command requests and responses as specified in section 2.2.2.  
+
+Values for the FileAs element can differ depending on their location; the value for the FileAs element 
+in the recipient information cache is not required to match the value of the FileAs element in the 
+Contacts folder. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+The FileAs element is one of the Contact class elements that is returned in a recipient information 
+cache response. For more details about the interaction with the recipient information cache, see [MS-
+ASCMD] section 2.2.3.186.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+32 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.31 FirstName 
+
+The FirstName element specifies the first name of the contact. It is defined as an element in the 
+Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.32 GovernmentId 
+
+The contacts2:GovernmentId element specifies the government-assigned identifier (ID) for the 
+contact. It is defined as an element in the Contacts2 namespace and is used in ActiveSync command 
+requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+33 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.33 HomeAddressCity 
+
+The HomeAddressCity element specifies the home city for the contact. It is defined as an element in 
+the Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.34 HomeAddressCountry 
+
+The HomeAddressCountry element specifies the home country/region for the contact. It is defined 
+as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+34 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.35 HomeAddressPostalCode 
+
+The HomeAddressPostalCode element specifies the home postal code for the contact. It is defined 
+as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+35 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.36 HomeAddressState 
+
+The HomeAddressState element specifies the home state for the contact. It is defined as an element 
+in the Contacts namespace and is used in ActiveSync command requests and responses as specified 
+in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.37 HomeAddressStreet 
+
+The HomeAddressStreet element specifies the home street address for the contact. It is defined as 
+an element in the Contacts namespace and is used in ActiveSync command requests and responses 
+as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+36 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.38 HomeFaxNumber 
+
+The HomeFaxNumber element specifies the home fax number for the contact. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.39 HomePhoneNumber 
+
+The HomePhoneNumber element specifies the home phone number for the contact. It is defined as 
+an element in the Contacts namespace and is used in ActiveSync command requests and responses 
+as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+37 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.40 Home2PhoneNumber 
+
+The Home2PhoneNumber element specifies the alternative home phone number for the contact. It 
+is defined as an element in the Contacts namespace and is used in ActiveSync command requests 
+and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+38 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.41 IMAddress 
+
+The contacts2:IMAddress element specifies the instant messaging address for the contact. It is 
+defined as an element in the Contacts2 namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.42 IMAddress2 
+
+The contacts2:IMAddress2 element specifies the alternative instant messaging address for the 
+contact. It is defined as an element in the Contacts2 namespace and is used in ActiveSync command 
+requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+39 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.43 IMAddress3 
+
+The contacts2:IMAddress3 element specifies the tertiary instant messaging address for the contact. 
+It is defined as an element in the Contacts2 namespace and is used in ActiveSync command requests 
+and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.44 JobTitle 
+
+The JobTitle element specifies the contact’s job title. It is defined as an element in the Contacts 
+namespace and is used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+40 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.45 LastName 
+
+The LastName element specifies the contact’s last name. It is defined as an element in the Contacts 
+namespace and is used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+41 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.46 ManagerName 
+
+The contacts2:ManagerName element specifies the distinguished name (DN) of the contact's 
+manager. It is defined as an element in the Contacts2 namespace and is used in ActiveSync 
+command requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.47 MiddleName 
+
+The MiddleName element specifies the middle name of the contact. It is defined as an element in the 
+Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+42 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.48 MMS 
+
+The contacts2:MMS element specifies the Multimedia Messaging Service (MMS) address for the 
+contact. It is defined as an element in the Contacts2 namespace and is used in ActiveSync command 
+requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.49 MobilePhoneNumber 
+
+The MobilePhoneNumber element specifies the mobile phone number for the contact. It is defined 
+as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+43 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.50 NickName 
+
+The contacts2:NickName element specifies the nickname for the contact. It is defined as an element 
+in the Contacts2 namespace and is used in ActiveSync command requests and responses as specified 
+in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+44 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.51 OfficeLocation 
+
+The OfficeLocation element specifies the office location for the contact. It is defined as an element in 
+the Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.52 OtherAddressCity 
+
+The OtherAddressCity element specifies the city for the contact's alternate address. It is defined as 
+an element in the Contacts namespace and is used in ActiveSync command requests and responses 
+as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+45 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.53 OtherAddressCountry 
+
+The OtherAddressCountry element specifies the country/region of the contact’s alternate address. It 
+is defined as an element in the Contacts namespace and is used in ActiveSync command requests 
+and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.54 OtherAddressPostalCode 
+
+The OtherAddressPostalCode element specifies the postal code of the contact’s alternate address. It 
+is defined as an element in the Contacts namespace and is used in ActiveSync command requests 
+and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+46 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.55 OtherAddressState 
+
+The OtherAddressState element specifies the state of the contact’s alternate address. It is defined 
+as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+47 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.56 OtherAddressStreet 
+
+The OtherAddressStreet element specifies the street address of the contact’s alternate address. It is 
+defined as an element in the Contacts namespace and is used in ActiveSync command requests and 
+responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.57 PagerNumber 
+
+The PagerNumber element specifies the pager number for the contact. It is defined as an element in 
+the Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+48 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.58 Picture 
+
+The Picture element specifies the file that contains the picture of the contact. The value of the 
+Picture element SHOULD be a stream that is encoded with base64 encoding. It is defined as an 
+element in the Contacts namespace and is used in ActiveSync command requests and responses as 
+specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+The value of the Picture element MUST be limited to 48 KB of binary content that is encoded with 
+base64 encoding, or an image size of around 36 KB. Since base64 encoding is nondeterministic, the 
+actual maximum size of the image can vary. If the value of the Picture element exceeds 48 KB of 
+content with base64 encoding, the server MUST return a status error of 6. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.59 RadioPhoneNumber 
+
+The RadioPhoneNumber element specifies the radio phone number for the contact. It is defined as 
+an element in the Contacts namespace and is used in ActiveSync command requests and responses 
+as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7.5. 
+
+49 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.60 Spouse 
+
+The Spouse element specifies the name of the contact’s spouse/partner. It is defined as an element in 
+the Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+50 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.2.61 Suffix 
+
+The Suffix element specifies the suffix for the contact’s name. It is defined as an element in the 
+Contacts namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.62 Title 
+
+The Title element specifies the contact’s business title. It is defined as an element in the Contacts 
+namespace and is used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+51 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.63 WebPage 
+
+The WebPage element specifies the Web site or personal Web page for the contact. It is defined as 
+an element in the Contacts namespace and is used in ActiveSync command requests and responses 
+as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.64 WeightedRank 
+
+The WeightedRank element specifies the rank of this contact entry in the recipient information 
+cache. It is defined as an element in the Contacts namespace. 
+
+The value of this element is an integer data type, as specified in [MS-ASDTYPE] section 2.6. 
+
+Clients can use the WeightedRank element to determine which entries in a recipient information 
+cache list are displayed first in an auto-completion field. Higher values of the WeightedRank element 
+identify the most relevant entries. 
+
+52 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The WeightedRank element is only returned in a recipient information cache response. For more 
+details about the interaction with the recipient information cache, see [MS-ASCMD] section 
+2.2.3.186.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.65 YomiCompanyName 
+
+The YomiCompanyName element specifies the Japanese phonetic rendering of the company name 
+for the contact. It is defined as an element in the Contacts namespace and is used in ActiveSync 
+command requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+53 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+16.1 Yes 
+
+ 
+
+2.2.2.66 YomiFirstName 
+
+The YomiFirstName element specifies the Japanese phonetic rendering of the first name of the 
+contact. It is defined as an element in the Contacts namespace and is used in ActiveSync command 
+requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.67 YomiLastName 
+
+The YomiLastName element specifies the Japanese phonetic rendering of the last name of the 
+contact. It is defined as an element in the Contacts namespace and is used in ActiveSync command 
+requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+This element can be ghosted. For details about the use of ghosted properties, see [MS-ASCMD] 
+section 2.2.3.179. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+54 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+2.5 Yes 
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+55 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+Contact class: A structured XML text block that specifies a contact and adheres to the XML schema 
+specified in section 2.2. It is returned by the server to the client as part of a full XML response to the 
+client command requests specified in section 3.1.5.  
+
+Command request: A WBXML formatted message that adheres to the command schemas specified 
+in [MS-ASCMD]. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Synchronizing Contact Data Between Client and Server 
+
+A client initiates synchronization of Contact class data with the server by sending a Sync command 
+request ([MS-ASCMD] section 2.2.1.21) to the server. 
+
+3.1.4.2 Searching a Server for Contact Data 
+
+A client searches for Contact class data by sending a Search command request ([MS-ASCMD] section 
+2.2.1.16) to the server. 
+
+3.1.4.3 Requesting Details for Specific Contacts 
+
+A client requests Contact class data for one or more contacts by sending an ItemOperations 
+command request ([MS-ASCMD] section 2.2.1.10) to the server that contains one or more 
+itemoperations:Fetch elements ([MS-ASCMD] section 2.2.3.67.1). 
+
+3.1.4.4 Refreshing the Recipient Information Cache 
+
+A client retrieves a minimal set of Contact class data from the server by issuing a Sync command 
+request ([MS-ASCMD] section 2.2.1.21) against Folder object type 19, which is the recipient 
+information cache. The recipient information cache is not supported by protocol versions 2.5, 12.0, 
+and 12.1. 
+
+56 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+For more details about the use of this Folder object type in a Sync command request, see [MS-
+ASCMD] section 2.2.3.30.6. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+The following sections define how various elements of the Contact class are used in the context of 
+specific ActiveSync commands. Command details are specified in [MS-ASCMD]. 
+
+3.1.5.1 ItemOperations Command Request 
+
+A client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) that contains 
+one or more itemoperations:Fetch elements ([MS-ASCMD] section 2.2.3.67.1) to retrieve data from 
+the server for one or more contact items. 
+
+Any of the elements that belong to the Contact class, as specified in section 2.2.2, can be included in 
+an ItemOperations command request. 
+
+The client can restrict the elements returned by the ItemOperations command response ([MS-
+ASCMD] section 2.2.1.10) by including top-level schema elements for the Contact class as child 
+elements of the itemoperations:Schema element ([MS-ASCMD] section 2.2.3.158) in the 
+ItemOperations command request. For the Contact class, every element is considered a top-level 
+schema element. 
+
+The ItemOperations command is specified in [MS-ASCMD] section 2.2.1.10. 
+
+The client can request that the server truncate the contact notes field in an ItemOperations 
+command request. For more information, see section 3.1.5.4. 
+
+3.1.5.2 Search Command Request 
+
+A client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve Contact class 
+items that match the criteria specified by the client. 
+
+None of the elements that belong to the Contact class, as specified in section 2.2.2, can be included 
+in a Search command request. 
+
+The Search command is specified in [MS-ASCMD] section 2.2.1.16. 
+
+3.1.5.3 Sync Command Request 
+
+A client uses the Sync command request ([MS-ASCMD] section 2.2.1.21) to synchronize its Contact 
+class items for a specified user with the contacts currently stored by the server. 
+
+Any of the elements that belong to the Contact class, as specified in section 2.2.2, can be included in 
+a Sync command request as child elements of the airsync:ApplicationData element ([MS-ASCMD] 
+section 2.2.3.11) within either an airsync:Add element ([MS-ASCMD] section 2.2.3.7.2) or an 
+airsync:Change element ([MS-ASCMD] section 2.2.3.24). 
+
+Contact class elements can be transmitted as child elements of the Supported element ([MS-
+ASCMD] section 2.2.3.179) in order to support ghosted elements.<1>  
+
+The Sync command is specified in [MS-ASCMD] section 2.2.1.21. 
+
+The client can request that the server truncate the contact notes field in a Sync command request. 
+For more information, see section 3.1.5.4. 
+
+3.1.5.3.1 Omitting Ghosted Properties from a Sync Change Request 
+
+57 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+At the beginning of a session (that is, when the value of the SyncKey element ([MS-ASCMD] section 
+2.2.3.181.4) in a Sync command request ([MS-ASCMD] section 2.2.1.21) is 0 (zero)), the client uses 
+the airsync:Supported element ([MS-ASCMD] section 2.2.3.179) in the Sync command request to 
+specify which properties are not ghosted. In subsequent Sync command requests, the client includes 
+only the set of airsync:Supported elements from the Sync command request's airsync:Change 
+element. 
+
+For more information on ghosted properties, see [MS-ASCMD] section 2.2.3.179. 
+
+3.1.5.4 Truncating the Contact Notes Field 
+
+A client can request that the server truncate the contents of the airsyncbase:Body element (section 
+2.2.2.7.1) in the Sync command response ([MS-ASCMD] section 2.2.1.21) or ItemOperations 
+command response ([MS-ASCMD] section 2.2.1.10) by including the airsyncbase:TruncationSize 
+element ([MS-ASAIRS] section 2.2.2.40.2) in a Sync command request ([MS-ASCMD] section 
+2.2.1.21) or ItemOperations command request ([MS-ASCMD] section 2.2.1.10). The behavior of 
+airsyncbase:TruncationSize is specified in [MS-ASAIRS] section 2.2.2.40.2. 
+
+Once a client requests truncation, the server truncates the contents of the airsyncbase:Body 
+element in all subsequent Sync command responses. A client can request that the server no longer 
+truncate the contents of the airsyncbase:Body element by sending an 
+airsyncbase:BodyPreference element ([MS-ASAIRS] section 2.2.2.12) in the request that contains 
+a Type element ([MS-ASAIRS] section 2.2.2.41.4) to specify the desired format, but does not include 
+the airsyncbase:TruncationSize element. 
+
+If an airsyncbase:Body element is not included in the request that is sent from the client to the 
+server, the server MUST NOT delete the stored Notes for the contact. 
+
+Client devices that do not support the notes field for contacts can omit the airsyncbase:Body 
+element when synchronizing contact information with a server. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+Contact class: A structured XML text block that specifies a contact and adheres to the XML schema 
+specified in section 2.2. It is returned by the server as part of a full XML response to the client 
+requests specified in section 3.1.5.  
+
+Command response: A WBXML formatted message that adheres to the command schemas specified 
+in [MS-ASCMD]. 
+
+58 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+3.2.4.1 Synchronizing Contact Data Between Client and Server 
+
+Synchronization of Contact class data between client and server is initiated by the client, as specified 
+in section 3.1.4.1. The server responds with a Sync command response ([MS-ASCMD] section 
+2.2.1.21). 
+
+3.2.4.2 Searching for Contact Data 
+
+Searching for Contact class data is initiated by the client, as specified in section 3.1.4.2. The server 
+responds with a Search command response ([MS-ASCMD] section 2.2.1.16). 
+
+3.2.4.3 Retrieving Details for Specific Contacts 
+
+Retrieval of Contact class data for one or more contact items is initiated by the client, as specified in 
+section 3.1.4.3. The server responds with an ItemOperations command response ([MS-ASCMD] 
+section 2.2.1.10). 
+
+3.2.4.4 Refreshing the Recipient Information Cache 
+
+Retrieval of a minimal set of Contact class data that represents the recipient information cache is 
+initiated by the client, as specified in section 3.1.4.4. The recipient information cache is not supported 
+by protocol versions 2.5, 12.0, and 12.1. The server responds with a Sync command response ([MS-
+ASCMD] section 2.2.1.21) that includes only the following elements from the Contact class: 
+
+ Email1Address (section 2.2.2.27) 
+
+ FileAs (section 2.2.2.30) 
+
+ Alias (section 2.2.2.2) 
+
+ WeightedRank (section 2.2.2.64) 
+
+This use of the Sync command is further specified in [MS-ASCMD] section 2.2.3.30.6. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The following sections define how various elements of the Contact class are used in the context of 
+specific ActiveSync commands. Command details are specified in [MS-ASCMD]. 
+
+3.2.5.1 ItemOperations Command Response 
+
+When a client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) to retrieve 
+data from the server for one or more contact items, as specified in section 3.1.5.1, the server 
+responds with an ItemOperations command response ([MS-ASCMD] section 2.2.1.10). 
+
+59 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Any of the elements that belong to the Contact class, as specified in section 2.2.2, can be included in 
+an ItemOperations command response. If an itemoperations:Schema element ([MS-ASCMD] 
+section 2.2.3.158) is included in the ItemOperations command request, the elements returned in 
+the ItemOperations command response MUST be restricted to the elements that were included as 
+child elements of the itemoperations:Schema element in the command request. 
+
+Contact class elements are returned as child elements of the itemoperations:Properties element 
+([MS-ASCMD] section 2.2.3.139) in the ItemOperations command response. 
+
+The ItemOperations command is specified in [MS-ASCMD] section 2.2.1.10. 
+
+3.2.5.2 Search Command Response 
+
+When a client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve Contact 
+class items that match the criteria specified by the client, as specified in section 3.1.5.2, the server 
+responds with a Search command response ([MS-ASCMD] section 2.2.1.16). 
+
+Any of the elements that belong to the Contact class, as specified in section 2.2.2, can be included in 
+a Search command response. 
+
+Contact class elements are returned as child elements of the search:Properties element ([MS-
+ASCMD] section 2.2.3.139) in the Search command response. 
+
+The Search command is specified in [MS-ASCMD] section 2.2.1.16. 
+
+3.2.5.3 Sync Command Response 
+
+When a client uses the Sync command request ([MS-ASCMD] section 2.2.1.21) to synchronize its 
+Contact class items for a specified user with the contacts currently stored by the server, as specified 
+in section 3.1.5.3, the server responds with a Sync command response ([MS-ASCMD] section 
+2.2.1.21). 
+
+Any of the elements that belong to the Contact class, as specified in section 2.2.2, can be included in 
+a Sync command response as child elements of the airsync:ApplicationData element ([MS-ASCMD] 
+section 2.2.3.11) within either an airsync:Add element ([MS-ASCMD] section 2.2.3.7.2) or an 
+airsync:Change element ([MS-ASCMD] section 2.2.3.24). 
+
+The Sync command is specified in [MS-ASCMD] section 2.2.1.21. 
+
+3.2.5.3.1 Omitting Ghosted Properties from a Sync Change Request 
+
+At the beginning of a session (that is, when the value of the SyncKey element ([MS-ASCMD] section 
+2.2.3.181.4) in a Sync command request ([MS-ASCMD] section 2.2.1.21) is 0 (zero))), the client uses 
+the airsync:Supported element ([MS-ASCMD] section 2.2.3.179) in the Sync command request to 
+specify which properties are not ghosted. In subsequent Sync command requests, the client includes 
+only these elements from the Sync request's airsync:Change element. Ghosted elements are not 
+sent to the server. Instead of deleting these excluded properties, the server preserves their previous 
+value. 
+
+For more details about ghosted properties, see [MS-ASCMD] section 2.2.3.179. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+60 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+The following example demonstrates a client request to synchronize contact data with the server, and 
+the server response. In this example, the server returns a single new contact, represented by 
+elements of the Contact class that are child elements of the airsync:ApplicationData element ([MS-
+ASCMD] section 2.2.3.11) under an airsync:Add element ([MS-ASCMD] section 2.2.3.7.2) in the 
+server response. 
+
+Note   For the sake of brevity, the value of the Picture element in the server response, which is a 
+representation of the image encoded with base64 encoding, has been truncated. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>2006814013</SyncKey> 
+      <CollectionId>2</CollectionId> 
+      <DeletesAsMoves/> 
+      <GetChanges/> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync" xmlns:A="AirSyncBase" xmlns:B="POOMCONTACTS"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>243360144</SyncKey> 
+      <CollectionId>2</CollectionId> 
+      <Status>1</Status> 
+      <Commands> 
+        <Add> 
+          <ServerId>2:1</ServerId> 
+          <ApplicationData> 
+            <A:Body> 
+              <A:Type>3</A:Type> 
+              <A:EstimatedDataSize>5500</A:EstimatedDataSize> 
+              <A:Truncated>1</A:Truncated> 
+            </A:Body> 
+            <B:WebPage>http://www.contoso.com/</B:WebPage> 
+            <B:BusinessAddressCountry>United States of America</B:BusinessAddressCountry> 
+            <B:Email1Address>"Anat Kerry (anat@contoso.com)" 
+&lt;anat@contoso.com&gt;</B:Email1Address> 
+            <B:BusinessFaxNumber>(206) 555-0100</B:BusinessFaxNumber> 
+            <B:FileAs>Kerry, Anat</B:FileAs> 
+            <B:FirstName>Anat</B:FirstName> 
+            <B:HomePhoneNumber>(206) 555-0101</B:HomePhoneNumber> 
+            <B:BusinessAddressCity>Redmond</B:BusinessAddressCity> 
+            <B:MiddleName>M.</B:MiddleName> 
+            <B:MobilePhoneNumber>(206) 555-0102</B:MobilePhoneNumber> 
+            <B:CompanyName>Contoso, Ltd.</B:CompanyName> 
+            <B:BusinessAddressPostalCode>10021</B:BusinessAddressPostalCode> 
+            <B:LastName>Kerry</B:LastName> 
+            <B:BusinessAddressState>WA</B:BusinessAddressState> 
+            <B:BusinessAddressStreet>234 Main St.</B:BusinessAddressStreet> 
+            <B:BusinessPhoneNumber>(206) 555-0103</B:BusinessPhoneNumber> 
+            <B:JobTitle>Development Manager</B:JobTitle> 
+            <B:Picture>/9j/4AAQSkZJRgABAQEAYABgAAD/...</B:Picture> 
+            <A:NativeBodyType>3</A:NativeBodyType> 
+          </ApplicationData> 
+
+61 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        </Add> 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+62 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+63 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schemas for this protocol. 
+These schemas are valid for protocol versions 2.5, 12.0, 12.1, 14.0, 14.1, 16.0 and 16.1.  
+
+Schema name Prefix Section 
+
+Contacts namespace schema contacts 6.1 
+
+Contacts2 namespace schema contacts2 6.2 
+
+ 
+
+6.1 Contacts Namespace Schema 
+
+This section contains the contents of the Contacts.xsd file. The additional file that this schema file 
+requires to operate correctly is listed in the following table. 
+
+File name Defining specification 
+
+AirSyncBase.xsd [MS-ASAIRS] section 6 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:airsyncbase= 
+    "AirSyncBase" xmlns="Contacts" targetNamespace="Contacts"  
+    elementFormDefault="qualified" attributeFormDefault="unqualified"> 
+  <xs:import namespace="AirSyncBase" schemaLocation="AirSyncBase.xsd"/> 
+  <xs:element name="Anniversary" type="xs:dateTime"/> 
+  <xs:element name="AssistantName" type="xs:string"/> 
+  <xs:element name="AssistantPhoneNumber" type="xs:string"/> 
+  <xs:element name="Birthday" type="xs:dateTime"/> 
+  <xs:element name="Body" type="xs:string"/> 
+  <xs:element name="BodySize" type="xs:integer"/> 
+  <xs:element name="BodyTruncated" type="xs:unsignedByte"/> 
+  <xs:element name="Business2PhoneNumber" type="xs:string"/> 
+  <xs:element name="BusinessAddressCity" type="xs:string"/> 
+  <xs:element name="BusinessPhoneNumber" type="xs:string"/> 
+  <xs:element name="WebPage" type="xs:string"/> 
+  <xs:element name="BusinessAddressCountry" type="xs:string"/> 
+  <xs:element name="Department" type="xs:string"/> 
+  <xs:element name="Email1Address" type="xs:string"/> 
+  <xs:element name="Email2Address" type="xs:string"/> 
+  <xs:element name="Email3Address" type="xs:string"/> 
+  <xs:element name="BusinessFaxNumber" type="xs:string"/> 
+  <xs:element name="FileAs" type="xs:string"/> 
+  <xs:element name="Alias" type="xs:string"/> 
+  <xs:element name="WeightedRank" type="xs:int"/> 
+  <xs:element name="FirstName" type="xs:string"/> 
+  <xs:element name="MiddleName" type="xs:string"/> 
+  <xs:element name="HomeAddressCity" type="xs:string"/> 
+  <xs:element name="HomeAddressCountry" type="xs:string"/> 
+  <xs:element name="HomeFaxNumber" type="xs:string"/> 
+  <xs:element name="HomePhoneNumber" type="xs:string"/> 
+  <xs:element name="Home2PhoneNumber" type="xs:string"/> 
+  <xs:element name="HomeAddressPostalCode" type="xs:string"/> 
+  <xs:element name="HomeAddressState" type="xs:string"/> 
+  <xs:element name="HomeAddressStreet" type="xs:string"/> 
+  <xs:element name="MobilePhoneNumber" type="xs:string"/> 
+  <xs:element name="Suffix" type="xs:string"/> 
+  <xs:element name="CompanyName" type="xs:string"/> 
+  <xs:element name="OtherAddressCity" type="xs:string"/> 
+  <xs:element name="OtherAddressCountry" type="xs:string"/> 
+  <xs:element name="CarPhoneNumber" type="xs:string"/> 
+  <xs:element name="OtherAddressPostalCode" type="xs:string"/> 
+
+64 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:element name="OtherAddressState" type="xs:string"/> 
+  <xs:element name="OtherAddressStreet" type="xs:string"/> 
+  <xs:element name="PagerNumber" type="xs:string"/> 
+  <xs:element name="Title" type="xs:string"/> 
+  <xs:element name="BusinessAddressPostalCode" type="xs:string"/> 
+  <xs:element name="LastName" type="xs:string"/> 
+  <xs:element name="Spouse" type="xs:string"/> 
+  <xs:element name="BusinessAddressState" type="xs:string"/> 
+  <xs:element name="BusinessAddressStreet" type="xs:string"/> 
+  <xs:element name="JobTitle" type="xs:string"/> 
+  <xs:element name="YomiFirstName" type="xs:string"/> 
+  <xs:element name="YomiLastName" type="xs:string"/> 
+  <xs:element name="YomiCompanyName" type="xs:string"/> 
+  <xs:element name="OfficeLocation" type="xs:string"/> 
+  <xs:element name="RadioPhoneNumber" type="xs:string"/> 
+  <xs:element name="Picture" type="xs:string"/> 
+  <xs:element name="Categories"> 
+    <xs:complexType> 
+      <xs:sequence> 
+        <xs:element name="Category" type="xs:string" minOccurs="0"  
+            maxOccurs="300"/> 
+      </xs:sequence> 
+    </xs:complexType> 
+  </xs:element> 
+  <xs:element name="Children"> 
+    <xs:complexType> 
+      <xs:sequence minOccurs="0"> 
+        <xs:element name="Child" type="xs:string" minOccurs="0"  
+            maxOccurs="300"/> 
+      </xs:sequence> 
+    </xs:complexType> 
+  </xs:element> 
+  <xs:group name="AllProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element ref="Anniversary"/> 
+        <xs:element ref="AssistantName"/> 
+        <xs:element ref="AssistantPhoneNumber"/> 
+        <xs:element ref="Birthday"/> 
+        <xs:element ref="Body"/> 
+        <xs:element ref="BodySize"/> 
+        <xs:element ref="BodyTruncated"/> 
+        <xs:element ref="Business2PhoneNumber"/> 
+        <xs:element ref="BusinessAddressCity"/> 
+        <xs:element ref="BusinessPhoneNumber"/> 
+        <xs:element ref="WebPage"/> 
+        <xs:element ref="BusinessAddressCountry"/> 
+        <xs:element ref="Department"/> 
+        <xs:element ref="Email1Address"/> 
+        <xs:element ref="Email2Address"/> 
+        <xs:element ref="Email3Address"/> 
+        <xs:element ref="BusinessFaxNumber"/> 
+        <xs:element ref="FileAs"/> 
+        <xs:element ref="Alias"/> 
+        <xs:element ref="WeightedRank"/> 
+        <xs:element ref="FirstName"/> 
+        <xs:element ref="MiddleName"/> 
+        <xs:element ref="HomeAddressCity"/> 
+        <xs:element ref="HomeAddressCountry"/> 
+        <xs:element ref="HomeFaxNumber"/> 
+        <xs:element ref="HomePhoneNumber"/> 
+        <xs:element ref="Home2PhoneNumber"/> 
+        <xs:element ref="HomeAddressPostalCode"/> 
+        <xs:element ref="HomeAddressState"/> 
+        <xs:element ref="HomeAddressStreet"/> 
+        <xs:element ref="MobilePhoneNumber"/> 
+        <xs:element ref="Suffix"/> 
+        <xs:element ref="CompanyName"/> 
+        <xs:element ref="OtherAddressCity"/> 
+
+65 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element ref="OtherAddressCountry"/> 
+        <xs:element ref="CarPhoneNumber"/> 
+        <xs:element ref="OtherAddressPostalCode"/> 
+        <xs:element ref="OtherAddressState"/> 
+        <xs:element ref="OtherAddressStreet"/> 
+        <xs:element ref="PagerNumber"/> 
+        <xs:element ref="Title"/> 
+        <xs:element ref="BusinessAddressPostalCode"/> 
+        <xs:element ref="LastName"/> 
+        <xs:element ref="Spouse"/> 
+        <xs:element ref="BusinessAddressState"/> 
+        <xs:element ref="BusinessAddressStreet"/> 
+        <xs:element ref="JobTitle"/> 
+        <xs:element ref="YomiFirstName"/> 
+        <xs:element ref="YomiLastName"/> 
+        <xs:element ref="YomiCompanyName"/> 
+        <xs:element ref="OfficeLocation"/> 
+        <xs:element ref="RadioPhoneNumber"/> 
+        <xs:element ref="Picture"/> 
+        <xs:element ref="Categories"/> 
+        <xs:element ref="Children"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+  <xs:group name="GhostingProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element name="Anniversary" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Birthday" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="WebPage" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Children" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressCountry" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Department" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Email1Address" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Email2Address" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Email3Address" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessFaxNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="FileAs" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="FirstName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressCity" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressCountry" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeFaxNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomePhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Home2PhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressPostalCode" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressState" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressStreet" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressCity" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="MiddleName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="MobilePhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Suffix" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="CompanyName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressCity" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressCountry" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="CarPhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressPostalCode" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressState" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressStreet" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="PagerNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Title" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressPostalCode"  
+            type="airsyncbase:EmptyTag"/> 
+        <xs:element name="AssistantName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="AssistantPhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="AssistnamePhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="LastName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Spouse" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressState" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressStreet" type="airsyncbase:EmptyTag"/> 
+
+66 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="BusinessPhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Business2PhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="JobTitle" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="YomiFirstName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="YomiLastName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="YomiCompanyName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OfficeLocation" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="RadioPhoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Picture" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Categories" type="airsyncbase:EmptyTag"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+  <xs:group name="TopLevelSchemaProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element name="Anniversary" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Birthday" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Webpage" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Children" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressCountry" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Department" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Email1Address" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Email2Address" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Email3Address" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessFaxNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="FileAs" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="FirstName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressCity" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressCountry" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeFaxNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeTelephoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Home2TelephoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressPostalCode" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressState" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="HomeAddressStreet" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressCity" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="MiddleName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="MobileTelephoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Suffix" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="CompanyName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressCity" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressCountry" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="CarTelephoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressPostalCode" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressState" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OtherAddressStreet" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="PagerNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Title" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressPostalCode"  
+            type="airsyncbase:EmptyTag"/> 
+        <xs:element name="AssistantName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="AssistantTelephoneNumber"  
+            type="airsyncbase:EmptyTag"/> 
+        <xs:element name="LastName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Spouse" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressState" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessAddressStreet" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="BusinessTelephoneNumber"  
+            type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Business2TelephoneNumber"  
+            type="airsyncbase:EmptyTag"/> 
+        <xs:element name="JobTitle" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="YomiFirstName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="YomiLastName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="YomiCompanyName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="OfficeLocation" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="RadioTelephoneNumber" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="Categories" type="airsyncbase:EmptyTag"/> 
+
+67 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="Picture" type="airsyncbase:EmptyTag"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+ </xs:schema> 
+
+6.2 Contacts2 Namespace Schema 
+
+This section contains the contents of the Contacts2.xsd file. The additional file that this schema file 
+requires to operate correctly is listed in the following table. 
+
+File name Defining specification 
+
+AirSyncBase.xsd [MS-ASAIRS] section 6 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:airsyncbase= 
+    "AirSyncBase" xmlns="Contacts2" targetNamespace="Contacts2"  
+    elementFormDefault="qualified" attributeFormDefault="unqualified"> 
+  <xs:import namespace="AirSyncBase" schemaLocation="AirSyncBase.xsd"/> 
+  <xs:element name="CustomerId" type="xs:string"/> 
+  <xs:element name="GovernmentId" type="xs:string"/> 
+  <xs:element name="IMAddress" type="xs:string"/> 
+  <xs:element name="IMAddress2" type="xs:string"/> 
+  <xs:element name="IMAddress3" type="xs:string"/> 
+  <xs:element name="ManagerName" type="xs:string"/> 
+  <xs:element name="CompanyMainPhone" type="xs:string"/> 
+  <xs:element name="AccountName" type="xs:string"/> 
+  <xs:element name="NickName" type="xs:string"/> 
+  <xs:element name="MMS" type="xs:string"/> 
+  <xs:group name="AllProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element ref="CustomerId"/> 
+        <xs:element ref="GovernmentId"/> 
+        <xs:element ref="IMAddress"/> 
+        <xs:element ref="IMAddress2"/> 
+        <xs:element ref="IMAddress3"/> 
+        <xs:element ref="ManagerName"/> 
+        <xs:element ref="CompanyMainPhone"/> 
+        <xs:element ref="AccountName"/> 
+        <xs:element ref="NickName"/> 
+        <xs:element ref="MMS"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+  <xs:group name="GhostingProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element name="CustomerId" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="GovernmentId" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="IMAddress" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="IMAddress2" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="IMAddress3" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="ManagerName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="CompanyMainPhone" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="AccountName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="NickName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="MMS" type="airsyncbase:EmptyTag"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+  <xs:group name="TopLevelSchemaProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element name="CustomerId" type="airsyncbase:EmptyTag"/> 
+
+68 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="GovernmentId" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="IMAddress" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="IMAddress2" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="IMAddress3" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="ManagerName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="CompanyMainPhone" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="AccountName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="NickName" type="airsyncbase:EmptyTag"/> 
+        <xs:element name="MMS" type="airsyncbase:EmptyTag"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+ </xs:schema> 
+
+69 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 Service Pack 1 (SP1) 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Windows 8.1 
+
+ Windows Communication Apps 
+
+ Windows 10 operating system 
+
+ Windows Server 2016 operating system  
+
+ Windows 11 operating system 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 3.1.5.3:  The Sync command returns a Status value of 4 when the Supported element 
+is included in a Sync request that is sent to an Exchange 2007 SP1 server. 
+
+70 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+7 Appendix B: Product Behavior Updated list of supported products. Major 
+
+71 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Index
+A    Email3Address 31 
+    FileAs 32 
+Abstract data model    FirstName 33 
+   client 56    GovernmentId 33 
+   server 58    Home2PhoneNumber 38 
+Applicability 9    HomeAddressCity 34 
+    HomeAddressCountry 34 
+
+C    HomeAddressPostalCode 35 
+
+    HomeAddressState 36 
+
+Capability negotiation 9    HomeAddressStreet 36 
+
+Change tracking 71    HomeFaxNumber 37 
+
+Client    HomePhoneNumber 37 
+
+   abstract data model 56    IMAddress 39 
+
+   initialization 56    IMAddress2 39 
+
+   message processing 57    IMAddress3 40 
+
+   other local events 58    JobTitle 40 
+
+   sequencing rules 57    LastName 41 
+
+   timer events 58    ManagerName 42 
+
+   timers 56    MiddleName 42 
+
+Contacts Namespace Schema schema    MMS 43 
+
+   Full XML Schema:\Contacts Namespace Schema    MobilePhoneNumber 43 
+
+schema 64    NickName 44 
+
+Contacts2 Namespace Schema schema    OfficeLocation 45 
+
+   Full XML schema:\Contacts2 Namespace Schema    OtherAddressCity 45 
+
+schema 68    OtherAddressCountry 46 
+
+    OtherAddressPostalCode 46 
+
+D    OtherAddressState 47 
+
+    OtherAddressStreet 48 
+
+Data model - abstract    PagerNumber 48 
+
+   client 56    Picture 49 
+
+   server 58    RadioPhoneNumber 49 
+
+    Spouse 50 
+   Suffix 51 
+
+E 
+   Title 51 
+
+ 
+   WebPage 52 
+
+Elements 
+   WeightedRank 52 
+
+   AccountName 13 
+   YomiCompanyName 53 
+
+   Alias 14 
+   YomiFirstName 54 
+
+   Anniversary 14 
+   YomiLastName 54 
+
+   AssistantName 15 
+Elements message 10 
+
+   AssistantPhoneNumber 16 
+Examples 61 
+
+   Birthday 16 
+ 
+
+   Body 17 
+   Business2PhoneNumber 24 F 
+
+   BusinessAddressCity 20  
+
+   BusinessAddressCountry 20 Fields - vendor-extensible 9 
+
+   BusinessAddressPostalCode 21 Full XML schema 64 
+
+   BusinessAddressState 21    XML schema 64 
+
+   BusinessAddressStreet 22  
+
+   BusinessFaxNumber 23 G 
+   BusinessPhoneNumber 23  
+
+   CarPhoneNumber 24 Glossary 7 
+
+   Categories 25  
+
+   Category 26 I 
+   Child 27  
+   Children 26 Implementer - security considerations 63 
+   CompanyMainPhone 27 Index of security parameters 63 
+   CompanyName 28 Informative references 8 
+   CustomerId 29 Initialization 
+   Department 29    client 56 
+   Email1Address 30    server 59 
+   Email2Address 31 Introduction 7 
+
+72 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Tracking changes 71 
+M Transport 10 
+  
+Message processing V 
+   client 57  
+   server 59 Vendor-extensible fields 9 
+Messages Versioning 9 
+   Elements 10  
+   Namespaces 10 X 
+   syntax 10  
+   transport 10 XML schema 64 
+ 
+N  
+
+ 
+Namespaces message 10 
+Normative references 8 
+ 
+O 
+ 
+Other local events 
+   client 58 
+   server 60 
+Overview (synopsis) 8 
+ 
+P 
+ 
+Parameters - security index 63 
+Preconditions 9 
+Prerequisites 9 
+Product behavior 70 
+ 
+R 
+ 
+References 8 
+   informative 8 
+   normative 8 
+Relationship to other protocols 9 
+ 
+S 
+ 
+Security 
+   implementer considerations 63 
+   parameter index 63 
+Sequencing rules 
+   client 57 
+   server 59 
+Server 
+   abstract data model 58 
+   initialization 59 
+   message processing 59 
+   other local events 60 
+   sequencing rules 59 
+   timer events 60 
+   timers 58 
+Standards assignments 9 
+ 
+T 
+ 
+Timer events 
+   client 58 
+   server 60 
+Timers 
+   client 56 
+   server 58 
+
+73 / 73 
+
+[MS-ASCNTC] - v20250520 
+Exchange ActiveSync: Contact Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025
