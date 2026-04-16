@@ -1,0 +1,1345 @@
+﻿[MS-OXOSMMS]:  
+
+Short Message Service (SMS) and Multimedia Messaging 
+Service (MMS) Object Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+4/10/2009 2.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 4.0.0 None Version 4.0.0 release 
+
+5/5/2010 5.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 5.1 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 5.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+3/18/2011 5.2 None 
+
+technical content. 
+
+8/5/2011 5.3 Minor Clarified the meaning of the technical content. 
+
+10/7/2011 6.0 Major Significantly changed the technical content. 
+
+1/20/2012 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 7.0 None 
+
+technical content. 
+
+7/16/2012 8.0 Major Significantly changed the technical content. 
+
+10/8/2012 8.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 8.1 None 
+
+technical content. 
+
+7/26/2013 8.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 8.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 8.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 8.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 8.2 None 
+
+technical content. 
+
+2 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+10/30/2014 9.0 Major Significantly changed the technical content. 
+
+3/16/2015 10.0 Major Significantly changed the technical content. 
+
+6/3/2016 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 11.0 None 
+
+technical content. 
+
+8/20/2024 12.0 Major Significantly changed the technical content. 
+
+3 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 8 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Message Syntax ............................................................................................... 10 
+
+2.2.1 Common SMS and MMS Object Properties ...................................................... 10 
+2.2.1.1 PidNameOMSAccountGuid Property ......................................................... 10 
+2.2.1.2 PidNameOMSScheduleTime Property ....................................................... 10 
+2.2.1.3 PidNameOMSServiceType Property .......................................................... 10 
+2.2.1.4 PidNameOMSSourceType Property .......................................................... 10 
+2.2.1.5 PidNameContentClass Property ............................................................... 11 
+2.2.1.6 PidNameOMSMobileModel Property .......................................................... 11 
+
+2.2.2 Additional Property Constraints .................................................................... 11 
+2.2.2.1 PidTagIconIndex Property ...................................................................... 11 
+2.2.2.2 PidTagMessageClass Property ................................................................. 11 
+2.2.2.3 Body Properties .................................................................................... 12 
+2.2.2.4 PidTagNormalizedSubject Property .......................................................... 12 
+
+3 Protocol Details ..................................................................................................... 13 
+3.1 Client Details ................................................................................................... 13 
+
+3.1.1 Abstract Data Model .................................................................................... 13 
+3.1.2 Timers ...................................................................................................... 13 
+3.1.3 Initialization ............................................................................................... 13 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 13 
+
+3.1.4.1 Creation of an SMS or MMS Object .......................................................... 13 
+3.1.4.2 Modification of an SMS or MMS Object ..................................................... 13 
+3.1.4.3 Deletion of an SMS or MMS Object .......................................................... 13 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 13 
+3.1.6 Timer Events .............................................................................................. 13 
+3.1.7 Other Local Events ...................................................................................... 13 
+
+3.2 Server Details .................................................................................................. 14 
+3.2.1 Abstract Data Model .................................................................................... 14 
+3.2.2 Timers ...................................................................................................... 14 
+3.2.3 Initialization ............................................................................................... 14 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 14 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 14 
+3.2.6 Timer Events .............................................................................................. 14 
+3.2.7 Other Local Events ...................................................................................... 14 
+
+4 Protocol Examples ................................................................................................. 15 
+4.1 Sample SMS Object .......................................................................................... 15 
+4.2 Sample MMS Object ......................................................................................... 16 
+
+5 Security ................................................................................................................. 20 
+5.1 Security Considerations for Implementers ........................................................... 20 
+
+4 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+5.2 Index of Security Parameters ............................................................................ 20 
+
+6 Appendix A: Product Behavior ............................................................................... 21 
+
+7 Change Tracking .................................................................................................... 22 
+
+8 Index ..................................................................................................................... 23 
+
+ 
+
+5 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+1 Introduction 
+
+The Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol enables 
+clients to create, modify, and delete Short Message Service (SMS) and Multimedia Messaging 
+Service (MMS) messages. 
+
+This protocol extends the Message and Attachment Object Protocol, as described in [MS-OXCMSG]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Attachment object: A set of properties that represents a file, Message object, or structured 
+storage that is attached to a Message object and is visible through the attachments table for a 
+Message object. 
+
+calendar: A date range that shows availability, meetings, and appointments for one or more users 
+or resources. See also Calendar object. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+Drafts folder: A special folder that is the default location for Message objects that have been 
+saved but not sent. 
+
+flags: A set of values used to configure or report options or settings. 
+
+globally unique identifier (GUID): A term used interchangeably with universally unique 
+identifier (UUID) in Microsoft protocol technical documents (TDs). Interchanging the usage of 
+these terms does not imply or require a specific algorithm or mechanism to generate the value. 
+Specifically, the use of this term does not imply or require that the algorithms described in 
+[RFC4122] or [C706] have to be used for generating the GUID. See also universally unique 
+identifier (UUID). 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+Hypertext Markup Language (HTML): An application of the Standard Generalized Markup 
+Language (SGML) that uses tags to mark elements in a document, as described in [HTML]. 
+
+Inbox folder: A special folder that is the default location for Message objects received by a 
+user or resource. 
+
+Mail User Agent (MUA): A client application that is used to compose and read email messages. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+6 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Multimedia Messaging Service (MMS): A communications protocol that is designed for 
+messages containing text, images, and other multimedia content that is sent between mobile 
+phones. 
+
+Multimedia Messaging Service (MMS) object: A Message object that represents a 
+Multimedia Messaging Service (MMS) message in a message store. 
+
+named property: A property that is identified by both a GUID and either a string name or a 32-bit 
+identifier. 
+
+plain text: Text that does not have markup. See also plain text message body. 
+
+property ID: A 16-bit numeric identifier of a specific attribute. A property ID does not include any 
+property type information. 
+
+reminder: A generally user-visible notification that a specified time has been reached. A reminder 
+is most commonly related to the beginning of a meeting or the due time of a task but it can be 
+applied to any object type. 
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+ROP request: See ROP request buffer. 
+
+ROP response: See ROP response buffer. 
+
+rule: A condition or action, or a set of conditions or actions, that performs tasks automatically 
+based on events and values.  
+
+Sent Items folder: A special folder that is the default location for storing copies of Message 
+objects after they are submitted or sent. 
+
+Short Message Service (SMS): A communications protocol that is designed for sending text 
+messages between mobile phones. 
+
+SMS object: A Message object that represents a Short Message Service (SMS) message in a 
+message store. 
+
+special folder: One of a default set of Folder objects that can be used by an implementation to 
+store and retrieve user data objects. 
+
+stream: A flow of data from one host to another host, or the data that flows between two hosts. 
+
+Unicode: A character encoding standard developed by the Unicode Consortium that represents 
+almost all of the written languages of the world. The Unicode standard [UNICODE5.0.0/2007] 
+provides three forms (UTF-8, UTF-16, and UTF-32) and seven schemes (UTF-8, UTF-16, UTF-16 
+BE, UTF-16 LE, UTF-32, UTF-32 LE, and UTF-32 BE). 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+7 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCMAIL] Microsoft Corporation, "RFC 2822 and MIME to Email Object Conversion Algorithm". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXOSFLD] Microsoft Corporation, "Special Folders Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+1.2.2 Informative References 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MSDN-MobileServicePart1] Microsoft Corporation, "Office 2010 Mobile Service Guidelines (Part 1 of 
+3)", http://msdn.microsoft.com/en-us/library/ff606754(v=office.14).aspx 
+
+[SMIL2.1] Bulterman, D., Grassel, G., Jansen, J., Koivisto, A., Layaida, N., et al., Eds., "Synchronized 
+Multimedia Integration Language (SMIL 2.1)", W3C Recommendation, December, 2005, 
+http://www.w3.org/TR/SMIL2/ 
+
+1.3 Overview 
+
+This protocol enables a client to create, modify, and delete SMS text messages and MMS multimedia 
+messages in a message store. SMS text messages are characterized by a short unformatted text 
+body. MMS messages are characterized by text and multimedia components. 
+
+This protocol extends the Message and Attachment Object Protocol, as described in [MS-OXCMSG], in 
+that it defines new properties unique to SMS objects and MMS objects and adds restrictions to the 
+existing of the Message object. 
+
+A typical scenario for using this protocol is to create, modify, or delete SMS text messages or MMS 
+multimedia messages.  
+
+1.4 Relationship to Other Protocols 
+
+This protocol has the same dependencies as the Message and Attachment Object Protocol, which it 
+extends. For more details about the Message and Attachment Object Protocol, see [MS-OXCMSG]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+8 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+1.5 Prerequisites/Preconditions 
+
+This protocol has the same prerequisites and preconditions as the Message and Attachment Object 
+Protocol, as specified in [MS-OXCMSG]. 
+
+1.6 Applicability Statement 
+
+None. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+This protocol provides no vendor-extensibility beyond what is already specified in [MS-OXCMSG]. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol uses the protocols specified in [MS-OXCPRPT] and [MS-OXCMSG] as its primary 
+transport mechanism. 
+
+2.2 Message Syntax 
+
+Clients operate on SMS objects and MMS objects using the Message and Attachment Object 
+Protocol, as specified in [MS-OXCMSG]. 
+
+Unless otherwise specified, SMS objects and MMS objects adhere to all property constraints specified 
+in [MS-OXPROPS] and [MS-OXCMSG]. SMS objects and MMS objects can also contain other properties, 
+but these properties have no impact on this protocol. 
+
+2.2.1 Common SMS and MMS Object Properties 
+
+2.2.1.1 PidNameOMSAccountGuid Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameOMSAccountGuid property ([MS-OXPROPS] section 2.463) specifies the GUID of the 
+SMS account used to deliver the message. The GUID is encoded as a string in the following format 
+(including the braces), where X is any hexadecimal digit: "{XXXXXXXX-XXXX-XXXX-XXXX-
+XXXXXXXXXXXX}"; for example, "{C200E360-38C5-11CE-AE62-08002B2B79EF}". 
+
+2.2.1.2 PidNameOMSScheduleTime Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameOMSScheduleTime property ([MS-OXPROPS] section 2.465) specifies the time, in 
+Coordinated Universal Time (UTC), that the client sends the requests instructing the service 
+provider to send the SMS or MMS message. 
+
+2.2.1.3 PidNameOMSServiceType Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameOMSServiceType property ([MS-OXPROPS] section 2.466) indicates the type of service 
+used to send the SMS or MMS message. The value of this property MUST be one of the values in the 
+following table. 
+
+Value Meaning 
+
+0x00000001 SMS  
+
+0x00000004 MMS  
+
+ 
+
+2.2.1.4 PidNameOMSSourceType Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+10 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+The PidNameOMSSourceType property ([MS-OXPROPS] section 2.467) indicates the source of the 
+SMS or MMS message. The value of this property MUST be one of the values in the following table. 
+
+Value  Source type  
+
+0x00000000 XMS inspector (as described in [MSDN-MobileServicePart1]) 
+
+0x00000001 Reminder  
+
+0x00000002 Calendar summary 
+
+0x00000003 Rule 
+
+0x00000004 Unknown 
+
+ 
+
+2.2.1.5 PidNameContentClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameContentClass property ([MS-OXCMSG] section 2.2.1.48) MUST be set to one of the 
+values in the following table. 
+
+Value  Meaning 
+
+MS-OMS-SMS SMS  
+
+MS-OMS-MMS MMS  
+
+ 
+
+2.2.1.6 PidNameOMSMobileModel Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameOMSMobileModel property ([MS-OXPROPS] section 2.464) indicates the model of the 
+mobile device used to send the SMS or MMS message. 
+
+2.2.2 Additional Property Constraints 
+
+This protocol makes additional constraints on the properties specified in section 2.2.2.1 through 
+section 2.2.2.4 beyond what is specified in [MS-OXCMSG] and [MS-OXOMSG]. 
+
+2.2.2.1 PidTagIconIndex Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagIconIndex property ([MS-OXOMSG] section 2.2.1.10) specifies which icon is to be used 
+by a user interface when displaying a group of SMS objects and/or MMS objects. This property 
+SHOULD<1> be set; if set, the value MUST be 0xFFFFFFFF. 
+
+2.2.2.2 PidTagMessageClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+11 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) specifies the type of the 
+Message object. In addition to meeting the criteria specified in [MS-OXCMSG], for SMS objects this 
+value MUST either be set to "IPM.Note.Mobile.SMS" or begin with "IPM.Note.Mobile.SMS". For MMS 
+objects, this property MUST either be set to "IPM.Note.Mobile.MMS" or begin with 
+"IPM.Note.Mobile.MMS.". 
+
+2.2.2.3 Body Properties 
+
+The contents of SMS objects are stored and retrieved following the details specified for plain text 
+messages in [MS-OXCMAIL] section 2.1.3.3.1.<2> 
+
+The contents of MMS objects are stored and retrieved following the details specified for HTML 
+messages, as specified in [MS-OXCMAIL] section 2.1.3.3.1.<3> 
+
+2.2.2.4 PidTagNormalizedSubject Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagNormalizedSubject property ([MS-OXCMSG] section 2.2.1.10) contains an abbreviated 
+version of the contents of the message suitable for displaying groups of SMS objects to a user. For 
+MMS objects, only the constraints specified in [MS-OXCMSG] section 2.2.1.10 apply. 
+
+12 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client role creates and sets properties on SMS objects and MMS objects. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Creation of an SMS or MMS Object 
+
+To create an SMS object or MMS object, the client sets properties in accordance with the 
+requirements in section 2 and [MS-OXCPRPT] and then saves the resulting Message object as 
+specified in [MS-OXCMSG]. 
+
+3.1.4.2 Modification of an SMS or MMS Object 
+
+When modifying an SMS object or MMS object, the client modifies any of the properties in 
+accordance with the requirements in section 2 and [MS-OXCPRPT] and then saves the Message 
+object as specified in [MS-OXCMSG]. 
+
+3.1.4.3 Deletion of an SMS or MMS Object 
+
+An SMS object or MMS object has no special deletion semantics beyond what is specified in [MS-
+OXCMSG]. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+13 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+3.2 Server Details 
+
+The server processes a client's requests regarding an SMS object and MMS object and in all other 
+ways operates within the server role as specified in [MS-OXCMSG]. 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.1.1 with the 
+following adaptations: 
+
+ The SMS object and MMS object are extensions of the Message object. 
+
+ An SMS object and MMS object are created in the Drafts folder, the Inbox folder, or the Sent 
+Items folder, which are special folders, unless the MUA explicitly specifies another folder. For 
+details about special folders, see [MS-OXOSFLD]. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG] section 3.2.5. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+14 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+4 Protocol Examples 
+
+4.1 Sample SMS Object 
+
+A user creates an SMS text message, types in some text, and sends it. The following is a description 
+of what a client might do to accomplish the user's intentions and the responses a server might return. 
+For more details about remote operations (ROPs), see [MS-OXCPRPT] and [MS-OXCMSG]. 
+
+Before manipulating SMS objects, the client asks the server to map the named properties to 
+property IDs by sending a RopGetPropertyIDsFromNames ROP request ([MS-OXCROPS] section 
+2.2.8.1). 
+
+Property Property set GUID NameID  
+
+PidNameOMSMobileModel (section 2.2.1.6) {00020329-0000-0000-C000-00000000046} OMSMobileModel 
+
+PidNameOMSAccountGuid (section 2.2.1.1) {00020329-0000-0000-C000-00000000046} OMSAccountGuid 
+
+PidNameOMSServiceType (section 2.2.1.3) {00020329-0000-0000-C000-00000000046} OMSServiceType 
+
+PidNameOMSSourceType (section 2.2.1.4) {00020329-0000-0000-C000-00000000046} OMSSourceType 
+
+The server might send a RopGetPropertyIDsFromNames ROP response with the following 
+property IDs, which are used in the example that follows. (The actual property IDs are at the 
+discretion of the server.) 
+
+Property  Property ID 
+
+PidNameOMSMobileModel 0x84C3 
+
+PidNameOMSAccountGuid 0x84C4 
+
+PidNameOMSServiceType 0x84C5 
+
+PidNameOMSSourceType 0x84C6 
+
+To create an SMS object, the client uses the RopCreateMessage ROP ([MS-OXCROPS] section 
+2.2.6.2).The server returns a success code and a handle to a Message object. 
+
+After the user inputs the content for the SMS object, the client transmits the data to the server by 
+using the RopSetProperties ROP ([MS-OXCROPS] section 2.2.8.6). 
+
+Property 
+Property ID  Data type Value 
+
+PidNameOMSAccountGuid 0x84C4 PtypString ([MS- {01234567-0123-0123-
+OXCDATA] section 0123-0123456789AB} 
+2.11.1) 
+
+PidNameOMSMobileModel 0x84C3 PtypString (null) 
+
+PidNameOMSServiceType 0x84C5 PtypInteger32 ([MS- 0x00000001 
+OXCDATA] section 
+2.11.1) 
+
+PidNameOMSSourceType  0x84C6 PtypInteger32 0x00000000 
+
+PidTagBody ([MS-OXCMSG] section 0x1000 PtypString What time is the meeting? 
+2.2.1.58.1) 
+
+15 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Property 
+Property ID  Data type Value 
+
+PidTagInternetCodepage ([MS- 0x3FDE PtypInteger32 0x0000FDE9 
+OXCMSG] section 2.2.1.58.6) 
+
+PidTagMessageClass (section 0x001A PtypString IPM.Note.Mobile.SMS 
+2.2.2.2) 
+
+PidTagNormalizedSubject (section 0x0E1D PtypString What time is the meeting? 
+2.2.2.4) 
+
+PidTagSubjectPrefix ([MS-OXCMSG] 0x003D PtypString (null) 
+section 2.2.1.9) 
+
+When the user sends the message, the client commits the properties on the server by using the 
+RopSaveChangesMessage ROP ([MS-OXCROPS] section 2.2.6.3) and then releases the SMS object 
+by using the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3). The client then submits the 
+message to an SMS provider by using the RopSubmitMessage ROP ([MS-OXCROPS] section 
+2.2.7.1). 
+
+The values of some properties change during the processing of the RopSaveChangesMessage ROP, 
+but the properties defined in this specification do not change. 
+
+4.2 Sample MMS Object 
+
+A user creates an MMS message, gives it a subject, types some text, attaches a picture, and sends it. 
+The following is a description of what a client might do to accomplish the user's intentions and the 
+responses a server might return. For more details about ROPs, see [MS-OXCPRPT] and [MS-
+OXCMSG]. 
+
+Before manipulating an MMS object, the client asks the server to map the named properties to 
+property IDs by sending a RopGetPropertyIDsFromNames ROP request ([MS-OXCROPS] section 
+2.2.8.1). 
+
+Property  Property set GUID  NameID  
+
+PidNameOMSMobileModel (section 2.2.1.6) {00020329-0000-0000-C00000000046} OMSMobileModel 
+
+PidNameOMSAccountGuid (section 2.2.1.1) {00020329-0000-0000-C00000000046} OMSAccountGuid 
+
+PidNameOMSServiceType (section 2.2.1.3) {00020329-0000-0000-C00000000046} OMSServiceType 
+
+PidNameOMSSourceType (section 2.2.1.4) {00020329-0000-0000-C00000000046} OMSSourceType 
+
+The server might send a RopGetPropertyIDsFromNames ROP response with the following 
+property IDs, which are used in the example that follows. (The actual property IDs are at the 
+discretion of the server.) 
+
+Property Property ID 
+
+PidNameOMSMobileModel  0x84CE 
+
+PidNameOMSAccountGuid  0x84CF 
+
+PidNameOMSServiceType  0x84D0 
+
+PidNameOMSSourceType  0x84D1 
+
+16 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+To create an MMS object, the client uses the RopCreateMessage ROP ([MS-OXCROPS] section 
+2.2.6.2). The server returns a success code and a handle to an object. 
+
+After the user inputs the content for the MMS object, the client transmits the data to the server by 
+using the RopSetProperties ROP ([MS-OXCROPS] section 2.2.8.6). 
+
+Property 
+Property ID Data type  Value 
+
+PidNameOMSAccountGuid  0x84CF PtypString ([MS- {01234567-0123-0123-0123-
+OXCDATA] section 0123456789AB} 
+2.11.1) 
+
+PidNameOMSMobileModel  0x84CE PtypString (empty) 
+
+PidNameOMSServiceType  0x84D0 PtypInteger32 ([MS- 0x00000004 
+OXCDATA] section 
+2.11.1) 
+
+PidNameOMSSourceType  0x84D1 PtypInteger32 0x00000000 
+
+PidTagInternetCodepage ([MS- 0x3FDE PtypInteger32 0x0000FDE9 
+OXCMSG] section 2.2.1.58.6) 
+
+PidTagHtml ([MS-OXCMSG] section 0x1013 PtypBinary ([MS- (The content of this property is 
+2.2.1.58.9) OXCDATA] section given following the table.) 
+
+2.11.1) 
+
+PidTagIconIndex (section 2.2.2.1) 0x1080 PtypInteger32 0xFFFFFFFFFF 
+
+PidTagMessageClass ([MS- 0x001A PtypString IPM.Note.Mobile.MMS 
+OXCMSG] section 2.2.1.3) 
+
+PidTagMessageFlags ([MS- 0x0E07 PtypInteger32 Flags: 0x00000018 
+OXCMSG] section 2.2.1.6) MSGFLAG_UNSENT 
+
+MSGFLAG_HASATTACH 
+
+PidTagNormalizedSubject ([MS- 0x0E1d PtypString Here's the photo. 
+OXCMSG] section 2.2.1.10) 
+
+PidTagSubjectPrefix ([MS- 0x003d PtypString (empty) 
+OXCMSG] section 2.2.1.9) 
+
+The PidTagHtml property is a binary property containing the following text. 
+
+ <HTML> 
+ <BODY> 
+ <IMG SRC="cid:Att1.jpg@AB1B43B2B0594564.B94EF7ABB12B49BA" border="0"> 
+ <BR> 
+ This is the photo you asked for. 
+ <BR> 
+ <A HREF="cid:Att0.txt@AB1B43B2B0594564.B94EF7ABB12B49BA"></A> 
+ </BODY> 
+ </HTML> 
+
+The client allocates space for a data file in the message by using the RopCreateAttachment ROP 
+([MS-OXCROPS] section 2.2.6.13). In response, the server returns a success code and a handle to an 
+Attachment object. The client uses this handle with the RopSetProperties ROP ([MS-OXCROPS] 
+section 2.2.8.6) to transmit data about the attachment to the server. 
+
+17 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Propert
+Property y ID Data type Value 
+
+PidTagAttachmentHidden 0x7FFE PtypBoolean 0x01 
+([MS-OXCMSG] section ([MS-
+2.2.2.24) OXCDATA] 
+
+section 2.11.1) 
+
+PidTagAttachMethod 0x3705 PtypInteger3 0x00000001 (ATTACH_BY_VALUE) 
+([MS-OXCMSG] section 2 
+2.2.2.9) 
+
+PidTagAttachContentId 0x3712 PtypString MMS.smil@AB1B43B2B0594564.B94EF7ABB12B49
+([MS-OXCMSG] section BA 
+2.2.2.29) 
+
+PidTagAttachMimeTag 0x370E PtypString application/smil 
+([MS-OXCMSG] section 
+2.2.2.29) 
+
+PidTagAttachLongFilenam 0x3707 PtypString MMS.smil 
+e ([MS-OXCMSG] section 
+2.2.2.10) 
+
+The client sets the contents of the attachment by using the attachment handle with the 
+RopOpenStream ROP ([MS-OXCROPS] section 2.2.9.1), passing in the PidTagAttachDataBinary 
+property ([MS-OXPROPS] section 2.589) as the property to open. With the handle returned from the 
+RopOpenStream ROP, the client calls the RopWriteStream ROP ([MS-OXCROPS] section 2.2.9.3), 
+writing out the contents of the Synchronized Multimedia Integration Language (SMIL) file, the format 
+of which is described in [SMIL2.1], describing the layout of the MMS message. The client follows this 
+with the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3) on the stream handle, then commits 
+the changes by using the RopSaveChangesAttachment ROP ([MS-OXCROPS] section 2.2.6.15), 
+releases the handle to the attachment by using the RopRelease ROP. 
+
+The client repeats the process from the RopCreateAttachment ROP ([MS-OXCROPS] section 
+2.2.6.13) for the RopRelease ROP with the attachment handle twice more, once for a plain-text 
+version of the body, and once for the image. The attachment containing the body uses the following 
+properties and values with the RopSetProperties ROP. 
+
+Propert
+Property y ID Data type  Value 
+
+PidTagAttachmentHidden  0x7FFE PtypBoolean 0x01 
+
+PidTagAttachMethod  0x3705 PtypInteger3 0x00000001 (ATTACH_BY_VALUE) 
+2 
+
+PidTagAttachContentId  0x3712 PtypString Att0.txt@AB1B43B2B0594564.B94EF7ABB12B49B
+A 
+
+PidTagAttachMimeTag  0x370E PtypString text/plain 
+
+PidTagAttachLongFilenam 0x3707 PtypString 1.txt 
+e  
+
+The RopOpenStream ROP for the plain-text body is also on the PidTagAttachDataBinary property, 
+but the contents written are Unicode text. The last attachment the client creates contains the image, 
+and the RopSetProperties ROP sends the following data. 
+
+18 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Propert
+Property  y ID Data type Value 
+
+PidTagAttachmentHidden  0x7FFE PtypBoolean 0x01 
+
+PidTagAttachMethod  0x3705 PtypInteger3 0x00000001 (ATTACH_BY_VALUE) 
+2 
+
+PidTagAttachContentId  0x3712 PtypString Att1.jpg@AB1B43B2B0594564.B94EF7ABB12B49B
+A 
+
+PidTagAttachMimeTag  0x370E PtypString image/jpeg 
+
+PidTagAttachLongFilenam 0x3707 PtypString photo.jpg 
+e  
+
+The contents of the PidTagAttachDataBinary property on the image attachment are the binary 
+contents of the image file. 
+
+When the user sends the message, the client commits the properties on the server by using the 
+RopSaveChangesMessage ROP ([MS-OXCROPS] section 2.2.6.3) and then releases the MMS object 
+by using the RopRelease ROP. The client then submits the message to an MMS provider by using the 
+RopSubmitMessage ROP ([MS-OXCROPS] section 2.2.7.1). 
+
+The values of some properties change during the processing of the RopSaveChangesMessage ROP, 
+but the properties specified in this protocol do not change. 
+
+19 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no special security considerations specific to the SMS and MMS Object Protocol. General 
+security considerations pertaining to the underlying transport apply, as specified in [MS-OXCMSG] and 
+[MS-OXCPRPT]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+20 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook LTSC 2024 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.2.1: Office Outlook 2007 does not set the PidTagIconIndex property on SMS 
+objects or MMS objects. 
+
+<2> Section 2.2.2.3: Microsoft Office Outlook 2007 Service Pack 1 sets both the PidTagBody 
+property ([MS-OXCMSG] section 2.2.1.58.1) and the PidTagHtml property ([MS-OXCMSG] section 
+2.2.1.58.9) on SMS objects.  
+
+<3> Section 2.2.2.3: Office Outlook 2007 SP1 sets both the PidTagBody property ([MS-OXCMSG] 
+section 2.2.1.58.1) and the PidTagHtml property ([MS-OXCMSG] section 2.2.1.58.9) on MMS 
+objects. 
+
+21 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+22 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+8 Index
+A Glossary 6 
+  
+Abstract data model H 
+   client 13  
+   server 14 Higher-layer triggered events 
+Additional property constraints    server 14 
+   body properties 12 Higher-layer triggered events - client 
+   PidTagIconIndex property 11    creation of an SMS or MMS object 13 
+   PidTagMessageClass property 11    deletion of an SMS or MMS object 13 
+   PidTagNormalizedSubject property 12    modification of an SMS or MMS object 13 
+Additional Property Constraints message 11  
+Applicability 9 I 
+  
+B Implementer - security considerations 20 
+ Index of security parameters 20 
+Body properties additional property constraints 12 Informative references 8 
+ Initialization 
+C    client 13 
+    server 14 
+Capability negotiation 9 Introduction 6 
+Change tracking 22  
+Client M 
+   abstract data model 13  
+   initialization 13 Message processing 
+   message processing 13    client 13 
+   other local events 13    server 14 
+   overview 13 Messages 
+   sequencing rules 13    Additional Property Constraints 11 
+   timer events 13    syntax 10 
+   timers 13    transport 10 
+Client - higher-layer triggered events  
+   creation of an SMS or MMS object 13 N 
+   deletion of an SMS or MMS object 13  
+   modification of an SMS or MMS object 13 Normative references 8 
+Client - overview 13  
+Common SMS and MMS object properties O 
+   PidNameContentClass property 11  
+   PidNameOMSAccountGuid property 10 Other local events 
+   PidNameOMSMobileModel property 11    client 13 
+   PidNameOMSScheduleTime property 10    server 14 
+   PidNameOMSServiceType property 10 Overview (synopsis) 8 
+   PidNameOMSSourceType property 10  
+ P 
+D  
+ Parameters - security index 20 
+Data model - abstract PidNameContentClass common SMS and MMS object 
+   client 13 property 11 
+   server 14 PidNameOMSAccountGuid common SMS and MMS 
+ object property 10 
+E PidNameOMSMobileModel common SMS and MMS 
+ object property 11 
+Examples PidNameOMSScheduleTime common SMS and MMS 
+   sample MMS object 16 object property 10 
+   sample SMS object 15 PidNameOMSServiceType common SMS and MMS 
+ object property 10 
+F PidNameOMSSourceType common SMS and MMS 
+ object property 10 
+Fields - vendor-extensible 9 PidTagIconIndex additional property constraints 11 
+ PidTagMessageClass additional property constraints 
+G 11 
+ 
+
+23 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+PidTagNormalizedSubject additional property 
+constraints 12 
+
+Preconditions 9 
+Prerequisites 9 
+Product behavior 21 
+ 
+R 
+ 
+References 7 
+   informative 8 
+   normative 8 
+Relationship to other protocols 8 
+ 
+S 
+ 
+Sample MMS object example 16 
+Sample SMS object example 15 
+Security 
+   implementer considerations 20 
+   parameter index 20 
+Sequencing rules 
+   client 13 
+   server 14 
+Server 
+   abstract data model 14 
+   higher-layer triggered events 14 
+   initialization 14 
+   message processing 14 
+   other local events 14 
+   overview 14 
+   sequencing rules 14 
+   timer events 14 
+   timers 14 
+Standards assignments 9 
+Syntax 10 
+ 
+T 
+ 
+Timer events 
+   client 13 
+   server 14 
+Timers 
+   client 13 
+   server 14 
+Tracking changes 22 
+Transport 10 
+Triggered events - client 
+   creation of an SMS or MMS object 13 
+   deletion of an SMS or MMS object 13 
+   modification of an SMS or MMS object 13 
+Triggered events - higher-layer 
+   server 14 
+ 
+V 
+ 
+Vendor-extensible fields 9 
+Versioning 9 
+
+ 
+
+24 / 24 
+
+[MS-OXOSMMS] - v20240820 
+Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024

@@ -1,0 +1,1087 @@
+﻿[MS-OXOPOST]:  
+
+Post Object Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+4/10/2009 2.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 4.1.0 Minor Updated the technical content. 
+
+5/5/2010 4.1.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 4.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 4.2 None 
+
+technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 4.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 4.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 4.2 None 
+
+technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+4/27/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 6.0 None 
+
+technical content. 
+
+10/8/2012 6.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 6.1 None 
+
+technical content. 
+
+7/26/2013 6.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 6.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 6.2 None 
+
+technical content. 
+
+2 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 6.2 None 
+
+technical content. 
+
+10/30/2014 6.3 Minor Clarified the meaning of the technical content. 
+
+3/16/2015 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.0 None 
+
+technical content. 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+4/22/2021 10.0 Major Significantly changed the technical content. 
+
+8/17/2021 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 11.0 None 
+
+technical content. 
+
+8/20/2024 12.0 Major Significantly changed the technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 7 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Post Object Properties ................................................................................... 9 
+2.2.2 Additional Property Constraints ...................................................................... 9 
+
+2.2.2.1 PidTagConversationIndex Property ............................................................ 9 
+2.2.2.2 PidTagConversationTopic Property ............................................................. 9 
+2.2.2.3 PidTagIconIndex Property ........................................................................ 9 
+2.2.2.4 PidTagMessageClass Property ................................................................... 9 
+2.2.2.5 Sender Properties ................................................................................. 10 
+2.2.2.6 Recipients ............................................................................................ 10 
+
+3 Protocol Details ..................................................................................................... 11 
+3.1 Client Details ................................................................................................... 11 
+
+3.1.1 Abstract Data Model .................................................................................... 11 
+3.1.2 Timers ...................................................................................................... 11 
+3.1.3 Initialization ............................................................................................... 11 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 11 
+
+3.1.4.1 Creating the Initial Post Object ............................................................... 11 
+3.1.4.2 Modifying a Post Object ......................................................................... 11 
+3.1.4.3 Deleting a Post Object ........................................................................... 11 
+3.1.4.4 Replying to a Post Object ....................................................................... 12 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 12 
+3.1.6 Timer Events .............................................................................................. 12 
+3.1.7 Other Local Events ...................................................................................... 12 
+
+3.2 Server Details .................................................................................................. 12 
+3.2.1 Abstract Data Model .................................................................................... 12 
+3.2.2 Timers ...................................................................................................... 12 
+3.2.3 Initialization ............................................................................................... 12 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 12 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 13 
+3.2.6 Timer Events .............................................................................................. 13 
+3.2.7 Other Local Events ...................................................................................... 13 
+
+4 Protocol Examples ................................................................................................. 14 
+
+5 Security ................................................................................................................. 16 
+5.1 Security Considerations for Implementers ........................................................... 16 
+5.2 Index of Security Parameters ............................................................................ 16 
+
+6 Appendix A: Product Behavior ............................................................................... 17 
+
+7 Change Tracking .................................................................................................... 18 
+
+4 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index ..................................................................................................................... 19 
+
+ 
+
+5 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Post Object Protocol enables the representation of a bulletin board post. This protocol extends the 
+Message and Attachment Object Protocol, which is described in [MS-OXCMSG]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+conversation: A single representation of a send/response series of email messages. A 
+conversation appears in the Inbox as one unit and allows the user to view and read the series of 
+related email messages in a single effort. 
+
+Email object: A Message object that represents an email message in a message store and 
+adheres to the property descriptions that are described in in [MS-OXOMSG]. 
+
+Folder object: A messaging construct that is typically used to organize data into a hierarchy of 
+objects containing Message objects and folder associated information (FAI) Message objects. 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+Post object: A Message object that represents an entry in a discussion thread stored in a 
+messaging store. 
+
+recipient: An entity that can receive email messages.   
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+ROP request: See ROP request buffer. 
+
+search key: A binary-comparable key that identifies related objects for a search. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+6 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+1.2.2 Informative References 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+The Post Object Protocol allows a user to post a message to a bulletin board in a message store. A 
+Post object represents a bulletin board post. There are no properties specific to a Post object. A Post 
+object is stored in a Folder object. The Post Object Protocol also specifies how a Post object is 
+created and manipulated. 
+
+The Post Object Protocol extends the Message and Attachment Object Protocol, described in [MS-
+OXCMSG], in that it adds constraints to the properties of a Message object. 
+
+1.4 Relationship to Other Protocols 
+
+The Post Object Protocol has the same dependencies as the Message and Attachment Object Protocol, 
+which it extends. For information about the Message and Attachment Object Protocol, see [MS-
+OXCMSG]. 
+
+The Post Object Protocol is a peer of the Email Object Protocol, described in [MS-OXOMSG], and uses 
+a subset of the properties specified for an E-mail object. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The Post Object Protocol has the same prerequisites and preconditions as the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+7 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.6 Applicability Statement 
+
+A client can use this protocol to create and maintain messages that are posted to a bulletin board in a 
+message store. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+This protocol provides no vendor-extensibility beyond what is already specified in [MS-OXCMSG]. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The Post Object Protocol uses the same underlying transport as that used by the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+2.2 Message Syntax 
+
+A Post object can be created and modified by clients and servers. Except where noted, this section 
+defines constraints under which both clients and servers operate. 
+
+Clients operate on a Post object by using the Message and Attachment Protocol, as specified in [MS-
+OXCMSG]. How a server operates on a Post object is implementation-dependent. The results of any 
+such operations MUST be exposed to clients in a manner that is consistent with the Post Object 
+Protocol. 
+
+Unless otherwise specified, a Post object adheres to all property constraints specified in [MS-
+OXPROPS], [MS-OXCMSG], and [MS-OXOMSG].  
+
+2.2.1 Post Object Properties 
+
+There are no properties that are specific to a Post object. 
+
+2.2.2 Additional Property Constraints 
+
+The properties specified in the following sections have additional constraints for this protocol beyond 
+what is specified in [MS-OXCMSG] and [MS-OXOMSG]. 
+
+2.2.2.1 PidTagConversationIndex Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagConversationIndex property ([MS-OXOMSG] section 2.2.1.3) specifies the depth of the 
+reply in a hierarchical representation of Post objects in one conversation. 
+
+2.2.2.2 PidTagConversationTopic Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagConversationTopic property ([MS-OXOMSG] section 2.2.1.5) contains an unchanging 
+copy of the original subject. This property MUST be set to the same value as that of the 
+PidTagNormalizedSubject property ([MS-OXCMSG] section 2.2.1.10) on a new Post object when it 
+is first saved.  
+
+2.2.2.3 PidTagIconIndex Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagIconIndex property ([MS-OXOMSG] section 2.2.1.10) specifies which icon is to be used 
+by a user interface when displaying a group of Post objects. This value MUST be 0x00000001. 
+
+9 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.4 PidTagMessageClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) specifies the type of Message 
+object. This value MUST be "IPM.Post" or MUST begin with "IPM.Post.", in addition to meeting the 
+criteria specified in [MS-OXCMSG]. The string is case-insensitive. 
+
+2.2.2.5 Sender Properties 
+
+The following properties are specified in [MS-OXOMSG] to represent the sender of an E-mail object. 
+They are used in this protocol to represent the creator of a Post object: 
+
+ PidTagSenderAddressType ([MS-OXOMSG] section 2.2.1.48) 
+
+ PidTagSenderEntryId ([MS-OXOMSG] section 2.2.1.50) 
+
+ PidTagSenderName ([MS-OXOMSG] section 2.2.1.51) 
+
+ PidTagSenderSearchKey ([MS-OXOMSG] section 2.2.1.52) 
+
+ PidTagSentRepresentingAddressType ([MS-OXOMSG] section 2.2.1.54) 
+
+ PidTagSentRepresentingEntryId ([MS-OXOMSG] section 2.2.1.56) 
+
+ PidTagSentRepresentingName ([MS-OXOMSG] section 2.2.1.57) 
+
+ PidTagSentRepresentingSearchKey ([MS-OXOMSG] section 2.2.1.58) 
+
+2.2.2.6 Recipients 
+
+A Post object MUST NOT have recipients. 
+
+10 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client creates and manipulates a Post object and operates within the client role as specified in 
+[MS-OXCMSG]. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that specified in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.1.1 with the 
+following adaptations: 
+
+ A Post object extends the Message object. 
+
+ A Post object is created in the folder chosen by the user. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Creating the Initial Post Object 
+
+When the user creates a message to be posted on a bulletin board, the client creates a Message 
+object as specified in [MS-OXCMSG] section 3.1.4.2, sets properties in accordance with the 
+requirements specified in section 2 and [MS-OXCPRPT], and saves the resulting Post object as 
+specified in [MS-OXCMSG] section 3.1.4.3. 
+
+3.1.4.2 Modifying a Post Object 
+
+When the user modifies a bulletin board post, the client opens the Post object in the same way that 
+it opens any Message object, as specified in [MS-OXCMSG] section 3.1.4.1. The client then modifies 
+any properties in accordance with the requirements specified in section 2 and [MS-OXCPRPT], and 
+saves the Post object, as specified in [MS-OXCMSG] section 3.1.4.3. 
+
+3.1.4.3 Deleting a Post Object 
+
+When the user deletes a bulletin board post, the client deletes the Post object in the same way that 
+it deletes any Message object, as specified in [MS-OXCFOLD] section 3.1.4.8. 
+
+11 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4 Replying to a Post Object 
+
+When the user replies to a bulletin board post, the client creates a new Post object in the same way 
+it creates any Message object, as specified in [MS-OXCMSG] section 3.1.4.2. The new Post object is 
+created in the same Folder object that contains the original Post object. The 
+PidTagConversationTopic property (section 2.2.2.2) of the new Post object MUST be copied from 
+the original Post object. The PidTagConversationIndex property (section 2.2.2.1) of the new Post 
+object is set to a value that is updated from the PidTagConversationIndex property of the original 
+Post object. For details about setting properties and copying properties, see [MS-OXCPRPT]. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+The server processes a client's requests regarding a Post object and in all other ways operates within 
+the server role as specified in [MS-OXCMSG]. 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that specified in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.2.1 with the 
+following adaptations: 
+
+ A Post object extends the Message object. 
+
+ A Post object is created in the folder chosen by the user. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+12 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG] section 3.2.5. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+13 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+To post his grocery list of celery and broccoli to a bulletin board, Joe creates a bulletin board post, 
+adds a subject and body, and places it in a folder. The following is a description of what a client might 
+do to accomplish Joe's intentions and the responses a server might return. 
+
+To create a Post object, the client sends a RopCreateMessage ROP request ([MS-OXCROPS] 
+section 2.2.6.2). The server returns a success code and a handle to a Message object. 
+
+After Joe has input his content for the Post object, the client transmits his data to the server by 
+sending a RopSetProperties ROP request ([MS-OXCROPS] section 2.2.8.6). 
+
+Property 
+Property ID Property type Value 
+
+PidTagIconIndex (section 2.2.2.3) 0x1080 0x0003 0x00000001 
+
+(PtypInteger32 
+([MS-OXCDATA] 
+section 2.11.1)) 
+
+PidTagMessageClass (section 2.2.2.4) 0x001A 0x001F "IPM.Post" 
+
+(PtypString ([MS-
+OXCDATA] section 
+2.11.1) 
+
+PidTagNormalizedSubject ([MS-OXCMSG] 0x0E1D 0x001F "Grocery List" 
+section 2.2.1.10) 
+
+PidTagSubjectPrefix ([MS-OXCMSG] 0x003D 0x001F ""(null) 
+section 2.2.1.9) 
+
+PidTagConversationTopic (section 2.2.2.2) 0x0070 0x001F "Grocery List" 
+
+PidTagConversationIndex (section 0x0071 0x0102 (Set as described in note 1 
+2.2.2.1) (PtypBinary [MS- following this table.) 
+
+OXCDATA] section 
+2.11.1) 
+
+PidTagHtml ([MS-OXCMSG] section 0x1013 0x0102 <html> 
+2.2.1.58.9) <head> 
+
+<META HTTP-
+EQUIV="Content-Type" 
+CONTENT="text/html; 
+charset=us-ascii"> 
+
+</head> 
+
+<body lang=EN-US> 
+
+<p>Celery</p> 
+
+<p>Broccoli</p> 
+
+</body> 
+
+</html> 
+
+PidTagSenderName ([MS-OXOMSG] 0x0C1A 0x001F "Joe Healy" 
+section 2.2.1.51) 
+
+PidTagSenderAddressType ([MS- 0x0C1E 0x001F "EX" 
+OXOMSG] section 2.2.1.48) 
+
+PidTagSenderEntryId ([MS-OXOMSG] 0x0C19 0x0102 (Set as described in note 2 
+section 2.2.1.50) following this table.) 
+
+14 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type Value 
+
+PidTagSenderSearchKey ([MS-OXOMSG] 0x0C1D 0x0102 (Set as described in note 3 
+section 2.2.1.52) following this table.) 
+
+PidTagSentRepresentingName ([MS- 0x0042 0x001F "Joe Healy" 
+OXOMSG] section 2.2.1.57) 
+
+PidTagSentRepresentingAddressType 0x0064 0x001F "EX" 
+([MS-OXOMSG] section 2.2.1.54) 
+
+PidTagSentRepresentingEntryId ([MS- 0x0041 0x0102 (Set as described in note 2 
+OXOMSG] section 2.2.1.56) following this table.) 
+
+PidTagSentRepresentingSearchKey ([MS- 0x003B 0x0102 (Set as described in note 3 
+OXOMSG] section 2.2.1.58) following this table.) 
+
+Notes  
+
+1. The PidTagConversationIndex property is set with a depth of 1 and has the following binary 
+contents: 
+
+0000: 01 C8 73 2D A1 0A 3E B3-EE 24 90 F4 45 BE 97 10 
+0010: 90 B2 A5 07 7A 13 
+
+2. The values of the PidTagSenderEntryId and PidTagSentRepresentingEntryId properties are 
+identical because Joe isn't posting this on behalf of another user. These properties have the 
+following 125-byte value: 
+
+0000: 00 00 00 00 DC A7 40 C8-C0 42 10 1A B4 B9 08 00 ......@..B...... 
+0010: 2B 2F E1 82 01 00 00 00-00 00 00 00 2F 4F 3D 46 +/........../O=F 
+0020: 49 52 53 54 20 4F 52 47-41 4E 49 5A 41 54 49 4F IRST ORGANIZATIO 
+0030: 4E 2F 4F 55 3D 45 58 43-48 41 4E 47 45 20 41 44 N/OU=EXCHANGE AD 
+0040: 4D 49 4E 49 53 54 52 41-54 49 56 45 20 47 52 4F MINISTRATIVE GRO 
+0050: 55 50 20 28 46 59 44 49-42 4F 48 46 32 33 53 50 UP (FYDIBOHF23SP 
+0060: 44 4C 54 29 2F 43 4E 3D-52 45 43 49 50 49 45 4E DLT)/CN=RECIPIEN 
+0070: 54 53 2F 43 4E 3D 4A 48-45 41 4C 59 00          TS/CN=JHEALY. 
+
+3. The values of PidTagSenderSearchKey and PidTagSentRepresentingSearchKey properties 
+are identical because Joe isn't posting this on behalf of another user. The contents of these 
+properties are used as Joe's search key. These properties have the following 100-byte value: 
+
+0000: 45 58 3A 2F 4F 3D 46 49-52 53 54 20 4F 52 47 41 EX:/O=FIRST ORGA 
+0010: 4E 49 5A 41 54 49 4F 4E-2F 4F 55 3D 45 58 43 48 NIZATION/OU=EXCH 
+0020: 41 4E 47 45 20 41 44 4D-49 4E 49 53 54 52 41 54 ANGE ADMINISTRAT 
+0030: 49 56 45 20 47 52 4F 55-50 20 28 46 59 44 49 42 IVE GROUP (FYDIB 
+0040: 4F 48 46 32 33 53 50 44-4C 54 29 2F 43 4E 3D 52 OHF23SPDLT)/CN=R 
+0050: 45 43 49 50 49 45 4E 54-53 2F 43 4E 3D 4A 48 45 ECIPIENTS/CN=JHE 
+0060: 41 4C 59 00                                     ALY. 
+
+When Joe is ready to save his changes, the client commits the properties on the server by sending a 
+RopSaveChangesMessage ROP request ([MS-OXCROPS] section 2.2.6.3) and then releases the 
+handle for the Message object by sending a RopRelease ROP request ([MS-OXCROPS] section 
+2.2.15.3). 
+
+The values of some properties will change during the processing of the RopSaveChangesMessage 
+ROP, but the properties specified in section 2.2.2 will not change. 
+
+15 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no special security considerations specific to the Post Object Protocol. General security 
+considerations pertaining to the underlying transport apply, as described in [MS-OXCMSG]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+16 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+17 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+18 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A    replying to a Post object 12 
+  
+Abstract data model I 
+   client 11  
+   server 12 Implementer - security considerations 16 
+Additional property constraints Index of security parameters 16 
+   PidTagConversationIndex property 9 Informative references 7 
+   PidTagConversationTopic property 9 Initialization 
+   PidTagIconIndex property 9    client 11 
+   PidTagMessageClass property 9    server 12 
+   recipients 10 Introduction 6 
+   sender properties 10  
+Additional Property Constraints message 9 M 
+Applicability 8  
+ Message processing 
+C    client 12 
+    server 13 
+Capability negotiation 8 Messages 
+Change tracking 18    Additional Property Constraints 9 
+Client    Post Object Properties 9 
+   abstract data model 11    syntax 9 
+   initialization 11    transport 9 
+   message processing 12  
+   other local events 12 N 
+   overview 11  
+   sequencing rules 12 Normative references 7 
+   timer events 12  
+   timers 11 O 
+Client - higher-layer triggered events  
+   creating the initial Post object 11 Other local events 
+   deleting a Post object 11    client 12 
+   modifying a Post object 11    server 13 
+   replying to a Post object 12 Overview (synopsis) 7 
+Creating a bulletin board post example 14  
+ P 
+D  
+ Parameters - security index 16 
+Data model - abstract PidTagConversationIndex property additional 
+   client 11 property constraints 9 
+   server 12 PidTagConversationTopic property additional 
+ property constraints 9 
+E PidTagIconIndex property additional property 
+ constraints 9 
+Examples - creating a bulletin board post 14 PidTagMessageClass property additional property 
+ constraints 9 
+F Post Object Properties message 9 
+ Preconditions 7 
+Fields - vendor-extensible 8 Prerequisites 7 
+ Product behavior 17 
+G  
+ R 
+Glossary 6  
+ Recipients additional property constraints 10 
+H References 6 
+    informative 7 
+Higher-layer triggered events    normative 7 
+   server 12 Relationship to other protocols 7 
+Higher-layer triggered events - client  
+   creating the initial Post object 11 S 
+   deleting a Post object 11  
+   modifying a Post object 11 Security 
+
+19 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   implementer considerations 16 
+   parameter index 16 
+Sender properties additional property constraints 10 
+Sequencing rules 
+   client 12 
+   server 13 
+Server 
+   abstract data model 12 
+   higher-layer triggered events 12 
+   initialization 12 
+   message processing 13 
+   other local events 13 
+   overview 12 
+   sequencing rules 13 
+   timer events 13 
+   timers 12 
+Standards assignments 8 
+Syntax 9 
+ 
+T 
+ 
+Timer events 
+   client 12 
+   server 13 
+Timers 
+   client 11 
+   server 12 
+Tracking changes 18 
+Transport 9 
+Triggered events - client 
+   creating the initial Post object 11 
+   deleting a Post object 11 
+   modifying a Post object 11 
+   replying to a Post object 12 
+Triggered events - higher-layer 
+   server 12 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+
+ 
+
+20 / 20 
+
+[MS-OXOPOST] - v20250520 
+Post Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

@@ -1,0 +1,2942 @@
+﻿[MS-OXWSSYNC]:  
+
+Mailbox Contents Synchronization Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0 Major Initial Availability. 
+
+11/4/2009 1.0.1 Editorial Revised and edited the technical content. 
+
+2/10/2010 1.2.0 Minor Updated the technical content. 
+
+5/5/2010 1.2.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 1.3 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 2.0 Major Significantly changed the technical content. 
+
+3/18/2011 3.0 Major Significantly changed the technical content. 
+
+8/5/2011 3.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 3.1 None 
+
+technical content. 
+
+1/20/2012 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 4.0 None 
+
+technical content. 
+
+10/8/2012 5.0 Major Significantly changed the technical content. 
+
+2/11/2013 6.0 Major Significantly changed the technical content. 
+
+7/26/2013 6.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 6.1 None 
+
+technical content. 
+
+5/26/2015 7.0 Major Significantly changed the technical content. 
+
+9/14/2015 7.1 Minor Clarified the meaning of the technical content. 
+
+6/13/2016 7.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.2 None 
+
+technical content. 
+
+12/15/2016 7.3 Minor Clarified the meaning of the technical content. 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+2 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+2/21/2023 9.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/15/2023 9.1 None 
+
+technical content. 
+
+11/13/2023 9.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/18/2025 9.2 None 
+
+technical content. 
+
+5/20/2025 10.0 Major Significantly changed the technical content. 
+
+3 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 9 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ..................................................................................... 10 
+1.7 Versioning and Capability Negotiation ................................................................. 10 
+1.8 Vendor-Extensible Fields ................................................................................... 10 
+1.9 Standards Assignments ..................................................................................... 10 
+
+2 Messages ............................................................................................................... 11 
+2.1 Transport ........................................................................................................ 11 
+2.2 Common Message Syntax ................................................................................. 11 
+
+2.2.1 Namespaces .............................................................................................. 11 
+2.2.2 Messages ................................................................................................... 11 
+2.2.3 Elements ................................................................................................... 11 
+2.2.4 Complex Types ........................................................................................... 12 
+2.2.5 Simple Types ............................................................................................. 12 
+2.2.6 Attributes .................................................................................................. 12 
+2.2.7 Groups ...................................................................................................... 12 
+2.2.8 Attribute Groups ......................................................................................... 12 
+2.2.9 Common Data Structures ............................................................................ 12 
+
+3 Protocol Details ..................................................................................................... 13 
+3.1 ExchangeServicePortType Server Details ............................................................. 13 
+
+3.1.1 Abstract Data Model .................................................................................... 13 
+3.1.2 Timers ...................................................................................................... 13 
+3.1.3 Initialization ............................................................................................... 13 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 13 
+
+3.1.4.1 SyncFolderHierarchy .............................................................................. 14 
+3.1.4.1.1 Messages ....................................................................................... 14 
+
+3.1.4.1.1.1 tns:SyncFolderHierarchySoapIn Message ...................................... 15 
+3.1.4.1.1.2 tns:SyncFolderHierarchySoapOut ................................................. 15 
+
+3.1.4.1.2 Elements ........................................................................................ 16 
+3.1.4.1.2.1 SyncFolderHierarchy Element ...................................................... 16 
+3.1.4.1.2.2 SyncFolderHierarchyResponse Element ......................................... 16 
+
+3.1.4.1.3 Complex Types ............................................................................... 16 
+3.1.4.1.3.1 t:SyncFolderHierarchyChangesType Complex Type ......................... 17 
+3.1.4.1.3.2 t:SyncFolderHierarchyCreateOrUpdateType Complex Type .............. 17 
+3.1.4.1.3.3 t:SyncFolderHierarchyDeleteType Complex Type ............................ 18 
+3.1.4.1.3.4 m:SyncFolderHierarchyResponseMessageType Complex Type .......... 19 
+3.1.4.1.3.5 m:SyncFolderHierarchyResponseType Complex Type ...................... 20 
+3.1.4.1.3.6 m:SyncFolderHierarchyType Complex Type ................................... 20 
+
+3.1.4.1.4 Simple Types .................................................................................. 21 
+3.1.4.1.5 Attributes ....................................................................................... 21 
+3.1.4.1.6 Groups ........................................................................................... 21 
+3.1.4.1.7 Attribute Groups.............................................................................. 21 
+
+3.1.4.2 SyncFolderItems ................................................................................... 21 
+3.1.4.2.1 Messages ....................................................................................... 21 
+
+3.1.4.2.1.1 tns:SyncFolderItemsSoapIn Message ........................................... 22 
+3.1.4.2.1.2 tns:SyncFolderItemsSoapOut ...................................................... 22 
+
+3.1.4.2.2 Elements ........................................................................................ 23 
+
+4 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.2.1 SyncFolderItems Element ........................................................... 23 
+3.1.4.2.2.2 SyncFolderItemsResponse Element .............................................. 23 
+
+3.1.4.2.3 Complex Types ............................................................................... 23 
+3.1.4.2.3.1 t:ArrayOfBaseItemIdsType Complex Type ..................................... 24 
+3.1.4.2.3.2 t:SyncFolderItemsChangesType Complex Type .............................. 24 
+3.1.4.2.3.3 t:SyncFolderItemsCreateOrUpdateType Complex Type ................... 25 
+3.1.4.2.3.4 t:SyncFolderItemsDeleteType Complex Type ................................. 27 
+3.1.4.2.3.5 t:SyncFolderItemsReadFlagType Complex Type ............................. 27 
+3.1.4.2.3.6 m:SyncFolderItemsResponseMessageType Complex Type ............... 28 
+3.1.4.2.3.7 m:SyncFolderItemsResponseType Complex Type ........................... 28 
+3.1.4.2.3.8 m:SyncFolderItemsType Complex Type ........................................ 29 
+
+3.1.4.2.4 Simple Types .................................................................................. 30 
+3.1.4.2.4.1 t:MaxSyncChangesReturnedType Simple Type ............................... 30 
+3.1.4.2.4.2 t:SyncFolderItemsScopeType Simple Type .................................... 31 
+
+3.1.4.2.5 Attributes ....................................................................................... 31 
+3.1.4.2.6 Groups ........................................................................................... 31 
+3.1.4.2.7 Attribute Groups.............................................................................. 31 
+
+3.1.5 Timer Events .............................................................................................. 31 
+3.1.6 Other Local Events ...................................................................................... 31 
+
+4 Protocol Examples ................................................................................................. 32 
+4.1 SyncFolderHierarchy Operation .......................................................................... 32 
+4.2 SyncFolderItems Operation ............................................................................... 33 
+
+5 Security ................................................................................................................. 35 
+5.1 Security Considerations for Implementers ........................................................... 35 
+5.2 Index of Security Parameters ............................................................................ 35 
+
+6 Appendix A: Full WSDL .......................................................................................... 36 
+
+7 Appendix B: Full XML Schema ................................................................................ 38 
+7.1 Messages Schema ............................................................................................ 38 
+7.2 Types Schema ................................................................................................. 39 
+
+8 Appendix C: Product Behavior ............................................................................... 42 
+
+9 Change Tracking .................................................................................................... 43 
+
+10 Index ..................................................................................................................... 44 
+
+ 
+
+5 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Mailbox Contents Synchronization Web Service Protocol is used for providing the necessary 
+information to keep a local message store synchronized with the contents of a mailbox on the 
+server. Clients use the SOAP protocol, as described in [SOAP1.1], to contact the synchronization 
+service. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+base64 encoding: A binary-to-text encoding scheme whereby an arbitrary sequence of bytes is 
+converted to a sequence of printable ASCII characters, as described in [RFC4648]. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+folder associated information (FAI): A collection of Message objects that are stored in a Folder 
+object and are typically hidden from view by email applications. An FAI Message object is used 
+to store a variety of settings and auxiliary data, including forms, views, calendar options, 
+favorites, and category lists. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+Sent Items folder: A special folder that is the default location for storing copies of Message 
+objects after they are submitted or sent. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+6 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCONT] Microsoft Corporation, "Contacts Web Service Protocol". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSDLIST] Microsoft Corporation, "Distribution List Creation and Usage Web Service Protocol". 
+
+7 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXWSFOLD] Microsoft Corporation, "Folders and Folder Permissions Web Service Protocol". 
+
+[MS-OXWSMSG] Microsoft Corporation, "Email Message Types Web Service Protocol". 
+
+[MS-OXWSMTGS] Microsoft Corporation, "Calendaring Web Service Protocol". 
+
+[MS-OXWSPOST] Microsoft Corporation, "Post Items Web Service Protocol". 
+
+[MS-OXWSSRCH] Microsoft Corporation, "Mailbox Search Web Service Protocol". 
+
+[MS-OXWSTASK] Microsoft Corporation, "Tasks Web Service Protocol". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[RFC3066] Alvestrand, H., "Tags for the Identification of Languages", BCP 47, RFC 3066, January 
+2001, https://www.rfc-editor.org/info/rfc3066 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[WSIBASIC] Ballinger, K., Ehnebuske, D., Gudgin, M., et al., Eds., "Basic Profile Version 1.0", Final 
+Material, April 2004, http://www.ws-i.org/Profiles/BasicProfile-1.0-2004-04-16.html 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+The Mailbox Contents Synchronization Web Service Protocol enables clients to synchronize a local 
+message store with the contents of a mailbox on a server. This protocol provides operations to 
+return synchronization information for mailbox folders and the items in those folders. It also provides 
+
+8 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+synchronization states so that clients can request synchronization changes from the last 
+synchronization request. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP Protocol, as described in [SOAP1.1], to specify the structure information 
+exchanged between the client and server. This protocol uses the XML schema, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content sent to and from the server. 
+
+The Mailbox Synchronization Web Service Protocol uses SOAP over HTTP, as described in [RFC2616], 
+and SOAP over HTTPS, as described in [RFC2818], as shown in the following layering diagram.  
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+The synchronized items are managed by using one of the following protocols: 
+
+ Calendaring Web Service Protocol [MS-OXWSMTGS] 
+
+ Common Web Service Data Types Protocol [MS-OXWSCDATA] 
+
+ Contacts Web Service Protocol [MS-OXWSCONT] 
+
+ Email Message Types Web Service Protocol [MS-OXWSMSG] 
+
+ Mailbox Search Web Service Protocol [MS-OXWSSRCH] 
+
+ Post Items Web Service Protocol [MS-OXWSPOST] 
+
+ Tasks Web Service Protocol [MS-OXWSTASK] 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], is required to form the HTTP request to the Web server that 
+hosts this protocol. The operations that this protocol defines cannot be accessed unless the correct 
+endpoint is identified in the HTTP Web requests that target this protocol. 
+
+9 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client applications that use Web services to synchronize a local message 
+store with mailbox data on a server.  
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as specified in section 2.1. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. The WSDL version 
+of the request is identified by using the t:RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the t:ServerVerstionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the Web server that is hosting it 
+to perform authentication. 
+
+ Localization: None. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+10 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1. For details, see [SOAP1.1]. 
+
+This protocol relies on the Web server that hosts the application to perform authentication. The 
+protocol MUST support SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use secure 
+communications via HTTPS, as defined in [RFC2818] 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and Web Services 
+Description Language (WSDL) as defined in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+wsi http://ws-i.org/schemas/conformanceClaim/ [WSIBASIC] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages   
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+11 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+This specification does not define any common XML schema complex type definitions. 
+
+2.2.5 Simple Types 
+
+This specification does not define any common XML schema simple type definitions. 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+2.2.9 Common Data Structures 
+
+This specification does not define any common XML data structures. 
+
+12 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results that are returned by the transport are passed directly 
+back to the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+The Mailbox Contents Synchronization Web Service Protocol defines a single port type with two 
+operations. These operations enable client implementations to synchronize folders in a mailbox and 
+to synchronize an item within a mailbox folder. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that specified in this 
+document. 
+
+This protocol enables client applications either to request complete synchronization information from 
+the server or to request incremental synchronization from the last synchronization information 
+request. If the optional SyncState element of the SyncFolderHierarchyType complex type (section 
+3.1.4.1.3.6) is included in a SyncFolderHierarchy operation (section 3.1.4.1) request, or if the 
+SyncState element of the SyncFolderItemsType complex type (section 3.1.4.2.3.8) is included in a 
+SyncFolderItems operation (section 3.1.4.2), the server MUST return incremental synchronization 
+information from the last synchronization request.  
+
+The contents of the SyncState elements are opaque to the client application; the client uses either 
+the SyncState element of the SyncFolderHierarchyResponseMessageType complex type (section 
+3.1.4.1.3.4) that was returned by the previous SyncFolderHierarchy operation request, or the 
+SyncState element of the SyncFolderItemsResponseMessageType complex type (section 
+3.1.4.2.3.6).  
+
+Client applications that use incremental synchronization for folder hierarchy synchronization MUST 
+store the contents of the SyncState element of the SyncFolderHierarchyResponseMessageType 
+complex type for subsequent requests.  
+
+Client applications that use incremental synchronization for item synchronization MUST store the 
+contents of the SyncState element of the SyncFolderItemsResponseMessageType complex type 
+for subsequent requests. 
+
+3.1.2 Timers 
+
+None 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+This protocol includes the operations listed in the following table. 
+
+13 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Operation Description 
+
+SyncFolderHierarchy (section 3.1.4.1) Synchronizes the hierarchical list of folders in the mailbox. 
+
+SyncFolderItems (section 3.1.4.2) Synchronized the items in a mailbox folder. 
+
+ 
+
+3.1.4.1 SyncFolderHierarchy 
+
+The SyncFolderHierarchy operation gets synchronization information that enables folders to be 
+synchronized between a client and a server. 
+
+The following is the WSDL port type specification of the SyncFolderHierarchy operation. 
+
+ <wsdl:operation name="SyncFolderHierarchy"> 
+     <wsdl:input message="tns:SyncFolderHierarchySoapIn" /> 
+     <wsdl:output message="tns:SyncFolderHierarchySoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the SyncFolderHierarchy operation. 
+
+ <wsdl:operation name="SyncFolderHierarchy"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SyncFolderHierarchy" 
+/> 
+   <wsdl:input> 
+      <soap:header message="tns:SyncFolderHierarchySoapIn" part="Impersonation" 
+use="literal"></soap:header> 
+      <soap:header message="tns:SyncFolderHierarchySoapIn" part="MailboxCulture" 
+use="literal"/> 
+      <soap:header message="tns:SyncFolderHierarchySoapIn" part="RequestVersion" 
+use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="SyncFolderHierarchyResult" use="literal" /> 
+      <soap:header message="tns:SyncFolderHierarchySoapOut" part="ServerVersion" 
+use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+The SyncFolderHierarchy operation MUST return one SyncFolderHierarchyResponseMessage 
+element in the ResponseMessages element of the SyncFolderHierarchyResponse element 
+(section 3.1.4.1.2.2). The SyncFolderHierarchyResponseMessage element is specified by the 
+SyncFolderHierarchyResponseMessageType complex type (section 3.1.4.1.3.4). The 
+ResponseMessages element is specified as an element of the BaseResponseMessageType 
+complex type ([MS-OXWSCDATA] section 2.2.4.18). 
+
+3.1.4.1.1 Messages 
+
+The WSDL message definitions listed in the following table are specific to this operation. 
+
+Message Description 
+
+SyncFolderHierarchySoapIn  Specifies the SOAP message that requests synchronization information. 
+
+SyncFolderHierarchySoapOut Specifies the SOAP message that is returned by the server in response to a 
+request for synchronization information. 
+
+14 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.1.1.1 tns:SyncFolderHierarchySoapIn Message 
+
+The SyncFolderHierarchySoapIn WSDL message specifies the SyncFolderHierarchy operation 
+request to return synchronization information. 
+
+ <wsdl:message name="SyncFolderHierarchySoapIn"> 
+   <wsdl:part name="request" element="tns:SyncFolderHierarchy" /> 
+   <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The SyncFolderHierarchySoapIn WSDL message is the input message for the following SOAP 
+action: http://schemas.microsoft.com/exchange/services/2006/messages/SyncFolderHierarchy. 
+
+The SyncFolderHierarchySoapIn WSDL message contains four parts, as listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+request tns:SyncFolderHierarchy (section Specifies the SOAP body of the request to return 
+3.1.4.1.2.1) synchronization information. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) whom the client application is impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the culture 
+section 2.2.3.6) to use for accessing the mailbox. The cultures 
+
+are defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the request. 
+
+ 
+
+3.1.4.1.1.2 tns:SyncFolderHierarchySoapOut 
+
+The SyncFolderHierarchySoapOut WSDL message specifies the server response to a 
+SyncFolderHierarchy operation request to return synchronization information. 
+
+ <wsdl:message name="SyncFolderHierarchySoapOut"> 
+   <wsdl:part name="SyncFolderHierarchyResult" element="tns:SyncFolderHierarchyResponse" /> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The SyncFolderHierarchySoapOut WSDL message is the output message for the following SOAP 
+action: http://schemas.microsoft.com/exchange/services/2006/messages/SyncFolderHierarchy. 
+
+The SyncFolderHierarchySoapOut WSDL message contains two parts, as listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+SyncFolderHierarchyResult tns:SyncFolderHierarchyResponse Specifies the SOAP body of the 
+(section 3.1.4.1.2.2) response to a SyncFolderHierarchy 
+
+operation request. 
+
+15 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.10) identifies the server version for the 
+
+response to a SyncFolderHierarchy 
+operation request. 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The XML schema element definitions listed in the following table are specific to this operation. 
+
+Element Description 
+
+SyncFolderHierarchy  Specifies the base element for the SyncFolderHierarchy operation. 
+
+SyncFolderHierarchyResponse Specifies the response message from the SyncFolderHierarchy operation. 
+
+ 
+
+3.1.4.1.2.1 SyncFolderHierarchy Element 
+
+The SyncFolderHierarchy element specifies the base element for a SyncFolderHierarchy operation 
+(section 3.1.4.1). 
+
+ <xs:element name="SyncFolderHierarchy" 
+  type="m:SyncFolderHierarchyType" 
+ /> 
+ 
+
+3.1.4.1.2.2 SyncFolderHierarchyResponse Element 
+
+The SyncFolderHierarchyResponse element specifies the response message for a 
+SyncFolderHierarchy operation (section 3.1.4.1). 
+
+ <xs:element name="SyncFolderHierarchyResponse" 
+  type="m:SyncFolderHierarchyResponseType" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+The XML schema complex type definitions listed in the following table are specific to this operation. 
+
+Complex type Description 
+
+SyncFolderHierarchyChangesType  Specifies a sequenced array of change types that describe the 
+differences between the folders on the client and the folders 
+on the server. 
+
+SyncFolderHierarchyCreateOrUpdateType Specifies a single folder to create or update in the client 
+message store. 
+
+SyncFolderHierarchyDeleteType Specifies a folder to delete from the client message store. 
+
+SyncFolderHierarchyResponseMessageType Specifies the status and results of a single call to the 
+
+16 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+SyncFolderHierarchy operation. 
+
+SyncFolderHierarchyResponseType Specifies the response from the SyncFolderHierarchy 
+operation. 
+
+SyncFolderHierarchyType  Specifies a request for synchronization information. 
+
+ 
+
+3.1.4.1.3.1 t:SyncFolderHierarchyChangesType Complex Type 
+
+The SyncFolderHierarchyChangesType complex type specifies a sequenced array of change types 
+that describe the differences between the folders on the client and the folders on the server. 
+
+ <xs:complexType name="SyncFolderHierarchyChangesType"> 
+  <xs:sequence> 
+    <xs:choice 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+    > 
+      <xs:element name="Create" 
+        type="t:SyncFolderHierarchyCreateOrUpdateType" 
+       /> 
+      <xs:element name="Update" 
+        type="t:SyncFolderHierarchyCreateOrUpdateType" 
+       /> 
+      <xs:element name="Delete" 
+        type="t:SyncFolderHierarchyDeleteType" 
+       /> 
+    </xs:choice> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderHierarchyChangesType complex type. 
+
+Element Type Description 
+
+Create t:SyncFolderHierarchyCreateOrUpdateType Specifies a folder that has been created on 
+(section 3.1.4.1.3.2) the server and has to be created on the 
+
+client. 
+
+Update t:SyncFolderHierarchyCreateOrUpdateType  Specifies a folder that has been changed on 
+the server and has to be changed on the 
+client. 
+
+Delete  t:SyncFolderHierarchyDeleteType (section Specifies a folder that has been deleted 
+3.1.4.1.3.3) from the server and has to be deleted from 
+
+the client.<1> 
+
+ 
+
+3.1.4.1.3.2 t:SyncFolderHierarchyCreateOrUpdateType Complex Type 
+
+The SyncFolderHierarchyCreateOrUpdateType complex type specifies a single folder to create or 
+update in the client message store. 
+
+ <xs:complexType name="SyncFolderHierarchyCreateOrUpdateType"> 
+
+17 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:choice> 
+    <xs:element name="Folder" 
+      type="t:FolderType" 
+     /> 
+    <xs:element name="CalendarFolder" 
+      type="t:CalendarFolderType" 
+     /> 
+    <xs:element name="ContactsFolder" 
+      type="t:ContactsFolderType" 
+     /> 
+    <xs:element name="SearchFolder" 
+      type="t:SearchFolderType" 
+     /> 
+    <xs:element name="TasksFolder" 
+      type="t:TasksFolderType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderHierarchyCreateOrUpdateType 
+complex type. 
+
+Element Type Description 
+
+Folder t:FolderType ([MS-OXWSFOLD] section Specifies a regular folder to create or update 
+2.2.4.12) in the client message store. 
+
+CalendarFolder t:CalendarFolderType ([MS-OXWSMTGS] Specifies a calendar folder to create or update 
+section 2.2.4.5) in the client message store. 
+
+ContactsFolder t:ContactsFolderType ([MS-OXWSCONT] Specifies a contacts folder to create or update 
+section 3.1.4.1.1.6) in the client message store. 
+
+SearchFolder t:SearchFolderType ([MS-OXWSSRCH] Specifies a search folder to create or update 
+section 2.2.4.32) in the client message store. 
+
+TasksFolder t:TasksFolderType ([MS-OXWSTASK] Specifies a tasks folder to create or update in 
+section 2.2.4.5) the client message store. 
+
+ 
+
+3.1.4.1.3.3 t:SyncFolderHierarchyDeleteType Complex Type 
+
+The SyncFolderHierarchyDeleteType complex type specifies a folder to delete from the client 
+message store. 
+
+ <xs:complexType name="SyncFolderHierarchyDeleteType"> 
+  <xs:sequence> 
+    <xs:element name="FolderId" 
+      type="t:FolderIdType" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderHierarchyDeleteType complex type. 
+
+Element Type Description 
+
+FolderId t:FolderIdType ([MS-OXWSCDATA] Specifies the identifier of the folder to delete from the 
+
+18 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+section 2.2.4.35) client message store. 
+
+ 
+
+3.1.4.1.3.4 m:SyncFolderHierarchyResponseMessageType Complex Type 
+
+The SyncFolderHierarchyResponseMessageType complex type specifies the status and results of 
+a single call to the SyncFolderHierarchy operation (section 3.1.4.1). The 
+SyncFolderHierarchyResponseMessageType complex type extends the ResponseMessageType 
+complex type ([MS-OXWSCDATA] section 2.2.4.65). 
+
+ <xs:complexType name="SyncFolderHierarchyResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="SyncState" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="IncludesLastFolderInRange" 
+          type="xs:boolean" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Changes" 
+          type="t:SyncFolderHierarchyChangesType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderHierarchyResponseMessageType 
+complex type. 
+
+Element Type Description 
+
+SyncState xs:string [XMLSCHEMA2] Specifies a form of the 
+synchronization data, which is 
+encoded with base64 encoding, 
+that is used to identify the 
+synchronization state. This element 
+is optional. 
+
+IncludesLastFolderInRange xs:boolean [XMLSCHEMA2] Specifies a Boolean value that 
+indicates whether the last folder to 
+synchronize is included in the 
+response. This element is optional. 
+If this element is included in the 
+response, the value is "true". 
+
+Changes t:SyncFolderHierarchyChangesType Specifies the differences between 
+(section 3.1.4.1.3.1) the folders on the client and the 
+
+folders on the server. This element 
+is optional. 
+
+ 
+
+19 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.3.5 m:SyncFolderHierarchyResponseType Complex Type 
+
+The SyncFolderHierarchyResponseType complex type specifies the response from the 
+SyncFolderHierarchy operation (section 3.1.4.1). The SyncFolderHierarchyResponseType 
+complex type extends the BaseResponseMessageType complex type ([MS-OXWSCDATA] section 
+2.2.4.18). 
+
+ <xs:complexType name="SyncFolderHierarchyResponseType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+3.1.4.1.3.6 m:SyncFolderHierarchyType Complex Type 
+
+The SyncFolderHierarchyType complex type specifies a request for synchronization information for 
+folders in the server message store. The SyncFolderHierarchyType complex type extends the 
+BaseRequestType complex type ([MS-OXWSCDATA] section 2.2.4.17). 
+
+ <xs:complexType name="SyncFolderHierarchyType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="FolderShape" 
+          type="t:FolderResponseShapeType" 
+         /> 
+        <xs:element name="SyncFolderId" 
+          type="t:TargetFolderIdType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="SyncState" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderHierarchyType complex type. 
+
+Element Type Description 
+
+FolderShape t:FolderResponseShapeType ([MS- Specifies the properties that are returned in the 
+OXWSCDATA] section 2.2.4.36) response. 
+
+SyncFolderId t:TargetFolderIdType ([MS- Specifies the target folder for the operation. This 
+OXWSFOLD] section 2.2.4.16) element is optional. 
+
+SyncState xs:string ([XMLSCHEMA2]) Specifies the synchronization state of a previous 
+synchronization for an incremental synchronization call. 
+If this element is not specified, all items in their current 
+state are returned as if the items have never been 
+synchronized. This element is optional. 
+
+ 
+
+20 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.4 Simple Types 
+
+None. 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.4.2 SyncFolderItems 
+
+The SyncFolderItems operation gets synchronization information that enables items to be 
+synchronized between a client and a server. 
+
+The following is the WSDL port type specification of the SyncFolderItems operation. 
+
+ <wsdl:operation name="SyncFolderItems"> 
+     <wsdl:input message="tns:SyncFolderItemsSoapIn" /> 
+     <wsdl:output message="tns:SyncFolderItemsSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the SyncFolderItems operation. 
+
+ <wsdl:operation name="SyncFolderItems"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SyncFolderItems" /> 
+   <wsdl:input> 
+      <soap:header message="tns:SyncFolderItemsSoapIn" part="Impersonation" 
+use="literal"></soap:header> 
+      <soap:header message="tns:SyncFolderItemsSoapIn" part="MailboxCulture" use="literal"/> 
+      <soap:header message="tns:SyncFolderItemsSoapIn" part="RequestVersion" use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="SyncFolderItemsResult" use="literal" /> 
+      <soap:header message="tns:SyncFolderItemsSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.2.1 Messages 
+
+The WSDL message definitions listed in the following table are specific to this operation. 
+
+Message Description 
+
+SyncFolderItemsSoapIn Specifies the SOAP message that requests item synchronization information. 
+
+SyncFolderItemSoapOut Specifies the SOAP message that is returned by the server in response. 
+
+ 
+
+21 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.1.1 tns:SyncFolderItemsSoapIn Message 
+
+The SyncFolderItemsSoapIn WSDL message specifies the SyncFolderItems operation request to 
+return item synchronization information. 
+
+ <wsdl:message name="SyncFolderItemsSoapIn">  
+   <wsdl:part name="request" element="tns:SyncFolderItems" />  
+     <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/>  
+     <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/>  
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/>  
+ </wsdl:message> 
+
+The SyncFolderItemsSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/. 
+
+The parts of the SyncFolderItemsSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+request tns:SyncFolderItems (section Specifies the SOAP body of the request for item 
+3.1.4.2.2.1) synchronization information. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) whom the client application is impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the culture 
+section 2.2.3.6) to use for accessing the mailbox. The cultures 
+
+are defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the request. 
+
+ 
+
+3.1.4.2.1.2 tns:SyncFolderItemsSoapOut 
+
+The SyncFolderItemsSoapOut WSDL message specifies the response from the SyncFolderItems 
+operation. 
+
+ <wsdl:message name="SyncFolderItemsSoapOut"> 
+   <wsdl:part name="SyncFolderItemsResult" element="tns:SyncFolderItemsResponse" /> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The SyncFolderItemsSoapOut WSDL message is the output message for the following SOAP 
+action: http://schemas.microsoft.com/exchange/services/2006/messages/SyncFolderItems. 
+
+The SyncFolderItemsSoapOut WSDL message contains the two parts listed in the following table. 
+
+Part name Element/type Description 
+
+SyncFolderItemsResult tns:SyncFolderItemsResponse (section Specifies the SOAP body of the 
+3.1.4.2.2.2) response to a SyncFolderItems 
+
+operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that identifies 
+OXWSCDATA] section 2.2.3.10) the server version for the response. 
+
+ 
+
+22 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.2 Elements 
+
+The XML schema element definitions listed in the following table are specific to this operation. 
+
+Element Description 
+
+SyncFolderItems Specifies the base element for requests to the SyncFolderItems operation. 
+
+SyncFolderItemsResponse Specifies the base element for responses from the SyncFolderItems operation. 
+
+ 
+
+3.1.4.2.2.1 SyncFolderItems Element 
+
+The SyncFolderItems element specifies the base element for the SyncFolderItems operation. 
+
+ <xs:element name="SyncFolderItems" 
+  type="m:SyncFolderItemsType" 
+ /> 
+ 
+
+3.1.4.2.2.2 SyncFolderItemsResponse Element 
+
+The SyncFolderItemsResponse element specifies the response message for the SyncFolderItems 
+operation. 
+
+ <xs:element name="SyncFolderItemsResponse" 
+  type="m:SyncFolderItemsResponseType" 
+ /> 
+ 
+
+3.1.4.2.3 Complex Types 
+
+The following XML schema complex type definitions are specific to this operation. 
+
+Complex type Description 
+
+ArrayOfBaseItemIdsType Specifies zero or more ItemIdType types. 
+
+SyncFolderItemsChangesType Specifies a sequenced array of change types that describe the 
+differences between the items on the client and the items on the 
+server. 
+
+SyncFolderItemsCreateOrUpdateType Specifies a single item to create or update in the message store. 
+
+SyncFolderItemsDeleteType Specifies an item to delete from the client message store. 
+
+SyncFolderItemsReadFlagType Specifies whether an item on the server has been read. 
+
+SyncFolderItemsResponseMessageType Specifies the status and results from a single call to the 
+SyncFolderItems operation. 
+
+SyncFolderItemsResponseType  Specifies a response from the SyncFolderItems operation. 
+
+SyncFolderItemsType Specifies a request for synchronization information for items in the 
+client message store. 
+
+ 
+
+23 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3.1 t:ArrayOfBaseItemIdsType Complex Type 
+
+The ArrayOfBaseItemIdsType complex type specifies zero or more ItemIdType types ([MS-
+OXWSCORE] section 2.2.4.25). 
+
+ <xs:complexType name="ArrayOfBaseItemIdsType"> 
+  <xs:choice 
+    maxOccurs="unbounded" 
+    minOccurs="0" 
+  > 
+    <xs:element name="ItemId" 
+      type="t:ItemIdType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfBaseItemIdsType complex type. 
+
+Element Type Description 
+
+ItemId t:ItemIdType ([MS-OXWSCORE] section Specifies the item identifier of the array 
+2.2.4.25) member. 
+
+ 
+
+3.1.4.2.3.2 t:SyncFolderItemsChangesType Complex Type 
+
+The SyncFolderItemsChangesType complex type specifies a sequenced array of change types that 
+describe the differences between the items on the client and the items on the server. 
+
+ <xs:complexType name="SyncFolderItemsChangesType"> 
+  <xs:sequence> 
+    <xs:choice 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+    > 
+      <xs:element name="Create" 
+        type="t:SyncFolderItemsCreateOrUpdateType" 
+       /> 
+      <xs:element name="Update" 
+        type="t:SyncFolderItemsCreateOrUpdateType" 
+       /> 
+      <xs:element name="Delete" 
+        type="t:SyncFolderItemsDeleteType" 
+       /> 
+      <xs:element name="ReadFlagChange" 
+        type="t:SyncFolderItemsReadFlagType" 
+       /> 
+    </xs:choice> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderItemsChangesType complex type. 
+
+Element Type Description 
+
+Create t:SyncFolderItemsCreateOrUpdateType Specifies an item that has been created 
+(section 3.1.4.2.3.3) on the server and has to be created on 
+
+the client. 
+
+24 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+Update t:SyncFolderItemsCreateOrUpdateType Specifies an item that has been 
+changed on the server and has to be 
+changed on the client. 
+
+Delete t:SyncFolderItemsDeleteType (section Specifies an item that has been deleted 
+3.1.4.2.3.4) on the server and has to be deleted on 
+
+the client. 
+
+ReadFlagChange t:SyncFolderItemsReadFlagType (section Specifies an item that has been marked 
+3.1.4.2.3.5) as read on the server and has to be 
+
+marked as read on the client. 
+
+ 
+
+3.1.4.2.3.3 t:SyncFolderItemsCreateOrUpdateType Complex Type 
+
+The SyncFolderItemsCreateOrUpdateType complex type specifies a single item to create or 
+update in the client message store. 
+
+ <xs:complexType name="SyncFolderItemsCreateOrUpdateType"> 
+  <xs:choice> 
+    <xs:element name="Item" 
+      type="t:ItemType" 
+     /> 
+    <xs:element name="Message" 
+      type="t:MessageType" 
+     /> 
+    <xs:element name="CalendarItem" 
+      type="t:CalendarItemType" 
+     /> 
+    <xs:element name="Contact" 
+      type="t:ContactItemType" 
+     /> 
+    <xs:element name="DistributionList" 
+      type="t:DistributionListType" 
+     /> 
+    <xs:element name="MeetingMessage" 
+      type="t:MeetingMessageType" 
+     /> 
+    <xs:element name="MeetingRequest" 
+      type="t:MeetingRequestMessageType" 
+     /> 
+    <xs:element name="MeetingResponse" 
+      type="t:MeetingResponseMessageType" 
+     /> 
+    <xs:element name="MeetingCancellation" 
+      type="t:MeetingCancellationMessageType" 
+     /> 
+    <xs:element name="Task" 
+      type="t:TaskType" 
+     /> 
+    <xs:element name="PostItem" 
+      type="t:PostItemType" 
+     /> 
+    <xs:element name="RoleMember"  
+      type="t:RoleMemberItemType" 
+     /> 
+    <xs:element name="Network"  
+      type="t:NetworkItemType" 
+     /> 
+    <xs:element name="Person"  
+
+      type="t:AbchPersonItemType" 
+     /> 
+
+25 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element name="Booking"  
+      type="t:BookingItemType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderItemsCreateOrUpdateType complex 
+type. 
+
+Element Type Description 
+
+Item t:ItemType ([MS-OXWSCORE] section Specifies an item to create or update in 
+2.2.4.24) the client message store. This element 
+
+SHOULD NOT be used. If a client creates 
+or updates an item of this type, an item 
+of t:MessageType type SHOULD<2> be 
+returned. 
+
+Message t:MessageType ([MS-OXWSMSG] section Specifies a message to create or update 
+2.2.4.3) in the client message store. 
+
+CalendarItem t:CalendarItemType ([MS-OXWSMTGS] Specifies a calendar item to create or 
+section 2.2.4.6) update in the client message store. 
+
+Contact t:ContactItemType ([MS-OXWSCONT] Specifies a contact to create or update in 
+section 2.2.4.3) the client message store. 
+
+DistributionList t:DistributionListType ([MS-OXWSDLIST] Specifies a distribution list to create or 
+section 2.2.4.1) update in the client message store. 
+
+MeetingMessage t:MeetingMessageType ([MS- Specifies a meeting message to create or 
+OXWSMTGS] section 2.2.4.15) update in the client message store. 
+
+MeetingRequest t:MeetingRequestMessageType ([MS- Specifies a meeting request message to 
+OXWSMTGS] section 2.2.4.17) create or update in the client message 
+
+store. 
+
+MeetingResponse t:MeetingResponseMessageType ([MS- Specifies a meeting response message to 
+OXWSMTGS] section 2.2.4.18) create or update in the client message 
+
+store. 
+
+MeetingCancellation t:MeetingCancellationMessageType Specifies a meeting cancellation message 
+([MS-OXWSMTGS] section 2.2.4.14) to create or update in the client message 
+
+store. 
+
+Task t:TaskType ([MS-OXWSTASK] section Specifies a task to create or update in the 
+2.2.4.6) client message store. 
+
+PostItem t:PostItemType ([MS-OXWSPOST] section Specifies a post item to create or update 
+2.2.4.1) in the client message store. 
+
+RoleMember t:RoleMemberItemType ([MS- For internal use only.<3> 
+OXWSCORE] section 2.2.4.43) 
+
+Network t:NetworkItemType ([MS-OXWSCORE] For internal use only.<4>  
+section 2.2.4.30) 
+
+Person t:AbchPersonItemType ([MS- Specifies a person to create or update in 
+OXWSCONT] section 2.2.4.1) the client message store.<5> 
+
+Booking t:BookingItemType ([MS-OXWSCDATA] For internal use only.<6> 
+section 2.2.4.20) 
+
+26 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.2.3.4 t:SyncFolderItemsDeleteType Complex Type 
+
+The SyncFolderItemsDeleteType complex type specifies an item to delete from the client message 
+store. 
+
+ <xs:complexType name="SyncFolderItemsDeleteType"> 
+  <xs:sequence> 
+    <xs:element name="ItemId" 
+      type="t:ItemIdType" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderItemsDeleteType complex type. 
+
+Element Type Description 
+
+ItemId t:ItemIdType ([MS-OXWSCORE] section Specifies the identifier of the item to delete from the 
+2.2.4.25) client message store. 
+
+ 
+
+3.1.4.2.3.5 t:SyncFolderItemsReadFlagType Complex Type 
+
+The SyncFolderItemsReadFlagType complex type specifies whether an item on the server has been 
+read. 
+
+ <xs:complexType name="SyncFolderItemsReadFlagType"> 
+  <xs:sequence> 
+    <xs:element name="ItemID" 
+      type="t:ItemIdType" 
+     /> 
+    <xs:element name="IsRead" 
+      type="xs:boolean" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists the child elements of the SyncFolderItemsReadFlagType complex type. 
+
+Element Type Description 
+
+ItemID t:ItemIdType ([MS-OXWSCORE] section Specifies the identifier of the read item. 
+2.2.4.25) 
+
+IsRead xs:boolean ([XMLSCHEMA2]) Specifies a Boolean value that indicates whether the 
+item has been read. 
+
+ 
+
+3.1.4.2.3.6 m:SyncFolderItemsResponseMessageType Complex Type 
+
+The SyncFolderItemsResponseMessageType complex type specifies the status and results of a 
+single call to the SyncFolderItems operation (section 3.1.4.2). The 
+
+27 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SyncFolderItemsResponseMessageType complex type extends the ResponseMessageType 
+complex type ([MS-OXWSCDATA] section 2.2.4.65). 
+
+ <xs:complexType name="SyncFolderItemsResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="SyncState" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="IncludesLastItemInRange" 
+          type="xs:boolean" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Changes" 
+          type="t:SyncFolderItemsChangesType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderItemsResponseMessageType 
+complex type. 
+
+Element Type Description 
+
+SyncState xs:string ([XMLSCHEMA2]) Specifies a form of the synchronization 
+data, which is encoded with base64 
+encoding, that is used to identify the 
+synchronization state. This element is 
+optional. 
+
+IncludesLastItemInRange xs:boolean ([XMLSCHEMA2]) Specifies a Boolean value that indicates 
+whether the last item to synchronize is 
+included in the response. This element 
+is optional. 
+
+Changes t:SyncFolderItemsChangesType Specifies the differences between the 
+(section 3.1.4.2.3.2) items on the client and the items on the 
+
+server. This element is optional. 
+
+ 
+
+3.1.4.2.3.7 m:SyncFolderItemsResponseType Complex Type 
+
+The SyncFolderItemsResponseType complex type specifies a response from the SyncFolderItems 
+operation. The SyncFolderItemsResponseType complex type extends the 
+BaseResponseMessageType complex type ([MS-OXWSCDATA] section 2.2.4.18). 
+
+ <xs:complexType name="SyncFolderItemsResponseType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseResponseMessageType" 
+
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+28 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.2.3.8 m:SyncFolderItemsType Complex Type 
+
+The SyncFolderItemsType complex type specifies a request for synchronization information for 
+items in the server message store. The SyncFolderItemsType complex type extends the 
+BaseRequestType complex type ([MS-OXWSCDATA] section 2.2.4.17).  
+
+ <xs:complexType name="SyncFolderItemsType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="ItemShape" 
+          type="t:ItemResponseShapeType" 
+         /> 
+        <xs:element name="SyncFolderId" 
+          type="t:TargetFolderIdType" 
+         /> 
+        <xs:element name="SyncState" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Ignore" 
+          type="t:ArrayOfBaseItemIdsType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="MaxChangesReturned" 
+          type="t:MaxSyncChangesReturnedType" 
+         /> 
+        <xs:element name="SyncScope" 
+          type="t:SyncFolderItemsScopeType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="NumberOfDays" 
+          type="xs:int" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="MaximumCount" 
+          type="xs:int" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="MinimumCount" 
+          type="xs:int" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SyncFolderItemsType complex type. 
+
+Element Type Description 
+
+ItemShape t:ItemResponseShapeType ([MS- Specifies the item properties that are 
+OXWSCDATA] section 2.2.4.42) returned in a response message. 
+
+SyncFolderId t:TargetFolderIdType ([MS- Specifies the identity of the folder that 
+OXWSFOLD] section 2.2.4.16) contains the items to synchronize. 
+
+29 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+SyncState xs:string ([XMLSCHEMA2]) Specifies the synchronization state of a 
+previous synchronization for an incremental 
+synchronization call. If this element is not 
+specified, all items in their current state are 
+returned as if the items have never been 
+synchronized. This element is optional. 
+
+Ignore t:ArrayOfBaseItemIdsType (section Specifies an array of items to skip for 
+3.1.4.2.3.1) synchronization. This element is optional. 
+
+MaxChangesReturned t:MaxSyncChangesReturnedType Specifies the maximum number of changes 
+(section 3.1.4.2.4.1) that can be returned in a synchronization 
+
+response. This element MUST be set 
+between 1 and 512, inclusive. 
+
+SyncScope t:SyncFolderItemsScopeType Specifies whether only items or items and 
+(section 3.1.4.2.4.2) folder associated information (FAI) are 
+
+returned. This element is optional. <7> 
+
+NumberOfDays xs:int ([XMLSCHEMA2]) Specifies the time window (expressed in a 
+number of days) of the items to include in a 
+synchronization response. 
+
+MaximumCount xs:int ([XMLSCHEMA2]) Specifies the maximum number of items 
+(from the latest received time) to include in 
+a synchronization response. 
+
+MinimumCount xs:int ([XMLSCHEMA2]) Specifies the minimum number of items 
+(from the latest received time) to include in 
+a synchronization response. 
+
+ 
+
+3.1.4.2.4 Simple Types 
+
+The XML schema simple type definitions listed in the following table are specific to this operation. 
+
+Simple type Description 
+
+MaxSyncChangesReturnedType  Specifies the size of the range of responses returned by an item 
+synchronization request. 
+
+SyncFolderItemsScopeType Specifies whether an item synchronization request includes folder associated 
+information (FAI). 
+
+ 
+
+3.1.4.2.4.1 t:MaxSyncChangesReturnedType Simple Type 
+
+The MaxSyncChangesReturnedType simple type specifies the size of the range of responses 
+returned by an item synchronization operation. 
+
+ <xs:simpleType name="MaxSyncChangesReturnedType"> 
+  <xs:restriction 
+    base="xs:int" 
+  > 
+    <xs:minInclusive 
+      value="1" 
+
+     /> 
+
+30 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:maxInclusive 
+      value="512" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+3.1.4.2.4.2 t:SyncFolderItemsScopeType Simple Type 
+
+The SyncFolderItemsScopeType simple type specifies whether a synchronization request is only for 
+items in the folder or includes folder associated information (FAI) as well. 
+
+ <xs:simpleType name="SyncFolderItemsScopeType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="NormalItems" 
+     /> 
+    <xs:enumeration 
+      value="NormalAndAssociatedItems" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The values listed in the following table are defined by the SyncFolderItemsScopeType simple type, 
+
+Value Description 
+
+NormalItems Specifies that only items in the folder are returned. 
+
+NormalAndAssociatedItems Specifies that folder associated information is returned along with the items in the 
+folder. 
+
+ 
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+None. 
+
+3.1.4.2.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+31 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 SyncFolderHierarchy Operation 
+
+The following example of a SyncFolderHierarchy operation request, as described in section 3.1.4.1, 
+shows how to synchronize a client folder hierarchy with the server. This example shows a folder 
+hierarchy that has already been synchronized at least one time. The SyncState element of the 
+SyncFolderHierarchyType complex type, as described in section 3.1.4.1.3.6, is not included in the 
+request for the first attempt to synchronize a client with the server. The first request returns all the 
+folders in the mailbox. The SyncState element is returned in the SyncFolderHierarchyResponse 
+element, as described in section 3.1.4.1.2.2. This element is used to synchronize the state for 
+subsequent SyncFolderHierarchy requests.  
+
+In this example, the SyncState element data, encoded with base64 encoding, has been shortened 
+to preserve readability. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <soap:Body> 
+    <SyncFolderHierarchy  
+            xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <FolderShape> 
+        <t:BaseShape>AllProperties</t:BaseShape> 
+      </FolderShape> 
+      <SyncState>H4sIA=</SyncState> 
+    </SyncFolderHierarchy> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The following example shows a successful response to the SyncFolderHierarchy operation request. 
+In this example, a new folder has been synchronized. In this example, the SyncState element data, 
+encoded with base64 encoding, and the folder identifier data have been shortened to preserve 
+readability. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"  
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="0"  
+                         MajorBuildNumber="628" MinorBuildNumber="0" 
+                         xmlns:t="http:// 
+                            schemas.microsoft.com/exchange/services/2006/types" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <SyncFolderHierarchyResponse  
+           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"  
+           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"  
+           xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <m:ResponseMessages> 
+        <m:SyncFolderHierarchyResponseMessage ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:SyncState>H4sIAAA==</m:SyncState> 
+          <m:IncludesLastFolderInRange>true</m:IncludesLastFolderInRange> 
+          <m:Changes> 
+            <t:Create> 
+              <t:Folder> 
+                <t:FolderId Id="AQApAHR=" ChangeKey="AQAAABY" /> 
+                <t:ParentFolderId Id="AQApA=" ChangeKey="AQAAAA==" /> 
+                <t:FolderClass>IPF.Note</t:FolderClass> 
+                <t:DisplayName>NewFolder</t:DisplayName> 
+
+32 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                <t:TotalCount>0</t:TotalCount> 
+                <t:ChildFolderCount>0</t:ChildFolderCount> 
+                <t:UnreadCount>0</t:UnreadCount> 
+              </t:Folder> 
+            </t:Create> 
+          </m:Changes> 
+        </m:SyncFolderHierarchyResponseMessage> 
+      </m:ResponseMessages> 
+    </SyncFolderHierarchyResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.2 SyncFolderItems Operation 
+
+The following example of a SyncFolderItems operation request, as described in section 3.1.4.2, 
+shows how to synchronize items in a folder. This example shows a folder item's synchronization that is 
+not the first synchronization to have occurred for the Sent Items folder. The SyncState element of 
+the SyncFolderItemsType complex type, as described in section 3.1.4.2.3.8, is not included in the 
+request for the first attempt to synchronize a client with the server. The first attempt to synchronize 
+the items in a folder hierarchy returns all the items in the mailbox, excluding items that are identified 
+in the Ignore element of the SyncFolderItemsType complex type. This SyncFolderItems 
+operation request tries to synchronize all changes to the folder items since the last synchronization. 
+This request ignores the attempt to synchronize the one item that is identified in the Ignore element.  
+
+In this example the SyncState element data, encoded with base64 encoding, and the ItemId 
+element Id attribute have been shortened to preserve readability. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <soap:Body> 
+    <SyncFolderItems  
+            xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ItemShape> 
+        <t:BaseShape>Default</t:BaseShape> 
+      </ItemShape> 
+      <SyncFolderId> 
+        <t:DistinguishedFolderId Id="sentitems"/> 
+      </SyncFolderId> 
+      <SyncState>AEbJ94eMOAAA=</SyncState> 
+      <Ignore> 
+        <t:ItemId Id="AQApAHRAA==" ChangeKey="CQAAABY"/> 
+      </Ignore> 
+      <MaxChangesReturned>100</MaxChangesReturned> 
+    </SyncFolderItems> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The following example shows a successful response to the SyncFolderItems operation request. A 
+meeting request is synchronized from the Sent Items folder. In this example the SyncState element 
+data, encoded with base64 encoding, and the ItemId element Id attribute have been shortened to 
+preserve readability. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"  
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="0"  
+                         MajorBuildNumber="628" MinorBuildNumber="0"  
+      xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" /> 
+
+33 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </soap:Header> 
+  <soap:Body> 
+    <SyncFolderItemsResponse  
+          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"  
+          xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"  
+          xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <m:ResponseMessages> 
+        <m:SyncFolderItemsResponseMessage ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:SyncState>H4sIAAAAA=</m:SyncState> 
+          <m:IncludesLastItemInRange>true</m:IncludesLastItemInRange> 
+          <m:Changes> 
+            <t:Create> 
+              <t:MeetingRequest> 
+                <t:ItemId Id="AQApAHRwA==" ChangeKey="CwAAABYA" /> 
+                <t:Subject>Budget Q3</t:Subject> 
+                <t:Sensitivity>Normal</t:Sensitivity> 
+                <t:IsOutOfDate>false</t:IsOutOfDate> 
+                <t:HasBeenProcessed>true</t:HasBeenProcessed> 
+                <t:ResponseType>NoResponseReceived</t:ResponseType> 
+                <t:IntendedFreeBusyStatus>Busy</t:IntendedFreeBusyStatus> 
+                <t:Start>2006-08-02T17:30:00Z</t:Start> 
+                <t:End>2006-08-02T19:30:00Z</t:End> 
+                <t:Location>Conference Room 2</t:Location> 
+                <t:Organizer> 
+                  <t:Mailbox> 
+                    <t:Name>Dan Park</t:Name> 
+                    <t:EmailAddress>dpark@example.com</t:EmailAddress> 
+                    <t:RoutingType>SMTP</t:RoutingType></t:Mailbox> 
+                </t:Organizer> 
+              </t:MeetingRequest> 
+            </t:Create> 
+          </m:Changes> 
+        </m:SyncFolderItemsResponseMessage> 
+      </m:ResponseMessages> 
+    </SyncFolderItemsResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+34 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+The Mailbox Contents Synchronization Web Service Protocol does not use any additional security 
+mechanisms. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+35 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The following table lists the XML files that are required to implement the functionality that is specified 
+in this document. The contents of each file are included in this section. 
+
+File name Description Section 
+
+MS-OXWSSYNC.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSSYNC- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWSSYNC-types.xsd Contains the XML schema type definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSSYNC-types.xsd or MS-
+OXWSSYNC-messages.xsd schema have to be placed in the common folder along with the files.  
+
+This section contains the contents of the MS-OXWSSYNC.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+     <wsdl:types> 
+          <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+               <xs:include schemaLocation="MS-OXWSSYNC-messages.xsd"/> 
+               <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+         </xs:schema> 
+          <xs:schema id="types" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+               <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+               <!-- Add global elements and types from types.xsd --> 
+          </xs:schema> 
+     </wsdl:types> 
+     <wsdl:message name="SyncFolderHierarchySoapIn"> 
+        <wsdl:part name="request" element="tns:SyncFolderHierarchy" /> 
+        <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+        <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+        <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+     </wsdl:message> 
+     <wsdl:message name="SyncFolderHierarchySoapOut"> 
+        <wsdl:part name="SyncFolderHierarchyResult" element="tns:SyncFolderHierarchyResponse" 
+/> 
+        <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+     </wsdl:message> 
+     <wsdl:message name="SyncFolderItemsSoapIn"> 
+        <wsdl:part name="request" element="tns:SyncFolderItems" /> 
+        <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+        <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+        <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+     </wsdl:message> 
+
+36 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+     <wsdl:message name="SyncFolderItemsSoapOut"> 
+        <wsdl:part name="SyncFolderItemsResult" element="tns:SyncFolderItemsResponse" /> 
+        <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+     </wsdl:message> 
+     <wsdl:portType name="ExchangeServicePortType"> 
+        <wsdl:operation name="SyncFolderHierarchy"> 
+            <wsdl:input message="tns:SyncFolderHierarchySoapIn" /> 
+            <wsdl:output message="tns:SyncFolderHierarchySoapOut" /> 
+        </wsdl:operation> 
+        <wsdl:operation name="SyncFolderItems"> 
+            <wsdl:input message="tns:SyncFolderItemsSoapIn" /> 
+            <wsdl:output message="tns:SyncFolderItemsSoapOut" /> 
+        </wsdl:operation> 
+     </wsdl:portType> 
+     <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+          <wsdl:documentation> 
+               <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" 
+xmlns:wsi="http://ws-i.org/schemas/conformanceClaim/"/> 
+          </wsdl:documentation> 
+          <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+        <wsdl:operation name="SyncFolderHierarchy"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SyncFolderHierarchy" 
+/> 
+            <wsdl:input> 
+                <soap:header message="tns:SyncFolderHierarchySoapIn" part="Impersonation" 
+use="literal"></soap:header> 
+                <soap:header message="tns:SyncFolderHierarchySoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:SyncFolderHierarchySoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="SyncFolderHierarchyResult" use="literal" /> 
+                <soap:header message="tns:SyncFolderHierarchySoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+        <wsdl:operation name="SyncFolderItems"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SyncFolderItems" /> 
+            <wsdl:input> 
+                <soap:header message="tns:SyncFolderItemsSoapIn" part="Impersonation" 
+use="literal"></soap:header> 
+                <soap:header message="tns:SyncFolderItemsSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:SyncFolderItemsSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="SyncFolderItemsResult" use="literal" /> 
+                <soap:header message="tns:SyncFolderItemsSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+     </wsdl:binding> 
+     
+ </wsdl:definitions> 
+
+37 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSSYNC-types.xsd or MS-
+OXWSSYNC-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWSSYNC-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSSYNC-messages.xsd includes the file listed in the following table. For the schema file to 
+operate correctly, this file has to be in the folder that contains the WSDL, types schema, and 
+messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+     <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSSYNC-types.xsd"/> 
+     <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+     <xs:complexType name="SyncFolderHierarchyType"> 
+          <xs:complexContent> 
+               <xs:extension base="m:BaseRequestType"> 
+                    <xs:sequence> 
+                         <xs:element name="FolderShape" type="t:FolderResponseShapeType"/> 
+                         <xs:element name="SyncFolderId" type="t:TargetFolderIdType" 
+minOccurs="0"/> 
+                         <xs:element name="SyncState" type="xs:string" minOccurs="0"/> 
+                    </xs:sequence> 
+               </xs:extension> 
+          </xs:complexContent> 
+     </xs:complexType> 
+     <xs:element name="SyncFolderHierarchy" type="m:SyncFolderHierarchyType"/> 
+     <xs:complexType name="SyncFolderHierarchyResponseMessageType"> 
+          <xs:complexContent> 
+               <xs:extension base="m:ResponseMessageType"> 
+                    <xs:sequence> 
+                         <xs:element name="SyncState" type="xs:string" minOccurs="0"/> 
+                         <xs:element name="IncludesLastFolderInRange" type="xs:boolean" 
+minOccurs="0"/> 
+                         <xs:element name="Changes" type="t:SyncFolderHierarchyChangesType" 
+minOccurs="0"/> 
+                    </xs:sequence> 
+               </xs:extension> 
+          </xs:complexContent> 
+
+38 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+     </xs:complexType> 
+     <xs:complexType name="SyncFolderHierarchyResponseType"> 
+          <xs:complexContent> 
+               <xs:extension base="m:BaseResponseMessageType"/> 
+          </xs:complexContent> 
+     </xs:complexType> 
+     <xs:element name="SyncFolderHierarchyResponse" 
+type="m:SyncFolderHierarchyResponseType"/> 
+     <xs:complexType name="SyncFolderItemsType"> 
+          <xs:complexContent> 
+               <xs:extension base="m:BaseRequestType"> 
+                    <xs:sequence> 
+                         <xs:element name="ItemShape" type="t:ItemResponseShapeType"/> 
+                         <xs:element name="SyncFolderId" type="t:TargetFolderIdType"/> 
+                         <xs:element name="SyncState" type="xs:string" minOccurs="0"/> 
+                         <xs:element name="Ignore" type="t:ArrayOfBaseItemIdsType" 
+minOccurs="0"/> 
+                         <xs:element name="MaxChangesReturned" 
+type="t:MaxSyncChangesReturnedType"/> 
+                         <xs:element name="SyncScope" type="t:SyncFolderItemsScopeType" 
+minOccurs="0"/> 
+                         <xs:element name="NumberOfDays" type="xs:int" minOccurs="0"/> 
+                         <xs:element name="MaximumCount" type="xs:int" minOccurs="0"/> 
+                         <xs:element name="MinimumCount" type="xs:int" minOccurs="0"/> 
+                    </xs:sequence> 
+               </xs:extension> 
+          </xs:complexContent> 
+     </xs:complexType> 
+     <xs:element name="SyncFolderItems" type="m:SyncFolderItemsType"/> 
+     <xs:complexType name="SyncFolderItemsResponseMessageType"> 
+          <xs:complexContent> 
+               <xs:extension base="m:ResponseMessageType"> 
+                    <xs:sequence> 
+                         <xs:element name="SyncState" type="xs:string" minOccurs="0"/> 
+                         <xs:element name="IncludesLastItemInRange" type="xs:boolean" 
+minOccurs="0"/> 
+                         <xs:element name="Changes" type="t:SyncFolderItemsChangesType" 
+minOccurs="0"/> 
+                    </xs:sequence> 
+               </xs:extension> 
+          </xs:complexContent> 
+     </xs:complexType> 
+     <xs:complexType name="SyncFolderItemsResponseType"> 
+          <xs:complexContent> 
+               <xs:extension base="m:BaseResponseMessageType"/> 
+          </xs:complexContent> 
+     </xs:complexType> 
+     <xs:element name="SyncFolderItemsResponse" type="m:SyncFolderItemsResponseType"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSSYNC-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSSYNC-types.xsd includes the file listed in the following table. For the schema file to operate 
+correctly, this file has to be present in the folder that contains the WSDL, types schema, and 
+messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSFOLD-types.xsd [MS-OXWSFOLD] section 7.2 
+
+ 
+ <?xml version="1.0" encoding="utf-8"?> 
+
+39 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+     <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+     <xs:include schemaLocation="MS-OXWSFOLD-types.xsd"/> 
+     <xs:complexType name="ArrayOfBaseItemIdsType"> 
+          <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+               <xs:element name="ItemId" type="t:ItemIdType"/> 
+          </xs:choice> 
+     </xs:complexType> 
+     <xs:complexType name="SyncFolderHierarchyChangesType"> 
+          <xs:sequence> 
+               <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+                    <xs:element name="Create" 
+type="t:SyncFolderHierarchyCreateOrUpdateType"/> 
+                    <xs:element name="Update" 
+type="t:SyncFolderHierarchyCreateOrUpdateType"/> 
+                    <xs:element name="Delete" type="t:SyncFolderHierarchyDeleteType"/> 
+               </xs:choice> 
+          </xs:sequence> 
+     </xs:complexType> 
+     <xs:simpleType name="MaxSyncChangesReturnedType"> 
+          <xs:restriction base="xs:int"> 
+               <xs:minInclusive value="1"/> 
+               <xs:maxInclusive value="512"/> 
+          </xs:restriction> 
+     </xs:simpleType> 
+     <xs:complexType name="SyncFolderHierarchyCreateOrUpdateType"> 
+          <xs:choice> 
+               <xs:element name="Folder" type="t:FolderType"/> 
+               <xs:element name="CalendarFolder" type="t:CalendarFolderType"/> 
+               <xs:element name="ContactsFolder" type="t:ContactsFolderType"/> 
+               <xs:element name="SearchFolder" type="t:SearchFolderType"/> 
+               <xs:element name="TasksFolder" type="t:TasksFolderType"/> 
+          </xs:choice> 
+     </xs:complexType> 
+     <xs:complexType name="SyncFolderHierarchyDeleteType"> 
+          <xs:sequence> 
+               <xs:element name="FolderId" type="t:FolderIdType"/> 
+          </xs:sequence> 
+     </xs:complexType> 
+     <xs:complexType name="SyncFolderItemsChangesType"> 
+          <xs:sequence> 
+               <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+                    <xs:element name="Create" type="t:SyncFolderItemsCreateOrUpdateType"/> 
+                    <xs:element name="Update" type="t:SyncFolderItemsCreateOrUpdateType"/> 
+                    <xs:element name="Delete" type="t:SyncFolderItemsDeleteType"/> 
+                    <xs:element name="ReadFlagChange" type="t:SyncFolderItemsReadFlagType"/> 
+               </xs:choice> 
+          </xs:sequence> 
+     </xs:complexType> 
+     <xs:complexType name="SyncFolderItemsDeleteType"> 
+          <xs:sequence> 
+               <xs:element name="ItemId" type="t:ItemIdType"/> 
+          </xs:sequence> 
+     </xs:complexType> 
+     <xs:complexType name="SyncFolderItemsReadFlagType"> 
+          <xs:sequence> 
+               <xs:element name="ItemId" type="t:ItemIdType"/> 
+               <xs:element name="IsRead" type="xs:boolean"/> 
+          </xs:sequence> 
+     </xs:complexType> 
+     <xs:simpleType name="SyncFolderItemsScopeType"> 
+          <xs:restriction base="xs:string"> 
+               <xs:enumeration value="NormalItems"/> 
+               <xs:enumeration value="NormalAndAssociatedItems"/> 
+          </xs:restriction> 
+
+40 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+     </xs:simpleType> 
+     <xs:complexType name="SyncFolderItemsCreateOrUpdateType"> 
+          <xs:choice> 
+               <xs:element name="Item" type="t:ItemType"/> 
+               <xs:element name="Message" type="t:MessageType"/> 
+               <xs:element name="CalendarItem" type="t:CalendarItemType"/> 
+               <xs:element name="Contact" type="t:ContactItemType"/> 
+               <xs:element name="DistributionList" type="t:DistributionListType"/> 
+               <xs:element name="MeetingMessage" type="t:MeetingMessageType"/> 
+               <xs:element name="MeetingRequest" type="t:MeetingRequestMessageType"/> 
+               <xs:element name="MeetingResponse" type="t:MeetingResponseMessageType"/> 
+               <xs:element name="MeetingCancellation" 
+type="t:MeetingCancellationMessageType"/> 
+               <xs:element name="Task" type="t:TaskType"/> 
+               <xs:element name="PostItem" type="t:PostItemType"/> 
+               <xs:element name="RoleMember" type="t:RoleMemberItemType"/> 
+               <xs:element name="Network" type="t:NetworkItemType"/> 
+               <xs:element name="Person" type="t:AbchPersonItemType"/> 
+               <xs:element name="Booking" type="t:BookingItemType"/> 
+          </xs:choice> 
+     </xs:complexType> 
+ </xs:schema> 
+
+41 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 3.1.4.1.3.1:  Microsoft Exchange Server 2007 Service Pack 3 (SP3) does not specify the 
+Delete element. All other versions of Exchange include this element. 
+
+<2> Section 3.1.4.2.3.3:  The initial release of Exchange 2007 returns the item of type t:ItemType. 
+Microsoft Exchange Server 2007 Service Pack 1 (SP1) returns the item of type t:ItemType as a 
+t:MessageType type. 
+
+<3> Section 3.1.4.2.3.3:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+RoleMember element. 
+
+<4> Section 3.1.4.2.3.3:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+Network element. 
+
+<5> Section 3.1.4.2.3.3:  Exchange 2007, Exchange 2010. and Exchange 2013 do not support the 
+Person element. 
+
+<6> Section 3.1.4.2.3.3:  Exchange 2007, Exchange 2010. and Exchange 2013 do not support the 
+Booking element. 
+
+<7> Section 3.1.4.2.3.8:  Exchange 2007 does not support the SyncScope element. 
+
+42 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Revision 
+Section Description 
+
+class 
+
+Added element Booking to SyncFolderItemsCreateOrUpdateType 
+7.2 Types Schema Minor 
+
+complex type. 
+
+8 Appendix C: Product 
+Updated list of supported products. Major 
+
+Behavior 
+
+43 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A Messages 
+    attribute groups 12 
+Abstract data model    attributes 12 
+   server 13    common data structures 12 
+Applicability 10    complex types 12 
+Attribute groups 12    elements 11 
+Attributes 12    enumerated 11 
+    groups 12 
+
+C    namespaces 11 
+
+    simple types 12 
+
+Capability negotiation 10    syntax 11 
+
+Change tracking 43    transport 11 
+
+Common data structures 12  
+
+Complex types 12 N 
+  
+
+D Namespaces 11 
+
+ Normative references 7 
+
+Data model - abstract  
+
+   server 13 O 
+  
+
+E Operations 
+
+    SyncFolderHierarchy 14 
+
+Events    SyncFolderItems 21 
+
+   local - server 31 Overview (synopsis) 8 
+
+   timer - server 31  
+
+Examples P 
+   SyncFolderHierarchy operation 32  
+   SyncFolderItems operation 33 Parameters - security index 35 
+ Preconditions 9 
+
+F Prerequisites 9 
+
+ Product behavior 42 
+
+Fields - vendor-extensible 10 Protocol Details 
+
+Full WSDL 36    overview 13 
+
+Full XML schema 38  
+
+   Messages Schema 38 R 
+   Types Schema 39  
+ References 7 
+
+G    informative 8 
+
+    normative 7 
+
+Glossary 6 Relationship to other protocols 9 
+
+Groups 12  
+
+ S 
+I  
+
+ Security 
+
+Implementer - security considerations 35    implementer considerations 35 
+
+Index of security parameters 35    parameter index 35 
+
+Informative references 8 Sequencing rules 
+
+Initialization    server 13 
+
+   server 13 Server 
+
+Introduction 6    abstract data model 13 
+
+    initialization 13 
+
+L    local events 31 
+
+    message processing 13 
+
+Local events    sequencing rules 13 
+
+   server 31    SyncFolderHierarchy operation 14 
+
+    SyncFolderItems operation 21 
+   timer events 31 
+
+M 
+   timers 13 
+
+ 
+Simple types 12 
+
+Message processing 
+Standards assignments 10 
+
+   server 13 
+SyncFolderHierarchy operation example 32 
+
+44 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SyncFolderItems operation example 33 
+Syntax 
+   messages - overview 11 
+ 
+T 
+ 
+Timer events 
+   server 31 
+Timers 
+   server 13 
+Tracking changes 43 
+Transport 11 
+Types 
+   complex 12 
+   simple 12 
+ 
+V 
+ 
+Vendor-extensible fields 10 
+Versioning 10 
+ 
+W 
+ 
+WSDL 36 
+ 
+X 
+ 
+XML schema 38 
+   Messages Schema 38 
+   Types Schema 39 
+
+ 
+
+45 / 45 
+
+[MS-OXWSSYNC] - v20250520 
+Mailbox Contents Synchronization Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

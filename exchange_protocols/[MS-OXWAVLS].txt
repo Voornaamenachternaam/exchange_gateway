@@ -1,0 +1,4340 @@
+﻿[MS-OXWAVLS]:  
+
+Availability Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 Major Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.0.1 Editorial Updated references to reflect date of initial release. 
+
+9/3/2008 1.0.2 Editorial Revised and edited technical content. 
+
+12/3/2008 1.0.3 Editorial Revised and edited technical content. 
+
+3/4/2009 1.0.4 Editorial Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.1.0 Minor Updated the technical content. 
+
+2/10/2010 4.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 5.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 5.1 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 5.2 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 6.0 Major Significantly changed the technical content. 
+
+8/5/2011 6.1 Minor Clarified the meaning of the technical content. 
+
+10/7/2011 7.0 Major Significantly changed the technical content. 
+
+1/20/2012 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 8.0 None 
+
+technical content. 
+
+7/16/2012 8.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 9.0 None 
+
+technical content. 
+
+7/26/2013 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 10.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 10.0 None 
+
+technical content. 
+
+4/30/2014 10.1 Minor Clarified the meaning of the technical content. 
+
+7/31/2014 10.2 Minor Clarified the meaning of the technical content. 
+
+10/30/2014 10.3 Minor Clarified the meaning of the technical content. 
+
+2 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+3/16/2015 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 11.0 None 
+
+technical content. 
+
+7/24/2018 12.0 Major Significantly changed the technical content. 
+
+10/1/2018 13.0 Major Significantly changed the technical content. 
+
+4/22/2021 14.0 Major Significantly changed the technical content. 
+
+8/17/2021 15.0 Major Significantly changed the technical content. 
+
+11/16/2021 15.1 Minor Clarified the meaning of the technical content. 
+
+8/20/2024 16.0 Major Significantly changed the technical content. 
+
+5/20/2025 17.0 Major Significantly changed the technical content. 
+
+3 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 8 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 9 
+1.4 Relationship to Other Protocols ............................................................................ 9 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ................................................................................... 10 
+1.9 Standards Assignments ..................................................................................... 10 
+
+2 Messages ............................................................................................................... 11 
+2.1 Transport ........................................................................................................ 11 
+
+2.1.1 X-ClientStatistics Header ............................................................................. 11 
+2.2 Common Message Syntax ................................................................................. 11 
+
+2.2.1 Namespaces .............................................................................................. 12 
+2.2.2 Messages ................................................................................................... 12 
+2.2.3 Elements ................................................................................................... 12 
+2.2.4 Complex Types ........................................................................................... 12 
+2.2.5 Simple Types ............................................................................................. 12 
+2.2.6 Attributes .................................................................................................. 12 
+2.2.7 Groups ...................................................................................................... 12 
+2.2.8 Attribute Groups ......................................................................................... 12 
+
+3 Protocol Details ..................................................................................................... 13 
+3.1 ExchangeServicePortType Server Details ............................................................. 13 
+
+3.1.1 Abstract Data Model .................................................................................... 13 
+3.1.2 Timers ...................................................................................................... 13 
+3.1.3 Initialization ............................................................................................... 13 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 13 
+
+3.1.4.1 GetUserAvailability Operation ................................................................. 13 
+3.1.4.1.1 Messages ....................................................................................... 14 
+
+3.1.4.1.1.1 GetUserAvailabilitySoapIn Message .............................................. 15 
+3.1.4.1.1.2 GetUserAvailabilitySoapOut Message ............................................ 15 
+
+3.1.4.1.2 Elements ........................................................................................ 16 
+3.1.4.1.2.1 t:FreeBusyViewOptions Element .................................................. 16 
+3.1.4.1.2.2 tns:GetUserAvailabilityRequest Element ........................................ 16 
+3.1.4.1.2.3 tns:GetUserAvailabilityResponse Element ...................................... 17 
+3.1.4.1.2.4 t:SuggestionsViewOptions Element .............................................. 17 
+3.1.4.1.2.5 t:TimeZone Element ................................................................... 17 
+
+3.1.4.1.3 Complex Types ............................................................................... 17 
+3.1.4.1.3.1 t:ArrayOfAttendeeConflictData Complex Type ................................ 18 
+3.1.4.1.3.2 t:ArrayOfCalendarEvent Complex Type ......................................... 20 
+3.1.4.1.3.3 m:ArrayOfFreeBusyResponse Complex Type ................................. 20 
+3.1.4.1.3.4 t:ArrayOfMailboxData Complex Type ............................................ 21 
+3.1.4.1.3.5 t:ArrayOfSuggestion Complex Type .............................................. 21 
+3.1.4.1.3.6 t:ArrayOfSuggestionDayResult Complex Type ................................ 22 
+3.1.4.1.3.7 t:ArrayOfWorkingPeriod Complex Type ......................................... 22 
+3.1.4.1.3.8 t:AttendeeConflictData Complex Type .......................................... 23 
+3.1.4.1.3.9 t:CalendarEvent Complex Type .................................................... 23 
+3.1.4.1.3.10 t:CalendarEventDetails Complex Type .......................................... 24 
+3.1.4.1.3.11 m:FreeBusyResponseType Complex Type ..................................... 26 
+3.1.4.1.3.12 t:FreeBusyView Complex Type ..................................................... 26 
+
+4 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.3.13 t:FreeBusyViewOptionsType Complex Type ................................... 27 
+3.1.4.1.3.14 m:GetUserAvailabilityRequestType Complex Type .......................... 29 
+3.1.4.1.3.15 m:GetUserAvailabilityResponseType Complex Type ........................ 30 
+3.1.4.1.3.16 t:GroupAttendeeConflictData Complex Type .................................. 30 
+3.1.4.1.3.17 t:IndividualAttendeeConflictData Complex Type ............................. 31 
+3.1.4.1.3.18 t:MailboxData Complex Type ....................................................... 32 
+3.1.4.1.3.19 t:SerializableTimeZone Complex Type .......................................... 33 
+3.1.4.1.3.20 t:SerializableTimeZoneTime Complex Type ................................... 34 
+3.1.4.1.3.21 t:Suggestion Complex Type ........................................................ 35 
+3.1.4.1.3.22 t:SuggestionDayResult Complex Type .......................................... 36 
+3.1.4.1.3.23 m:SuggestionsResponseType Complex Type ................................. 37 
+3.1.4.1.3.24 t:SuggestionsViewOptionsType Complex Type ............................... 38 
+3.1.4.1.3.25 t:TooBigGroupAttendeeConflictData Complex Type ........................ 40 
+3.1.4.1.3.26 t:UnknownAttendeeConflictData Complex Type .............................. 40 
+3.1.4.1.3.27 t:WorkingHours Complex Type .................................................... 40 
+3.1.4.1.3.28 t:WorkingPeriod Complex Type .................................................... 41 
+
+3.1.4.1.4 Simple Types .................................................................................. 42 
+3.1.4.1.4.1 t:FreeBusyViewType Simple Type ................................................ 42 
+3.1.4.1.4.2 t:MeetingAttendeeType Simple Type ............................................ 43 
+3.1.4.1.4.3 t:SuggestionQuality Simple Type ................................................. 44 
+
+3.1.4.1.5 Attributes ....................................................................................... 45 
+3.1.4.1.6 Groups ........................................................................................... 45 
+3.1.4.1.7 Attribute Groups.............................................................................. 45 
+
+3.1.5 Timer Events .............................................................................................. 45 
+3.1.6 Other Local Events ...................................................................................... 45 
+
+4 Protocol Examples ................................................................................................. 46 
+4.1 GetUserAvailability Request ............................................................................... 46 
+4.2 GetUserAvailability Response ............................................................................. 47 
+4.3 Merged Free/Busy String ................................................................................... 49 
+4.4 Unsuccessful Response ..................................................................................... 50 
+
+4.4.1 SOAP Exception .......................................................................................... 50 
+4.4.2 GetUserAvailability Error Response ............................................................... 50 
+
+5 Security ................................................................................................................. 52 
+5.1 Security Considerations for Implementers ........................................................... 52 
+5.2 Index of Security Parameters ............................................................................ 52 
+
+6 Appendix A: Full WSDL .......................................................................................... 53 
+
+7 Appendix B: Full XML Schema ................................................................................ 55 
+7.1 Messages Schema ............................................................................................ 55 
+7.2 Types Schema ................................................................................................. 56 
+
+8 Appendix C: Product Behavior ............................................................................... 60 
+
+9 Change Tracking .................................................................................................... 62 
+
+10 Index ..................................................................................................................... 63 
+
+ 
+
+5 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Availability Web Service Protocol enables a client to get status information for a set of users, 
+rooms, and resources within a specified time window. 
+
+This protocol also enables a client to get suggestions for alternate meeting times. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+calendar: A date range that shows availability, meetings, and appointments for one or more users 
+or resources. See also Calendar object. 
+
+Calendar folder: A Folder object that contains Calendar objects. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+entry ID: See EntryID. 
+
+free/busy status: A property of an appointment that indicates how an appointment on the 
+calendar of an attendee or resource affects their availability. 
+
+globally unique identifier (GUID): A term used interchangeably with universally unique 
+identifier (UUID) in Microsoft protocol technical documents (TDs). Interchanging the usage of 
+these terms does not imply or require a specific algorithm or mechanism to generate the value. 
+Specifically, the use of this term does not imply or require that the algorithms described in 
+[RFC4122] or [C706] have to be used for generating the GUID. See also universally unique 
+identifier (UUID). 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+meeting suggestions: A possible meeting time based on the availability of the meeting 
+attendees. 
+
+6 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Out of Office (OOF): One of the possible values for the free/busy status on an appointment. It 
+indicates that the user will not be in the office during the appointment. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP fault: A container for error and status information within a SOAP message. See [SOAP1.2-
+1/2007] section 5.4 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+working hours: Times of the day that are valid for meetings to be considered for an attendee. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+
+7 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[ISO-8601] International Organization for Standardization, "Data Elements and Interchange Formats - 
+Information Interchange - Representation of Dates and Times", ISO/IEC 8601:2004, December 2004, 
+http://www.iso.org/iso/en/CatalogueDetailPage.CatalogueDetail?CSNUMBER=40874&ICS1=1&ICS2=1
+40&ICS3=30 
+
+Note There is a charge to download the specification. 
+
+[MS-OXCPERM] Microsoft Corporation, "Exchange Access and Operation Permissions Protocol". 
+
+[MS-OXOCAL] Microsoft Corporation, "Appointment and Meeting Object Protocol". 
+
+[MS-OXORMDR] Microsoft Corporation, "Reminder Settings Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSGTZ] Microsoft Corporation, "Get Server Time Zone Web Service Protocol". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+8 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+1.3 Overview 
+
+The Availability Web Service Protocol enables the retrieval of up-to-date free/busy information and 
+meeting suggestions for a set of mailboxes. Typically, this set of mailboxes represents a meeting's 
+attendees and resources.  
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing Lookup SOAP-based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP Protocol, as described in [SOAP1.1], to specify the structure information 
+that is exchanged between the client and server. This protocol uses the XML Protocol, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content that is sent to and from the 
+server. 
+
+Clients can contact this protocol by using SOAP over HTTP, as described in [RFC2616], and SOAP over 
+HTTPS, as described in [RFC2818], as shown in the following layering diagram. 
+
+ 
+
+Figure 1:  This protocol in relation to other protocols 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], is required to form the HTTP request to the Web server that 
+hosts this protocol. The operations that this protocol defines cannot be accessed unless the correct 
+endpoint is identified in the HTTP Web requests that target this protocol.  
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client applications that use Web services to request calendar availability 
+information from the server. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as specified in section 2.1. 
+
+9 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Protocol Versions: This protocol has only one WSDL port type version. The version of the server 
+responding to the request is identified by using the ServerVersionInfo element, as described in 
+[MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the Web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes dates and times in various messages. Local time zone 
+considerations for such dates and times are specified in section 3.1.4.1.3.19. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+10 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1. For details, see [SOAP1.1].  
+
+This protocol MUST support SOAP over HTTP, as specified in [RFC2616]. The protocol servers SHOULD 
+additionally support SOAP over HTTPS for securing communications with clients, as specified in 
+[RFC2818]. 
+
+Protocol messages MUST be formatted as specified in [SOAP1.1] section 4. 
+
+2.1.1 X-ClientStatistics Header 
+
+The X-ClientStatistics header SHOULD<1> be sent by the client to the server to report free/busy 
+status request statistics to the server. The following table lists the fields that are included in the X-
+ClientStatistics header. 
+
+Field name Data format Description 
+
+MessageID GUID A unique identifier for a free/busy data request. 
+
+RequstTime [ISO-8601] date The Coordinated Universal Time (UTC) time when the request 
+format was sent. 
+
+ResponseTime milliseconds The round-trip response time for the request. 
+
+ResponseSize kilobytes The size of the data received. 
+
+HTTPResponseCode HTTP response The HTTP response that is returned by the server. 
+code 
+
+ErrorCode Error code When the HTTP response is 200 (HTTP STATUS OK), additional 
+errors can be reported for individual users. 
+
+Overflow Integer The number of additional errors that occurred, but the details of 
+which are not included in the report.  
+
+Multiple reports included in the same X-ClientStatistics header MUST be separated by semicolons.  
+
+2.2 Common Message Syntax 
+
+The request header for this protocol SHOULD<2> contain a MessageID header, as specified in 
+section 2.1.1.  
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML Schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and WSDL, as defined in 
+[WSDL]. 
+
+11 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any XML namespace prefix is implementation-specific and not 
+significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [WSDL]  
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1]  
+
+ http://www.w3.org/2001/XMLSchema-instance  
+
+targetNamespace http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL]  
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+2.2.4 Complex Types 
+
+This specification does not define any common XML schema complex type definitions. 
+
+2.2.5 Simple Types 
+
+This specification does not define any common XML schema simple type definitions. 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+12 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+This protocol specifies a way of getting calendar data for a set of mailboxes, which can represent 
+users, rooms, or resources, from a server. 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol defines a single port type with one operation that enables client implementations to 
+query a server for user availability information. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation how the protocol behaves. This document does not mandate that implementations adhere 
+to this model as long as their external behavior is consistent with that specified in this document. 
+
+The availability information that is returned by this protocol is taken from the data store and can be 
+generated in response to each request. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of operations as defined by this specification. 
+
+Operation Description 
+
+GetUserAvailability  Provides up-to-date availability information for a set of users. 
+
+ 
+
+3.1.4.1 GetUserAvailability Operation 
+
+The GetUserAvailability operation provides current user availability information at a specified level 
+of detail.<3> 
+
+The following is the WSDL port type specification of this operation. 
+
+ <wsdl:operation name="GetUserAvailability"> 
+    <wsdl:input message="tns:GetUserAvailabilitySoapIn" /> 
+    <wsdl:output message="tns:GetUserAvailabilitySoapOut" /> 
+ </wsdl:operation> 
+
+13 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following is the WSDL binding specification of this operation.<4> 
+
+ <wsdl:operation name="GetUserAvailability"> 
+   <soap:operation soapAction="http://schemas.microsoft.com/exchange/ 
+ services/2006/messages/GetUserAvailability"/> 
+   <wsdl:input> 
+      <soap:header message="tns:GetUserAvailabilitySoapIn" part="Impersonation" 
+use="literal"/> 
+      <soap:header message="tns:GetUserAvailabilitySoapIn" part="TimeZoneContext" 
+use="literal"/> 
+      <soap:header message="tns:GetUserAvailabilitySoapIn" part="RequestVersion" 
+use="literal"/> 
+      <soap:body parts="GetUserAvailabilityRequest" use="literal"/> 
+   </wsdl:input> 
+    <wsdl:output> 
+      <soap:body parts="GetUserAvailabilityResult" use="literal"/> 
+      <soap:header message="tns:GetUserAvailabilitySoapOut" 
+ part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+For a successful request, the GetUserAvailability operation MUST return a 
+GetUserAvailabilityResponse element with the ResponseClass attribute ([MS-OXWSCDATA] 
+section 2.2.4.65) of the ResponseMessage element (section 3.1.4.1.3.11) set to "Success". The 
+ResponseCode attribute ([MS-OXWSCDATA] section 2.2.4.65) of the ResponseMessage element 
+MUST be set to "NoError". 
+
+If one or more of the mailboxes in the MailboxDataArray element (section 3.1.4.1.3.14) in the 
+GetUserAvailabilityRequest element (section 3.1.4.1.1.1) is not found in the directory service, the 
+server MUST return a ResponseMessage element in the FreeBusyResponseArray element (section 
+3.1.4.1.3.15) of the GetUserAvailabilityResponse element (section 3.1.4.1.1.2) with the 
+ResponseClass attribute of the ResponseMessage element set to "Error" and the MessageText 
+element ([MS-OXWSCDATA] section 2.2.4.65) of the ResponseMessage element set to "Unable to 
+resolve email address <SMTP address> to an Active Directory object", where <SMTP address> is 
+replaced with the email address that cannot be resolved. 
+
+If there are no mailboxes specified in the request, the server MUST return a SOAP fault. The 
+following XML specifies the SOAP body that MUST be returned. 
+
+ <?xml version="1.0" encoding="utf-8" ?>  
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema">  
+ <soap:Header>  
+ <t:ServerVersionInfo MajorVersion="8" MinorVersion="1" MajorBuildNumber="240" 
+MinorBuildNumber="5" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />  
+ </soap:Header>  
+ <soap:Body>  
+ <soap:Fault>  
+ <faultcode>soap:Client</faultcode>  
+ <faultstring>Microsoft.Exchange.InfoWorker.Common.Availability.IdentityArrayEmptyException: 
+The MailboxData array is empty. ---> The MailboxData array is empty.</faultstring>  
+ <faultactor>https://server/ews/exchange.asmx</faultactor>  
+ <detail>  
+ <ErrorCode 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">5001</ErrorCode>  
+ </detail>  
+ </soap:Fault>  
+ </soap:Body>  
+ </soap:Envelope> 
+
+3.1.4.1.1 Messages 
+
+14 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+GetUserAvailabilitySoapIn Specifies the SOAP message that requests the user availability information. 
+
+GetUserAvailabilitySoapOut Specifies the SOAP message that is returned by the server in response. 
+
+ 
+
+3.1.4.1.1.1 GetUserAvailabilitySoapIn Message 
+
+The GetUserAvailabilitySoapIn WSDL message specifies the GetUserAvailability operation 
+request to return availability information. 
+
+ <wsdl:message name="GetUserAvailabilitySoapIn"> 
+  <wsdl:part name="GetUserAvailabilityRequest"  
+    element="tns:GetUserAvailabilityRequest"/> 
+  <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+  <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetUserAvailabilitySoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetUserAvailability. 
+
+The parts of the GetUserAvailabilitySoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetUserAvailabilityRequest tns:GetUserAvailabilityRequest Specifies the SOAP body of the 
+(section 3.1.4.1.2.2)  request containing the information that 
+
+is required to query for availability. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.3) identifies the user whom the client is 
+
+impersonating.<5> 
+
+TimezoneContext t:TimeZoneContext ([MS- Specifies a SOAP header that identifies 
+OXWSGTZ] section 2.2.3.4) the time zone to use for all responses 
+
+from the server. All times that are 
+returned from the server will be 
+converted to the specified time 
+zone.<6> 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies 
+OXWSCDATA] section 2.2.3.9) the schema version for the 
+
+GetUserAvailability operation 
+request.<7> 
+
+ 
+
+3.1.4.1.1.2 GetUserAvailabilitySoapOut Message 
+
+The GetUserAvailabilitySoapOut WSDL message specifies the server response to a 
+GetUserAvailability operation request. 
+
+ <wsdl:message name="GetUserAvailabilitySoapOut"> 
+
+15 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   <wsdl:part name="GetUserAvailabilityResult" element="tns:GetUserAvailabilityResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetUserAvailabilitySoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetUserAvailability. 
+
+The parts of the GetUserAvailabilitySoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetUserAvailabilityResult tns:GetUserAvailabilityResponse Specifies the SOAP body of the 
+(section 3.1.4.1.2.3) response that contains the 
+
+requested availability information. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that 
+section 2.2.3.10) identifies the server version for the 
+
+response. 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+FreeBusyViewOptions Specifies the type of free/busy status information that is returned in the 
+response. 
+
+GetUserAvailabilityRequest Specifies the root element in a GetUserAvailability operation request. 
+
+GetUserAvailabilityResponse Specifies the root element in the response from a GetUserAvailability 
+operation request. 
+
+SuggestionsViewOptions Contains the options for obtaining meeting suggestion information. 
+
+TimeZone Specifies time-zone related information. 
+
+ 
+
+3.1.4.1.2.1 t:FreeBusyViewOptions Element 
+
+The FreeBusyViewOptions element specifies the type of free/busy status information that is 
+returned in the response. 
+
+ <xs:element name="FreeBusyViewOptions" 
+  type="t:FreeBusyViewOptionsType" 
+ /> 
+ 
+
+3.1.4.1.2.2 tns:GetUserAvailabilityRequest Element 
+
+The GetUserAvailabilityRequest element specifies the root element in a GetUserAvailability 
+operation request. 
+
+16 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:element name="GetUserAvailabilityRequest" 
+  type="m:GetUserAvailabilityRequestType" 
+ /> 
+ 
+
+3.1.4.1.2.3 tns:GetUserAvailabilityResponse Element 
+
+The GetUserAvailabilityResponse element specifies the root element in a GetUserAvailability 
+operation response. 
+
+ <xs:element name="GetUserAvailabilityResponse" 
+  type="m:GetUserAvailabilityResponseType" 
+ /> 
+ 
+
+3.1.4.1.2.4 t:SuggestionsViewOptions Element 
+
+The SuggestionsViewOptions element contains the options for obtaining meeting suggestion 
+information. 
+
+ <xs:element name="SuggestionsViewOptions" 
+  type="t:SuggestionsViewOptionsType" 
+ /> 
+ 
+
+3.1.4.1.2.5 t:TimeZone Element 
+
+The TimeZone element specifies time zone–related information. 
+
+ <xs:element name="TimeZone" 
+  type="t:SerializableTimeZone" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+ArrayOfAttendeeConflictData Specifies an array of conflict data for queried attendees while retrieving 
+suggested meeting times. 
+
+ArrayOfCalendarEvent Specifies an array of calendar events for the attendee. 
+
+ArrayOfFreeBusyResponse Specifies the requested users' availability information. 
+
+ArrayOfMailboxData Specifies a list of mailboxes to query for availability information. 
+
+ArrayOfSuggestion Specifies an array of meeting suggestions. 
+
+ArrayOfSuggestionDayResult Specifies an array of meeting suggestions organized by date. 
+
+ArrayOfWorkingPeriod Specifies the working period information for a mailbox user. 
+
+AttendeeConflictData Specifies the abstract base type used for conflict data. 
+
+17 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+CalendarEvent Specifies an item on the calendar. 
+
+CalendarEventDetails Specifies additional information about a calendar event. 
+
+FreeBusyResponseType Specifies the returned response from the Availability Web Service 
+Protocol. 
+
+FreeBusyView Specifies the free/busy status information that is returned in the 
+response. 
+
+FreeBusyViewOptionsType Specifies the data to be returned in the response. 
+
+GetUserAvailabilityRequestType Specifies the parameters that are used to obtain user availability 
+information. 
+
+GetUserAvailabilityResponseType Specifies the information that is returned in a response. 
+
+GroupAttendeeConflictData Specifies aggregate conflict information. 
+
+IndividualAttendeeConflictData Specifies a user's or contact's free/busy status. 
+
+MailboxData Specifies details about an attendee. 
+
+SerializableTimeZone Specifies elements that identify time zone information. 
+
+SerializableTimeZoneTime Specifies the start and end dates of daylight saving time. 
+
+Suggestion Specifies a single meeting suggestion. 
+
+SuggestionDayResult Specifies a single day that contains suggested meeting times. 
+
+SuggestionsResponseType Specifies the response that is returned with meeting suggestions. 
+
+SuggestionsViewOptionsType Specifies the options for obtaining meeting suggestion information. 
+
+TooBigGroupAttendeeConflictData Specifies an attendee that was resolved as a distribution list, but the 
+list was too large to expand. 
+
+UnknownAttendeeConflictData Specifies an attendee that cannot be found or used. 
+
+WorkingHours Specifies the time zone settings and working hours for a mailbox user. 
+
+WorkingPeriod Specifies the work days and hours of the mailbox user. 
+
+ 
+
+3.1.4.1.3.1 t:ArrayOfAttendeeConflictData Complex Type 
+
+The ArrayOfAttendeeConflictData complex type specifies an array of conflict data for queried 
+attendees while retrieving suggested meeting times. 
+
+ <xs:complexType name="ArrayOfAttendeeConflictData"> 
+  <xs:choice 
+    maxOccurs="unbounded" 
+    minOccurs="0" 
+  > 
+    <xs:element name="UnknownAttendeeConflictData" 
+      type="t:UnknownAttendeeConflictData" 
+      maxOccurs="1" 
+      minOccurs="1" 
+      nillable="true" 
+     /> 
+
+18 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element name="IndividualAttendeeConflictData" 
+      type="t:IndividualAttendeeConflictData" 
+      maxOccurs="1" 
+      minOccurs="1" 
+      nillable="true" 
+     /> 
+    <xs:element name="TooBigGroupAttendeeConflictData" 
+      type="t:TooBigGroupAttendeeConflictData" 
+     /> 
+    <xs:element name="GroupAttendeeConflictData" 
+      type="t:GroupAttendeeConflictData" 
+      maxOccurs="1" 
+      minOccurs="1" 
+      nillable="true" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfAttendeeConflictData complex type. 
+
+Element Type Description 
+
+UnknownAttendeeConflictData t:UnknownAttendeeConflictData Specifies an attendee that is not 
+(section 3.1.4.1.3.26) recognized (not a user, distribution 
+
+list, or contact).  
+
+Can be present, but the value can 
+be null. If present, MUST only 
+appear once. 
+
+When a meeting request contains 
+an invalid e-mail address, an  
+UnknownAttendeeConflictData 
+element MUST be present with the 
+value null when more than one 
+user is requested. 
+
+IndividualAttendeeConflictData t:IndividualAttendeeConflictData Specifies the attendee's free/busy 
+(section 3.1.4.1.3.17) status for a window of time that 
+
+occurs at the same time as the 
+suggested meeting time. 
+
+Can be present, but the value can 
+be null. If present, MUST appear 
+only once. 
+
+TooBigGroupAttendeeConflictD t:TooBigGroupAttendeeConflictD Specifies an attendee that is a 
+ata ata (section 3.1.4.1.3.25) distribution list that exceeds the 
+
+maximum group size. If the 
+maximum group size is larger than 
+100, the 
+GroupAttendeeConflictData 
+element will contain only the 
+default maximum group size 
+members, and a 
+TooBigGroupAttendeeConflictD
+ata element will not be returned. 
+
+Can be present, but the value can 
+be null. If present, MUST appear 
+only once.  
+
+The default maximum group size is 
+either 20 or 100.<8> 
+
+GroupAttendeeConflictData t:GroupAttendeeConflictData Specifies the conflict information 
+
+19 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+(section 3.1.4.1.3.16) about the number of attendees 
+that are available, the number of 
+attendees that have conflicts, and 
+the number of attendees that do 
+not have free/busy status 
+information in a distribution list. 
+
+If the distribution list is larger than 
+the default maximum group size, 
+the server MUST return a 
+TooBigGroupAttendeeConflictD
+ata element for the distribution 
+list. 
+
+If the maximum group size is 
+larger than 100, the 
+GroupAttendeeConflictData 
+element will contain only the 
+default maximum group size 
+members, and a 
+TooBigGroupAttendeeConflictD
+ata element will not be returned. 
+
+Can be present, but the value can 
+be null. If present, MUST appear 
+only once. 
+
+ 
+
+3.1.4.1.3.2 t:ArrayOfCalendarEvent Complex Type 
+
+The ArrayOfCalendarEvent complex type specifies an array of calendar events for the attendee. 
+
+ <xs:complexType name="ArrayOfCalendarEvent"> 
+  <xs:sequence> 
+    <xs:element name="CalendarEvent" 
+      type="t:CalendarEvent" 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfCalendarEvent complex type. 
+
+Element name Type Description 
+
+CalendarEvent t:CalendarEvent (section 3.1.4.1.3.9) Specifies a unique calendar time occurance. 
+
+Can be present. 
+
+ 
+
+3.1.4.1.3.3 m:ArrayOfFreeBusyResponse Complex Type 
+
+The ArrayOfFreeBusyResponse complex type contains the requested users' availability information. 
+The order of the individual elements of this array MUST match the order of the users in the 
+GetUserAvailabilityRequest element (section 3.1.4.1.2.2). 
+
+ <xs:complexType name="ArrayOfFreeBusyResponse"> 
+
+20 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:sequence> 
+    <xs:element name="FreeBusyResponse" 
+      type="m:FreeBusyResponseType" 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfFreeBusyResponse complex type. 
+
+Element name Type Description 
+
+FreeBusyResponse m:FreeBusyResponseType (section Specifies the free/busy status information for 
+3.1.4.1.3.11) a single mailbox user and the response status. 
+
+ 
+
+3.1.4.1.3.4 t:ArrayOfMailboxData Complex Type 
+
+The ArrayOfMailboxData complex type contains a list of mailboxes to query for availability 
+information. 
+
+ <xs:complexType name="ArrayOfMailboxData"> 
+  <xs:sequence> 
+    <xs:element name="MailboxData" 
+      type="t:MailboxData" 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+      nillable="true" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfMailboxData complex type. 
+
+Element 
+name Type Description 
+
+MailboxData t:MailboxData Specifies a mailbox. While the maxOccurs attribute is unbounded, 
+(section 3.1.4.1.3.18) the GetUserAvailability operation restricts the total number of 
+
+MailboxData elements to 100 entries by default. 
+
+Can be present, but the value can be null. 
+
+ 
+
+3.1.4.1.3.5 t:ArrayOfSuggestion Complex Type 
+
+The ArrayOfSuggestion complex type specifies an array of meeting suggestions in an Availability 
+response. 
+
+ <xs:complexType name="ArrayOfSuggestion"> 
+  <xs:sequence> 
+    <xs:element name="Suggestion" 
+      type="t:Suggestion" 
+      maxOccurs="unbounded" 
+
+21 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      minOccurs="0" 
+      nillable="true" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfSuggestion complex type. 
+
+Element 
+name Type Description 
+
+Suggestion t:Suggestion Specifies a meeting suggestion. While the maxOccurs attribute is 
+(section unbounded, the GetUserAvailability operation restricts the total 
+3.1.4.1.3.21) number of Suggestion elements to 48 entries by default. 
+
+Can be present, but the value can be null. 
+
+ 
+
+3.1.4.1.3.6 t:ArrayOfSuggestionDayResult Complex Type 
+
+The ArrayOfSuggestionDayResult complex type specifies an array of meeting suggestions 
+organized by date. 
+
+ <xs:complexType name="ArrayOfSuggestionDayResult"> 
+  <xs:sequence> 
+    <xs:element name="SuggestionDayResult" 
+      type="t:SuggestionDayResult" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfSuggestionDayResult complex type. 
+
+Element name Type Description 
+
+SuggestionDayResult t:SuggestionDayResult (section Specifies zero or more 
+3.1.4.1.3.22) SuggestionDayResult entities. 
+
+Can be present. 
+
+ 
+
+3.1.4.1.3.7 t:ArrayOfWorkingPeriod Complex Type 
+
+The ArrayOfWorkingPeriod complex type specifies the working period information for the mailbox 
+user. 
+
+ <xs:complexType name="ArrayOfWorkingPeriod"> 
+  <xs:sequence> 
+    <xs:element name="WorkingPeriod" 
+      type="t:WorkingPeriod" 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+22 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table lists the child elements of the ArrayOfWorkingPeriod complex type. 
+
+Element name Type Description 
+
+WorkingPeriod t:WorkingPeriod (section Specifies the workweek days and hours of the 
+3.1.4.1.3.28) mailbox user. 
+
+ 
+
+3.1.4.1.3.8 t:AttendeeConflictData Complex Type 
+
+The AttendeeConflictData complex type specifies the abstract base type that is used for the 
+UnknownAttendeeConflictData (section 3.1.4.1.3.26), TooBigGroupAttendeeConflictData 
+(section 3.1.4.1.3.25), IndividualAttendeeConflictData (section 3.1.4.1.3.17), and 
+GroupAttendeeConflictData (section 3.1.4.1.3.16) complex types. 
+
+ <xs:complexType name="AttendeeConflictData" 
+  abstract="true" 
+ /> 
+ 
+
+3.1.4.1.3.9 t:CalendarEvent Complex Type 
+
+The CalendarEvent complex type represents an item in the calendar. 
+
+ <xs:complexType name="CalendarEvent"> 
+  <xs:sequence> 
+    <xs:element name="StartTime" 
+      type="xs:dateTime" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="EndTime" 
+      type="xs:dateTime" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="BusyType" 
+      type="t:LegacyFreeBusyType" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="CalendarEventDetails" 
+      type="t:CalendarEventDetails" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the CalendarEvent complex type. 
+
+Element name Type Description 
+
+StartTime xs:dateTime [XMLSCHEMA2] Specifies the start of a calendar event. 
+
+MUST be present. 
+
+EndTime xs:dateTime Specifies the end of a calendar event. 
+
+MUST be present. 
+
+23 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+BusyType t:LegacyFreeBusyType Specifies the free/busy status set for the calendar 
+([MS-OXWSCDATA] section event. 
+2.2.5.17) MUST be present. 
+
+CalendarEventDetails t:CalendarEventDetails Specifies additional information for a calendar event. 
+(section 3.1.4.1.3.10) Can be present. 
+
+The level of detail provided by this element depends 
+on the permissions granted to the requester. This 
+element SHOULD be included when the 
+FreeBusyViewType element (section 3.1.4.1.4.1) is 
+set to "Detailed", or "DetailedMerged". 
+
+ 
+
+3.1.4.1.3.10 t:CalendarEventDetails Complex Type 
+
+The CalendarEventDetails complex type specifies additional information about a calendar event. 
+
+ <xs:complexType name="CalendarEventDetails"> 
+  <xs:sequence> 
+    <xs:element name="ID" 
+      type="xs:string" 
+      minOccurs="0" 
+      maxOccurs="1" 
+     /> 
+    <xs:element name="Subject" 
+      type="xs:string" 
+      minOccurs="0" 
+      maxOccurs="1" 
+     /> 
+    <xs:element name="Location" 
+      type="xs:string" 
+      minOccurs="0" 
+      maxOccurs="1" 
+     /> 
+    <xs:element name="IsMeeting" 
+      type="xs:boolean" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="IsRecurring" 
+      type="xs:boolean" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="IsException" 
+      type="xs:boolean" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="IsReminderSet" 
+      type="xs:boolean" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="IsPrivate" 
+      type="xs:boolean" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+24 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+The following table lists the child elements of the CalendarEventDetails complex type. 
+
+Element name Type Description 
+
+ID xs:string Specifies the entry ID of the calendar item. 
+[XMLSCHEMA2] Can be present. 
+
+Subject xs:string Specifies the subject of the calendar item. 
+
+Can be present. 
+
+Location xs:string Specifies the location field of the calendar item. 
+
+Can be present. 
+
+IsMeeting xs:boolean Specifies whether the calendar event is a meeting or an 
+[XMLSCHEMA2] appointment. 
+
+MUST be present and can only occur once. 
+
+IsRecurring xs:boolean Specifies whether the calendar event is an instance of a recurring 
+calendar item or a single calendar item. 
+
+MUST be present, and can only occur once. 
+
+IsException xs:boolean Specifies whether an instance of a recurring calendar item is 
+changed from the master calendar. 
+
+MUST be present, and can only occur once. 
+
+IsReminderSet xs:boolean Specifies whether a reminder has been set for the calendar event. 
+
+MUST be present, and can only occur once. 
+
+IsPrivate xs:boolean Specifies whether the calendar item is private. 
+
+MUST be present, and can only occur once. 
+
+The following restrictions apply to the CalendarEventDetails complex type: 
+
+1. All the child elements are listed in the sequence in which they occur. 
+
+2. If the IsPrivate element is set to "TRUE", the required elements (IsMeeting, IsRecurring, 
+IsException, IsReminderSet, IsPrivate) MUST be returned and the optional elements (ID, 
+Subject, Location) MUST NOT be returned. If the IsPrivate element is set to "FALSE", the 
+required elements MUST be returned and the optional elements can be present. 
+
+The following table maps the information in the CalendarEvent complex type to properties on a 
+calendar item, as specified in [MS-OXOCAL]. 
+
+Element Property Flags used 
+
+ID PidTagEntryId ([MS-OXPROPS] section N/A 
+2.684) 
+
+Subject PidTagSubject ([MS-OXPROPS] section N/A 
+2.1035)  
+
+Location PidLidLocation ([MS-OXOCAL] section N/A 
+2.2.1.4) 
+
+IsMeeting PidLidAppointmentStateFlags ([MS- Flag used is asfMeeting. 
+OXOCAL] section 2.2.1.10) 
+
+25 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Property Flags used 
+
+IsRecurring PidLidRecurring ([MS-OXOCAL] section N/A 
+2.2.1.12)  
+
+IsException PidLidIsException ([MS-OXOCAL] section N/A 
+2.2.1.35)  
+
+IsReminderSet PidLidReminderSet ([MS-OXORMDR] N/A 
+section 2.2.1.1)  
+
+IsPrivate PidTagSensitivity ([MS-OXPROPS] section If the PidTagSensitivity property is set to 
+2.1012) 0x00000002, the IsPrivate element returns 
+
+"TRUE". 
+
+ 
+
+3.1.4.1.3.11 m:FreeBusyResponseType Complex Type 
+
+The FreeBusyResponseType complex type specifies the returned response from the service. 
+
+ <xs:complexType name="FreeBusyResponseType"> 
+  <xs:sequence> 
+    <xs:element name="ResponseMessage" 
+      type="m:ResponseMessageType" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="FreeBusyView" 
+      type="t:FreeBusyView" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the FreeBusyResponseType complex type. 
+
+Element name Type Description 
+
+ResponseMessage m:ResponseMessageType ([MS-OXWSCDATA] Specifies descriptive information about 
+section 2.2.4.65) the response status. 
+
+Can be present. 
+
+FreeBusyView t:FreeBusyView (section 3.1.4.1.3.12) Specifies availability information for a 
+specific user. 
+
+Can be present. 
+
+ 
+
+3.1.4.1.3.12 t:FreeBusyView Complex Type 
+
+The FreeBusyView complex type specifies the free/busy status information that is returned in the 
+response. 
+
+ <xs:complexType name="FreeBusyView"> 
+  <xs:sequence> 
+    <xs:element name="FreeBusyViewType" 
+      type="t:FreeBusyViewType" 
+      maxOccurs="1" 
+      minOccurs="1" 
+
+26 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+     /> 
+    <xs:element name="MergedFreeBusy" 
+      type="xs:string" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="CalendarEventArray" 
+      type="t:ArrayOfCalendarEvent" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="WorkingHours" 
+      type="t:WorkingHours" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the FreeBusyView complex type. 
+
+Element name Type Description 
+
+FreeBusyViewType t:FreeBusyViewType Specifies the type of the free/busy status information 
+(section 3.1.4.1.4.1)  that is returned in the response. 
+
+MUST be present. 
+
+MergedFreeBusy xs:string [XMLSCHEMA2] Specifies the Merged Free/Busy information. 
+
+Can be present but MUST be present if there is 
+free/busy information in the response and one of the 
+following was specified in the RequestedView element 
+(section 3.1.4.1.3.13) of the request: 
+
+ MergedOnly 
+
+ FreeBusyMerged 
+
+ DetailedMerged 
+
+CalendarEventArray t:ArrayOfCalendarEvent  Specifies the array of calendar appointments in the 
+(section 3.1.4.1.3.2) mailbox. 
+
+Can be present, but MUST be present if there is 
+free/busy status information in the response and one of 
+the following was specified in the RequestedView 
+element (section 3.1.4.1.3.13) of the request: 
+
+ FreeBusy 
+
+ FreeBusyMerged 
+
+ DetailedMerged 
+
+WorkingHours t:WorkingHours (section Specifies the time zone settings and working hours 
+3.1.4.1.3.27) for the requested mailbox user. 
+
+Can be present. 
+
+ 
+
+3.1.4.1.3.13 t:FreeBusyViewOptionsType Complex Type 
+
+27 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The FreeBusyViewOptionsType complex type indicates what data is to be returned in the response. 
+
+ <xs:complexType name="FreeBusyViewOptionsType"> 
+  <xs:sequence> 
+    <xs:element name="TimeWindow" 
+      type="t:Duration" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="MergedFreeBusyIntervalInMinutes" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="RequestedView" 
+      type="t:FreeBusyViewType" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the FreeBusyViewOptionsType complex type. 
+
+Element name Type Description 
+
+TimeWindow t:Duration ([MS- Specifies the time span for the queried 
+OXWSCDATA] section user's availability. 
+2.2.4.28) MUST occur once. 
+
+Maximum time period is 42 or 62 
+days.<9>  
+
+MergedFreeBusyIntervalInMinutes xs:int [XMLSCHEMA2] Specifies the time difference between 
+two successive slots in the Merged 
+Free/Busy view. 
+
+Can be present. 
+
+Minimum value = 5, Maximum value = 
+1440 (represents a day). 
+
+Default is 30. 
+
+RequestedView t:FreeBusyViewType Specifies the type of calendar 
+(section 3.1.4.1.3.12) information that a client requests. 
+
+Can be present, but if it is present it 
+MUST be a string with one of the 
+following values: 
+
+ MergedOnly  
+
+ FreeBusy  
+
+ FreeBusyMerged  
+
+ Detailed  
+
+ DetailedMerged  
+
+MUST NOT be a string with a value of 
+"None". 
+
+ 
+
+28 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.3.14 m:GetUserAvailabilityRequestType Complex Type 
+
+The GetUserAvailabilityRequestType complex type specifies the arguments that are used to obtain 
+user availability information. 
+
+ <xs:complexType name="GetUserAvailabilityRequestType"> 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          ref="t:TimeZone" 
+         /> 
+        <xs:element name="MailboxDataArray" 
+          type="t:ArrayOfMailboxData" 
+         /> 
+        <xs:element 
+          maxOccurs="1" 
+          minOccurs="0" 
+          ref="t:FreeBusyViewOptions" 
+         /> 
+        <xs:element 
+          maxOccurs="1" 
+          minOccurs="0" 
+          ref="t:SuggestionsViewOptions" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetUserAvailabilityRequestType complex type. 
+
+Element name Type Description 
+
+TimeZone t:SerializableTimeZone (section Specifies elements that identify time zone 
+3.1.4.1.3.19) information. This element also contains 
+
+information about the transition between 
+standard time and daylight saving time. 
+
+All times that are returned in the 
+GetUserAvailability operation response 
+will be in this time zone. 
+
+MUST be present. 
+
+MailboxDataArray t:ArrayOfMailboxData  (section Specifies a list of mailboxes to query for 
+3.1.4.1.3.4) availability information. 
+
+MUST be present. 
+
+FreeBusyViewOptions t:FreeBusyViewOptionsType Specifies the type of free/busy status 
+(section 3.1.4.1.3.13) information that is returned in the 
+
+response. 
+
+Can be present. 
+
+SuggestionsViewOptions t:SuggestionsViewOptionsType Specifies the options that obtain meeting 
+(section 3.1.4.1.3.24) suggestion information. 
+
+Can be present. 
+
+ 
+
+29 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.3.15 m:GetUserAvailabilityResponseType Complex Type 
+
+The GetUserAvailabilityResponseType complex type specifies which information is returned in a 
+GetUserAvailability operation response. 
+
+ <xs:complexType name="GetUserAvailabilityResponseType"> 
+  <xs:sequence> 
+    <xs:element name="FreeBusyResponseArray" 
+      type="m:ArrayOfFreeBusyResponse" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="SuggestionResponse" 
+      type="m:SuggestionsResponseType" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetUserAvailabilityResponseType complex type. 
+
+Element name Type Description 
+
+FreeBusyResponseArray m:ArrayOfFreeBusyResponse Specifies the requested user's availability 
+(section 3.1.4.1.3.3) information and the response status. 
+
+Can be present. MUST be present if the 
+FreeBusyViewOptions element is present 
+in the request. 
+
+SuggestionResponse m:SuggestionsResponseType Specifies the suggested data for requested 
+(section 3.1.4.1.3.23) meeting suggestions. 
+
+Can be present. MUST be present if the 
+SuggestionsViewOptions element is 
+present in the request. 
+
+ 
+
+3.1.4.1.3.16 t:GroupAttendeeConflictData Complex Type 
+
+The GroupAttendeeConflictData complex type specifies aggregate conflict information about the 
+number of users who are available, the number of users who have conflicts, and the number of users 
+who do not have availability information in a distribution list for a suggested meeting time. 
+
+ <xs:complexType name="GroupAttendeeConflictData"> 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="t:AttendeeConflictData" 
+    > 
+      <xs:sequence> 
+        <xs:element name="NumberOfMembers" 
+          type="xs:int" 
+          maxOccurs="1" 
+          minOccurs="1" 
+         /> 
+        <xs:element name="NumberOfMembersAvailable" 
+          type="xs:int" 
+          maxOccurs="1" 
+          minOccurs="1" 
+
+30 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+         /> 
+        <xs:element name="NumberOfMembersWithConflict" 
+          type="xs:int" 
+          maxOccurs="1" 
+          minOccurs="1" 
+         /> 
+        <xs:element name="NumberOfMembersWithNoData" 
+          type="xs:int" 
+          maxOccurs="1" 
+          minOccurs="1" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GroupAttendeeConflictData complex type. 
+
+Element name Type Description 
+
+NumberOfMembers xs:int Specifies the number of attendees in the distribution list. 
+[XMLSCHEMA2] If the number of members in the distribution list exceeds 
+
+100, the GroupAttendeeConflictData element will only 
+return information for the first 100 members. The value 
+of the NumberOfMembersAvailable, 
+NumberOfMembersWithConflict, and 
+NumberOfMembersWithNoData elements MUST equal 
+the value of this element. 
+
+MUST be present. 
+
+ 
+
+NumberOfMembersAvailable xs:int Specifies the number of attendees who are available. 
+
+MUST be present. The maximum value is 100. 
+
+NumberOfMembersWithConflict xs:int Specifies the number of attendees who have conflicts. 
+
+MUST be present. The maximum value is 100. 
+
+NumberOfMembersWithNoData xs:int Specifies the number of attendees for which data could 
+not be retrieved. 
+
+MUST be present. The maximum value is 100. 
+
+ 
+
+3.1.4.1.3.17 t:IndividualAttendeeConflictData Complex Type 
+
+The IndividualAttendeeConflictData complex type specifies a user's or contact's free/busy status 
+for a time window that occurs at the same time as the suggested meeting time that is identified in the 
+Suggestion element. 
+
+ <xs:complexType name="IndividualAttendeeConflictData"> 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="t:AttendeeConflictData" 
+    > 
+      <xs:sequence> 
+        <xs:element name="BusyType" 
+          type="t:LegacyFreeBusyType" 
+          maxOccurs="1" 
+
+31 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          minOccurs="1" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the IndividualAttendeeConflictData complex type. 
+
+Element 
+name Type Description 
+
+BusyType t:LegacyFreeBusyType ([MS-OXWSCDATA] Specifies the free/busy status of an attendee for 
+section 2.2.2.15) a suggested meeting time. 
+
+MUST be present. 
+
+  
+
+ 
+
+3.1.4.1.3.18 t:MailboxData Complex Type 
+
+The MailboxData complex type specifies details about an attendee. 
+
+ <xs:complexType name="MailxboxData"> 
+  <xs:sequence> 
+    <xs:element name="Email" 
+      type="t:EmailAddress" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="AttendeeType" 
+      type="t:MeetingAttendeeType" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="ExcludeConflicts" 
+      type="xs:boolean" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the MailboxData complex type. 
+
+Element name Type Description 
+
+Email t:EmailAddress ([MS- Specifies an attendee. 
+OXWSCDATA] section 2.2.4.30) MUST be present. 
+
+AttendeeType t:MeetingAttendeeType (section Specifies the type of attendee identified in the Email 
+3.1.4.1.4.2) element. This element is used in requests for 
+
+meeting suggestions. 
+
+MUST be present. 
+
+ExcludeConflicts xs:boolean [XMLSCHEMA2] Specifies whether to return suggested times for 
+calendar times that conflict among the attendees. 
+
+32 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+This is used to calculate meeting suggestions. 
+
+Can be present. 
+
+ 
+
+3.1.4.1.3.19 t:SerializableTimeZone Complex Type 
+
+The SerializableTimeZone complex type contains elements that identify time zone information. This 
+element also contains information about the transition between standard time and daylight saving 
+time. The TimeZone element in the GetUserAvailabilityRequest WSDL message represents the 
+time zone in which the DateTime values in the request are specified. The DateTime values that are 
+returned by this protocol are also in this time zone. The exception is that working hours in a response 
+are returned in the time zone of the attendee. 
+
+ <xs:complexType name="SerializableTimeZone"> 
+  <xs:sequence> 
+    <xs:element name="Bias" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="StandardTime" 
+      type="t:SerializableTimeZoneTime" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="DaylightTime" 
+      type="t:SerializableTimeZoneTime" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SerializableTimeZone complex type. 
+
+Element 
+name Type Description 
+
+Bias xs:int [XMLSCHEMA2] Represents the offset from UTC for standard and daylight 
+saving time. This value is in minutes. Values can range 
+from -1440 to 1440. 
+
+MUST be present, and can occur only once. 
+
+StandardTime t:SerializableTimeZoneTime Represents an offset from the time relative to UTC that is 
+(section 3.1.4.1.3.20) represented by the Bias element. This element also 
+
+contains information about the transition to standard time 
+from daylight saving time in countries/regions where 
+daylight saving time is observed. 
+
+MUST be present. 
+
+DaylightTime t:SerializableTimeZoneTime Represents an offset from the time relative to UTC that is 
+(section 3.1.4.1.3.20) represented by the Bias element in countries/regions 
+
+where daylight saving time is observed. This element also 
+contains information about when the transition to daylight 
+saving time from standard time occurs. 
+
+MUST be present. 
+
+33 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.1.3.20 t:SerializableTimeZoneTime Complex Type 
+
+The SerializableTimeZoneTime complex type specifies a time and a time zone for a meeting 
+suggestion. 
+
+ <xs:complexType name="SerializableTimeZoneTime"> 
+  <xs:sequence> 
+    <xs:element name="Bias" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="Time" 
+      type="xs:string" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="DayOrder" 
+      type="xs:short" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="Month" 
+      type="xs:short" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="DayOfWeek" 
+      type="t:DayOfWeekType" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="Year" 
+      type="xs:string" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SerializableTimeZoneTime complex type. 
+
+Element 
+name Type Description 
+
+Bias xs:int [XMLSCHEMA2] Represents the offset from UTC for standard and daylight saving 
+time. This value is in minutes. Values can range from -1440 to 
+1440. 
+
+MUST be present, and can only occur once. 
+
+ 
+
+Time xs:string [XMLSCHEMA2] Represents the transition of the time of day to and from standard 
+time and daylight saving time. 
+
+MUST be present, and can only occur once. 
+
+Format: 
+
+hh:mm:ss 
+
+hh: hours ranging from 0 to 23. 
+
+mm: minutes ranging from 0 to 59. 
+
+34 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element 
+name Type Description 
+
+ss: seconds ranging from 0 to 59.  
+
+ 
+
+DayOrder xs:short [XMLSCHEMA2] For relative time zones, represents the nth occurrence of the day 
+that is specified in the DayOfWeek element that represents the 
+date of transition from and to standard time and daylight saving 
+time. 
+
+For dynamic time zones, this represents the actual day of the 
+month. 
+
+MUST be present and can only occur once. 
+
+Valid values for time zones with transitions are between 1-5 or 1-
+31. 
+
+For time zones that do not have transitions, 0 (zero) SHOULD be 
+used. 
+
+ 
+
+Month xs:short Represents the transition month of the year to and from standard 
+time and daylight saving time. 
+
+MUST be present and can occur only once. 
+
+Valid values for time zones that have transitions: 1-12, where 1 
+represents January and 12 represents December. 
+
+For time zones that do not have transitions, 0 (zero) SHOULD be 
+used. 
+
+DayOfWeek t:DayOfWeekType ([MS- Represents the day of the week when the transition to and from 
+OXWSCDATA] section standard time and daylight saving time occurs. 
+2.2.5.5) The DayOfWeek element MUST NOT contain the "Day", 
+
+"WeekDay", or "WeekendDay" values specified in the 
+t:DayOfWeekType simple type. 
+
+MUST be present, and can only occur once. 
+
+Year xs:string Defines a time zone that changes, depending on the year. 
+
+Can be present and can occur only once. 
+
+Minimum: 1601 
+
+Maximum: 4500  
+
+When the Year element is present in the SerializableTimeZoneTime complex type (for dynamic 
+time zones), the value of the DayOrder element MUST be between 1 and 31. When the Year element 
+is not present (for relative time zones), the value of the DayOrder element MUST be between 1 and 
+5, where 1 represents the Sunday of the first week of the month and 5 represents the Sunday of the 
+last week of the month. 
+
+3.1.4.1.3.21 t:Suggestion Complex Type 
+
+The Suggestion complex type specifies a single meeting suggestion in a GetUserAvailability 
+operation response. 
+
+ <xs:complexType name="Suggestion"> 
+  <xs:sequence> 
+    <xs:element name="MeetingTime" 
+      type="xs:dateTime" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="IsWorkTime" 
+      type="xs:boolean" 
+
+35 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="SuggestionQuality" 
+      type="t:SuggestionQuality" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="AttendeeConflictDataArray" 
+      type="t:ArrayOfAttendeeConflictData" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the Suggestion complex type. 
+
+Element name Type Description 
+
+MeetingTime xs:dateTime [XMLSCHEMA2] Represents a suggested meeting time. 
+
+MUST be present. 
+
+ 
+
+IsWorkTime xs:boolean [XMLSCHEMA2] Represents whether the suggested 
+meeting time occurs during the 
+scheduled working hours of the 
+organizer. 
+
+MUST be present. 
+
+ 
+
+SuggestionQuality t:SuggestionQuality (section Represents the quality of the 
+3.1.4.1.4.3) suggested meeting time. 
+
+SHOULD<10> be present. 
+
+AttendeeConflictDataArray t:ArrayOfAttendeeConflictData Contains an array of conflicts between 
+(section 3.1.4.1.3.1) attendees and the suggested meeting 
+
+time. 
+
+Can be present. 
+
+ 
+
+3.1.4.1.3.22 t:SuggestionDayResult Complex Type 
+
+The SuggestionDayResult complex type specifies a single day that contains suggested meeting 
+times in a GetUserAvailability operation response. 
+
+ <xs:complexType name="SuggestionDayResult"> 
+  <xs:sequence> 
+    <xs:element name="Date" 
+      type="xs:dateTime" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="DayQuality" 
+      type="t:SuggestionQuality" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="SuggestionArray" 
+
+36 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      type="t:ArrayOfSuggestion" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SuggestionDayResult complex type. 
+
+Element name Type Description 
+
+Date xs:dateTime [XMLSCHEMA2] Specifies the date that contains the suggested 
+meeting times. 
+
+MUST be present. 
+
+ 
+
+DayQuality t:SuggestionQuality (section Specifies the quality of the best suggestion for the 
+3.1.4.1.4.3) day. 
+
+MUST be present. 
+
+SuggestionArray t:ArrayOfSuggestion (section Contains an array of meeting suggestions. 
+3.1.4.1.3.5) SHOULD<11> be present. 
+
+ 
+
+3.1.4.1.3.23 m:SuggestionsResponseType Complex Type 
+
+The SuggestionsResponseType complex type specifies the response that is returned from the 
+service for meeting suggestions. 
+
+ <xs:complexType name="SuggestionsResponseType"> 
+  <xs:sequence> 
+    <xs:element name="ResponseMessage" 
+      type="m:ResponseMessageType" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="SuggestionDayResultArray" 
+      type="t:ArrayOfSuggestionDayResult" 
+      minOccurs="0" 
+      maxOccurs="1" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SuggestionsResponseType complex type. 
+
+Element name Type Description 
+
+ResponseMessage m:ResponseMessageType ([MS- Provides descriptive 
+OXWSCDATA] section 2.2.4.65) information about the response 
+
+status.  
+
+Can be present. 
+
+SuggestionDayResultArray t:ArrayOfSuggestionDayResult (section Contains an array of meeting 
+3.1.4.1.3.6) suggestions organized by date. 
+
+Can be present. 
+
+37 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.1.3.24 t:SuggestionsViewOptionsType Complex Type 
+
+The SuggestionsViewOptionsType complex type specifies the options for obtaining meeting 
+suggestion information. 
+
+ <xs:complexType name="SuggestionsViewOptionsType"> 
+  <xs:sequence> 
+    <xs:element name="GoodThreshold" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="MaximumResultsByDay" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="MaximumNonWorkHourResultsByDay" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="MeetingDurationInMinutes" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="MinimumSuggestionQuality" 
+      type="t:SuggestionQuality" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="DetailedSuggestionsWindow" 
+      type="t:Duration" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="CurrentMeetingTime" 
+      type="xs:dateTime" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="GlobalObjectId" 
+      type="xs:string" 
+      maxOccurs="1" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SuggestionsViewOptionsType complex type. 
+
+Element name Type Description 
+
+GoodThreshold xs:int [XMLSCHEMA2] Determines whether the suggestion is 
+considered Good or Fair. The suggested 
+meeting time is considered Excellent if 
+there are no conflicts. The suggested 
+meeting time is considered Poor if the 
+percentage of conflicts is greater than 50 
+percent. The suggested meeting time is 
+considered Good if the percentage of 
+
+38 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+conflicts is less than the GoodThreshold 
+element value. The suggested meeting 
+time is considered Fair if the percentage of 
+conflicts is greater than the 
+GoodThreshold element value, but less 
+than or equal to 50 percent. 
+
+Can be present. 
+
+If present, the value MUST be an integer 
+>= 1 and <= 49. 
+
+The default value is 25. 
+
+MaximumResultsByDay xs:int Specifies the number of suggested meeting 
+times per day that are returned in the 
+response. 
+
+Can be present. If present, MUST be an 
+integer <= 48. If the value is <= 0, MUST 
+return an empty SuggestionArray 
+element in the response. 
+
+The default value is 24. 
+
+MaximumNonWorkHourResultsByDay xs:int Specifies the number of suggested results 
+for meeting times outside the regular 
+working hours of the organizer per day. 
+
+Can be present; if present, MUST be an 
+integer >= 1 and <= 48.  
+
+The default value is 0 (zero). 
+
+MeetingDurationInMinutes xs:int Specifies the length in minutes of the 
+meeting to be suggested. 
+
+Can be present. If present, MUST be an int 
+>= 1 and <= 1440. 
+
+The default value is 30. 
+
+MinimumSuggestionQuality t:SuggestionQuality Specifies the minimum quality of meeting 
+(section 3.1.4.1.4.3) suggestions that are to be returned in the 
+
+response. 
+
+Can be present. 
+
+The default value is "Fair". 
+
+DetailedSuggestionsWindow t:Duration ([MS- Specifies the time span that is queried for 
+OXWSCDATA] section detailed information about suggested 
+2.2.4.28) meeting times. 
+
+Though the element is specified as 
+minOccurs = 0, the 
+DetailedSuggestionsWindow element 
+MUST be present. 
+
+StartTime and EndTime fields have dates 
+only and no time information present in the 
+DateTime data type. 
+
+CurrentMeetingTime xs:dateTime Represents the start time of a meeting that 
+[XMLSCHEMA2] you want to update with the suggested 
+
+meeting time results. 
+
+Can be present. 
+
+GlobalObjectId xs:string Represents the global object ID (the 
+[XMLSCHEMA2] PidLidGlobalObjectId property, as 
+
+specified in [MS-OXOCAL] section 2.2.1.27) 
+of the calendar item that is to be ignored 
+
+39 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+while calculating suggestions. 
+
+Can be present. 
+
+ 
+
+3.1.4.1.3.25 t:TooBigGroupAttendeeConflictData Complex Type 
+
+The TooBigGroupAttendeeConflictData complex type specifies an attendee that was resolved as a 
+distribution list, but the distribution list was too large to expand. 
+
+ <xs:complexType name="TooBigGroupAttendeeConflictData"> 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="t:AttendeeConflictData" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The TooBigGroupAttendeeConflictData complex type extends the AttendeeConflictData complex 
+type, as specified in section 3.1.4.1.3.8.  
+
+3.1.4.1.3.26 t:UnknownAttendeeConflictData Complex Type 
+
+The UnknownAttendeeConflictData complex type specifies that an attendee cannot be found in the 
+directory, or that the attendee is not a user, distribution list, or contact to be used in a suggested 
+meeting time response. 
+
+ <xs:complexType name="UnknownAttendeeConflictData"> 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="t:AttendeeConflictData" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The UnknownAttendeeConflictData complex type extends the AttendeeConflictData complex 
+type, as specified in section 3.1.4.1.3.8. 
+
+3.1.4.1.3.27 t:WorkingHours Complex Type 
+
+The WorkingHours complex type specifies the time zone settings and working hours for the 
+requested mailbox user. 
+
+ <xs:complexType name="WorkingHours"> 
+  <xs:sequence> 
+    <xs:element name="TimeZone" 
+      type="t:SerializableTimeZone" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="WorkingPeriodArray" 
+
+40 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      type="t:ArrayOfWorkingPeriod" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the WorkingHours complex type. 
+
+Element name Type Description 
+
+TimeZone t:SerializableTimeZone (section Contains information that identifies the time 
+3.1.4.1.3.19) zone information. MUST be present. 
+
+WorkingPeriodArray t:ArrayOfWorkingPeriod (section Contains working period information for the 
+3.1.4.1.3.7) mailbox user. MUST be present. 
+
+ 
+
+3.1.4.1.3.28 t:WorkingPeriod Complex Type 
+
+The WorkingPeriod complex type contains the work week days and hours of the mailbox user. 
+
+ <xs:complexType name="WorkingPeriod"> 
+  <xs:sequence> 
+    <xs:element name="DayOfWeek" 
+      type="t:DaysOfWeekType" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="StartTimeInMinutes" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+    <xs:element name="EndTimeInMinutes" 
+      type="xs:int" 
+      maxOccurs="1" 
+      minOccurs="1" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the WorkingPeriod complex type. 
+
+Element name Type Description 
+
+DayOfWeek t:DaysOfWeekType ([MS- Contains the list of working days that are scheduled 
+OXWSCDATA] section 2.2.5.6) for the mailbox user. MUST be present. 
+
+StartTimeInMinutes xs:int [XMLSCHEMA2] Represents the start of the working day for a 
+mailbox user. Minutes are counted starting from 12 
+A.M. MUST be present. 
+
+EndTimeInMinutes xs:int Represents the end of the working day for a 
+mailbox user. Minutes are counted starting from 12 
+A.M. MUST be present. 
+
+ 
+
+41 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.4 Simple Types 
+
+The following table summarizes the XML schema simple type definitions that are specific to this 
+operation. 
+
+Simple type Description 
+
+FreeBusyViewType Identifies the type of free/busy status view information in the request to or response 
+from the Availability Web service. 
+
+MeetingAttendeeType Designates an attendee's role in the meeting. 
+
+SugestionQuality Specifies the quality level of the suggested meeting time. 
+
+ 
+
+3.1.4.1.4.1 t:FreeBusyViewType Simple Type 
+
+The FreeBusyViewType simple type specifies the type of requested free/busy status information 
+that is returned in a response when it occurs as an instance in the context of a RequestedView 
+element. This simple type specifies the type of free/busy status information that is actually returned in 
+a response when it occurs as an instance in the context of a FreeBusyView element. 
+
+ <xs:simpleType name="FreeBusyViewType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="None" 
+     /> 
+    <xs:enumeration 
+      value="MergedOnly" 
+     /> 
+    <xs:enumeration 
+      value="FreeBusy" 
+     /> 
+    <xs:enumeration 
+      value="FreeBusyMerged" 
+     /> 
+    <xs:enumeration 
+      value="Detailed" 
+     /> 
+    <xs:enumeration 
+      value="DetailedMerged" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the FreeBusyViewType simple type. 
+
+Value Meaning 
+
+None Specifies that no free/busy status information is returned. This value is not valid for 
+requests. This value is valid for responses. 
+
+MergedOnly Specifies that merged free/busy status information is requested or returned. 
+
+FreeBusy Specifies that the response contains status information: Free, Busy, Tentative, and OOF. 
+This also includes the start/end times of the appointments.  
+
+FreeBusyMerged Specifies that the response contains all the properties in specified by the "FreeBusy" value 
+
+42 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+with merged free/busy status information.  
+
+Detailed Specifies that the response contains status information: Free, Busy, Tentative, and OOF; the 
+start/end times of the appointments; and various properties of the appointment such as 
+subject, location, and importance. This requested view will return the maximum amount of 
+information for which the requesting user is privileged.  
+
+DetailedMerged Specifies that the response contains all the properties in the "Detailed" value with merged 
+free/busy status information. This requested view will return the maximum amount of 
+information for which the requesting user is privileged along with merged free/busy status 
+information. 
+
+Merged Free/Busy is a string representation of the Calendar folder for the requested duration. The 
+"MergedFreeBusyIntervalInMinutes" value that is specified in the request is used to break up the 
+requested duration into separate blocks, the size for which is equal to the "MergedFreeBusyInterval" 
+value. The blocks contain a number that represents the free/busy status of the calendar. 
+
+Number Free/busy status 
+
+0 Free  
+
+1 Tentative  
+
+2 Busy  
+
+3 OOF  
+
+4 No data (indicates that the requester does not have permissions to view free/busy data) 
+
+If the block has overlapping appointments, the following precedence order is used (from high to low): 
+OOF, Busy, Tentative, Free. 
+
+The mailbox owner can grant users specific free/busy status view permissions. This can be done by 
+setting the free/busy status permissions on the Calendar folder.<12> 
+
+3.1.4.1.4.2 t:MeetingAttendeeType Simple Type 
+
+The MeetingAttendeeType simple type provides the AttendeeType element values that designate a 
+meeting attendee's role in the MailboxData complex type. 
+
+ <xs:simpleType name="MeetingAttendeeType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Organizer" 
+     /> 
+    <xs:enumeration 
+      value="Required" 
+     /> 
+    <xs:enumeration 
+      value="Optional" 
+     /> 
+    <xs:enumeration 
+      value="Room" 
+     /> 
+    <xs:enumeration 
+
+      value="Resource" 
+     /> 
+  </xs:restriction> 
+
+43 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the MeetingAttendeeType simple type. 
+
+Value Meaning 
+
+Organizer Attendee is the organizer of the meeting. 
+
+Required Required attendee of the meeting. 
+
+Optional Optional attendee of the meeting. 
+
+Room A room resource that is used for the meeting. 
+
+Resource A resource such as a TV or project or that is scheduled for use in the meeting. 
+
+ 
+
+3.1.4.1.4.3 t:SuggestionQuality Simple Type 
+
+The SuggestionQuality simple type specifies the quality level of the suggestion time. 
+
+ <xs:simpleType name="SuggestionQuality"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Excellent" 
+     /> 
+    <xs:enumeration 
+      value="Good" 
+     /> 
+    <xs:enumeration 
+      value="Fair" 
+     /> 
+    <xs:enumeration 
+      value="Poor" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the SuggestionQuality simple type. 
+
+Value Meaning 
+
+Excellent Request: Caller requests suggestions for times where there are no conflicts. 
+
+Response: Indicates that 0 percent of the attendees have a conflict for the suggested meeting time. 
+
+Good Request: Caller requests suggestions for times where the percentage of conflicts is equal to or less 
+than the GoodThreshold element (section 3.1.4.1.3.24) value. 
+
+Response: Indicates that the suggested meeting time has a conflict percentage that is equal to or 
+lower than the GoodThreshold element value. 
+
+Fair Request: Percentage of conflicts is between the GoodThreshold element (section 3.1.4.1.3.24) 
+value and 50 percent. 
+
+Poor Percentage of conflicts is greater than or equal to 50 percent. 
+
+44 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+45 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 GetUserAvailability Request 
+
+The following example shows how to get detailed availability information for two users in the Pacific 
+Time zone. One user has been given free/busy status permissions, and the other user's mailbox is 
+on a computer that does not use this protocol to provide free/busy status information. 
+
+Working hours for both users are Monday – Friday, 0800 to 1700. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <soap:Header> 
+    <wsa:MessageID xmlns:wsa="http://www.w3.org/2005/08/addressing/"> 
+      [unique message identifier] 
+    </wsa:MessageID> 
+  </soap:Header> 
+  <soap:Body> 
+    <GetUserAvailabilityRequest 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <TimeZone xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+        <Bias>480</Bias> 
+        <StandardTime> 
+          <Bias>0</Bias> 
+          <Time>02:00:00</Time> 
+          <DayOrder>5</DayOrder> 
+          <Month>10</Month> 
+          <DayOfWeek>Sunday</DayOfWeek> 
+        </StandardTime> 
+        <DaylightTime> 
+          <Bias>-60</Bias> 
+          <Time>02:00:00</Time> 
+          <DayOrder>1</DayOrder> 
+          <Month>4</Month> 
+          <DayOfWeek>Sunday</DayOfWeek> 
+        </DaylightTime> 
+      </TimeZone> 
+      <MailboxDataArray> 
+        <MailboxData xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Email> 
+            <Name></Name> 
+            <Address>user1@example.com</Address> 
+            <RoutingType>SMTP</RoutingType> 
+          </Email> 
+          <AttendeeType>Required</AttendeeType> 
+          <ExcludeConflicts>false</ExcludeConflicts> 
+        </MailboxData> 
+        <MailboxData xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Email> 
+            <Name></Name> 
+            <Address>user2@example.com</Address> 
+            <RoutingType>SMTP</RoutingType> 
+          </Email> 
+          <AttendeeType>Required</AttendeeType> 
+          <ExcludeConflicts>false</ExcludeConflicts> 
+        </MailboxData> 
+      </MailboxDataArray> 
+      <FreeBusyViewOptions xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+        <TimeWindow> 
+          <StartTime>2008-01-20T00:00:00</StartTime> 
+          <EndTime>2008-01-21T00:00:00</EndTime> 
+        </TimeWindow> 
+        <MergedFreeBusyIntervalInMinutes>30</MergedFreeBusyIntervalInMinutes> 
+        <RequestedView>Detailed</RequestedView> 
+
+46 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      </FreeBusyViewOptions> 
+    </GetUserAvailabilityRequest> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.2 GetUserAvailability Response 
+
+The following is an example of a successful response from this protocol. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="1" MajorBuildNumber="240" 
+MinorBuildNumber="5" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <GetUserAvailabilityResponse 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <FreeBusyResponseArray> 
+        <FreeBusyResponse> 
+          <ResponseMessage ResponseClass="Success"> 
+            <ResponseCode>NoError</ResponseCode> 
+          </ResponseMessage> 
+          <FreeBusyView> 
+            <FreeBusyViewType 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">FreeBusy</FreeBusyViewType> 
+            <CalendarEventArray 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+              <CalendarEvent> 
+                <StartTime>2008-01-21T11:30:00</StartTime> 
+                <EndTime>2008-01-21T14:00:00</EndTime> 
+                <BusyType>Tentative</BusyType> 
+              </CalendarEvent> 
+              <CalendarEvent> 
+                <StartTime>2008-01-21T13:00:00</StartTime> 
+                <EndTime>2008-01-21T14:00:00</EndTime> 
+                <BusyType>Tentative</BusyType> 
+              </CalendarEvent> 
+            </CalendarEventArray> 
+            <WorkingHours xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+              <TimeZone> 
+                <Bias>480</Bias> 
+                <StandardTime> 
+                  <Bias>0</Bias> 
+                  <Time>02:00:00</Time> 
+                  <DayOrder>1</DayOrder> 
+                  <Month>11</Month> 
+                  <DayOfWeek>Sunday</DayOfWeek> 
+                </StandardTime> 
+                <DaylightTime> 
+                  <Bias>-60</Bias> 
+                  <Time>02:00:00</Time> 
+                  <DayOrder>2</DayOrder> 
+                  <Month>3</Month> 
+                  <DayOfWeek>Sunday</DayOfWeek> 
+                </DaylightTime> 
+              </TimeZone> 
+              <WorkingPeriodArray> 
+                <WorkingPeriod> 
+                  <DayOfWeek>Monday Tuesday Wednesday Thursday Friday</DayOfWeek> 
+                  <StartTimeInMinutes>480</StartTimeInMinutes> 
+                  <EndTimeInMinutes>1020</EndTimeInMinutes> 
+                </WorkingPeriod> 
+              </WorkingPeriodArray> 
+
+47 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+            </WorkingHours> 
+          </FreeBusyView> 
+        </FreeBusyResponse> 
+        <FreeBusyResponse> 
+          <ResponseMessage ResponseClass="Success"> 
+            <ResponseCode>NoError</ResponseCode> 
+          </ResponseMessage> 
+          <FreeBusyView> 
+            <FreeBusyViewType 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">Detailed</FreeBusyViewType> 
+            <CalendarEventArray 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+              <CalendarEvent> 
+                <StartTime>2008-01-21T08:00:00</StartTime> 
+                <EndTime>2008-01-21T09:00:00</EndTime> 
+                <BusyType>Tentative</BusyType> 
+                <CalendarEventDetails> 
+                  
+<ID>00000000CEB2AC9CFA28D311AECE0008C707F197070019398D273324D3118A2B0008C7E9A5690000000A24590
+000603ECC64E5A9D843AFA932BEBCE2DE3D0002B8745C820000</ID> 
+                  <Subject>Meeting1</Subject> 
+                  <Location>Location1</Location> 
+                  <IsMeeting>true</IsMeeting> 
+                  <IsRecurring>false</IsRecurring> 
+                  <IsException>false</IsException> 
+                  <IsReminderSet>false</IsReminderSet> 
+                  <IsPrivate>false</IsPrivate> 
+                </CalendarEventDetails> 
+              </CalendarEvent> 
+              <CalendarEvent> 
+                <StartTime>2008-01-21T13:00:00</StartTime> 
+                <EndTime>2008-01-21T14:00:00</EndTime> 
+                <BusyType>Busy</BusyType> 
+                <CalendarEventDetails> 
+                  
+<ID>00000000CEB2AC9CFA28D311AECE0008C707F197070019398D273324D3118A2B0008C7E9A5690000000A24590
+000EF70892B18E20546A69506A5B037FFF60034E85A28180000</ID> 
+                  <Subject>Meeting2</Subject> 
+                  <Location>Location2</Location> 
+                  <IsMeeting>true</IsMeeting> 
+                  <IsRecurring>false</IsRecurring> 
+                  <IsException>false</IsException> 
+                  <IsReminderSet>false</IsReminderSet> 
+                  <IsPrivate>false</IsPrivate> 
+                </CalendarEventDetails> 
+              </CalendarEvent> 
+              <CalendarEvent> 
+                <StartTime>2008-01-21T14:30:00</StartTime> 
+                <EndTime>2008-01-21T15:00:00</EndTime> 
+                <BusyType>Busy</BusyType> 
+                <CalendarEventDetails> 
+                  
+<ID>00000000CEB2AC9CFA28D311AECE0008C707F197070019398D273324D3118A2B0008C7E9A5690000000A24590
+0005B0217B934765A46963D785DF0840DDC00B35D7DF3C80000</ID> 
+                  <Subject>Meeting3</Subject> 
+                  <Location>my office</Location> 
+                  <IsMeeting>true</IsMeeting> 
+                  <IsRecurring>true</IsRecurring> 
+                  <IsException>false</IsException> 
+                  <IsReminderSet>true</IsReminderSet> 
+                  <IsPrivate>false</IsPrivate> 
+                </CalendarEventDetails> 
+              </CalendarEvent> 
+            </CalendarEventArray> 
+            <WorkingHours xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+              <TimeZone> 
+                <Bias>480</Bias> 
+                <StandardTime> 
+                  <Bias>0</Bias> 
+
+48 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                  <Time>02:00:00</Time> 
+                  <DayOrder>1</DayOrder> 
+                  <Month>11</Month> 
+                  <DayOfWeek>Sunday</DayOfWeek> 
+                </StandardTime> 
+                <DaylightTime> 
+                  <Bias>-60</Bias> 
+                  <Time>02:00:00</Time> 
+                  <DayOrder>2</DayOrder> 
+                  <Month>3</Month> 
+                  <DayOfWeek>Sunday</DayOfWeek> 
+                </DaylightTime> 
+              </TimeZone> 
+              <WorkingPeriodArray> 
+                <WorkingPeriod> 
+                  <DayOfWeek>Monday Tuesday Wednesday Thursday Friday</DayOfWeek> 
+                  <StartTimeInMinutes>480</StartTimeInMinutes> 
+                  <EndTimeInMinutes>1020</EndTimeInMinutes> 
+                </WorkingPeriod> 
+              </WorkingPeriodArray> 
+            </WorkingHours> 
+          </FreeBusyView> 
+        </FreeBusyResponse> 
+      </FreeBusyResponseArray> 
+    </GetUserAvailabilityResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.3 Merged Free/Busy String 
+
+The following example shows how the MergedFreeBusy string is created by the server for a specified 
+set of free/busy status view options. The following is an example of the FreeBusyViewOptions 
+element of a GetUserAvailability operation request. 
+
+ <FreeBusyViewOptions xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <TimeWindow>  
+    <StartTime>2008-01-30T00:00:00</StartTime>  
+    <EndTime>2008-01-31T00:00:00</EndTime>  
+  </TimeWindow>  
+  <MergedFreeBusyIntervalInMinutes>60</MergedFreeBusyIntervalInMinutes>  
+  <RequestedView>FreeBusy</RequestedView> 
+ </FreeBusyViewOptions> 
+
+The following is the CalendarEventArray element that is returned in the response. 
+
+ <CalendarEventArray xmlns="http://schemas.microsoft.com/exchange/services/2006/types">  
+  <CalendarEvent>  
+    <StartTime>2008-01-30T12:00:00</StartTime>  
+    <EndTime>2008-01-30T14:00:00</EndTime>  
+    <BusyType>OOF</BusyType>  
+  </CalendarEvent>  
+  <CalendarEvent>  
+    <StartTime>2008-01-30T13:30:00</StartTime>  
+    <EndTime>2008-01-30T14:30:00</EndTime>  
+    <BusyType>Busy</BusyType>  
+  </CalendarEvent></CalendarEventArray> 
+
+The corresponding merged free/busy status string will be the following: 000000000000332000000000 
+
+49 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Between 1:30 and 2:00 P.M., the mailbox has two overlapping appointments, one marked OOF and 
+the other marked Busy. The merged free/busy status string for that slot has to be marked OOF. The 
+no data value (4) is not returned in the merged free/busy status string. 
+
+For a description of how the merged free/busy status string is constructed by the server, see section 
+3.1.4.1.4.1. 
+
+4.4 Unsuccessful Response 
+
+4.4.1 SOAP Exception 
+
+The following is an example of a SOAP exception that is thrown when the MailboxData element is 
+empty. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="1" MajorBuildNumber="240" 
+MinorBuildNumber="5" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <soap:Fault> 
+      <faultcode>soap:Client</faultcode> 
+      
+<faultstring>Microsoft.Exchange.InfoWorker.Common.Availability.IdentityArrayEmptyException: 
+The MailboxData array is empty. ---> The MailboxData array is empty.</faultstring> 
+      <faultactor>https://server/ews/exchange.asmx</faultactor> 
+      <detail> 
+        <ErrorCode 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">5001</ErrorCode> 
+      </detail> 
+    </soap:Fault> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.4.2 GetUserAvailability Error Response 
+
+The following is an example where a mailbox in the MailboxData element cannot be found in the 
+directory service. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi=" 
+http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" MinorVersion="1" MajorBuildNumber="240" 
+MinorBuildNumber="5" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <GetUserAvailabilityResponse 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <FreeBusyResponseArray> 
+        <FreeBusyResponse> 
+          <ResponseMessage ResponseClass="Error"> 
+            <MessageText> 
+              Unable to resolve email address <>SMTP:nouser@example.com to an Active 
+Directory object. 
+            </MessageText> 
+            <ResponseCode>ErrorMailRecipientNotFound</ResponseCode> 
+            <DescriptiveLinkKey>0</DescriptiveLinkKey> 
+            <MessageXml> 
+
+50 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+              <ExceptionType 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/errors">Microsoft.Exchange.InfoWor
+ker.Common.Availability.MailRecipientNotFoundException</ExceptionType> 
+              <ExceptionCode 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/errors">5009</ExceptionCode> 
+            </MessageXml> 
+          </ResponseMessage> 
+          <FreeBusyView> 
+            <FreeBusyViewType 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">None</FreeBusyViewType> 
+          </FreeBusyView> 
+        </FreeBusyResponse> 
+      </FreeBusyResponseArray> 
+    </GetUserAvailabilityResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+51 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+52 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document. The contents of each file are included in this section. 
+
+File name Description Section 
+
+MS-OXWAVLS.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWAVLS- Contains the XML schema type definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWAVLS-types.xsd Contains the XML schema message definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWAVLS-messages.xsd or MS-
+OXWAVLS-types.xsd schemas have to be placed in the common folder with these files. 
+
+This section contains the contents of the MS-OXWAVLS.wsdl file. For ease of 
+implementation, the full WSDL is provided in this appendix. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:include schemaLocation="MS-OXWAVLS-messages.xsd"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:message name="GetUserAvailabilitySoapIn"> 
+    <wsdl:part name="GetUserAvailabilityRequest" element="tns:GetUserAvailabilityRequest"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetUserAvailabilitySoapOut"> 
+    <wsdl:part name="GetUserAvailabilityResult" element="tns:GetUserAvailabilityResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="GetUserAvailability"> 
+      <wsdl:input message="tns:GetUserAvailabilitySoapIn"/> 
+      <wsdl:output message="tns:GetUserAvailabilitySoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/> 
+    <wsdl:operation name="GetUserAvailability"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetUserAvailability"
+/> 
+      <wsdl:input> 
+        <soap:header message="tns:GetUserAvailabilitySoapIn" part="Impersonation" 
+use="literal"/> 
+
+53 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <soap:header message="tns:GetUserAvailabilitySoapIn" part="TimeZoneContext" 
+use="literal"/> 
+        <soap:header message="tns:GetUserAvailabilitySoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:body parts="GetUserAvailabilityRequest" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetUserAvailabilityResult" use="literal"/> 
+        <soap:header message="tns:GetUserAvailabilitySoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+54 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWAVLS-types.xsd or MS-OXWAVLS-
+messages.xsd schemas have to be placed in the common folder along with the files listed in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWAVLS-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly.  
+
+MS-OXWAVLS-messages.xsd includes the file(s) listed in the following table. To operate correctly, this 
+file has to be present in the folder that contains the WSDL, types schema, and messages schema files 
+for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+ 
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWAVLS-types.xsd"/> 
+  <xs:complexType name="GetUserAvailabilityRequestType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element ref="t:TimeZone"/> 
+          <xs:element name="MailboxDataArray" type="t:ArrayOfMailboxData"/> 
+          <xs:element minOccurs="0" maxOccurs="1" ref="t:FreeBusyViewOptions"/> 
+          <xs:element minOccurs="0" maxOccurs="1" ref="t:SuggestionsViewOptions"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetUserAvailabilityRequest" type="m:GetUserAvailabilityRequestType"/> 
+  <xs:complexType name="FreeBusyResponseType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ResponseMessage" 
+type="m:ResponseMessageType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FreeBusyView" type="t:FreeBusyView"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfFreeBusyResponse"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="FreeBusyResponse" 
+type="m:FreeBusyResponseType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+55 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:complexType name="SuggestionsResponseType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ResponseMessage" 
+type="m:ResponseMessageType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="SuggestionDayResultArray" 
+type="t:ArrayOfSuggestionDayResult"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="GetUserAvailabilityResponseType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FreeBusyResponseArray" 
+type="m:ArrayOfFreeBusyResponse"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="SuggestionsResponse" 
+type="m:SuggestionsResponseType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:element name="GetUserAvailabilityResponse" type="m:GetUserAvailabilityResponseType"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWAVLS-types.xsd file and information about additional 
+files that this schema file requires to operate correctly.  
+
+MS-OXWAVLS-types.xsd includes the file(s) listed in the following table. To operate correctly, this file 
+has to be present in the folder that contains the WSDL, types schema, and messages schema files for 
+this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+  <xs:simpleType name="MeetingAttendeeType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Organizer"/> 
+      <xs:enumeration value="Required"/> 
+      <xs:enumeration value="Optional"/> 
+      <xs:enumeration value="Room"/> 
+      <xs:enumeration value="Resource"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="CalendarEventDetails"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ID" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Subject" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Location" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsMeeting" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsRecurring" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsException" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsReminderSet" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsPrivate" type="xs:boolean"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="CalendarEvent"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="StartTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="EndTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="BusyType" type="t:LegacyFreeBusyType"/> 
+
+56 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="0" maxOccurs="1" name="CalendarEventDetails" 
+type="t:CalendarEventDetails"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfCalendarEvent"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="CalendarEvent" 
+type="t:CalendarEvent"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="FreeBusyViewType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="MergedOnly"/> 
+          <xs:enumeration value="FreeBusy"/> 
+          <xs:enumeration value="FreeBusyMerged"/> 
+          <xs:enumeration value="Detailed"/> 
+          <xs:enumeration value="DetailedMerged"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:complexType name="FreeBusyViewOptionsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="TimeWindow" type="t:Duration"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="MergedFreeBusyIntervalInMinutes" 
+type="xs:int"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="RequestedView" 
+type="t:FreeBusyViewType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:element name="FreeBusyViewOptions" type="t:FreeBusyViewOptionsType"/> 
+  <xs:complexType name="WorkingPeriod"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DayOfWeek" type="t:DaysOfWeekType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="StartTimeInMinutes" type="xs:int"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="EndTimeInMinutes" type="xs:int"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfWorkingPeriod"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="WorkingPeriod" 
+type="t:WorkingPeriod"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SerializableTimeZoneTime"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Bias" type="xs:int"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Time" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DayOrder" type="xs:short"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Month" type="xs:short"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DayOfWeek" type="t:DayOfWeekType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Year" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SerializableTimeZone"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Bias" type="xs:int"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="StandardTime" 
+type="t:SerializableTimeZoneTime"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DaylightTime" 
+type="t:SerializableTimeZoneTime"/> 
+    </xs:sequence> 
+ </xs:complexType> 
+ <xs:element name="TimeZone" type="t:SerializableTimeZone"/> 
+ <xs:complexType name="WorkingHours"> 
+    <xs:sequence> 
+
+57 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="1" maxOccurs="1" name="TimeZone" type="t:SerializableTimeZone"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="WorkingPeriodArray" 
+type="t:ArrayOfWorkingPeriod"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="FreeBusyView"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="FreeBusyViewType" 
+type="t:FreeBusyViewType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="MergedFreeBusy" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="CalendarEventArray" 
+type="t:ArrayOfCalendarEvent"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="WorkingHours" type="t:WorkingHours"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MailboxData"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Email" type="t:EmailAddress"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="AttendeeType" 
+type="t:MeetingAttendeeType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ExcludeConflicts" type="xs:boolean"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfMailboxData"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="MailboxData" nillable="true" 
+type="t:MailboxData"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="SuggestionQuality"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Excellent"/> 
+      <xs:enumeration value="Good"/> 
+      <xs:enumeration value="Fair"/> 
+      <xs:enumeration value="Poor"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="SuggestionsViewOptionsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="1" name="GoodThreshold" type="xs:int"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="MaximumResultsByDay" type="xs:int"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="MaximumNonWorkHourResultsByDay" 
+type="xs:int"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="MeetingDurationInMinutes" type="xs:int"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="MinimumSuggestionQuality" 
+type="t:SuggestionQuality"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DetailedSuggestionsWindow" 
+type="t:Duration"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="CurrentMeetingTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="GlobalObjectId" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:element name="SuggestionsViewOptions" type="t:SuggestionsViewOptionsType"/> 
+  <xs:complexType name="ArrayOfAttendeeConflictData"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element minOccurs="1" maxOccurs="1" name="UnknownAttendeeConflictData" 
+nillable="true" type="t:UnknownAttendeeConflictData"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IndividualAttendeeConflictData" 
+nillable="true" type="t:IndividualAttendeeConflictData"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="TooBigGroupAttendeeConflictData" 
+nillable="true" type="t:TooBigGroupAttendeeConflictData"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="GroupAttendeeConflictData" 
+nillable="true" type="t:GroupAttendeeConflictData"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="AttendeeConflictData" abstract="true"/> 
+  <xs:complexType name="UnknownAttendeeConflictData"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="t:AttendeeConflictData"/> 
+
+58 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="TooBigGroupAttendeeConflictData"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="t:AttendeeConflictData"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="IndividualAttendeeConflictData"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="t:AttendeeConflictData"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" maxOccurs="1" name="BusyType" 
+type="t:LegacyFreeBusyType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="GroupAttendeeConflictData"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="t:AttendeeConflictData"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" maxOccurs="1" name="NumberOfMembers" type="xs:int"/> 
+          <xs:element minOccurs="1" maxOccurs="1" name="NumberOfMembersAvailable" 
+type="xs:int"/> 
+          <xs:element minOccurs="1" maxOccurs="1" name="NumberOfMembersWithConflict" 
+type="xs:int"/> 
+          <xs:element minOccurs="1" maxOccurs="1" name="NumberOfMembersWithNoData" 
+type="xs:int"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="Suggestion"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="MeetingTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsWorkTime" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="SuggestionQuality" 
+type="t:SuggestionQuality"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="AttendeeConflictDataArray" 
+type="t:ArrayOfAttendeeConflictData"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfSuggestion"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="Suggestion" type="t:Suggestion"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SuggestionDayResult"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Date" type="xs:dateTime"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DayQuality" type="t:SuggestionQuality"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="SuggestionArray" 
+type="t:ArrayOfSuggestion"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfSuggestionDayResult"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="SuggestionDayResult" 
+type="t:SuggestionDayResult"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+ </xs:schema> 
+
+59 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016  
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.1.1:  Office Outlook 2007 does not send the X-ClientStatistics header. Exchange 
+2007 ignores the X-ClientStatistics header.  
+
+<2> Section 2.2: Office Outlook 2007 does not include the MessageID header in requests. Exchange 
+2007 ignores the MessageID header. 
+
+<3> Section 3.1.4.1: When a user creates a meeting request, adds attendees, and switches to the 
+scheduling assistant to view the attendees' free/busy status, Office Outlook 2007, Microsoft Outlook 
+2010, Outlook 2013, Outlook 2016, and Outlook 2019 issue a request to the Availability Web service. 
+
+<4> Section 3.1.4.1:  Exchange 2007, Exchange 2010, and Microsoft Exchange Server 2010 Service 
+Pack 1 (SP1) do not use the Impersonation, TimeZoneContext, and RequestVersion headers. 
+These headers were introduced in Microsoft Exchange Server 2010 Service Pack 2 (SP2). 
+
+<5> Section 3.1.4.1.1.1:  Exchange 2007, Exchange 2010, and Exchange 2010 SP1 do not use the 
+Impersonation header. The Impersonation header was introduced in Exchange 2010 SP2. 
+
+<6> Section 3.1.4.1.1.1:  Exchange 2007, Exchange 2010, and Exchange 2010 SP1 do not use the 
+TimeZoneContext header. The TimeZoneContext header was introduced in Exchange 2010 SP2. 
+
+60 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+<7> Section 3.1.4.1.1.1:  Exchange 2007, Exchange 2010, and Exchange 2010 SP1 do not use the 
+RequestVersion header. The RequestVersion header was introduced in Exchange 2010 SP2. 
+
+<8> Section 3.1.4.1.3.1:  The default value for Exchange 2007 is 100. The default value for Exchange 
+2010, Exchange 2013, Exchange 2016, and Exchange 2019 is 20. 
+
+<9> Section 3.1.4.1.3.13: The maximum time period for Exchange 2007 and Exchange 2010 is 42 
+days. The maximum time period for Exchange 2010 SP1, Exchange 2013, Exchange 2016, and 
+Exchange 2019 is 62 days. 
+
+<10> Section 3.1.4.1.3.21: Exchange 2007 does not return the SuggestionQuality element in a 
+Suggestion element when the value of the SuggestionQuality element is "Poor". 
+
+<11> Section 3.1.4.1.3.22: Exchange 2007 does not return the SuggestionArray element in a 
+SuggestionDayResult element when the value of the DayQuality element is "Poor". 
+
+<12> Section 3.1.4.1.4.1: The Availability Web service in Exchange 2007, Exchange 2010, Exchange 
+2013, Exchange 2016, and Exchange 2019 supports this by doing an access check with the 
+requester's credentials against the permissions that have been set on the mailbox owner's Calendar 
+folder, as described in [MS-OXCPERM]. The permissions are used to specify an access level that 
+determines the type of information that the requester can view. The following table shows how the 
+access level that is returned from this check is treated.  
+
+RequestedView element value (from 
+the GetUserAvailability operation 
+request) Allowed view based on Access level 
+
+ Detailed FreeBusy No Access 
+
+None - - - 
+
+MergedOnly Merged Merged Error 
+(InvalidAccessLevelException) 
+
+FreeBusy FreeBusy FreeBusy Error 
+(InvalidAccessLevelException) 
+
+FreeBusyMerged FreeBusyMerged FreeBusyMerged Error 
+(InvalidAccessLevelException) 
+
+Detailed Detailed FreeBusy Error 
+(InvalidAccessLevelException) 
+
+DetailedMerged DetailedMerged FreeBusyMerged Error 
+(InvalidAccessLevelException) 
+
+ 
+
+61 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+62 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A M 
+  
+Abstract data model Merged free/busy string example 49 
+   server 13 Message processing 
+Applicability 9    server 13 
+Attribute groups 12 Messages 
+Attributes 12    attribute groups 12 
+    attributes 12 
+C    complex types 12 
+    elements 12 
+Capability negotiation 9    enumerated 12 
+Change tracking 62    groups 12 
+Complex types 12    namespaces 12 
+    simple types 12 
+
+D    syntax 11 
+
+    transport 11 
+
+Data model - abstract  
+
+   server 13 N 
+  
+
+E Namespaces 12 
+
+ Normative references 8 
+
+Events  
+
+   local - server 45 O 
+   timer - server 45  
+Example Operations 
+   GetUserAvailability error response 50    GetUserAvailability Operation 13 
+   GetUserAvailability request 46 Overview (synopsis) 9 
+   GetUserAvailability response 47  
+   Merged free/busy string 49 P 
+   SOAP exception 50  
+ Parameters - security index 52 
+F Preconditions 9 
+ Prerequisites 9 
+Fields - vendor-extensible 10 Product behavior 60 
+Full WSDL 53 Protocol Details 
+Full XML schema 55    overview 13 
+   Messages Schema 55  
+   Types Schema 56 R 
+  
+G References 7 
+    informative 8 
+GetUserAvailability error response example 50    normative 8 
+GetUserAvailability request example 46 Relationship to other protocols 9 
+GetUserAvailability response example 47  
+Glossary 6 S 
+Groups 12  
+ Security 
+I    implementer considerations 52 
+    parameter index 52 
+Implementer - security considerations 52 Sequencing rules 
+Index of security parameters 52    server 13 
+Informative references 8 Server 
+Initialization    abstract data model 13 
+   server 13    GetUserAvailability Operation operation 13 
+Introduction 6    initialization 13 
+    local events 45 
+
+L    message processing 13 
+
+    sequencing rules 13 
+
+Local events    timer events 45 
+
+   server 45    timers 13 
+
+ Simple types 12 
+
+63 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SOAP exception example 50 
+Standards assignments 10 
+Syntax 
+   messages - overview 11 
+ 
+T 
+ 
+Timer events 
+   server 45 
+Timers 
+   server 13 
+Tracking changes 62 
+Transport 11 
+Types 
+   complex 12 
+   simple 12 
+ 
+V 
+ 
+Vendor-extensible fields 10 
+Versioning 9 
+ 
+W 
+ 
+WSDL 53 
+ 
+X 
+ 
+XML schema 55 
+   Messages Schema 55 
+   Types Schema 56 
+
+ 
+
+64 / 64 
+
+[MS-OXWAVLS] - v20250520 
+Availability Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

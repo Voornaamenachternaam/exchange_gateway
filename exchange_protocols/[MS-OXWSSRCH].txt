@@ -1,0 +1,5686 @@
+﻿[MS-OXWSSRCH]:  
+
+Mailbox Search Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0 Major Initial Availability. 
+
+11/4/2009 1.1.0 Minor Updated the technical content. 
+
+2/10/2010 1.1.0 None Version 1.1.0 release 
+
+5/5/2010 1.1.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 2.0 Major Significantly changed the technical content. 
+
+11/3/2010 2.1 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 3.0 Major Significantly changed the technical content. 
+
+8/5/2011 4.0 Major Significantly changed the technical content. 
+
+10/7/2011 5.0 Major Significantly changed the technical content. 
+
+1/20/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 6.0 None 
+
+technical content. 
+
+7/16/2012 7.0 Major Significantly changed the technical content. 
+
+10/8/2012 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 8.0 None 
+
+technical content. 
+
+7/26/2013 8.1 Minor Clarified the meaning of the technical content. 
+
+11/18/2013 8.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 8.2 None 
+
+technical content. 
+
+4/30/2014 9.0 Major Significantly changed the technical content. 
+
+7/31/2014 10.0 Major Significantly changed the technical content. 
+
+10/30/2014 10.1 Minor Clarified the meaning of the technical content. 
+
+5/26/2015 11.0 Major Significantly changed the technical content. 
+
+9/14/2015 12.0 Major Significantly changed the technical content. 
+
+6/13/2016 13.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 13.0 None 
+
+technical content. 
+
+1/12/2017 13.1 Minor Clarified the meaning of the technical content. 
+
+7/24/2018 14.0 Major Significantly changed the technical content. 
+
+10/1/2018 15.0 Major Significantly changed the technical content. 
+
+8/17/2021 16.0 Major Significantly changed the technical content. 
+
+2 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+11/16/2021 16.0 None 
+
+technical content. 
+
+8/20/2024 17.0 Major Significantly changed the technical content. 
+
+11/12/2024 17.1 Minor Clarified the meaning of the technical content. 
+
+2/18/2025 17.2 Minor Clarified the meaning of the technical content. 
+
+5/20/2025 18.0 Major Significantly changed the technical content. 
+
+3 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ........................................................................................................ 7 
+
+1.1 Glossary ........................................................................................................7 
+1.2 References .....................................................................................................8 
+
+1.2.1 Normative References .................................................................................8 
+1.2.2 Informative References ...............................................................................9 
+
+1.3 Overview ..................................................................................................... 10 
+1.4 Relationship to Other Protocols ........................................................................ 10 
+1.5 Prerequisites/Preconditions ............................................................................. 10 
+1.6 Applicability Statement .................................................................................. 11 
+1.7 Versioning and Capability Negotiation ............................................................... 11 
+1.8 Vendor-Extensible Fields................................................................................. 11 
+1.9 Standards Assignments .................................................................................. 11 
+
+2 Messages .......................................................................................................... 12 
+2.1 Transport ..................................................................................................... 12 
+2.2 Common Message Syntax ............................................................................... 12 
+
+2.2.1 Namespaces ............................................................................................ 12 
+2.2.2 Messages................................................................................................ 12 
+2.2.3 Elements ................................................................................................ 12 
+
+2.2.3.1 tns:And Element ................................................................................ 13 
+2.2.3.2 tns:Contains Element .......................................................................... 14 
+2.2.3.3 tns:Excludes Element .......................................................................... 14 
+2.2.3.4 tns:Exists Element .............................................................................. 14 
+2.2.3.5 tns:IsEqualTo Element ........................................................................ 14 
+2.2.3.6 tns:IsGreaterThan Element .................................................................. 14 
+2.2.3.7 tns:IsGreaterThanOrEqualTo Element .................................................... 15 
+2.2.3.8 tns:IsLessThan Element ....................................................................... 15 
+2.2.3.9 tns:IsLessThanOrEqualTo Element ......................................................... 15 
+2.2.3.10 tns:IsNotEqualTo Element .................................................................... 15 
+2.2.3.11 tns:Not Element ................................................................................. 15 
+2.2.3.12 tns:Or Element .................................................................................. 16 
+2.2.3.13 PerformInstantSearch Element ............................................................. 16 
+2.2.3.14 PerformInstantSearchResponse Element ................................................. 16 
+2.2.3.15 tns:SearchExpression Element .............................................................. 16 
+
+2.2.4 Complex Types ........................................................................................ 16 
+2.2.4.1 t:AndType Complex Type ..................................................................... 18 
+2.2.4.2 t:ArrayOfCalendarItemsType Complex Type ............................................ 19 
+2.2.4.3 t:ArrayOfGroupedItemsType Complex Type............................................. 19 
+2.2.4.4 t:ArrayOfItemsType Complex Type ........................................................ 19 
+2.2.4.5 t:BasePagingType Complex Type ........................................................... 20 
+2.2.4.6 t:ContainsExpressionType Complex Type ................................................ 20 
+2.2.4.7 t:ExcludesType Complex Type .............................................................. 21 
+2.2.4.8 t:ExcludesValueType Complex Type ....................................................... 22 
+2.2.4.9 t:ExistsType Complex Type .................................................................. 22 
+2.2.4.10 t:FindFolderParentType Complex Type ................................................... 23 
+2.2.4.11 m:FindFolderResponseMessageType Complex Type .................................. 23 
+2.2.4.12 t:FindItemParentType Complex Type ..................................................... 24 
+2.2.4.13 m:FindItemResponseMessageType Complex Type .................................... 24 
+2.2.4.14 t:FractionalPageViewType Complex Type ................................................ 25 
+2.2.4.15 t:GroupedItemsType Complex Type ....................................................... 26 
+2.2.4.16 t:IndexedPageViewType Complex Type .................................................. 26 
+2.2.4.17 t:InstantSearchPayloadType Complex Type ............................................. 27 
+2.2.4.18 t:IsEqualToType Complex Type ............................................................. 28 
+2.2.4.19 t:IsGreaterThanOrEqualToType Complex Type ......................................... 28 
+2.2.4.20 t:IsGreaterThanType Complex Type ....................................................... 28 
+
+4 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.21 t:IsLessThanOrEqualToType Complex Type ............................................. 28 
+2.2.4.22 t:IsLessThanType Complex Type ........................................................... 29 
+2.2.4.23 t:IsNotEqualToType Complex Type ........................................................ 29 
+2.2.4.24 t:MultipleOperandBooleanExpressionType Complex Type ........................... 29 
+2.2.4.25 t:NotType Complex Type ..................................................................... 30 
+2.2.4.26 t:OrType Complex Type ....................................................................... 30 
+2.2.4.27 m:PerformInstantSearchRequest Complex Type ....................................... 31 
+2.2.4.28 m:PerformInstantSearchResponse Complex Type ..................................... 31 
+2.2.4.29 m:QueryStringType Complex Type ........................................................ 32 
+2.2.4.30 t:RestrictionType Complex Type ............................................................ 32 
+2.2.4.31 t:SearchExpressionType Complex Type .................................................. 33 
+2.2.4.32 t:SearchFolderType Complex Type......................................................... 33 
+2.2.4.33 t:SearchParametersType Complex Type ................................................. 34 
+2.2.4.34 t:SeekToConditionPageViewType Complex Type ....................................... 34 
+2.2.4.35 t:TwoOperandExpressionType Complex Type ........................................... 35 
+
+2.2.5 Simple Types .......................................................................................... 36 
+2.2.5.1 t:ContainmentComparisonType Simple Type ........................................... 36 
+2.2.5.2 t:ContainmentModeType Simple Type .................................................... 37 
+2.2.5.3 t:FolderQueryTraversalType Simple Type ................................................ 38 
+2.2.5.4 t:IndexBasePointType Simple Type ........................................................ 38 
+2.2.5.5 t:InstantSearchItemType Simple Type ................................................... 39 
+2.2.5.6 t:InstantSearchResultType Simple Type ................................................. 40 
+2.2.5.7 t:ItemQueryTraversalType Simple Type .................................................. 41 
+2.2.5.8 t:QueryOptionsType Simple Type .......................................................... 42 
+2.2.5.9 t:SearchFolderTraversalType Simple Type ............................................... 42 
+
+2.2.6 Attributes ............................................................................................... 43 
+2.2.7 Groups ................................................................................................... 43 
+2.2.8 Attribute Groups ...................................................................................... 43 
+
+3 Protocol Details ................................................................................................. 44 
+3.1 ExchangeServicePortType Server Details ........................................................... 44 
+
+3.1.1 Abstract Data Model ................................................................................. 44 
+3.1.2 Timers ................................................................................................... 44 
+3.1.3 Initialization ............................................................................................ 44 
+3.1.4 Message Processing Events and Sequencing Rules ......................................... 44 
+
+3.1.4.1 FindFolder Operation ........................................................................... 44 
+3.1.4.1.1 Messages ..................................................................................... 45 
+
+3.1.4.1.1.1 tns:FindFolderSoapIn Message ................................................... 45 
+3.1.4.1.1.2 tns:FindFolderSoapOut Message ................................................. 46 
+
+3.1.4.1.2 Elements ..................................................................................... 46 
+3.1.4.1.2.1 tns:FindFolder Element ............................................................. 47 
+3.1.4.1.2.2 tns:FindFolderResponse Element ................................................ 47 
+
+3.1.4.1.3 Complex Types ............................................................................. 47 
+3.1.4.1.3.1 m:FindFolderResponseType Complex Type ................................... 47 
+3.1.4.1.3.2 m:FindFolderType Complex Type ................................................ 47 
+
+3.1.4.2 FindItem Operation ............................................................................. 49 
+3.1.4.2.1 Messages ..................................................................................... 49 
+
+3.1.4.2.1.1 tns:FindItemSoapIn Message ..................................................... 49 
+3.1.4.2.1.2 tns:FindItemSoapOut Message ................................................... 50 
+
+3.1.4.2.2 Elements ..................................................................................... 51 
+3.1.4.2.2.1 tns:FindItem Element ............................................................... 51 
+3.1.4.2.2.2 tns:FindItemResponse Element .................................................. 51 
+
+3.1.4.2.3 Complex Types ............................................................................. 51 
+3.1.4.2.3.1 m:FindItemResponseType Complex Type ..................................... 52 
+3.1.4.2.3.2 m:FindItemType Complex Type .................................................. 52 
+3.1.4.2.3.3 t:AggregateOnType Complex Type .............................................. 55 
+3.1.4.2.3.4 t:BaseGroupByType Complex Type ............................................. 56 
+3.1.4.2.3.5 t:DistinguishedGroupByType Complex Type .................................. 56 
+
+5 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3.6 t:FieldOrderType Complex Type ................................................. 57 
+3.1.4.2.3.7 t:GroupByType Complex Type .................................................... 57 
+3.1.4.2.3.8 t:NonEmptyArrayOfFieldOrdersType Complex Type ........................ 58 
+
+3.1.4.2.4 Simple Types ................................................................................ 59 
+3.1.4.2.4.1 t:AggregateType Simple Type .................................................... 59 
+3.1.4.2.4.2 t:SortDirectionType Simple Type ................................................ 59 
+3.1.4.2.4.3 t:StandardGroupByType Simple Type .......................................... 60 
+
+3.1.5 Timer Events ........................................................................................... 60 
+3.1.6 Other Local Events ................................................................................... 60 
+
+4 Protocol Examples ............................................................................................. 61 
+
+5 Security ............................................................................................................ 66 
+5.1 Security Considerations for Implementers ......................................................... 66 
+5.2 Index of Security Parameters .......................................................................... 66 
+
+6 Appendix A: Full WSDL ...................................................................................... 67 
+
+7 Appendix B: Full XML Schema ............................................................................ 70 
+7.1 Messages Schema ......................................................................................... 70 
+7.2 Types Schema .............................................................................................. 72 
+
+8 Appendix C: Product Behavior ............................................................................ 79 
+
+9 Change Tracking ................................................................................................ 81 
+
+10 Index ................................................................................................................ 82 
+
+ 
+
+6 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Mailbox Search Web Service Protocol is used to search the contents of a server and return the 
+results of that search.  
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Deleted Items folder: A special folder that is the default location for objects that have been 
+deleted. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+root folder: The folder at the top of a hierarchy of folders in a list. 
+
+search folder: A collection of related items to be crawled by a search service.  
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, which 
+provides a message construct that can be exchanged over a variety of underlying protocols. The 
+framework has been designed to be independent of any particular programming model and 
+other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See [SOAP1.2-
+1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+7 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Uniform Resource Identifier (URI): A string that identifies a resource. The URI is an addressing 
+mechanism defined in Internet Engineering Task Force (IETF) Uniform Resource Identifier (URI): 
+Generic Syntax [RFC3986]. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL operation: A single action or function of a web service. The execution of a WSDL operation 
+typically requires the exchange of messages between the service requestor and the service 
+provider. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCONT] Microsoft Corporation, "Contacts Web Service Protocol". 
+
+8 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXWSCONV] Microsoft Corporation, "Conversations Web Service Protocol". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSDLIST] Microsoft Corporation, "Distribution List Creation and Usage Web Service Protocol". 
+
+[MS-OXWSFOLD] Microsoft Corporation, "Folders and Folder Permissions Web Service Protocol". 
+
+[MS-OXWSGTZ] Microsoft Corporation, "Get Server Time Zone Web Service Protocol". 
+
+[MS-OXWSMSG] Microsoft Corporation, "Email Message Types Web Service Protocol". 
+
+[MS-OXWSMTGS] Microsoft Corporation, "Calendaring Web Service Protocol". 
+
+[MS-OXWSPERS] Microsoft Corporation, "Persona Web Service Protocol". 
+
+[MS-OXWSPOST] Microsoft Corporation, "Post Items Web Service Protocol". 
+
+[MS-OXWSTASK] Microsoft Corporation, "Tasks Web Service Protocol". 
+
+[MS-OXWSXPROP] Microsoft Corporation, "Extended Properties Structure". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[RFC3066] Alvestrand, H., "Tags for the Identification of Languages", BCP 47, RFC 3066, January 
+2001, https://www.rfc-editor.org/info/rfc3066 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[WSIBASIC] Ballinger, K., Ehnebuske, D., Gudgin, M., et al., Eds., "Basic Profile Version 1.0", Final 
+Material, April 2004, http://www.ws-i.org/Profiles/BasicProfile-1.0-2004-04-16.html 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA0] Fallside, D., and Walmsley, P., Eds., "XML Schema Part 0: Primer, Second Edition", 
+W3C Recommendation, October 2004, http://www.w3.org/TR/2004/REC-xmlschema-0-20041028/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+9 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+This protocol provides clients with operations that enable them to search the contents of a server 
+message store and to return the results of that search.  
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP Protocol, as described in [SOAP1.1], to describe the structure information 
+that is exchanged between the client and server. This protocol uses the XML Protocol, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content that is sent to and from the 
+server. 
+
+This protocol uses the Simple Object Access Protocol (SOAP) over the Hypertext Transfer 
+Protocol (HTTP), as described in [RFC2616], and SOAP over the Hypertext Transfer Protocol 
+over Secure Sockets Layer (HTTPS), as described in [RFC2818], as shown in the following layering 
+diagram.  
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+This protocol specifies searches that identify items in the server message store. After the item 
+identifier is returned, one of the following protocols is used to return the information from the 
+message store: 
+
+ Folders and Folder Permissions Web Service Protocol, as described in [MS-OXWSFOLD] 
+
+ Email Message Types Web Service Protocol, as described in [MS-OXWSMSG] 
+
+ Calendaring Web Service Protocol, as described in [MS-OXWSMTGS] 
+
+ Post Items Web Service Protocol, as described in [MS-OXWSPOST] 
+
+ Tasks Web Service Protocol, as described in [MS-OXWSTASK] 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+10 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing Lookup Protocol, 
+as described in [MS-OXDSCLI], is required to form the HTTP request to the web server that hosts 
+this protocol. The operations that this protocol defines cannot be accessed unless the correct endpoint 
+is identified in the HTTP Web requests that target this protocol. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client applications that search the contents of the server message store. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses multiple transports with SOAP 1.1, as specified in 
+section 2.1. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. The WSDL version 
+of the request is identified by using the RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the ServerVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the Web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes text strings in various messages. Localization considerations 
+for such strings are specified in section 3.1.4. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+11 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version that is supported is SOAP 1.1. For details, see [SOAP1.1]. 
+
+This protocol relies on the web server that hosts the application to perform authentication. Protocol 
+servers MUST support SOAP over HTTP, as defined in [RFC2616]. The protocol SHOULD additionally 
+support secure communications via HTTPS, as defined in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and Web Services 
+Description Language (WSDL), as defined in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces by using the mechanisms 
+specified in [XMLNS]. Although this specification associates a specific XML namespace prefix with 
+each XML namespace that is used, the choice of any particular XML namespace prefix is 
+implementation-specific and is not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+wsi http://ws-i.org/schemas/conformanceClaim/ [WSIBASIC] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1], [XMLSCHEMA2] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+The following table summarizes the set of common XML schema element definitions that are defined 
+by this specification. XML schema element definitions that are specific to a particular operation are 
+defined with the operation. 
+
+12 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Description 
+
+And Specifies a search expression that performs a Boolean AND operation 
+between two or more search expressions. 
+
+Contains Specifies a search expression that determines whether a given property 
+contains the supplied constant string value. 
+
+Excludes  Specifies a search expression that performs a bitwise mask of the specified 
+property and a supplied value. 
+
+Exists Specifies a search expression that determines whether the specified 
+property exists on an item. 
+
+IsEqualTo Specifies a search expression that compares a property value with either a 
+constant value or another property value and evaluates to true if the two 
+are equal. 
+
+IsGreaterThan Specifies a search expression that compares a property with either a 
+constant value or another property value and evaluates to true if the first 
+property is greater than the second. 
+
+IsGreaterThanOrEqualTo Specifies a search expression that compares a property with either a 
+constant value or another property and evaluates to true if the first 
+property is greater than or equal to the second. 
+
+IsLessThan Specifies a search expression that compares a property to either a constant 
+value or another property and evaluates to true if the first property is less 
+than the second. 
+
+IsLessThanOrEqualTo Specifies a search expression that compares a property to either a constant 
+value or another property and evaluates to true if the first property is less 
+than or equal to the second. 
+
+IsNotEqualTo Specifies a search expression that compares a property value with either a 
+constant value or another property value and evaluates to true if the two 
+are not the same. 
+
+Not Specifies a search expression that negates the Boolean value of a search 
+expression that it contains. 
+
+Or Specifies a search expression that performs a Boolean OR operation on two 
+or more search expressions. 
+
+PerformInstantSearch For internal use only. 
+
+PerformInstantSearchResponse For internal use only. 
+
+SearchExpression Specifies the base schema type for all search expressions. This type is 
+abstract and will never occur directly within instance documents. 
+
+ 
+
+2.2.3.1 tns:And Element 
+
+The And element specifies a search expression that performs a Boolean AND operation between two 
+or more search expressions. The AND operation evaluates to TRUE if all the search expressions that 
+are contained within the And element are TRUE. 
+
+ 
+ <xs:element name="And"  
+   type="t:AndType" 
+   substitutionGroup="t:SearchExpression" 
+
+13 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ /> 
+
+2.2.3.2 tns:Contains Element 
+
+The Contains element specifies a search expression that determines whether a given property 
+contains the supplied constant string value. 
+
+ <xs:element name="Contains" 
+  type="t:ContainsExpressionType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+
+2.2.3.3 tns:Excludes Element 
+
+The Excludes element specifies a search expression that performs a bitwise mask of the specified 
+property and a supplied value. 
+
+ <xs:element name="Excludes" 
+  type="t:ExcludesType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+ 
+
+2.2.3.4 tns:Exists Element 
+
+The Exists element specifies a search expression that determines whether the specified property 
+exists on an item. The Exists element evaluates to true if the specified property exists on the item. 
+
+ <xs:element name="Exists" 
+  type="t:ExistsType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+ 
+
+2.2.3.5 tns:IsEqualTo Element 
+
+The IsEqualTo element specifies a search expression that compares a property value with either a 
+constant value or another property value and evaluates to true if they are equal. 
+
+ <xs:element name="IsEqualTo" 
+  type="t:IsEqualToType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+
+2.2.3.6 tns:IsGreaterThan Element 
+
+The IsGreaterThan element specifies a search expression that compares a property with either a 
+constant value or another property and evaluates to true if the first property is greater. 
+
+ <xs:element name="IsGreaterThan" 
+  type="t:IsGreaterThanType" 
+  substitutionGroup="t:SearchExpression" 
+
+14 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ /> 
+
+2.2.3.7 tns:IsGreaterThanOrEqualTo Element 
+
+The IsGreaterThanOrEqualTo element specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to true if the first property is greater than 
+or equal to the second. 
+
+ <xs:element name="IsGreaterThanOrEqualTo" 
+  type="t:IsGreaterThanOrEqualToType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+
+2.2.3.8 tns:IsLessThan Element 
+
+The IsLessThan element specifies a search expression that compares a property to either a constant 
+value or another property and evaluates to true if the first property is less than the second. 
+
+ <xs:element name="IsLessThan" 
+  type="t:IsLessThanType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+
+2.2.3.9 tns:IsLessThanOrEqualTo Element 
+
+The IsLessThanOrEqualTo element specifies a search expression that compares a property to either 
+a constant value or another property and evaluates to true if the first property is less than or equal to 
+the second. 
+
+ <xs:element name="IsLessThanOrEqualTo" 
+  type="t:IsLessThanOrEqualToType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+ 
+
+2.2.3.10 tns:IsNotEqualTo Element 
+
+The IsNotEqualTo element specifies a search expression that compares a property value with either 
+a constant value or another property value and evaluates to true if they are not the same. 
+
+ <xs:element name="IsNotEqualTo" 
+  type="t:IsNotEqualToType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+
+2.2.3.11 tns:Not Element 
+
+The Not element specifies a search expression that negates the Boolean value of a search expression 
+that it contains. 
+
+ <xs:element name="Not" 
+  type="t:NotType" substitutionGroup="t:SearchExpression" 
+ /> 
+
+15 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.3.12 tns:Or Element 
+
+The Or element specifies a search expression that performs a logical OR on the search expressions 
+that it contains and evaluates to true if any of the search expressions evaluate to true. 
+
+ <xs:element name="Or" 
+  type="t:OrType" 
+  substitutionGroup="t:SearchExpression" 
+ /> 
+
+2.2.3.13 PerformInstantSearch Element 
+
+The PerformInstantSearch element is for internal use only.<1> 
+
+ <xs:element name="PerformInstantSearch"  
+  type="m:PerformInstantSearchRequest" 
+ /> 
+
+2.2.3.14 PerformInstantSearchResponse Element 
+
+The PerformInstantSearchResponse element is for internal use only.<2>  
+
+ <xs:element name="PerformInstantSearchResponse"  
+  type="m:PerformInstantSearchResponse" 
+ /> 
+
+2.2.3.15 tns:SearchExpression Element 
+
+The SearchExpression element specifies the base schema type for all search expressions. This type 
+is abstract and will never occur directly within instance documents. This type defines a substitution 
+group. 
+
+ <xs:element name="SearchExpression" 
+  type="t:SearchExpressionType" 
+ /> 
+ 
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions that are 
+defined by this specification. XML schema complex type definitions that are specific to a particular 
+operation are defined with the operation. 
+
+Complex type  Description 
+
+FindFolderResponseMessageType Specifies the result body for the FindFolder operation (section 
+3.1.4.1). 
+
+FindItemResponseMessageType Specifies the result body from the FindItem operation (section 
+3.1.4.2). 
+
+16 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type  Description 
+
+AndType Specifies a search expression that performs a Boolean AND 
+operation between two or more search expressions. 
+
+ArrayOfCalendaryItemsType Specifies an array of CalendarItemType complex types ([MS-
+OXWSMTGS] section 2.2.4.6). 
+
+ArrayOfGroupedItemsType Specifies an array of items that are returned by the FindItem 
+operation. 
+
+ArrayOfItemsType Specifies an array of ItemType complex types ([MS-OXWSCORE] 
+section 2.2.4.24). 
+
+BasePagingType Specifies the base type for derived types that specify paged 
+views. 
+
+ContainsExpressionType Specifies a search expression that determines whether a given 
+property contains the supplied constant string value. 
+
+ExcludesType Specifies a bitwise mask of a property for an exclude search 
+restriction. 
+
+ExcludesValueType Specifies a hexadecimal or decimal mask for an exclude search 
+restriction. 
+
+ExistsType Specifies a search restriction that resolves to true if the supplied 
+property exists on an item. 
+
+FindFolderParentType Specifies the results of searching a single Root folder during a 
+FindFolder operation, as specified in section 3.1.4.1. 
+
+FindItemParentType Specifies the results of searching a single Root folder during a 
+FindItem operation, as specified in section 3.1.4.2. 
+
+FractionalPageViewType Specifies where a paged view starts and the maximum number of 
+items that are returned. 
+
+GroupedItemsType Specifies a collection of items that are the result of a grouped 
+FindItem operation. 
+
+IndexedPageViewType Specifies how paged item information is returned by the 
+FindItem or the FindFolder operation. 
+
+InstantSearchPayloadType For internal use only. 
+
+IsEqualToType Specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to 
+"true" if they are equal. 
+
+IsGreaterThanOrEqualToType Specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to 
+"true" if the first property is greater than or equal to the second. 
+
+IsGreaterThanType Specifies a search expression that compares a property with 
+either a constant value or another property and returns "true" if 
+the first property is greater. 
+
+IsLessThanOrEqualToType Specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to true 
+if the first property is less than or equal to the second. 
+
+IsLessThanType Specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to true 
+if the first property is less than the second. 
+
+17 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type  Description 
+
+IsNotEqualToType Specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to true 
+if the values are not the same. 
+
+MultipleOperandBooleanExpressionType Specifies the base type for search expressions that are formed by 
+two or more Boolean operands. 
+
+NotType Specifies a search expression that negates the Boolean value of 
+the search expression that it contains. 
+
+OrType Specifies a search expression that performs a logical OR on the 
+search expression that it contains. 
+
+PerformInstantSearchRequest For internal use only. 
+
+PerformInstantSearchResponse For internal use only. 
+
+RestrictionType Specifies a search restriction or query for the FindItem operation 
+or the FindFolder operation. 
+
+SearchExpressionType Specifies the base type for all search expressions. 
+
+SearchFolderType Specifies a representation of a search folder that is contained in 
+a mailbox. 
+
+SearchParametersType Specifies the search parameters that define the contents of a 
+search folder. 
+
+SeekToConditionPageViewType Specifies a condition that has to be met in order for an item to be 
+included in the result set that is returned by the FindItem 
+operation or the FindFolder operation.<3> 
+
+TwoOperandExpressionType Specifies the base type for derived classes that represent a 
+restriction that is formed by comparing two values against one 
+another. 
+
+QueryStringType  Specifies a query string.<4> 
+
+ 
+
+2.2.4.1 t:AndType Complex Type 
+
+The AndType complex type specifies a search expression that performs a Boolean AND operation 
+between two or more search expressions. The result of the AND operation is TRUE if all the search 
+expressions that are contained within the AndType complex type are true. The AndType complex 
+type extends the MultipleOperandBooleanExpressionType complex type, as specified in section 
+2.2.4.24. 
+
+ <xs:complexType name="AndType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:MultipleOperandBooleanExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+18 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.2 t:ArrayOfCalendarItemsType Complex Type 
+
+The ArrayOfCalendarItemsType complex type specifies an array of calendar items that are returned 
+in a search.<5> 
+
+ <xs:complexType name="ArrayOfCalendarItemsType"> 
+  <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+    <xs:element name="CalendarItem" type="t:CalendarItemType"/> 
+  </xs:choice> 
+ </xs:complexType> 
+
+The following table describes the child element of the ArrayOfCalendarItemsType complex type. 
+
+Element Type Description 
+
+CalendarItem t:CalendarItemType A calendar 
+([MS-OXWSMTGS] item. 
+section 2.2.4.6) 
+
+ 
+
+2.2.4.3 t:ArrayOfGroupedItemsType Complex Type 
+
+The ArrayOfGroupedItemsType complex type specifies an array of items that are returned by the 
+FindItem operation, as specified in section 3.1.4.2. 
+
+ <xs:complexType name="ArrayOfGroupedItemsType"> 
+  <xs:choice> 
+    <xs:element name="GroupedItems" type="t:GroupedItemsType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the ArrayOfGroupedItemsType complex type. 
+
+Element Type Description 
+
+GroupedItems t:GroupedItemsType (section Specifies an array of items that are returned by the 
+2.2.4.15) FindItem operation. 
+
+ 
+
+2.2.4.4 t:ArrayOfItemsType Complex Type 
+
+The ArrayOfItemsType complex type specifies an array of items that are returned in a search.<6> 
+
+ <xs:complexType name="ArrayOfItemsType"> 
+  <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+    <xs:element name="Item" type="t:ItemType"/> 
+  </xs:choice> 
+ </xs:complexType> 
+
+The following table describes the child element of the ArrayOfItemsType complex type. 
+
+19 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+Item t:ItemType ([MS-OXWSCORE] A generic item. 
+section 2.2.4.24) 
+
+ 
+
+2.2.4.5 t:BasePagingType Complex Type 
+
+The BasePagingType complex type specifies the base type for derived types that specify paged 
+views. 
+
+ <xs:complexType name="BasePagingType" 
+  abstract="true" 
+ > 
+  <xs:attribute name="MaxEntriesReturned" 
+    type="xs:int" 
+    use="optional" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the attribute definition for the BasePagingType complex type. 
+
+Attribute Type Description 
+
+MaxEntriesReturned xs:int Specifies the maximum number of entries that are returned with 
+[XMLSCHEMA2] each page of the response. This attribute can be specified. 
+
+ 
+
+2.2.4.6 t:ContainsExpressionType Complex Type 
+
+The ContainsExpressionType complex type specifies a search expression that determines whether a 
+given property contains the supplied constant string value. The ContainsExpressionType complex 
+type extends the SearchExpressionType complex type, as specified in section 2.2.4.31. 
+
+ <xs:complexType name="ContainsExpressionType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:SearchExpressionType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          ref="t:Path" 
+         /> 
+        <xs:element name="Constant" 
+          type="t:ConstantValueType" 
+         /> 
+      </xs:sequence> 
+      <xs:attribute name="ContainmentMode" 
+        type="t:ContainmentModeType" 
+        use="optional" 
+       /> 
+      <xs:attribute name="ContainmentComparison" 
+        type="t:ContainmentComparisonType" 
+        use="optional" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+20 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+The following table lists the child elements of the ContainsExpressionType complex type. 
+
+Element Type Description 
+
+Path t:Path ([MS-OXWSCDATA] Specifies the property to use in a contains search expression. The 
+section 2.2.3.8) Path element specifies a substitution group, as specified in 
+
+[XMLSCHEMA0]. An element that is represented by the Path 
+element substitutionGroup attribute MUST be present. 
+
+Constant t:ConstantValueType ([MS- Specifies a constant value for a search restriction.  
+OXWSCDATA] section 
+2.2.4.23) 
+
+The following table lists the attribute definitions for the ContainsExpressionType complex type. 
+
+Attribute Type Description 
+
+ContainmentMode t:ContainmentModeType (section 2.2.5.2) Specifies the boundaries of a 
+search. 
+
+ContainmentComparison t:ContainmentComparisonType (section Specifies whether a search ignores 
+2.2.5.1) cases and spaces. 
+
+ 
+
+2.2.4.7 t:ExcludesType Complex Type 
+
+The ExcludesType complex type specifies a bitwise mask of a property for an exclude search 
+restriction. The ExcludesType complex type extends the SearchExpressionType complex type, as 
+specified in section 2.2.4.31. 
+
+ <xs:complexType name="ExcludesType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:SearchExpressionType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          ref="t:Path" 
+         /> 
+        <xs:element name="Bitmask" 
+          type="t:ExcludesValueType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ExcludesType complex type. 
+
+Element Type Description 
+
+Path t:Path ([MS-OXWSCDATA] Specifies the property to use in an excludes search expression. The 
+section 2.2.3.8) Path element specifies a substitution group, as specified in 
+
+[XMLSCHEMA0]. An element that is represented by the Path element 
+substitutionGroup attribute MUST be present. 
+
+21 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+Bitmask t:ExcludesValueType Specifies a hexadecimal or decimal mask for an excludes restriction. 
+(section 2.2.4.8) 
+
+An excludes restriction can only be applied to a property that has an integer value. 
+
+2.2.4.8 t:ExcludesValueType Complex Type 
+
+The ExcludesValueType complex type specifies a hexadecimal or decimal mask for a restriction that 
+excludes some results. 
+
+ <xs:complexType name="ExcludesValueType"> 
+  <xs:attribute name="Value" 
+    type="t:ExcludesAttributeType" 
+    use="required" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the attribute definition for the ExcludesValueType complex type. 
+
+Attribute  Type Description 
+
+Value t:ExcludesAttributeType ([MS-OXWSCDATA] Specifies a decimal or hexadecimal bitmask for 
+section 2.2.5.15) an exclude restriction. 
+
+ 
+
+ 
+
+2.2.4.9 t:ExistsType Complex Type 
+
+The ExistsType complex type specifies a search restriction that resolves to true if the supplied 
+property exists on an item. The ExistsType complex type extends the SearchExpressionType 
+complex type, as specified in section 2.2.4.31. 
+
+ <xs:complexType name="ExistsType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:SearchExpressionType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          ref="t:Path" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the ExistsType complex type. 
+
+Element  Type Description 
+
+Path Path ([MS- Specifies the property to use in an excludes search expression. The Path 
+OXWSCDATA] element specifies a substitution group, as specified in [XMLSCHEMA0]. An 
+
+element that is represented by the Path element substitutionGroup 
+
+22 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element  Type Description 
+
+section 2.2.3.8) attribute MUST be present. 
+
+ 
+
+2.2.4.10 t:FindFolderParentType Complex Type 
+
+The FindFolderParentType complex type specifies an array of folders and paging information that 
+are returned in the results of a call to the FindFolder operation, as specified in section 3.1.4.1. 
+
+ <xs:complexType name="FindFolderParentType"> 
+  <xs:sequence> 
+    <xs:element name="Folders" type="t:ArrayOfFoldersType" minOccurs="0"/> 
+  </xs:sequence> 
+  <xs:attributeGroup 
+    ref="t:FindResponsePagingAttributes" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the FindFolderParentType complex type. 
+
+Element Type Description 
+
+Folders t:ArrayOfFoldersType ([MS-OXWSFOLD] section 2.2.4.2) Specifies the folders in the result set. 
+
+The following table lists the attribute group that is defined for the FindFolderParentType complex 
+type. 
+
+Attribute group Description 
+
+t:FindResponsePagingAttributes ([MS-OXWSCDATA] Specifies zero or more attributes that describe 
+section 2.2.8.1) the result set. 
+
+ 
+
+2.2.4.11 m:FindFolderResponseMessageType Complex Type 
+
+The FindFolderResponseMessageType complex type specifies the response message for the 
+FindFolder operation, as specified in section 3.1.4.1. The FindFolderResponseMessageType 
+complex type extends the ResponseMessageType complex type, as specified in [MS-OXWSCDATA] 
+section 2.2.4.65. 
+
+ <xs:complexType name="FindFolderResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="RootFolder" type="t:FindFolderParentType" minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+ 
+
+23 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table lists the child element of the FindFolderResponseMessageType complex type. 
+
+Element  Type Description 
+
+RootFolder t:FindFolderParentType (section Specifies an array of folders and paging information that is 
+2.2.4.10) returned by the FindFolder operation.  
+
+ 
+
+2.2.4.12 t:FindItemParentType Complex Type 
+
+The FindItemParentType complex type specifies the results of a search of a single Root folder. 
+
+ <xs:complexType name="FindItemParentType"> 
+  <xs:choice> 
+    <xs:element name="Items" 
+      type="t:ArrayOfRealItemsType" 
+     /> 
+    <xs:element name="Groups" 
+      type="t:ArrayOfGroupedItemsType" 
+     /> 
+  </xs:choice> 
+  <xs:attributeGroup 
+    ref="t:FindResponsePagingAttributes" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the FindItemParentType complex type. 
+
+Element Type Description 
+
+Items t:ArrayOfRealItemsType ([MS-OXWSCDATA] Specifies the results of a search in which the 
+section 2.2.4.10) items returned are not grouped. 
+
+Groups t:ArrayOfGroupedItemsType (section 2.2.4.3) Specifies the grouped results of a search. 
+
+The following table lists the attribute group that is defined for the FindItemParentType complex 
+type. 
+
+Attribute group Description 
+
+t:FindResponsePagingAttributes ([MS-OXWSCDATA] Specifies zero or more attributes that describe 
+section 2.2.8.1) the result set. 
+
+If a GroupBy or DistinguishedGroupBy element was specified in the FindItemType complex type, 
+as specified in section 3.1.4.2.3.2, instance that was sent to the FindItem operation, as specified in 
+section 3.1.4.2, any results of the operation are returned in the Groups element; otherwise, the 
+results are returned in the Items element. 
+
+2.2.4.13 m:FindItemResponseMessageType Complex Type 
+
+The FindItemResponseMessageType complex type specifies the result body from the FindItem 
+operation, as specified in section 3.1.4.2. The FindItemResponseMessageType complex type 
+extends the ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 
+2.2.4.65. 
+
+ <xs:complexType name="FindItemResponseMessageType"> 
+
+24 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element name="RootFolder" type="t:FindItemParentType" minOccurs="0"/> 
+        <xs:element name="HighlightTerms" type="t:ArrayOfHighlightTermsType" minOccurs="0"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the FindItemResponseMessageType complex type. 
+
+Element Type Description 
+
+RootFolder t:FindItemParentType (section 2.2.4.12) Specifies the Root folder of the response. 
+
+HighlightTerms t:ArrayOfHighlightTermsType ([MS- Specifies an array of highlight terms. 
+OXWSCDATA] section 2.2.4.8) 
+
+ 
+
+2.2.4.14 t:FractionalPageViewType Complex Type 
+
+The FractionalPageViewType complex type specifies where a paged view starts and the maximum 
+number of items that are returned. The FractionalPageViewType complex type extends the 
+BasePagingType complex type, as specified in section 2.2.4.5. 
+
+ <xs:complexType name="FractionalPageViewType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:BasePagingType" 
+    > 
+      <xs:attribute name="Numerator" 
+        type="xs:int" 
+        use="required" 
+       /> 
+      <xs:attribute name="Denominator" 
+        type="xs:int" 
+        use="required" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the attributes that are defined for the FractionalPageViewType complex 
+type. 
+
+Attribute Type Description 
+
+Denominator xs:int Specifies the denominator of the fractional offset from the start of the 
+[XMLSCHEMA2] total number of items in the result set. 
+
+Numerator xs:int Specifies the numerator of the fractional offset from the start of the total 
+number of items in the result set. 
+
+ 
+
+25 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.15 t:GroupedItemsType Complex Type 
+
+The GroupedItemsType complex type specifies a collection of items that are the result of a grouped 
+FindItem operation, as specified in section 3.1.4.2. 
+
+ <xs:complexType name="GroupedItemsType"> 
+  <xs:sequence> 
+    <xs:element name="GroupIndex" 
+      type="xs:string" 
+     /> 
+    <xs:element name="Items" 
+      type="t:ArrayOfRealItemsType" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GroupedItemsType complex type. 
+
+Element Type Description 
+
+GroupIndex xs:string [XMLSCHEMA2] Specifies the property value that is used to 
+group the items. 
+
+Items t:ArrayOfRealItemsType ([MS-OXWSCDATA] Specifies the group of items that correspond 
+section 2.2.4.10) to the specified group value. 
+
+ 
+
+2.2.4.16 t:IndexedPageViewType Complex Type 
+
+The IndexedPageViewType complex type specifies how paged item information is returned by the 
+FindItem operation, as specified in section 3.1.4.2, or the FindFolder operation, as specified in 
+section 3.1.4.1. The IndexedPageViewType complex type extends the BasePagingType complex 
+type, as specified in section 2.2.4.5. 
+
+ <xs:complexType name="IndexedPageViewType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:BasePagingType" 
+    > 
+      <xs:attribute name="Offset" 
+        type="xs:int" 
+        use="required" 
+       /> 
+      <xs:attribute name="BasePoint" 
+        type="t:IndexBasePointType" 
+        use="required" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the attributes that are defined for the IndexedPageViewType complex type. 
+
+Attribute Type Description 
+
+Offset xs:int [XMLSCHEMA2] Specifies the offset from the BasePoint element. This attribute 
+
+26 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Attribute Type Description 
+
+MUST be specified. 
+
+BasePoint t:IndexBasePointType Specifies whether the page of items starts at the beginning or 
+(section 2.2.5.4) end of the set of items that were found by the search. This 
+
+attribute MUST be specified. 
+
+ 
+
+2.2.4.17 t:InstantSearchPayloadType Complex Type 
+
+The InstantSearchPayloadType complex type is for internal use only.<7> 
+
+ <xs:complexType name="InstantSearchPayloadType"> 
+  <xs:sequence> 
+    <xs:element name="SearchSessionId" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+    <xs:element name="SearchRequestId" type="xs:long" minOccurs="1" maxOccurs="1"/> 
+    <xs:element name="ResultType" type="t:InstantSearchResultType" minOccurs="1" 
+maxOccurs="1"/> 
+    <xs:element name="Items" type="t:ArrayOfItemsType" minOccurs="0" maxOccurs="1"/> 
+    <xs:element name="Conversations" type="t:ArrayOfConversationsType" minOccurs="0" 
+maxOccurs="1"/> 
+    <xs:element name="CalendarItems" type="t:ArrayOfCalendarItemsType" minOccurs="0" 
+maxOccurs="1"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists the child elements of the InstantSearchPayloadType complex type. 
+
+Element Type Description 
+
+SearchSessionId xs:string ([XMLSCHEMA2] ) For internal use only. 
+
+SearchRequestId xs:long ([XMLSCHEMA2] ) For internal use only. 
+
+ResultType t:InstantSearchResultType For internal use only. 
+(section 2.2.5.6) 
+
+Items t:ArrayOfItemsType (section For internal use only. 
+2.2.4.4) 
+
+Conversations t:ArrayOfConversationsType For internal use only. 
+([MS-OXWSCONV] section 
+3.1.4.2.3.1) 
+
+CalendarItems t:ArrayOfCalendarItemsType For internal use only. 
+(section 2.2.4.2) 
+
+ 
+
+2.2.4.18 t:IsEqualToType Complex Type 
+
+The IsEqualToType complex type specifies a search expression that compares a property with either 
+a constant value or another property and evaluates to true if they are equal. The IsEqualToType 
+complex type extends the TwoOperandExpressionType complex type, as specified in section 
+2.2.4.35. 
+
+ <xs:complexType name="IsEqualToType"> 
+  <xs:complexContent> 
+
+27 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:extension 
+      base="t:TwoOperandExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+2.2.4.19 t:IsGreaterThanOrEqualToType Complex Type 
+
+The IsGreaterThanOrEqualToType complex type specifies a search expression that compares a 
+property with either a constant value or another property and evaluates to "true" if the first property 
+is greater than or equal to the second. The IsGreaterThanOrEqualToType complex type extends 
+the TwoOperandExpressionType complex type, as specified in section 2.2.4.35. 
+
+ <xs:complexType name="IsGreaterThanOrEqualToType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:TwoOperandExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+2.2.4.20 t:IsGreaterThanType Complex Type 
+
+The IsGreaterThanType complex type specifies a search expression that compares a property with 
+either a constant value or another property and returns "true" if the first property is greater. The 
+IsGreaterThanType complex type extends the TwoOperandExpressionType complex type, as 
+specified in section 2.2.4.35. 
+
+ <xs:complexType name="IsGreaterThanType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:TwoOperandExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+2.2.4.21 t:IsLessThanOrEqualToType Complex Type 
+
+The IsLessThanOrEqualToType complex type specifies a search expression that compares a 
+property with either a constant value or another property and evaluates to "true" if the first property 
+is less than or equal to the second. The IsLessThanOrEqualToType complex type extends the 
+TwoOperandExpressionType complex type, as specified in section 2.2.4.35. 
+
+ <xs:complexType name="IsLessThanOrEqualToType"> 
+  <xs:complexContent> 
+    <xs:extension 
+
+      base="t:TwoOperandExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+28 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.22 t:IsLessThanType Complex Type 
+
+The IsLessThanType complex type specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to "true" if the first property is less than the 
+second. The IsLessThanType complex type extends the TwoOperandExpressionType complex 
+type, as specified in section 2.2.4.35. 
+
+ <xs:complexType name="IsLessThanType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:TwoOperandExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+2.2.4.23 t:IsNotEqualToType Complex Type 
+
+The IsNotEqualToType complex type specifies a search expression that compares a property with 
+either a constant value or another property and evaluates to "true" if the values are not the same. The 
+IsNotEqualToType complex type extends the TwoOperandExpressionType complex type, as 
+specified in section 2.2.4.35. 
+
+ <xs:complexType name="IsNotEqualToType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:TwoOperandExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+2.2.4.24 t:MultipleOperandBooleanExpressionType Complex Type 
+
+The MultipleOperandBooleanExpressionType complex type specifies the base type for search 
+expressions that are formed by two or more Boolean operands. The 
+MultipleOperandBooleanExpressionType complex type extends the SearchExpressionType 
+complex type, as specified in section 2.2.4.31. 
+
+ <xs:complexType name="MultipleOperandBooleanExpressionType" 
+  abstract="true" 
+ > 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:SearchExpressionType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          minOccurs="1" 
+          maxOccurs="unbounded" 
+          ref="t:SearchExpression" 
+         /> 
+
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+29 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table lists the child element of the MultipleOperandBooleanExpressionType complex 
+type. 
+
+Element Type Description 
+
+SearchExpression t:SearchExpression (section 2.2.3.15) Specifies a search expression. 
+
+ 
+
+2.2.4.25 t:NotType Complex Type 
+
+The NotType complex type specifies a search expression that negates the Boolean value of the search 
+expression that it contains. The NotType complex type extends the SearchExpressionType complex 
+type, as specified in section 2.2.4.31. 
+
+ <xs:complexType name="NotType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:SearchExpressionType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          ref="t:SearchExpression" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the NotType complex type. 
+
+Element Type Description 
+
+SearchExpression t:SearchExpression (section 2.2.3.15) Specifies a search expression. 
+
+ 
+
+2.2.4.26 t:OrType Complex Type 
+
+The OrType complex type specifies a search expression that performs a logical OR on the search 
+expression that it contains. The result of the OR operation is TRUE if any of the search expressions 
+that are contained within the OrType complex type is true. The OrType complex type extends the 
+MultipleOperandBooleanExpressionType complex type, as specified in section 2.2.4.24. 
+
+ <xs:complexType name="OrType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:MultipleOperandBooleanExpressionType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+ 
+
+2.2.4.27 m:PerformInstantSearchRequest Complex Type 
+
+The PerformInstantSearchRequest complex type is for internal use only.<8>  
+
+30 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:complexType name="PerformInstantSearchRequest"> 
+  <xs:complexContent> 
+    <xs:extension base="m:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element name="SearchSessionId" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+        <xs:element name="ItemType" type="t:InstantSearchItemType" minOccurs="1" 
+maxOccurs="1"/> 
+        <xs:element name="QueryOptions" type="t:QueryOptionsType" minOccurs="1" 
+maxOccurs="1"/> 
+        <xs:element name="SearchRequestId" type="xs:long" minOccurs="1" maxOccurs="1"/> 
+        <xs:element name="KqlQuery" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+        <xs:element name="FolderScope" type="t:ArrayOfFolderIdType" minOccurs="1" 
+maxOccurs="1"/> 
+        <xs:element name="DistinguishedFolderScope" type="t:ArrayOfDistinguishedFolderIdType" 
+minOccurs="0" maxOccurs="1"/> 
+        <xs:element name="IsDeepTraversal" type="xs:boolean" minOccurs="0" maxOccurs="1"/> 
+        <xs:element name="WaitOnSearchResults" type="xs:boolean" minOccurs="0" 
+maxOccurs="1"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+The following table lists the child elements of the PerformInstantSearchRequest complex type. 
+
+Element Type Description 
+
+SearchSessionId xs:string ([XMLSCHEMA2] ) For internal use only. 
+
+ItemType t:InstantSearchItemType (section For internal use only. 
+2.2.5.5) 
+
+QueryOptions t:QueryOptionsType (section 2.2.5.8) For internal use only. 
+
+SearchRequestId xs:long ([XMLSCHEMA2] ) For internal use only. 
+
+KqlQuery xs:string For internal use only. 
+
+FolderScope t:ArrayOfFolderIdType ([MS- For internal use only. 
+OXWSPERS] section 2.2.4.4) 
+
+DistinguishedFolderScope t:ArrayOfDistinguishedFolderIdType For internal use only. 
+([MS-OXWSCDATA] section 2.2.4.6) 
+
+IsDeepTraversal xs:boolean ([XMLSCHEMA2] ) For internal use only. 
+
+WaitOnSearchResults xs:boolean For internal use only. 
+
+ 
+
+2.2.4.28 m:PerformInstantSearchResponse Complex Type 
+
+The PerformInstantSearchResponse complex type is for internal use only.<9> 
+
+ <xs:complexType name="PerformInstantSearchResponse"> 
+  <xs:complexContent> 
+    <xs:extension base="m:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element name="Payload" type="t:InstantSearchPayloadType" minOccurs="0" 
+maxOccurs="1"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+
+31 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </xs:complexType> 
+
+The following table lists the child element of the PerformInstantSearchResponse complex type. 
+
+Element Type Description 
+
+Payload t:InstantSearchPayloadType For internal use only. 
+(section 2.2.4.17) 
+
+ 
+
+2.2.4.29 m:QueryStringType Complex Type 
+
+The QueryStringType complex type specifies a query string. 
+
+ <xs:complexType name="QueryStringType"> 
+  <xs:simpleContent> 
+    <xs:extension base="xs:string"> 
+      <xs:attribute name="ResetCache" type="xs:boolean" use="optional"/> 
+      <xs:attribute name="ReturnHighlightTerms" type="xs:boolean" use="optional"/> 
+      <xs:attribute name="ReturnDeletedItems" type="xs:boolean" use="optional"/> 
+    </xs:extension> 
+  </xs:simpleContent> 
+ </xs:complexType> 
+
+The following table lists and describes the attributes of the QueryStringType complex type. 
+
+Attribute Type Description 
+
+ResetCache xs:boolean ([XMLSCHEMA2]) Specifies whether to clear the 
+cache. 
+
+ReturnHighlightTerms xs:boolean Specifies whether to return 
+highlighted terms in the search. 
+
+ReturnDeletedItems xs:boolean Specifies whether to return deleted 
+items in the search. 
+
+ 
+
+2.2.4.30 t:RestrictionType Complex Type 
+
+The RestrictionType complex type specifies a search restriction or query for a FindItem operation, 
+as specified in section 3.1.4.2, or a FindFolder operation, as specified in section 3.1.4.1. 
+
+ <xs:complexType name="RestrictionType"> 
+  <xs:sequence> 
+    <xs:element 
+      ref="t:SearchExpression" 
+     /> 
+
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the RestrictionType complex type. 
+
+32 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+SearchExpression t:SearchExpression (section Specifies the search term that defines the 
+2.2.3.15) restriction. 
+
+ 
+
+2.2.4.31 t:SearchExpressionType Complex Type 
+
+The SearchExpressionType complex type specifies the base type for all search expressions. 
+
+ <xs:complexType name="SearchExpressionType" 
+  abstract="true" 
+ /> 
+ 
+
+2.2.4.32 t:SearchFolderType Complex Type 
+
+The SearchFolderType complex type specifies a representation of a search folder that is contained in a 
+mailbox. This type extends the FolderType complex type, as specified in [MS-OXWSFOLD] section 
+2.2.4.12. 
+
+ <xs:complexType name="SearchFolderType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:FolderType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="SearchParameters" 
+          type="t:SearchParametersType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the SearchFolderType complex type. 
+
+Element name Type Description 
+
+SearchParameters t:SearchParametersType (section Specifies the search parameters that define the contents 
+2.2.4.33) of the search folder. This element can be present. 
+
+ 
+
+2.2.4.33 t:SearchParametersType Complex Type 
+
+The SearchParametersType complex type specifies the search parameters that define the contents of a 
+search folder. 
+
+ <xs:complexType name="SearchParametersType"> 
+  <xs:sequence> 
+    <xs:element name="Restriction" 
+      type="t:RestrictionType" 
+     /> 
+    <xs:element name="BaseFolderIds" 
+
+33 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      type="t:NonEmptyArrayOfBaseFolderIdsType" 
+     /> 
+  </xs:sequence> 
+  <xs:attribute name="Traversal" 
+    type="t:SearchFolderTraversalType" 
+   /> 
+ </xs:complexType> 
+
+The following table lists the child elements of the SearchParametersType complex type. 
+
+Element 
+name Type Description 
+
+Restriction t:RestrictionType (section 2.2.4.30) Specifies the query that defines the 
+contents of a search folder. 
+
+BaseFolderIds t:NonEmptyArrayOfBaseFolderIdsType ([MS- Specifies an array of folder identifiers 
+OXWSFOLD] section 3.1.4.6.3.3) that identify the folders that are 
+
+searched. 
+
+The following table lists the attributes that are defined for the SearchParametersType complex type. 
+
+Attribute 
+name Type Description 
+
+Traversal t:SearchFolderTraversalType (section Specifies the depth of a search folder subtree 
+2.2.5.9) traversal. 
+
+ 
+
+2.2.4.34 t:SeekToConditionPageViewType Complex Type 
+
+The SeekToConditionPageViewType complex type specifies a condition that has to be satisfied in 
+order to include an item in the result set from the FindItem operation, as specified in section 3.1.4.2, 
+or the FindFolder operation, as specified in section 3.1.4.1.  The SeekToConditionPageViewType 
+complex type extends the BasePagingType complex type, as specified in section 2.2.4.5.<10> 
+
+  <xs:complexType name="SeekToConditionPageViewType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:BasePagingType"> 
+        <xs:sequence> 
+          <xs:element name="Condition" type="t:RestrictionType"  
+             minOccurs="1" 
+          /> 
+        </xs:sequence> 
+        <xs:attribute name="BasePoint" type="t:IndexBasePointType"  
+           use="required" 
+        /> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+The following table lists the child element of the SeekToConditionPageViewType complex type. 
+
+Element Type Description 
+
+Condition t:RestrictionType (section Specifies the search term used to determine if an item is to be 
+2.2.4.30) included in the result set. 
+
+34 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table lists the attribute of the SeekToConditionPageViewType complex type. 
+
+Attribute Type Description 
+
+BasePoint t:IndexBasePointType (section Specifies whether the search term SHOULD be applied from 
+2.2.5.4) the beginning or end of the result set. 
+
+ 
+
+2.2.4.35 t:TwoOperandExpressionType Complex Type 
+
+The TwoOperandExpressionType complex type specifies the base type for derived classes that 
+represent a restriction that is formed by comparing two values against one another. The 
+TwoOperandExpressionType complex type extends the SearchExpressionType complex type, as 
+specified in section 2.2.4.31. 
+
+ <xs:complexType name="TwoOperandExpressionType" 
+  abstract="true" 
+ > 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:SearchExpressionType" 
+    > 
+      <xs:sequence> 
+        <xs:element 
+          ref="t:Path" 
+         /> 
+        <xs:element name="FieldURIOrConstant" 
+          type="t:FieldURIOrConstantType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the TwoOperandExpressionType complex type. 
+
+Element Type Description 
+
+Path t:Path ([MS-OXWSCDATA] section 2.2.3.8) Specifies the property path that is 
+searched on for each item or folder in a 
+search. 
+
+FieldURIOrConstant t:FieldURIOrConstantType ([MS- Specifies the property or constant that is 
+OXWSCDATA] section 2.2.4.34) compared with each item or folder in a 
+
+restriction. 
+
+ 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions that are 
+defined by this specification. XML schema simple type definitions that are specific to a particular 
+operation are defined with the operation. 
+
+Simple type Description 
+
+ContainmentComparisonType Specifies whether a search is exact or whether it ignores casing and spaces. 
+
+35 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Simple type Description 
+
+ContainmentModeType Specifies the search boundaries. 
+
+FolderQueryTraversalType Specifies the types of subtree traversals for deletion and enumeration. 
+
+IndexBasePointType Specifies whether a page of items that are returned starts at the beginning or 
+at the end of the set of items that are found by the search. 
+
+InstantSearchItemType For internal use only. 
+
+InstantSearchResultType For internal use only. 
+
+ItemQueryTraversalType Specifies whether a search finds items in folders or in the Deleted Items 
+folder. 
+
+QueryOptionsType For internal use only. 
+
+SearchFolderTraversalType Specifies the options for how a folder hierarchy is searched when the contents 
+of a search folder are identified. 
+
+ 
+
+2.2.5.1 t:ContainmentComparisonType Simple Type 
+
+The ContainmentComparisonType simple type specifies whether a search is exact or whether it 
+ignores casing and spaces. 
+
+ <xs:simpleType name="ContainmentComparisonType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Exact" 
+     /> 
+    <xs:enumeration 
+      value="IgnoreCase" 
+     /> 
+    <xs:enumeration 
+      value="IgnoreNonSpacingCharacters" 
+     /> 
+    <xs:enumeration 
+      value="Loose" 
+     /> 
+    <xs:enumeration 
+      value="IgnoreCaseAndNonSpacingCharacters" 
+     /> 
+    <xs:enumeration 
+      value="LooseAndIgnoreCase" 
+     /> 
+    <xs:enumeration 
+      value="LooseAndIgnoreNonSpace" 
+     /> 
+  </xs:restriction> 
+      value="LooseAndIgnoreCaseAndIgnoreNonSpace" 
+     /> 
+    <xs:enumeration 
+
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the ContainmentComparisonType simple 
+type. 
+
+36 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+Exact Specifies that the comparison MUST be exact. 
+
+IgnoreCase Specifies that the comparison ignores casing. 
+
+IgnoreCaseAndNonSpacingCharacters Specifies that the comparison ignores casing and non-spacing 
+characters. 
+
+IgnoreNonSpacingCharacters Specifies that the comparison ignores non-spacing characters. 
+
+Loose This value MUST NOT be used. 
+
+LooseAndIgnoreCase This value MUST NOT be used. 
+
+LooseAndIgnoreCaseAndIgnoreNonSpace This value MUST NOT be used. 
+
+LooseAndIgnoreNonSpace This value MUST NOT be used. 
+
+ 
+
+2.2.5.2 t:ContainmentModeType Simple Type 
+
+The ContainmentModeType simple type specifies the search boundaries. 
+
+ <xs:simpleType name="ContainmentModeType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration 
+      value="FullString" 
+     /> 
+    <xs:enumeration 
+      value="Prefixed" 
+     /> 
+    <xs:enumeration 
+      value="Substring" 
+     /> 
+    <xs:enumeration 
+      value="PrefixOnWords" 
+     /> 
+    <xs:enumeration 
+      value="ExactPhrase" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the ContainmentModeType simple type. 
+
+Value Meaning 
+
+ExactPhrase Specifies that the comparison is between the exact phrase in the property and the constant. If 
+the phrase and the supplied constant are the same, the expression resolves to true. 
+
+FullString Specifies that the comparison is between the full string value of the property and the constant. 
+If the property value and the supplied constant are the same, the expression resolves to true. 
+
+Prefixed Specifies that the comparison is between the prefix of the property and the constant. If the 
+prefix of the property value matches the value that is provided in the constant, the expression 
+resolves to true. 
+
+PrefixOnWords Specifies that the comparison is between a prefix on any individual word in the property value 
+and the constant. If any of the words are prefixed with a value that matches the value that is 
+
+37 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+provided in the constant, the expression resolves to true. 
+
+Substring Specifies that the comparison is between a substring of the property value and the constant. If 
+the substring exists anywhere in the property value, the expression resolves to true. 
+
+ 
+
+2.2.5.3 t:FolderQueryTraversalType Simple Type 
+
+The FolderQueryTraversalType simple type specifies the types of subtree traversals for deletion and 
+enumeration. 
+
+ <xs:simpleType name="FolderQueryTraversalType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration 
+      value="Shallow" 
+     /> 
+    <xs:enumeration 
+      value="Deep" 
+     /> 
+    <xs:enumeration 
+      value="SoftDeleted" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the FolderQueryTraversalType simple type. 
+
+Value Meaning 
+
+Deep Specifies a search in all subfolders of the identified parent folder and returns only the folder IDs for 
+items that have not been deleted. 
+
+Shallow Specifies a search in only the identified folder and returns only the folder IDs for items that have 
+not been deleted. 
+
+SoftDeleted Specifies a shallow traversal search for items that are in the Deleted Items folder. 
+
+ 
+
+2.2.5.4 t:IndexBasePointType Simple Type 
+
+The IndexBasePointType simple type specifies whether a page of items that are returned by the 
+FindFolder operation, as specified in section 3.1.4.1, or FindItem operation, as specified in section 
+3.1.4.2, start at the beginning or at the end of the set of items that are found by the search. 
+
+ <xs:simpleType name="IndexBasePointType"> 
+  <xs:restriction 
+
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Beginning" 
+     /> 
+    <xs:enumeration 
+      value="End" 
+     /> 
+  </xs:restriction> 
+
+38 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the IndexBasePointType simple type. 
+
+Value Meaning 
+
+Beginning Specifies that the page of items starts from the beginning of the set of items that are returned by the 
+search. 
+
+End Specifies that the page of items starts from the end of the set of items that are returned by the 
+search. 
+
+ 
+
+2.2.5.5 t:InstantSearchItemType Simple Type 
+
+The InstantSearchItemType simple type is for internal use only.<11> 
+
+ <xs:simpleType name="InstantSearchItemType"> 
+  <xs:list> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:enumeration value="None"/> 
+        <xs:enumeration value="MailItem"/> 
+        <xs:enumeration value="MailConversation"/> 
+        <xs:enumeration value="CalendarItem"/> 
+        <xs:enumeration value="Persona"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:list> 
+ </xs:simpleType> 
+
+The following table lists the values of the InstantSearchItemType simple type. 
+
+Value Meaning 
+
+None For 
+internal 
+use only. 
+
+MailItem For 
+internal 
+use only. 
+
+MailConversation For 
+internal 
+use only. 
+
+CalendarItem For 
+internal 
+use only. 
+
+Persona For 
+internal 
+use only. 
+
+ 
+
+39 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.5.6 t:InstantSearchResultType Simple Type 
+
+The InstantSearchResultType simple type is for internal use only.<12>   
+
+ xs:simpleType name="InstantSearchResultType"> 
+  <xs:list> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:enumeration value="None"/> 
+        <xs:enumeration value="Suggestions"/> 
+        <xs:enumeration value="ItemResults"/> 
+        <xs:enumeration value="ConversationResults"/> 
+        <xs:enumeration value="Refiners"/> 
+        <xs:enumeration value="SearchTerms"/> 
+        <xs:enumeration value="Errors"/> 
+        <xs:enumeration value="QueryStatistics"/> 
+        <xs:enumeration value="CalendarItemResults"/> 
+        <xs:enumeration value="PersonaResults"/> 
+        <xs:enumeration value="SuggestionsPrimer"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:list> 
+ </xs:simpleType> 
+
+The following table lists the values of the InstantSearchResultType simple type. 
+
+Value Meaning 
+
+None For 
+internal 
+use only. 
+
+Suggestions For 
+internal 
+use only. 
+
+ItemResults For 
+internal 
+use only. 
+
+ConversationResults For 
+internal 
+use only. 
+
+Refiners For 
+internal 
+use only. 
+
+SearchTerms For 
+internal 
+use only. 
+
+Errors For 
+internal 
+use only. 
+
+QueryStatistics For 
+internal 
+use only. 
+
+CalendarItemResults For 
+internal 
+use only. 
+
+40 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+PersonaResults For 
+internal 
+use only. 
+
+SuggestionsPrimer For 
+internal 
+use only. 
+
+ 
+
+2.2.5.7 t:ItemQueryTraversalType Simple Type 
+
+The ItemQueryTraversalType simple type specifies whether the search finds items in folders or in 
+the Deleted Items folder. 
+
+ <xs:simpleType name="ItemQueryTraversalType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration 
+      value="Shallow" 
+     /> 
+    <xs:enumeration 
+      value="SoftDeleted" 
+     /> 
+    <xs:enumeration 
+      value="Associated" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the ItemQueryTraversalType simple type. 
+
+Value Description 
+
+Shallow Specifies that only the items in the folder are returned. 
+
+SoftDeleted Specifies that only the items in the Deleted Items folder are returned. 
+
+Associated Specifies that only the associated items in the folder are returned. 
+
+ 
+
+2.2.5.8 t:QueryOptionsType Simple Type 
+
+The QueryOptionsType simple type is for internal use only.<13> 
+
+ <xs:simpleType name="QueryOptionsType"> 
+  <xs:list> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:enumeration value="None"/> 
+        <xs:enumeration value="Suggestions"/> 
+        <xs:enumeration value="Results"/> 
+        <xs:enumeration value="Refiners"/> 
+        <xs:enumeration value="SearchTerms"/> 
+        <xs:enumeration value="ExplicitSearch"/> 
+        <xs:enumeration value="SuggestionsPrimer"/> 
+        <xs:enumeration value="AllowFuzzing"/> 
+
+41 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:list> 
+ </xs:simpleType> 
+
+The following table lists the values of the QueryOptionsType simple type. 
+
+Value Meaning 
+
+None. For internal use only. 
+
+Suggestions For internal use only. 
+
+Results For internal use only. 
+
+Refiners For internal use only. 
+
+SearchTerms For internal use only. 
+
+ExplicitSearch For internal use only. 
+
+SuggestionsPrimer For internal use only. 
+
+AllowFuzzing For internal use only. 
+
+ 
+
+2.2.5.9 t:SearchFolderTraversalType Simple Type 
+
+The SearchFolderTraversalType simple type specifies the options for how a folder hierarchy is 
+searched when the contents of a search folder are identified. 
+
+ <xs:simpleType name="SearchFolderTraversalType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Deep" 
+     /> 
+    <xs:enumeration 
+      value="Shallow" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the SearchFolderTraversalType simple type. 
+
+Value Meaning 
+
+Deep Specifies that a deep search is used to traverse the folder hierarchy. 
+
+Shallow Specifies that a shallow search is used to traverse the folder hierarchy. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+42 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+43 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results that are returned by the transport are passed directly 
+back to the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+The Mailbox Search Web Service Protocol defines a single port type with two operations. These 
+operations enable client applications to search for items in the mailbox and folders. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of WSDL operations as defined by this specification. 
+
+Operation Description 
+
+FindFolder Searches the message store and returns a folder or folders that match the specified search 
+criteria. 
+
+FindItem Searches the message store and returns the item or items that match the specified search criteria. 
+
+ 
+
+3.1.4.1 FindFolder Operation 
+
+The FindFolder operation obtains a list of folders that meet specified search criteria by searching the 
+subfolders of a specified folder. 
+
+The following is the WSDL port type specification of the operation. 
+
+ <wsdl:operation name="FindFolder"> 
+     <wsdl:input message="tns:FindFolderSoapIn"/> 
+     <wsdl:output message="tns:FindFolderSoapOut"/> 
+ </wsdl:operation> 
+ 
+
+The following is the WSDL binding specification of the operation. 
+
+ <wsdl:operation name="FindFolder"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindFolder"/> 
+
+44 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   <wsdl:input> 
+      <soap:header message="tns:FindFolderSoapIn" part="Impersonation" use="literal"/> 
+      <soap:header message="tns:FindFolderSoapIn" part="MailboxCulture" use="literal"/> 
+      <soap:header message="tns:FindFolderSoapIn" part="RequestVersion" use="literal"/> 
+      <soap:header message="tns:FindFolderSoapIn" part="TimeZoneContext" use="literal"/> 
+      <soap:header message="tns:FindFolderSoapIn" part="ManagementRole" use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="FindFolderResult" use="literal" /> 
+      <soap:header message="tns:FindFolderSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.1.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message Description 
+
+FindFolderSoapIn Specifies the SOAP message that defines the folder or 
+folders to search for. 
+
+FindFolderSoapOut Specifies the SOAP message that is returned by the 
+server in response. 
+
+ 
+
+3.1.4.1.1.1 tns:FindFolderSoapIn Message 
+
+The FindFolderSoapIn WSDL message specifies the search criteria for the folder or folders that are 
+to be returned by the FindFolder operation. 
+
+ <wsdl:message name="FindFolderSoapIn"> 
+   <wsdl:part name="request" element="tns:FindFolder"/> 
+   <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+   <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+   <wsdl:part name="ManagementRole" element="t:ManagementRole" /> 
+ </wsdl:message>  
+
+The FindFolderSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindFolder. 
+
+The parts of the FindFolderSoapIn WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+request tns:FindFolder (section Specifies the SOAP body of the request. 
+3.1.4.1.2.1) 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) whom the client application is impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS- Specifies a SOAP header that identifies the culture 
+OXWSCDATA] section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the FindFolder operation request. 
+
+45 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part Element/type Description 
+
+TimeZoneContext t:TimeZoneContext ([MS- Specifies a SOAP header that identifies the time 
+OXWSGTZ] section 2.2.3.4) zone to use for all responses from the server. All 
+
+times that are returned from the server will be 
+converted to the specified time zone. 
+
+ManagementRole t:ManagementRole ([MS- Specifies a SOAP header that identifies the server 
+OXWSCDATA] section 2.2.3.7) roles that are necessary in order for the caller to 
+
+make the request.<14> 
+
+ 
+
+3.1.4.1.1.2 tns:FindFolderSoapOut Message 
+
+The FindFolderSoapOut WSDL message specifies the server response to the FindFolder operation 
+request to find a folder or folders. 
+
+ <wsdl:message name="FindFolderSoapOut"> 
+   <wsdl:part name="FindFolderResult" element="tns:FindFolderResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The FindFolderSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindFolder. 
+
+The parts of the FindFolderSoapOut WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+FindFolderResult tns:FindFolderResponse (section Specifies SOAP body of the response 
+3.1.4.1.2.2) message to a FindFolder operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.10) server version for the response. 
+
+ 
+If the request is successful, the FindFolder operation returns a FindFolderResponse element with 
+the ResponseClass attribute of the FindFolderResponseMessage element set to "Success". The 
+ResponseCode element of the FindFolderResponseMessage element is set to "NoError". 
+
+If the request is unsuccessful, the FindFolder operation returns a FindFolderResponse element with 
+the ResponseClass attribute of the FindFolderResponseMessage element set to "Error". The 
+ResponseCode element of the FindFolderResponseMessage element is set to a value of the 
+ResponseCodeType simple type, as specified in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.1.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element Description 
+
+FindFolder Specifies the criteria required to search for a folder or 
+folders. 
+
+FindFolderResponse Specifies the response body from a request to search 
+for a folder or folders. 
+
+ 
+
+46 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.2.1 tns:FindFolder Element 
+
+The FindFolder element specifies the base element for a FindFolder operation request. 
+
+ <xs:element name="FindFolder" 
+  type="m:FindFolderType" 
+ /> 
+ 
+
+3.1.4.1.2.2 tns:FindFolderResponse Element 
+
+The FindFolderResponse element specifies the response message for a FindFolder operation. 
+
+ <xs:element name="FindFolderResponse" 
+  type="m:FindFolderResponseType" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+Complex type Description 
+
+FindFolderResponseType Specifies the response from the FindFolder operation. 
+
+FindFolderType Specifies the criteria for searching for a folder or folders 
+with the FindFolder operation. 
+
+ 
+
+3.1.4.1.3.1 m:FindFolderResponseType Complex Type 
+
+The FindFolderResponseType complex type extends the BaseResponseMessageType complex 
+type ([MS-OXWSCDATA] section 2.2.4.18). 
+
+ <xs:complexType name="FindFolderResponseType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.1.3.2 m:FindFolderType Complex Type 
+
+The FindFolderType complex type specifies a request to find folders in a mailbox. The 
+FindFolderType complex type extends the BaseRequestType complex type ([MS-OXWSCDATA] 
+section 2.2.4.17). 
+
+ <xs:complexType name="FindFolderType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="FolderShape" 
+
+47 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          type="t:FolderResponseShapeType" 
+         /> 
+        <xs:choice 
+          maxOccurs="1" 
+          minOccurs="0" 
+        > 
+          <xs:element name="IndexedPageFolderView" 
+            type="t:IndexedPageViewType" 
+           /> 
+          <xs:element name="FractionalPageFolderView" 
+            type="t:FractionalPageViewType" 
+           /> 
+        </xs:choice> 
+        <xs:element name="Restriction" 
+          type="t:RestrictionType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="ParentFolderIds" 
+          type="t:NonEmptyArrayOfBaseFolderIdsType" 
+         /> 
+      </xs:sequence> 
+      <xs:attribute name="Traversal" 
+        type="t:FolderQueryTraversalType" 
+        use="required" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the FindFolderType complex type. 
+
+Element Type Description 
+
+FolderShape t:FolderResponseShapeType ([MS- Specifies the contents of 
+OXWSCDATA] section 2.2.4.36) the query response. 
+
+IndexedPageFolderView t:IndexedPageViewType (section 2.2.4.16) Specifies how paged 
+information is returned by 
+the query. 
+
+FractionalPageFolderView t:FractionalPageViewType (section 2.2.4.14) Specifies the starting item 
+and the number of items 
+that are returned by a 
+paged query. 
+
+Restriction t:RestrictionType (section 2.2.4.30) Specifies the search 
+parameters that define the 
+folder query. 
+
+ParentFolderIds t:NonEmptyArrayOfBaseFolderIdsType ([MS- Specifies the folders that 
+OXWSFOLD] section 3.1.4.6.3.3) the query searches. 
+
+The following table lists the attribute that is defined for the FindFolderType complex type. 
+
+Attribute Type Description 
+
+Traversal t:FolderQueryTraversalType (section Specifies the traversal scheme that is used to search 
+2.2.5.3) for folders. 
+
+The FindFolderType complex type specifies the folders to search for as well as the structure of the 
+response. 
+
+48 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Either the IndexedPageFolderView element or the FractionalPageFolderView element can be 
+specified to paginate the items that are returned in the response. 
+
+3.1.4.2 FindItem Operation 
+
+The FindItem operation searches the mailbox and folders and returns items that meet the specified 
+search criteria. 
+
+The following is the WSDL port type specification for the operation. 
+
+ <wsdl:operation name="FindItem"> 
+     <wsdl:input message="tns:FindItemSoapIn"/> 
+     <wsdl:output message="tns:FindItemSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for the operation.<15> 
+
+ <wsdl:operation name="FindItem"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindItem"/> 
+   <wsdl:input> 
+      <soap:header message="tns:FindItemSoapIn" part="Impersonation" use="literal"/> 
+      <soap:header message="tns:FindItemSoapIn" part="MailboxCulture" use="literal"/> 
+      <soap:header message="tns:FindItemSoapIn" part="RequestVersion" use="literal"/> 
+      <soap:header message="tns:FindItemSoapIn" part="TimeZoneContext" use="literal"/> 
+      <soap:header message="tns:FindItemSoapIn" part="DateTimePrecision" use="literal" /> 
+      <soap:header message="tns:FindItemSoapIn" part="ManagementRole" use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="FindItemResult" use="literal" /> 
+      <soap:header message="tns:FindItemSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.2.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message Description 
+
+FindItemSoapIn Specifies the SOAP message that contains the criteria 
+required to search for items. 
+
+FindItemSoapOut Specifies the SOAP message that is returned by the 
+server in response. 
+
+ 
+
+3.1.4.2.1.1 tns:FindItemSoapIn Message 
+
+The FindItemSoapIn WSDL message specifies the search criteria for the items or items that the 
+FindItem operation returns. 
+
+ <wsdl:message name="FindItemSoapIn"> 
+   <wsdl:part name="request" element="tns:FindItem"/> 
+   <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+   <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+
+49 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   <wsdl:part name="DateTimePrecision" element="t:DateTimePrecision" /> 
+   <wsdl:part name="ManagementRole" element="t:ManagementRole" /> 
+ </wsdl:message> 
+
+The FindItemSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindItem. 
+
+The parts of the FindItemSoapIn WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+request tns:FindItem (section 3.1.4.2.2.1) Specifies SOAP body of the request. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) that the client application is impersonating.  
+
+ 
+
+MailboxCulture t:MailboxCulture ([MS- Specifies a SOAP header that identifies the culture 
+OXWSCDATA] section 2.2.3.6) to use to access the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+ 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the FindItem operation request. 
+
+TimeZoneContext t:TimeZoneContext ([MS- Specifies a SOAP header that identifies the time 
+OXWSGTZ] section 2.2.3.4) zone to use for all responses from the server. All 
+
+times that are returned from the server will be 
+converted to the specified time zone. 
+
+ 
+
+DateTimePrecision t:DateTimePrecision ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.1) resolution of date/time values in responses from 
+
+the server, either in seconds or in 
+milliseconds.<16> 
+
+ManagementRole t:ManagementRole ([MS- Specifies a SOAP header that identifies the server 
+OXWSCDATA] section 2.2.3.7) roles that are necessary in order for the caller to 
+
+make the request.<17> 
+
+ 
+
+3.1.4.2.1.2 tns:FindItemSoapOut Message 
+
+The FindItemSoapOut WSDL message specifies the server response to the FindItem operation 
+request. 
+
+ <wsdl:message name="FindItemSoapOut"> 
+   <wsdl:part name="FindItemResult" element="tns:FindItemResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The FindItemSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindItem. 
+
+The parts of the FindItemSoapOut WSDL message are described in the following table. 
+
+50 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part Element/type Description 
+
+FindItemResult tns:FindItemResponse (section Specifies SOAP body of the response to a 
+3.1.4.2.2.2) FindItem operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.10) server version for the response. 
+
+ 
+If the request is successful, the FindItem operation returns a FindItemResponse element with the 
+ResponseClass attribute of the FindItemResponseMessage element set to "Success". The 
+ResponseCode element of the FindItemResponseMessage element is set to "NoError". 
+
+If the request is unsuccessful, the FindItem operation returns a FindItemResponse element with 
+the ResponseClass attribute of the FindItemResponseMessage element set to "Error". The 
+ResponseCode element of the FindItemResponseMessage element is set to a value of the 
+ResponseCodeType simple type, as specified in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.2.2 Elements 
+
+The following table lists the XML schema element definitions are specific to this operation. 
+
+Element Description 
+
+FindItem Specifies the base element for the FindItem operation. 
+
+FindItemResponse Specifies the response element for the FindItem 
+operation. 
+
+ 
+
+3.1.4.2.2.1 tns:FindItem Element 
+
+The FindItem element specifies the base element for a FindItem operation. 
+
+ <xs:element name="FindItem" 
+  type="m:FindItemType" 
+ /> 
+ 
+
+3.1.4.2.2.2 tns:FindItemResponse Element 
+
+The FindItemResponse element specifies the response message for the FindItem operation. 
+
+ <xs:element name="FindItemResponse" 
+  type="m:FindItemResponseType" 
+ /> 
+ 
+
+3.1.4.2.3 Complex Types 
+
+The following table lists the XML schema complex type definitions are specific to this operation. 
+
+Complex type Description 
+
+FindItemResponseType Specifies the response to the FindItem operation 
+request. 
+
+FindItemType Specifies the request to the FindItem operation. 
+
+51 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+AggregateOnType Specifies the property that is used to determine the 
+order of grouped items for a grouped result set. 
+
+BaseGroupByType Specifies the base class for derived complex types that 
+specify grouped queries to the FindItem operation. 
+
+DistinguishedGroupByType Specifies a standard grouping for the FindItem 
+operation. 
+
+FieldOrderType Specifies a single field by which to sort results and 
+specifies the direction of the sort. 
+
+GroupByType Specifies the grouping for items returned by the 
+FindItem operation. 
+
+NonEmptyArrayOfFieldOrdersType Specifies an array of FieldOrderType complex type 
+elements that contains at least one member. 
+
+ 
+
+3.1.4.2.3.1 m:FindItemResponseType Complex Type 
+
+The FindItemResponseType complex type specifies the response message to the FindItem 
+operation request. The FindItemResponseType complex type extends the 
+BaseResponseMessageType complex type ([MS-OXWSCDATA] section 2.2.4.18). 
+
+ <xs:complexType name="FindItemResponseType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.2.3.2 m:FindItemType Complex Type 
+
+The FindItemType complex type specifies the search criteria to use for the FindItem operation. The 
+FindItemType complex type extends the BaseRequestType complex type ([MS-OXWSCDATA] 
+section 2.2.4.17). 
+
+ <xs:complexType name="FindItemType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="ItemShape" 
+          type="t:ItemResponseShapeType" 
+         /> 
+        <xs:choice 
+          minOccurs="0" 
+        > 
+          <xs:element name="IndexedPageItemView" 
+            type="t:IndexedPageViewType" 
+           /> 
+          <xs:element name="FractionalPageItemView" 
+            type="t:FractionalPageViewType" 
+           /> 
+          <xs:element name="CalendarView" 
+            type="t:CalendarViewType" 
+           /> 
+          <xs:element name="ContactsView" 
+
+52 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+            type="t:ContactsViewType" 
+           /> 
+        </xs:choice> 
+        <xs:choice 
+          minOccurs="0" 
+        > 
+          <xs:element name="GroupBy" 
+            type="t:GroupByType" 
+           /> 
+          <xs:element name="DistinguishedGroupBy" 
+            type="t:DistinguishedGroupByType" 
+           /> 
+        </xs:choice> 
+        <xs:element name="Restriction" 
+          type="t:RestrictionType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="SortOrder" 
+          type="t:NonEmptyArrayOfFieldOrdersType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="ParentFolderIds" 
+          type="t:NonEmptyArrayOfBaseFolderIdsType" 
+         /> 
+        <xs:element name="QueryString" 
+          type="xs:QueryStringType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+      <xs:attribute name="Traversal" 
+        type="t:ItemQueryTraversalType" use="required" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the FindItemType complex type 
+
+Element Type Description 
+
+ItemShape t:ItemResponseShapeType ([MS- Specifies the array of items that 
+OXWSCDATA] section 2.2.4.42) are returned by the query. 
+
+IndexedPageItemView t:IndexedPageViewType (section 2.2.4.16) Specifies how paged item 
+information is returned in the 
+response. 
+
+FractionalPageItemView t:FractionalPageViewType (section 2.2.4.14) Specifies the starting item and 
+number of items to return by 
+the query. 
+
+CalendarView t:CalendarViewType ([MS-OXWSMTGS] Specifies the settings that are 
+section 2.2.4.9) used to return calendar items as 
+
+they appear in a calendar. 
+
+ContactsView t:ContactsViewType ([MS-OXWSCONT] Specifies the settings that are 
+section 3.1.4.1.1.7) used to return contact items 
+
+based on their alphabetical 
+display names. 
+
+GroupBy t:GroupByType (section 3.1.4.2.3.7) Specifies the grouping for items 
+that are returned by a query. 
+
+DistinguishedGroupBy t:DistinguishedGroupByType (section Specifies a standard grouping. 
+
+53 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+3.1.4.2.3.5) 
+
+Restriction t:RestrictionType (section 2.2.4.30) Specifies a search restriction or 
+query. 
+
+SortOrder t:NonEmptyArrayOfFieldOrdersType Specifies one or more 
+(section 3.1.4.2.3.8) FieldOrderType complex type 
+
+(section 3.1.4.2.3.6) elements 
+that specify how the results 
+SHOULD be sorted. 
+
+ParentFolderIds t:NonEmptyArrayOfBaseFolderIdsType Specifies one or more folders 
+([MS-OXWSFOLD] section 3.1.4.6.3.3) that are the root of the search. 
+
+QueryString<18> m:QueryStringType (section 2.2.4.29) Specifies the query that is used 
+for the search. 
+
+The following table lists the attribute that is defined for the FindItemType complex type. 
+
+Attribute Type Description 
+
+Traversal t:ItemQueryTraversalType (section Specifies whether the search finds items in folders or in 
+2.2.5.7) the Deleted Items folder. 
+
+The FindItemType complex type specifies the search criteria to find a set of items by using the 
+FindItem operation as well as the structure of the response. 
+
+One of the following elements can be included in the request to specify how the returned items are 
+viewed. 
+
+ IndexedPageItemView 
+
+ FractionalPageItemView 
+
+ CalendarView 
+
+ ContactsView 
+
+One of the following elements can be included in the request to specify how the results, if any, are to 
+be grouped:  
+
+ GroupBy 
+
+ DistinguishedGroupBy 
+
+When the subelement BaseShape of the ItemShape element is set to "AllProperties" or "Default", 
+the properties that are returned by the FindItem operation depend on the folder that is searched for 
+the items. The properties that are returned are defined by the complex type element or combination 
+of complex type elements that represent the item stored in the folder, as shown in the following 
+table.<19> 
+
+Folder Complex type 
+
+Calendar CalendarItemType ([MS-OXWSMTGS] section 2.2.4.6). 
+
+Contacts ContactItemType ([MS-OXWSCONT] section 2.2.4.3). 
+
+DistributionListType ([MS-OXWSDLIST] section 2.2.4.1). 
+
+Folder MessageType ([MS-OXWSMSG] section 2.2.4.3). 
+
+54 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Folder Complex type 
+
+PostItemType ([MS-OXWSPOST] section 2.2.4.1). 
+
+MeetingCancellationMessageType ([MS-OXWSMTGS] section 2.2.4.14). 
+
+MeetingMessageType ([MS-OXWSMTGS] section 2.2.4.15). 
+
+MeetingRequestMessageType ([MS-OXWSMTGS] section 2.2.4.17). 
+
+MeetingResponseMessageType ([MS-OXWSMTGS] section 2.2.4.18). 
+
+Search CalendarItemType ([MS-OXWSMTGS] section 2.2.4.6). 
+
+ContactItemType ([MS-OXWSCONT] section 2.2.4.3). 
+
+DistributionListType ([MS-OXWSDLIST] section 2.2.4.1). 
+
+MessageType ([MS-OXWSMSG] section 2.2.4.3). 
+
+PostItemType ([MS-OXWSPOST] section 2.2.4.1). 
+
+MeetingCancellationMessageType ([MS-OXWSMTGS] section 2.2.4.14). 
+
+MeetingMessageType ([MS-OXWSMTGS] section 2.2.4.15). 
+
+MeetingRequestMessageType ([MS-OXWSMTGS] section 2.2.4.17). 
+
+MeetingResponseMessageType ([MS-OXWSMTGS] section 2.2.4.18). 
+
+TaskType  ([MS-OXWSTASK] section 2.2.4.6). 
+
+Tasks TaskType ([MS-OXWSTASK] section 2.2.4.6). 
+
+ 
+
+3.1.4.2.3.3 t:AggregateOnType Complex Type 
+
+The AggregateOnType complex type specifies the property that is used to determine the order of 
+grouped items for a grouped result set. When an AggregateOnType complex type element is 
+specified, one of the following child elements MUST be specified: 
+
+ FieldURI 
+
+ IndexedFieldURI 
+
+ ExtendedFieldURI 
+
+ <xs:complexType name="AggregateOnType"> 
+  <xs:choice> 
+    <xs:element name="FieldURI" 
+      type="t:PathToUnindexedFieldType" 
+     /> 
+    <xs:element name="IndexedFieldURI" 
+      type="t:PathToIndexedFieldType" 
+     /> 
+    <xs:element name="ExtendedFieldURI" 
+      type="t:PathToExtendedFieldType" 
+     /> 
+  </xs:choice> 
+  <xs:attribute name="Aggregate" 
+    type="t:AggregateType" 
+    use="required" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the AggregateOnType complex type. 
+
+55 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+FieldURI t:PathToUnindexedFieldType ([MS- Specifies a well-known message store 
+OXWSCDATA] section 2.2.4.55) property that is used to group the items.  
+
+IndexedFieldURI t:PathToIndexedFieldType ([MS- Specifies an individual member of a 
+OXWSCDATA] section 2.2.4.54) dictionary that is used to group the 
+
+items. 
+
+ExtendedFieldURI t:PathToExtendedFieldType ([MS- Specifies an extended property that is 
+OXWSXPROP] section 2.1.6) used to group the items. 
+
+The following table lists the attribute that is defined for the AggregateOnType complex type. 
+
+Attribute Type Description 
+
+Aggregate t:AggregateType Specifies the value that indicates whether the maximum or minimum 
+(section 3.1.4.2.4.1) value of the property specified is used for ordering a group of items. 
+
+This attribute MUST be set. 
+
+ 
+
+3.1.4.2.3.4 t:BaseGroupByType Complex Type 
+
+The BaseGroupByType complex type specifies the base class for derived complex types that specify 
+grouped queries to the FindItem operation, as specified in section 3.1.4.2. 
+
+ <xs:complexType name="BaseGroupByType"  abstract="true" 
+ > 
+  <xs:attribute name="Order" 
+    type="t:SortDirectionType" use="required" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the attribute that is defined for the BaseGroupByType complex type. 
+
+Attribute Type Description 
+
+Order t:SortDirectionType (section Specifies the sort order of the returned grouped items. This 
+3.1.4.2.4.2) attribute MUST be specified. 
+
+ 
+
+3.1.4.2.3.5 t:DistinguishedGroupByType Complex Type 
+
+The DistinguishedGroupByType complex type specifies a standard grouping for the FindItem 
+operation. The DistinguishedGroupByType complex type extends the BaseGroupByType complex 
+type, as specified in section 3.1.4.2.3.4. 
+
+ <xs:complexType name="DistinguishedGroupByType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:BaseGroupByType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="StandardGroupBy" 
+          type="t:StandardGroupByType" 
+         /> 
+
+56 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the DistinguishedGroupByType complex type. 
+
+Element Type Description 
+
+StandardGroupBy t:StandardGroupByType (section Specifies one of the standard groupings for 
+3.1.4.2.4.3) returned items. 
+
+ 
+
+3.1.4.2.3.6 t:FieldOrderType Complex Type 
+
+The FieldOrderType complex type specifies a single field by which to sort results and specifies the 
+direction of the sort. 
+
+ <xs:complexType name="FieldOrderType"> 
+  <xs:sequence> 
+    <xs:element 
+      ref="t:Path" 
+     /> 
+  </xs:sequence> 
+  <xs:attribute name="Order" 
+    type="t:SortDirectionType" use="required" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the FieldOrderType complex type. 
+
+Element Type Description 
+
+Path t:Path ([MS-OXWSCDATA] section Specifies the URI that describes the field by which the 
+2.2.3.8) results are sorted. 
+
+The following table lists the attribute that is defined for the FieldOrderType complex type. 
+
+Attribute Type Description 
+
+Order t:SortDirectionType (section Specifies the direction of the sort. This attribute MUST be 
+3.1.4.2.4.2) specified. 
+
+ 
+
+3.1.4.2.3.7 t:GroupByType Complex Type 
+
+The GroupByType complex type specifies the grouping for items that are returned by the FindItem 
+operation. The GroupByType complex type extends the BaseGroupByType complex type, as 
+specified in section 3.1.4.2.3.4. 
+
+ <xs:complexType name="GroupByType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:BaseGroupByType" 
+
+57 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    > 
+      <xs:sequence> 
+        <xs:choice> 
+          <xs:element name="FieldURI" 
+            type="t:PathToUnindexedFieldType" 
+           /> 
+          <xs:element name="IndexedFieldURI" 
+            type="t:PathToIndexedFieldType" 
+           /> 
+          <xs:element name="ExtendedFieldURI" 
+            type="t:PathToExtendedFieldType" 
+           /> 
+        </xs:choice> 
+        <xs:element name="AggregateOn" 
+          type="t:AggregateOnType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GroupByType complex type. 
+
+Element Type Description 
+
+FieldURI t:PathToUnindexedFieldType ([MS- Specifies the URI to an unindexed item 
+OXWSCDATA] section 2.2.4.55) property. 
+
+IndexedFieldURI t:PathToIndexedFieldType ([MS- Specifies the URI to an indexed item 
+OXWSCDATA] section 2.2.4.54) property. 
+
+ExtendedFieldURI t:PathToExtendedFieldType ([MS- Specifies an extended item property.  
+OXWSXPROP] section 2.1.6) 
+
+AggregateOn t:AggregateOnType (section 3.1.4.2.3.3) Specifies the item property that is used 
+to determine the order of groups in a 
+response. 
+
+ 
+
+3.1.4.2.3.8 t:NonEmptyArrayOfFieldOrdersType Complex Type 
+
+The NonEmptyArrayOfFieldOrdersType complex type specifies an array of FieldOrderType 
+complex type, as specified in section 3.1.4.2.3.6, elements that contains at least one member. 
+
+ <xs:complexType name="NonEmptyArrayOfFieldOrdersType"> 
+  <xs:sequence> 
+    <xs:element name="FieldOrder" 
+      type="t:FieldOrderType" 
+      maxOccurs="unbounded" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the NonEmptyArrayOfFieldOrdersType complex type. 
+
+Element Type Description 
+
+FieldOrder t:FieldOrderType (section 3.1.4.2.3.6) Specifies a FieldOrderType complex type. 
+
+58 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.2.4 Simple Types 
+
+The following XML schema simple type definitions are specific to this operation. 
+
+Simple type Description 
+
+AggregateType Specifies the maximum or minimum value used to order 
+items in a group. 
+
+SortDirectionType Specifies the ordering options for a group. 
+
+StandardGroupByType Specifies standard grouping and aggregating 
+mechanisms. 
+
+ 
+
+3.1.4.2.4.1 t:AggregateType Simple Type 
+
+The AggregateType simple type specifies whether the maximum or minimum value of a 
+representative property is used to order the items in a group that is returned by the FindItem 
+operation. 
+
+ <xs:simpleType name="AggregateType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Minimum" 
+     /> 
+    <xs:enumeration 
+      value="Maximum" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the AggregateType simple type. 
+
+Value Meaning 
+
+Maximum Specifies that the groups are sorted starting with the maximum value for a specified aggregation 
+property. 
+
+Minimum Specifies that the groups are sorted starting with the minimum value for a specified aggregation 
+property. 
+
+ 
+
+3.1.4.2.4.2 t:SortDirectionType Simple Type 
+
+The SortDirectionType simple type specifies the ordering options for the groups in the grouped item 
+array that is returned in the response. 
+
+ <xs:simpleType name="SortDirectionType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration 
+      value="Ascending" 
+     /> 
+    <xs:enumeration 
+
+59 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      value="Descending" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the SortDirectionType simple type. 
+
+Value Meaning 
+
+Ascending Specifies that the items are sorted in ascending order. 
+
+Descending Specifies that the items are sorted in descending order. 
+
+ 
+
+3.1.4.2.4.3 t:StandardGroupByType Simple Type 
+
+The StandardGroupByType simple type specifies the standard grouping and aggregating 
+mechanisms for a grouped response to the FindItem operation. 
+
+ <xs:simpleType name="StandardGroupByType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration 
+      value="ConversationTopic" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the value that is defined by the StandardGroupByType simple type. 
+
+Value Meaning 
+
+ConversationTopic Specifies that results are grouped by the conversation topic and aggregated on the date 
+and time at which the item was received.  
+
+ 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+60 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+Example XML for FindFolders operation. 
+
+ Request XML: 
+ <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:FindFolder Traversal="Deep"> 
+      <m:FolderShape> 
+        <t:BaseShape>IdOnly</t:BaseShape> 
+        <t:AdditionalProperties> 
+          <t:FieldURI FieldURI="folder:DisplayName" /> 
+        </t:AdditionalProperties> 
+      </m:FolderShape> 
+      <m:IndexedPageFolderView MaxEntriesReturned="10" Offset="0" BasePoint="Beginning" /> 
+      <m:Restriction> 
+        <t:And> 
+          <t:Contains ContainmentMode="Substring" ContainmentComparison="IgnoreCase"> 
+            <t:FieldURI FieldURI="folder:DisplayName" /> 
+            <t:Constant Value="value1" /> 
+          </t:Contains> 
+          <t:Contains ContainmentMode="Prefixed" ContainmentComparison="IgnoreCase"> 
+            <t:FieldURI FieldURI="folder:FolderClass" /> 
+            <t:Constant Value="IPF.Note" /> 
+          </t:Contains> 
+          <t:IsGreaterThan> 
+            <t:FieldURI FieldURI="folder:TotalCount" /> 
+            <t:FieldURIOrConstant> 
+              <t:Constant Value="0" /> 
+            </t:FieldURIOrConstant> 
+          </t:IsGreaterThan> 
+        </t:And> 
+      </m:Restriction> 
+      <m:ParentFolderIds> 
+        <t:DistinguishedFolderId Id="root" /> 
+      </m:ParentFolderIds> 
+    </m:FindFolder> 
+  </soap:Body> 
+ </soap:Envelope> 
+ 
+ Response XML: 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header><h:ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="31" 
+MinorBuildNumber="0" Version="V2_27" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"/></s:Header><s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <m:FindFolderResponse 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+      <m:ResponseMessages> 
+        <m:FindFolderResponseMessage ResponseClass="Success"> 
+          <m:ResponseCode> 
+            NoError 
+          </m:ResponseCode> 
+            <m:RootFolder IndexedPagingOffset="1" TotalItemsInView="1" 
+IncludesLastItemInRange="true"> 
+              <t:Folders> 
+                <t:Folder> 
+
+61 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                  <t:FolderId Id="AAMkADNkNzE5Nzg3LTRlN" 
+ChangeKey="AQAAABQAAAAWi/oZ5g6xAMTqA=="/> 
+                  <t:DisplayName> 
+                    E15 Dogfood 
+                  </t:DisplayName> 
+                </t:Folder> 
+              </t:Folders> 
+            </m:RootFolder> 
+        </m:FindFolderResponseMessage> 
+      </m:ResponseMessages> 
+    </m:FindFolderResponse> 
+  </s:Body> 
+ </s:Envelope> 
+ 
+
+Example XML for FindItem operation: 
+
+ <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+      xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+      xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"  
+      xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2010" /> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:FindItem Traversal="Shallow"> 
+      <m:ItemShape> 
+        <t:BaseShape>IdOnly</t:BaseShape> 
+        <t:AdditionalProperties> 
+          <t:FieldURI FieldURI="item:Subject" /> 
+          <t:FieldURI FieldURI="item:DateTimeReceived" /> 
+          <t:FieldURI FieldURI="message:Sender" /> 
+        </t:AdditionalProperties> 
+      </m:ItemShape> 
+      <m:IndexedPageItemView MaxEntriesReturned="10" Offset="0" BasePoint="Beginning" /> 
+      <m:GroupBy Order="Descending"> 
+        <t:FieldURI FieldURI="item:Subject" /> 
+        <t:AggregateOn Aggregate="Maximum"> 
+          <t:FieldURI FieldURI="item:DateTimeReceived" /> 
+        </t:AggregateOn> 
+      </m:GroupBy> 
+      <m:Restriction> 
+        <t:IsEqualTo> 
+          <t:FieldURI FieldURI="item:ItemClass" /> 
+          <t:FieldURIOrConstant> 
+            <t:Constant Value="IPM.Note" /> 
+          </t:FieldURIOrConstant> 
+        </t:IsEqualTo> 
+      </m:Restriction> 
+      <m:SortOrder> 
+        <t:FieldOrder Order="Ascending"> 
+          <t:FieldURI FieldURI="item:DateTimeReceived" /> 
+        </t:FieldOrder> 
+      </m:SortOrder> 
+      <m:ParentFolderIds> 
+        <t:DistinguishedFolderId Id="inbox" /> 
+      </m:ParentFolderIds> 
+    </m:FindItem> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+Following example shows the XML that is returned with FindItems operation. The ItemId and 
+ChangeKey attributes have been shortened to preserve readability. In this example, there are three 
+groups in this 10-item response. 
+
+62 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="14"  
+       MinorVersion="0"  
+       MajorBuildNumber="639"  
+       MinorBuildNumber="20"  
+       Version="Exchange2010"  
+       xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+       xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+       xmlns:xsd="http://www.w3.org/2001/XMLSchema" /> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+       xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <m:FindItemResponse 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+         xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+      <m:ResponseMessages> 
+        <m:FindItemResponseMessage ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:RootFolder IndexedPagingOffset="13" TotalItemsInView="26" 
+IncludesLastItemInRange="false"> 
+            <t:Groups> 
+              <t:GroupedItems> 
+                <t:GroupIndex>Testing</t:GroupIndex> 
+                <t:Items> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Testing</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T16:31:42Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserTwo</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Testing</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T16:31:50Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserTwo</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Testing</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T19:44:25Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserOne</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Testing</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T19:45:02Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserOne</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+
+63 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                  </t:Message> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Testing</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T19:48:02Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserOne</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Testing</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T19:48:23Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserOne</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                </t:Items> 
+              </t:GroupedItems> 
+              <t:GroupedItems> 
+                <t:GroupIndex>Over there</t:GroupIndex> 
+                <t:Items> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Over there</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T19:43:34Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserOne</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Over there</t:Subject> 
+                    <t:DateTimeReceived>2009-10-14T19:45:47Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserTwo</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                </t:Items> 
+              </t:GroupedItems> 
+              <t:GroupedItems> 
+                <t:GroupIndex>Interesting</t:GroupIndex> 
+                <t:Items> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Interesting</t:Subject> 
+                    <t:DateTimeReceived>2009-10-02T22:02:18Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserTwo</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                  <t:Message> 
+                    <t:ItemId Id="AQMkAGEyYzQ" ChangeKey="CQAAABYAAA" /> 
+                    <t:Subject>Interesting</t:Subject> 
+
+64 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                    <t:DateTimeReceived>2009-10-05T20:10:11Z</t:DateTimeReceived> 
+                    <t:Sender> 
+                      <t:Mailbox> 
+                        <t:Name>E14UserTwo</t:Name> 
+                        <t:MailboxType>OneOff</t:MailboxType> 
+                      </t:Mailbox> 
+                    </t:Sender> 
+                  </t:Message> 
+                </t:Items> 
+              </t:GroupedItems> 
+            </t:Groups> 
+          </m:RootFolder> 
+        </m:FindItemResponseMessage> 
+      </m:ResponseMessages> 
+    </m:FindItemResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+65 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+66 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document. The contents of each file are included in this section. 
+
+File name Description Section 
+
+MS-OXWSSRCH.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSSRCH- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWSSRCH-types.xsd Contains the XML schema type definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSSRCH-types.xsd or MS-
+OXWSSRCH-messages.xsd schemas have to be placed in the common folder along with the files.  
+
+This section contains the contents of the MS-OXWSSRCH.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:s="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+      <xs:include schemaLocation="MS-OXWSSRCH-messages.xsd" /> 
+      <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd" /> 
+ 
+    </xs:schema> 
+    <xs:schema id="types" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+ 
+    </xs:schema> 
+  </wsdl:types> 
+    <wsdl:message name="FindItemSoapIn"> 
+        <wsdl:part name="request" element="tns:FindItem"/> 
+        <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+        <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+        <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+        <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+         <wsdl:part name="DateTimePrecision" element="t:DateTimePrecision" /> 
+         <wsdl:part name="ManagementRole" element="t:ManagementRole" /> 
+    </wsdl:message> 
+    <wsdl:message name="FindItemSoapOut"> 
+        <wsdl:part name="FindItemResult" element="tns:FindItemResponse"/> 
+        <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+    </wsdl:message> 
+    <wsdl:message name="FindFolderSoapIn"> 
+        <wsdl:part name="request" element="tns:FindFolder"/> 
+        <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+
+67 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+        <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+        <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+        <wsdl:part name="ManagementRole" element="t:ManagementRole" /> 
+    </wsdl:message> 
+    <wsdl:message name="FindFolderSoapOut"> 
+        <wsdl:part name="FindFolderResult" element="tns:FindFolderResponse"/> 
+        <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+    </wsdl:message>     
+  <wsdl:portType name="ExchangeServicePortType"> 
+        <wsdl:operation name="FindFolder"> 
+            <wsdl:input message="tns:FindFolderSoapIn"/> 
+            <wsdl:output message="tns:FindFolderSoapOut"/> 
+        </wsdl:operation> 
+        <wsdl:operation name="FindItem"> 
+            <wsdl:input message="tns:FindItemSoapIn"/> 
+            <wsdl:output message="tns:FindItemSoapOut"/> 
+        </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+  <wsdl:operation name="FindFolder"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindFolder"/> 
+            <wsdl:input> 
+                <soap:header message="tns:FindFolderSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:FindFolderSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:FindFolderSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:header message="tns:FindFolderSoapIn" part="TimeZoneContext" 
+use="literal"/> 
+                <soap:header message="tns:FindFolderSoapIn" part="ManagementRole" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="FindFolderResult" use="literal" /> 
+                <soap:header message="tns:FindFolderSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+        <wsdl:operation name="FindItem"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindItem"/> 
+            <wsdl:input> 
+                <soap:header message="tns:FindItemSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:FindItemSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:FindItemSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:header message="tns:FindItemSoapIn" part="TimeZoneContext" 
+use="literal"/> 
+                <soap:header message="tns:FindItemSoapIn" part="DateTimePrecision" 
+use="literal" /> 
+                <soap:header message="tns:FindItemSoapIn" part="ManagementRole" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="FindItemResult" use="literal" /> 
+                <soap:header message="tns:FindItemSoapOut" part="ServerVersion" 
+use="literal"/> 
+
+68 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+            </wsdl:output> 
+        </wsdl:operation> 
+         
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+69 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema T: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSSRCH-types.xsd or MS-
+OXWSSRCH-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section provides the contents of the MS-OXWSSRCH-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSSRCH-messages.xsd includes or imports the files listed in the following table. For the 
+schema file to operate correctly, these files have to be present in the folder that contains the WSDL, 
+types schema, and messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSSRCH-types.xsd section 7.2 
+
+MS-OXWSCDATA-messages.xsd  [MS-OXWSCDATA] section 7.1 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+    <!--    CHANGE THE SCHEMA LOCATION TO REFLECT THE TYPES XSD ASSOCIATED WITH THIS DOCUMENT 
+    <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="types.xsd"/> 
+    <xs:include/> 
+ --> 
+    <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSSRCH-types.xsd"/> 
+    <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+    <xs:complexType name="FindFolderType"> 
+        <xs:complexContent> 
+            <xs:extension base="m:BaseRequestType"> 
+                <xs:sequence> 
+                    <xs:element name="FolderShape" type="t:FolderResponseShapeType"/> 
+                    <xs:choice minOccurs="0"> 
+                        <xs:element name="IndexedPageFolderView" 
+type="t:IndexedPageViewType"/> 
+                        <xs:element name="FractionalPageFolderView" 
+type="t:FractionalPageViewType"/> 
+                    </xs:choice> 
+                    <xs:element name="Restriction" type="t:RestrictionType" minOccurs="0"/> 
+                    <xs:element name="ParentFolderIds" 
+type="t:NonEmptyArrayOfBaseFolderIdsType"/> 
+                </xs:sequence> 
+                <xs:attribute name="Traversal" type="t:FolderQueryTraversalType" 
+use="required"/> 
+
+            </xs:extension> 
+
+70 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        </xs:complexContent> 
+    </xs:complexType> 
+    <xs:element name="FindFolder" type="m:FindFolderType"/> 
+    <xs:complexType name="FindFolderResponseMessageType"> 
+        <xs:complexContent> 
+            <xs:extension base="m:ResponseMessageType"> 
+                <xs:sequence> 
+                    <xs:element name="RootFolder" type="t:FindFolderParentType" 
+minOccurs="0"/> 
+                </xs:sequence> 
+            </xs:extension> 
+        </xs:complexContent> 
+    </xs:complexType> 
+    <xs:complexType name="FindFolderResponseType"> 
+        <xs:complexContent> 
+            <xs:extension base="m:BaseResponseMessageType"/> 
+        </xs:complexContent> 
+    </xs:complexType> 
+    <xs:element name="FindFolderResponse" type="m:FindFolderResponseType"/> 
+    <xs:complexType name="FindItemType"> 
+        <xs:complexContent> 
+            <xs:extension base="m:BaseRequestType"> 
+                <xs:sequence> 
+                    <xs:element name="ItemShape" type="t:ItemResponseShapeType"/> 
+                    <xs:choice minOccurs="0"> 
+                        <xs:element name="IndexedPageItemView" type="t:IndexedPageViewType"/> 
+                        <xs:element name="FractionalPageItemView" 
+type="t:FractionalPageViewType"/> 
+                        <xs:element name="SeekToConditionPageItemView" 
+type="t:SeekToConditionPageViewType"/> 
+                        <xs:element name="CalendarView" type="t:CalendarViewType"/> 
+                        <xs:element name="ContactsView" type="t:ContactsViewType"/> 
+                    </xs:choice> 
+                    <xs:choice minOccurs="0"> 
+                        <xs:element name="GroupBy" type="t:GroupByType"/> 
+                        <xs:element name="DistinguishedGroupBy" 
+type="t:DistinguishedGroupByType"/> 
+                    </xs:choice> 
+                    <xs:element name="Restriction" type="t:RestrictionType" minOccurs="0"/> 
+                    <xs:element name="SortOrder" type="t:NonEmptyArrayOfFieldOrdersType" 
+minOccurs="0"/> 
+                    <xs:element name="ParentFolderIds" 
+type="t:NonEmptyArrayOfBaseFolderIdsType"/> 
+                    <xs:element name="QueryString" type="m:QueryStringType" minOccurs="0" 
+maxOccurs="1"/> 
+                </xs:sequence> 
+                <xs:attribute name="Traversal" type="t:ItemQueryTraversalType" 
+use="required"/> 
+            </xs:extension> 
+        </xs:complexContent> 
+    </xs:complexType> 
+    <xs:element name="FindItem" type="m:FindItemType"/> 
+    <xs:complexType name="FindItemResponseMessageType"> 
+        <xs:complexContent> 
+            <xs:extension base="m:ResponseMessageType"> 
+                <xs:sequence> 
+                    <xs:element name="RootFolder" type="t:FindItemParentType" minOccurs="0"/> 
+                    <xs:element name="HighlightTerms" type="t:ArrayOfHighlightTermsType" 
+minOccurs="0"/> 
+                </xs:sequence> 
+            </xs:extension> 
+        </xs:complexContent> 
+    </xs:complexType> 
+    <xs:complexType name="FindItemResponseType"> 
+        <xs:complexContent> 
+            <xs:extension base="m:BaseResponseMessageType"/> 
+        </xs:complexContent> 
+    </xs:complexType> 
+    <xs:element name="FindItemResponse" type="m:FindItemResponseType"/> 
+
+71 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:complexType name="QueryStringType"> 
+        <xs:simpleContent> 
+            <xs:extension base="xs:string"> 
+                <xs:attribute name="ResetCache" type="xs:boolean" use="optional"/> 
+                <xs:attribute name="ReturnHighlightTerms" type="xs:boolean" use="optional"/> 
+                <xs:attribute name="ReturnDeletedItems" type="xs:boolean" use="optional"/> 
+            </xs:extension> 
+        </xs:simpleContent> 
+    </xs:complexType> 
+    <xs:complexType name="PerformInstantSearchRequest"> 
+      <xs:complexContent> 
+        <xs:extension base="m:BaseRequestType"> 
+          <xs:sequence> 
+            <xs:element name="SearchSessionId" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+            <xs:element name="ItemType" type="t:InstantSearchItemType" minOccurs="1" 
+maxOccurs="1"/> 
+            <xs:element name="QueryOptions" type="t:QueryOptionsType" minOccurs="1" 
+maxOccurs="1"/> 
+            <xs:element name="SearchRequestId" type="xs:long" minOccurs="1" maxOccurs="1"/> 
+            <xs:element name="KqlQuery" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+            <xs:element name="FolderScope" type="t:ArrayOfFolderIdType" minOccurs="1" 
+maxOccurs="1"/> 
+            <xs:element name="IsDeepTraversal" type="xs:boolean" minOccurs="0" 
+maxOccurs="1"/> 
+            <xs:element name="WaitOnSearchResults" type="xs:boolean" minOccurs="0" 
+maxOccurs="1"/> 
+          </xs:sequence> 
+        </xs:extension> 
+      </xs:complexContent> 
+    </xs:complexType> 
+    <xs:element name="PerformInstantSearch" type="m:PerformInstantSearchRequest"/> 
+    <xs:complexType name="PerformInstantSearchResponse"> 
+      <xs:complexContent> 
+        <xs:extension base="m:ResponseMessageType"> 
+          <xs:sequence> 
+            <xs:element name="Payload" type="t:InstantSearchPayloadType" minOccurs="0" 
+maxOccurs="1"/> 
+          </xs:sequence> 
+        </xs:extension> 
+      </xs:complexContent> 
+    </xs:complexType> 
+    <xs:element name="PerformInstantSearchResponse" type="m:PerformInstantSearchResponse"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSSRCH-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSSRCH-types.xsd includes the file listed in the following table. For the schema file to operate 
+correctly, this file has to be present in the folder that contains the WSDL, types schema, and 
+messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+MS-OXWSCONV-types.xsd [MS-OXWSCONV] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+
+72 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSCONV-types.xsd"/> 
+  <xs:complexType name="AggregateOnType"> 
+    <xs:choice> 
+      <xs:element name="FieldURI" type="t:PathToUnindexedFieldType"/> 
+      <xs:element name="IndexedFieldURI" type="t:PathToIndexedFieldType"/> 
+      <xs:element name="ExtendedFieldURI" type="t:PathToExtendedFieldType"/> 
+    </xs:choice> 
+    <xs:attribute name="Aggregate" type="t:AggregateType" use="required"/> 
+  </xs:complexType> 
+  <xs:simpleType name="AggregateType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Minimum"/> 
+      <xs:enumeration value="Maximum"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="AndType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:MultipleOperandBooleanExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="And" type="t:AndType" substitutionGroup="t:SearchExpression"/> 
+ <xs:complexType name="ArrayOfCalendarItemsType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="CalendarItem" type="t:CalendarItemType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfGroupedItemsType"> 
+    <xs:choice> 
+      <xs:element name="GroupedItems" type="t:GroupedItemsType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfItemsType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="Item" type="t:ItemType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="BaseGroupByType" abstract="true"> 
+    <xs:attribute name="Order" type="t:SortDirectionType" use="required"/> 
+  </xs:complexType> 
+  <xs:complexType name="BasePagingType" abstract="true"> 
+    <xs:attribute name="MaxEntriesReturned" type="xs:int" use="optional"/> 
+  </xs:complexType> 
+  <xs:simpleType name="ContainmentModeType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="FullString"/> 
+      <xs:enumeration value="Prefixed"/> 
+      <xs:enumeration value="Substring"/> 
+      <xs:enumeration value="PrefixOnWords"/> 
+      <xs:enumeration value="ExactPhrase"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="ContainmentComparisonType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Exact"/> 
+      <xs:enumeration value="IgnoreCase"/> 
+      <xs:enumeration value="IgnoreNonSpacingCharacters"/> 
+      <xs:enumeration value="Loose"/> 
+      <xs:enumeration value="IgnoreCaseAndNonSpacingCharacters"/> 
+      <xs:enumeration value="LooseAndIgnoreCase"/> 
+      <xs:enumeration value="LooseAndIgnoreNonSpace"/> 
+      <xs:enumeration value="LooseAndIgnoreCaseAndIgnoreNonSpace"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="ContainsExpressionType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:SearchExpressionType"> 
+        <xs:sequence> 
+
+73 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:element ref="t:Path"/> 
+          <xs:element name="Constant" type="t:ConstantValueType"/> 
+        </xs:sequence> 
+        <xs:attribute name="ContainmentMode" type="t:ContainmentModeType" use="optional"/> 
+        <xs:attribute name="ContainmentComparison" type="t:ContainmentComparisonType" 
+use="optional"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="Contains" type="t:ContainsExpressionType" 
+substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="DistinguishedGroupByType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:BaseGroupByType"> 
+        <xs:sequence> 
+          <xs:element name="StandardGroupBy" type="t:StandardGroupByType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="ExcludesValueType"> 
+    <xs:attribute name="Value" type="t:ExcludesAttributeType" use="required"/> 
+  </xs:complexType> 
+  <xs:complexType name="ExcludesType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:SearchExpressionType"> 
+        <xs:sequence> 
+          <xs:element ref="t:Path"/> 
+          <xs:element name="Bitmask" type="t:ExcludesValueType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="Excludes" type="t:ExcludesType" substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="ExistsType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:SearchExpressionType"> 
+        <xs:sequence> 
+          <xs:element ref="t:Path"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="Exists" type="t:ExistsType" substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="FieldOrderType"> 
+    <xs:sequence> 
+      <xs:element ref="t:Path"/> 
+    </xs:sequence> 
+    <xs:attribute name="Order" type="t:SortDirectionType" use="required"/> 
+  </xs:complexType> 
+  <xs:complexType name="FindFolderParentType"> 
+    <xs:sequence> 
+      <xs:element name="Folders" type="t:ArrayOfFoldersType" minOccurs="0"/> 
+    </xs:sequence> 
+    <xs:attributeGroup ref="t:FindResponsePagingAttributes"/> 
+  </xs:complexType> 
+  <xs:complexType name="FindItemParentType"> 
+    <xs:choice> 
+      <xs:element name="Items" type="t:ArrayOfRealItemsType"/> 
+      <xs:element name="Groups" type="t:ArrayOfGroupedItemsType"/> 
+    </xs:choice> 
+    <xs:attributeGroup ref="t:FindResponsePagingAttributes"/> 
+  </xs:complexType> 
+  <xs:simpleType name="FolderQueryTraversalType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Shallow"/> 
+      <xs:enumeration value="Deep"/> 
+      <xs:enumeration value="SoftDeleted"/> 
+    </xs:restriction> 
+
+74 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:simpleType> 
+  <xs:complexType name="FractionalPageViewType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:BasePagingType"> 
+        <xs:attribute name="Numerator" type="xs:int" use="required"/> 
+        <xs:attribute name="Denominator" type="xs:int" use="required"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="GroupByType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:BaseGroupByType"> 
+        <xs:sequence> 
+          <xs:choice> 
+            <xs:element name="FieldURI" type="t:PathToUnindexedFieldType"/> 
+            <xs:element name="IndexedFieldURI" type="t:PathToIndexedFieldType"/> 
+            <xs:element name="ExtendedFieldURI" type="t:PathToExtendedFieldType"/> 
+          </xs:choice> 
+          <xs:element name="AggregateOn" type="t:AggregateOnType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="GroupedItemsType"> 
+    <xs:sequence> 
+      <xs:element name="GroupIndex" type="xs:string"/> 
+      <xs:element name="Items" type="t:ArrayOfRealItemsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="IndexBasePointType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Beginning"/> 
+      <xs:enumeration value="End"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="IndexedPageViewType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:BasePagingType"> 
+        <xs:attribute name="Offset" type="xs:int" use="required"/> 
+        <xs:attribute name="BasePoint" type="t:IndexBasePointType" use="required"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+    <xs:simpleType name="InstantSearchItemType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="MailItem"/> 
+          <xs:enumeration value="MailConversation"/> 
+          <xs:enumeration value="CalendarItem"/> 
+          <xs:enumeration value="Persona"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:complexType name="InstantSearchPayloadType"> 
+    <xs:sequence> 
+      <xs:element name="SearchSessionId" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="SearchRequestId" type="xs:long" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="ResultType" type="t:InstantSearchResultType" minOccurs="1" 
+maxOccurs="1"/> 
+      <xs:element name="Items" type="t:ArrayOfItemsType" minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="Conversations" type="t:ArrayOfConversationsType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="CalendarItems" type="t:ArrayOfCalendarItemsType" minOccurs="0" 
+maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+75 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:simpleType name="InstantSearchResultType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="Suggestions"/> 
+          <xs:enumeration value="ItemResults"/> 
+          <xs:enumeration value="ConversationResults"/> 
+          <xs:enumeration value="Refiners"/> 
+          <xs:enumeration value="SearchTerms"/> 
+          <xs:enumeration value="Errors"/> 
+          <xs:enumeration value="QueryStatistics"/> 
+          <xs:enumeration value="CalendarItemResults"/> 
+          <xs:enumeration value="PersonaResults"/> 
+          <xs:enumeration value="SuggestionsPrimer"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:complexType name="IsEqualToType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:TwoOperandExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="IsEqualTo" type="t:IsEqualToType" 
+substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="IsNotEqualToType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:TwoOperandExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="IsNotEqualTo" type="t:IsNotEqualToType" 
+substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="IsGreaterThanType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:TwoOperandExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="IsGreaterThan" type="t:IsGreaterThanType" 
+substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="IsGreaterThanOrEqualToType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:TwoOperandExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="IsGreaterThanOrEqualTo" type="t:IsGreaterThanOrEqualToType" 
+substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="IsLessThanType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:TwoOperandExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="IsLessThan" type="t:IsLessThanType" 
+substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="IsLessThanOrEqualToType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:TwoOperandExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="IsLessThanOrEqualTo" type="t:IsLessThanOrEqualToType" 
+substitutionGroup="t:SearchExpression"/> 
+  <xs:simpleType name="ItemQueryTraversalType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Shallow"/> 
+      <xs:enumeration value="SoftDeleted"/> 
+      <xs:enumeration value="Associated"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="NotType"> 
+
+76 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:complexContent> 
+      <xs:extension base="t:SearchExpressionType"> 
+        <xs:sequence> 
+          <xs:element ref="t:SearchExpression"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="Not" type="t:NotType" substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="MultipleOperandBooleanExpressionType" abstract="true"> 
+    <xs:complexContent> 
+      <xs:extension base="t:SearchExpressionType"> 
+        <xs:sequence> 
+          <xs:element ref="t:SearchExpression" minOccurs="1" maxOccurs="unbounded"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="OrType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:MultipleOperandBooleanExpressionType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="Or" type="t:OrType" substitutionGroup="t:SearchExpression"/> 
+  <xs:complexType name="NonEmptyArrayOfFieldOrdersType"> 
+    <xs:sequence> 
+      <xs:element name="FieldOrder" type="t:FieldOrderType" maxOccurs="unbounded"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="QueryOptionsType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="Suggestions"/> 
+          <xs:enumeration value="Results"/> 
+          <xs:enumeration value="Refiners"/> 
+          <xs:enumeration value="SearchTerms"/> 
+          <xs:enumeration value="ExplicitSearch"/> 
+          <xs:enumeration value="SuggestionsPrimer"/> 
+          <xs:enumeration value="AllowFuzzing"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:complexType name="RestrictionType"> 
+    <xs:sequence> 
+      <xs:element ref="t:SearchExpression"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SearchExpressionType" abstract="true"/> 
+  <xs:element name="SearchExpression" type="t:SearchExpressionType"/> 
+  <xs:simpleType name="SearchFolderTraversalType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Shallow"/> 
+      <xs:enumeration value="Deep"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="SearchFolderType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:FolderType"> 
+        <xs:sequence> 
+          <xs:element name="SearchParameters" type="t:SearchParametersType" minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="SearchParametersType"> 
+    <xs:sequence> 
+
+77 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element name="Restriction" type="t:RestrictionType"/> 
+      <xs:element name="BaseFolderIds" type="t:NonEmptyArrayOfBaseFolderIdsType"/> 
+    </xs:sequence> 
+    <xs:attribute name="Traversal" type="t:SearchFolderTraversalType" use="optional"/> 
+  </xs:complexType> 
+  <xs:complexType name="SeekToConditionPageViewType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:BasePagingType"> 
+        <xs:sequence> 
+          <xs:element name="Condition" type="t:RestrictionType" minOccurs="1"/> 
+        </xs:sequence> 
+        <xs:attribute name="BasePoint" type="t:IndexBasePointType" use="required"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:simpleType name="SortDirectionType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Ascending"/> 
+      <xs:enumeration value="Descending"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="StandardGroupByType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="ConversationTopic"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="TwoOperandExpressionType" abstract="true"> 
+    <xs:complexContent> 
+      <xs:extension base="t:SearchExpressionType"> 
+        <xs:sequence> 
+          <xs:element ref="t:Path"/> 
+          <xs:element name="FieldURIOrConstant" type="t:FieldURIOrConstantType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+ </xs:schema> 
+
+78 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Lync 2010 
+
+ Microsoft Lync Client 2013/Skype for Business 
+
+ Microsoft Skype for Business 2016 
+
+ Microsoft Skype for Business 2019  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Skype for Business 2021  
+
+ Microsoft Skype for Business LTSC 2024  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.3.13:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+PerformInstantSearch element. 
+
+<2> Section 2.2.3.14:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+PerformInstantSearchResponse element. 
+
+<3> Section 2.2.4:  Exchange 2007 and Exchange 2010 do not implement the 
+SeekToConditionPageViewType complex type. 
+
+<4> Section 2.2.4:  Exchange 2007 and Exchange 2010 do not implement the QueryStringType 
+complex type. 
+
+<5> Section 2.2.4.2:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+ArrayOfCalendarItemsType complex type. 
+
+<6> Section 2.2.4.4:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+ArrayOfItemsType complex type. 
+
+<7> Section 2.2.4.17:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+InstantSearchPayloadType complex type. 
+
+79 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+<8> Section 2.2.4.27:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+PerformInstantSearchRequest complex type. 
+
+<9> Section 2.2.4.28:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+PerformInstantSearchResponse complex type. 
+
+<10> Section 2.2.4.34:  Exchange 2007 and Exchange 2010 do not implement the 
+SeekToConditionPageViewType. 
+
+<11> Section 2.2.5.5:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+InstantSearchItemType simple type. 
+
+<12> Section 2.2.5.6:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+InstantSearchResultType simple type. 
+
+<13> Section 2.2.5.8:  Exchange 2007, Exchange 2010, and Exchange 2013 do not support the 
+QueryOptionsType simple type. 
+
+<14> Section 3.1.4.1.1.1:  Exchange 2007 and Exchange 2010 do not use the ManagementRole 
+part. 
+
+<15> Section 3.1.4.2:  Exchange 2007, Exchange 2010, and Microsoft Exchange Server 2010 Service 
+Pack 1 (SP1) do not include the DateTimePrecision part. 
+
+<16> Section 3.1.4.2.1.1:  Exchange 2007, the initial release version of Exchange 2010, and 
+Exchange 2010 SP1 do not use the DateTimePrecision part. 
+
+<17> Section 3.1.4.2.1.1:  Exchange 2007 and Exchange 2010 do not use the ManagementRole 
+part. 
+
+<18> Section 3.1.4.2.3.2:  The Query String element is not supported in Exchange 2007. 
+
+<19> Section 3.1.4.2.3.2: Exchange 2007 and the initial release version of Exchange 2010 return all 
+properties defined for any item in the specified folder. 
+
+80 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Revision 
+Section Description 
+
+class 
+
+2.2.4.13 
+Added HighlightTerms element to 
+
+m:FindItemResponseMessageType Minor 
+FindItemResponseMessageType complex type. 
+
+Complex Type 
+
+2.2.4.32 t:SearchFolderType Complex Added 'minOccurs="0"' to SearchParameters 
+Minor 
+
+Type element. 
+
+2.2.5.7 t:ItemQueryTraversalType Simple Added 'Associated' to ItemQueryTraversalType 
+Minor 
+
+Type Simple Type. 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+81 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A    PerformInstantSearch Element 16 
+    PerformInstantSearchResponse Element 16 
+Abstract data model    tns:And Element 13 
+   server 44    tns:Contains Element 14 
+Applicability 11    tns:Excludes Element 14 
+Attribute groups 43    tns:Exists Element 14 
+Attributes 43    tns:IsEqualTo Element 14 
+    tns:IsGreaterThan Element 14 
+
+C    tns:IsGreaterThanOrEqualTo Element 15 
+
+    tns:IsLessThan Element 15 
+
+Capability negotiation 11    tns:IsLessThanOrEqualTo Element 15 
+
+Change tracking 81    tns:IsNotEqualTo Element 15 
+
+Complex types 16    tns:Not Element 15 
+
+   m:FindFolderResponseMessageType Complex Type    tns:Or Element 16 
+
+23    tns:SearchExpression Element 16 
+
+   m:FindItemResponseMessageType Complex Type Events 
+
+24    local - server 60 
+
+   m:PerformInstantSearchRequest Complex Type 31    timer - server 60 
+
+   m:PerformInstantSearchResponse Complex Type Examples 61 
+
+31  
+
+   m:QueryStringType Complex Type 32 F 
+   t:AndType Complex Type 18  
+   t:ArrayOfCalendarItemsType Complex Type 19 Fields - vendor-extensible 11 
+   t:ArrayOfGroupedItemsType Complex Type 19 Full WSDL 67 
+   t:ArrayOfItemsType Complex Type 19 Full XML schema 70 
+   t:BasePagingType Complex Type 20    Messages Schema 70 
+   t:ContainsExpressionType Complex Type 20    Types Schema 72 
+   t:ExcludesType Complex Type 21  
+   t:ExcludesValueType Complex Type 22 G 
+   t:ExistsType Complex Type 22  
+   t:FindFolderParentType Complex Type 23 Glossary 7 
+   t:FindItemParentType Complex Type 24 Groups 43 
+   t:FractionalPageViewType Complex Type 25  
+   t:GroupedItemsType Complex Type 26 I 
+   t:IndexedPageViewType Complex Type 26  
+   t:InstantSearchPayloadType Complex Type 27 Implementer - security considerations 66 
+   t:IsEqualToType Complex Type 28 Index of security parameters 66 
+   t:IsGreaterThanOrEqualToType Complex Type 28 Informative references 9 
+   t:IsGreaterThanType Complex Type 28 Initialization 
+   t:IsLessThanOrEqualToType Complex Type 28    server 44 
+   t:IsLessThanType Complex Type 29 Introduction 7 
+   t:IsNotEqualToType Complex Type 29  
+   t:MultipleOperandBooleanExpressionType Complex L 
+
+Type 29  
+   t:NotType Complex Type 30 Local events 
+   t:OrType Complex Type 30    server 60 
+   t:RestrictionType Complex Type 32  
+   t:SearchExpressionType Complex Type 33 M 
+   t:SearchFolderType Complex Type 33  
+   t:SearchParametersType Complex Type 34 m:FindFolderResponseMessageType Complex Type 
+   t:SeekToConditionPageViewType Complex Type 34 complex type 23 
+   t:TwoOperandExpressionType Complex Type 35 m:FindItemResponseMessageType Complex Type 
+ complex type 24 
+D m:PerformInstantSearchRequest Complex Type 
+ complex type 31 
+Data model - abstract m:PerformInstantSearchResponse Complex Type 
+   server 44 complex type 31 
+ m:QueryStringType Complex Type complex type 32 
+E Message processing 
+    server 44 
+Elements Messages 
+
+82 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   attribute groups 43    t:IsLessThanOrEqualToType Complex Type 
+   attributes 43 complex type 28 
+   complex types 16    t:IsLessThanType Complex Type complex type 29 
+   elements 12    t:IsNotEqualToType Complex Type complex type 
+   enumerated 12 29 
+   groups 43    t:ItemQueryTraversalType Simple Type simple 
+   m:FindFolderResponseMessageType Complex Type type 41 
+
+complex type 23    t:MultipleOperandBooleanExpressionType Complex 
+   m:FindItemResponseMessageType Complex Type Type complex type 29 
+
+complex type 24    t:NotType Complex Type complex type 30 
+   m:PerformInstantSearchRequest Complex Type    t:OrType Complex Type complex type 30 
+
+complex type 31    t:QueryOptionsType Simple Type simple type 42 
+   m:PerformInstantSearchResponse Complex Type    t:RestrictionType Complex Type complex type 32 
+
+complex type 31    t:SearchExpressionType Complex Type complex 
+   m:QueryStringType Complex Type complex type type 33 
+
+32    t:SearchFolderTraversalType Simple Type simple 
+   namespaces 12 type 42 
+   PerformInstantSearch Element element 16    t:SearchFolderType Complex Type complex type 
+   PerformInstantSearchResponse Element element 33 
+
+16    t:SearchParametersType Complex Type complex 
+   simple types 36 type 34 
+   syntax 12    t:SeekToConditionPageViewType Complex Type 
+   t:AndType Complex Type complex type 18 complex type 34 
+   t:ArrayOfCalendarItemsType Complex Type    t:TwoOperandExpressionType Complex Type 
+
+complex type 19 complex type 35 
+   t:ArrayOfGroupedItemsType Complex Type    tns:And Element element 13 
+
+complex type 19    tns:Contains Element element 14 
+   t:ArrayOfItemsType Complex Type complex type    tns:Excludes Element element 14 
+
+19    tns:Exists Element element 14 
+   t:BasePagingType Complex Type complex type 20    tns:IsEqualTo Element element 14 
+   t:ContainmentComparisonType Simple Type simple    tns:IsGreaterThan Element element 14 
+
+type 36    tns:IsGreaterThanOrEqualTo Element element 15 
+   t:ContainmentModeType Simple Type simple type    tns:IsLessThan Element element 15 
+
+37    tns:IsLessThanOrEqualTo Element element 15 
+   t:ContainsExpressionType Complex Type complex    tns:IsNotEqualTo Element element 15 
+
+type 20    tns:Not Element element 15 
+   t:ExcludesType Complex Type complex type 21    tns:Or Element element 16 
+   t:ExcludesValueType Complex Type complex type    tns:SearchExpression Element element 16 
+
+22    transport 12 
+   t:ExistsType Complex Type complex type 22  
+   t:FindFolderParentType Complex Type complex N 
+
+type 23  
+   t:FindItemParentType Complex Type complex type Namespaces 12 
+
+24 Normative references 8 
+   t:FolderQueryTraversalType Simple Type simple  
+
+type 38 O 
+   t:FractionalPageViewType Complex Type complex  
+
+type 25 Operations 
+   t:GroupedItemsType Complex Type complex type    FindFolder Operation 44 
+
+26    FindItem Operation 49 
+   t:IndexBasePointType Simple Type simple type 38 Overview (synopsis) 10 
+   t:IndexedPageViewType Complex Type complex  
+
+type 26 P 
+   t:InstantSearchItemType Simple Type simple type  
+
+39 Parameters - security index 66 
+   t:InstantSearchPayloadType Complex Type PerformInstantSearch Element element 16 
+
+complex type 27 PerformInstantSearchResponse Element element 16 
+   t:InstantSearchResultType Simple Type simple Preconditions 10 
+
+type 40 Prerequisites 10 
+   t:IsEqualToType Complex Type complex type 28 Product behavior 79 
+   t:IsGreaterThanOrEqualToType Complex Type Protocol Details 
+
+complex type 28    overview 44 
+   t:IsGreaterThanType Complex Type complex type  
+
+28 
+R 
+ 
+
+83 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+References 8 t:InstantSearchItemType Simple Type simple type 
+   informative 9 39 
+   normative 8 t:InstantSearchPayloadType Complex Type complex 
+Relationship to other protocols 10 type 27 
+ t:InstantSearchResultType Simple Type simple type 
+S 40 
+ t:IsEqualToType Complex Type complex type 28 
+Security t:IsGreaterThanOrEqualToType Complex Type 
+   implementer considerations 66 complex type 28 
+   parameter index 66 t:IsGreaterThanType Complex Type complex type 28 
+Sequencing rules t:IsLessThanOrEqualToType Complex Type complex 
+   server 44 type 28 
+Server t:IsLessThanType Complex Type complex type 29 
+   abstract data model 44 t:IsNotEqualToType Complex Type complex type 29 
+   FindFolder Operation operation 44 t:ItemQueryTraversalType Simple Type simple type 
+   FindItem Operation operation 49 41 
+   initialization 44 t:MultipleOperandBooleanExpressionType Complex 
+   local events 60 Type complex type 29 
+   message processing 44 t:NotType Complex Type complex type 30 
+   sequencing rules 44 t:OrType Complex Type complex type 30 
+   timer events 60 t:QueryOptionsType Simple Type simple type 42 
+   timers 44 t:RestrictionType Complex Type complex type 32 
+Simple types 36 t:SearchExpressionType Complex Type complex type 
+   t:ContainmentComparisonType Simple Type 36 33 
+   t:ContainmentModeType Simple Type 37 t:SearchFolderTraversalType Simple Type simple 
+   t:FolderQueryTraversalType Simple Type 38 type 42 
+   t:IndexBasePointType Simple Type 38 t:SearchFolderType Complex Type complex type 33 
+   t:InstantSearchItemType Simple Type 39 t:SearchParametersType Complex Type complex 
+   t:InstantSearchResultType Simple Type 40 type 34 
+   t:ItemQueryTraversalType Simple Type 41 t:SeekToConditionPageViewType Complex Type 
+   t:QueryOptionsType Simple Type 42 complex type 34 
+   t:SearchFolderTraversalType Simple Type 42 t:TwoOperandExpressionType Complex Type 
+Standards assignments 11 complex type 35 
+Syntax Timer events 
+   messages - overview 12    server 60 
+ Timers 
+
+T    server 44 
+
+ tns:And Element element 13 
+
+t:AndType Complex Type complex type 18 tns:Contains Element element 14 
+
+t:ArrayOfCalendarItemsType Complex Type complex tns:Excludes Element element 14 
+
+type 19 tns:Exists Element element 14 
+
+t:ArrayOfGroupedItemsType Complex Type complex tns:IsEqualTo Element element 14 
+
+type 19 tns:IsGreaterThan Element element 14 
+
+t:ArrayOfItemsType Complex Type complex type 19 tns:IsGreaterThanOrEqualTo Element element 15 
+
+t:BasePagingType Complex Type complex type 20 tns:IsLessThan Element element 15 
+
+t:ContainmentComparisonType Simple Type simple tns:IsLessThanOrEqualTo Element element 15 
+
+type 36 tns:IsNotEqualTo Element element 15 
+
+t:ContainmentModeType Simple Type simple type 37 tns:Not Element element 15 
+
+t:ContainsExpressionType Complex Type complex tns:Or Element element 16 
+
+type 20 tns:SearchExpression Element element 16 
+
+t:ExcludesType Complex Type complex type 21 Tracking changes 81 
+
+t:ExcludesValueType Complex Type complex type 22 Transport 12 
+
+t:ExistsType Complex Type complex type 22 Types 
+
+t:FindFolderParentType Complex Type complex type    complex 16 
+
+23    simple 36 
+
+t:FindItemParentType Complex Type complex type  
+
+24 V 
+t:FolderQueryTraversalType Simple Type simple type  
+
+38 Vendor-extensible fields 11 
+t:FractionalPageViewType Complex Type complex Versioning 11 
+
+type 25  
+t:GroupedItemsType Complex Type complex type 26 W 
+t:IndexBasePointType Simple Type simple type 38  
+t:IndexedPageViewType Complex Type complex type WSDL 67 
+
+26  
+
+84 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+X 
+ 
+XML schema 70 
+   Messages Schema 70 
+   Types Schema 72 
+
+ 
+
+85 / 85 
+
+[MS-OXWSSRCH] - v20250520 
+Mailbox Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

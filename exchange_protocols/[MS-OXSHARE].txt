@@ -1,0 +1,2296 @@
+﻿[MS-OXSHARE]:  
+
+Sharing Message Object Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+12/2/2009 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+4/10/2009 2.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.0.1 Editorial Revised and edited the technical content. 
+
+2/10/2010 3.0.1 None Version 3.0.1 release 
+
+5/5/2010 3.0.2 Editorial Revised and edited the technical content. 
+
+8/4/2010 3.1 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 4.0 None 
+
+technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 5.0 None 
+
+technical content. 
+
+10/8/2012 5.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 5.1 None 
+
+technical content. 
+
+4/30/2014 5.2 Minor Clarified the meaning of the technical content. 
+
+2 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 5.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 5.2 None 
+
+technical content. 
+
+3/16/2015 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 6.0 None 
+
+technical content. 
+
+9/19/2017 6.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/24/2018 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/1/2018 6.1 None 
+
+technical content. 
+
+4/22/2021 7.0 Major Significantly changed the technical content. 
+
+8/17/2021 8.0 Major Significantly changed the technical content. 
+
+8/20/2024 9.0 Major Significantly changed the technical content. 
+
+5/20/2025 10.0 Major Significantly changed the technical content. 
+
+3 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Common Message Object Properties ............................................................... 9 
+2.2.2 Common Sharing Message Object Properties .................................................... 9 
+
+2.2.2.1 PidLidSharingCapabilities Property............................................................. 9 
+2.2.2.2 PidNameXSharingCapabilities Property ..................................................... 10 
+2.2.2.3 PidLidSharingConfigurationUrl Property .................................................... 10 
+2.2.2.4 PidNameXSharingConfigUrl Property ........................................................ 10 
+2.2.2.5 PidLidSharingFlavor Property .................................................................. 10 
+2.2.2.6 PidNameXSharingFlavor Property ............................................................ 11 
+2.2.2.7 PidLidSharingInitiatorEntryId Property ..................................................... 11 
+2.2.2.8 PidLidSharingInitiatorName Property ....................................................... 11 
+2.2.2.9 PidLidSharingInitiatorSmtp Property ........................................................ 11 
+2.2.2.10 PidLidSharingLocalType Property ............................................................. 12 
+2.2.2.11 PidNameXSharingLocalType Property ....................................................... 12 
+2.2.2.12 PidLidSharingProviderGuid Property ......................................................... 12 
+2.2.2.13 PidNameXSharingProviderGuid Property ................................................... 12 
+2.2.2.14 PidLidSharingProviderName Property ....................................................... 12 
+2.2.2.15 PidNameXSharingProviderName Property ................................................. 13 
+2.2.2.16 PidLidSharingProviderUrl Property ........................................................... 13 
+2.2.2.17 PidNameXSharingProviderUrl Property ..................................................... 13 
+
+2.2.3 Sharing Invitation and Response Acceptance Properties ................................... 13 
+2.2.3.1 PidLidSharingRemoteName Property ........................................................ 13 
+2.2.3.2 PidNameXSharingRemoteName Property .................................................. 13 
+2.2.3.3 PidLidSharingRemoteStoreUid Property .................................................... 13 
+2.2.3.4 PidNameXSharingRemoteStoreUid Property .............................................. 14 
+2.2.3.5 PidLidSharingRemoteType Property ......................................................... 14 
+2.2.3.6 PidNameXSharingRemoteType Property ................................................... 14 
+2.2.3.7 PidLidSharingRemoteUid Property ........................................................... 14 
+2.2.3.8 PidNameXSharingRemoteUid Property ..................................................... 14 
+
+2.2.4 Sharing Request Properties .......................................................................... 14 
+2.2.4.1 PidLidSharingResponseTime Property ...................................................... 14 
+2.2.4.2 PidLidSharingResponseType Property ...................................................... 14 
+
+2.2.5 Additional Property Constraints .................................................................... 15 
+2.2.5.1 PidNameContentClass Property ............................................................... 15 
+2.2.5.2 PidTagMessageClass Property ................................................................. 15 
+
+2.2.6 Ignored Properties ...................................................................................... 15 
+
+3 Protocol Details ..................................................................................................... 18 
+3.1 Client Details ................................................................................................... 18 
+
+3.1.1 Abstract Data Model .................................................................................... 18 
+
+4 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.2 Timers ...................................................................................................... 18 
+3.1.3 Initialization ............................................................................................... 18 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 18 
+
+3.1.4.1 Creating a Sharing Invitation .................................................................. 18 
+3.1.4.2 Creating a Sharing Request .................................................................... 18 
+3.1.4.3 Creating a Sharing Response – Accept ..................................................... 18 
+3.1.4.4 Creating a Sharing Response – Deny ....................................................... 19 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 19 
+3.1.6 Timer Events .............................................................................................. 19 
+3.1.7 Other Local Events ...................................................................................... 19 
+
+3.2 Server Details .................................................................................................. 19 
+3.2.1 Abstract Data Model .................................................................................... 19 
+3.2.2 Timers ...................................................................................................... 19 
+3.2.3 Initialization ............................................................................................... 19 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 19 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 19 
+3.2.6 Timer Events .............................................................................................. 20 
+3.2.7 Other Local Events ...................................................................................... 20 
+
+4 Protocol Examples ................................................................................................. 21 
+4.1 Sending a Sharing Request ............................................................................... 23 
+4.2 Denying a Sharing Request ............................................................................... 25 
+4.3 Accepting a Sharing Request ............................................................................. 27 
+
+5 Security ................................................................................................................. 31 
+5.1 Security Considerations for Implementers ........................................................... 31 
+5.2 Index of Security Parameters ............................................................................ 31 
+
+6 Appendix A: Product Behavior ............................................................................... 32 
+
+7 Change Tracking .................................................................................................... 34 
+
+8 Index ..................................................................................................................... 35 
+
+ 
+
+5 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Sharing Message Object Protocol is used to share mailbox folders between clients. This protocol 
+extends the Message and Attachment Object Protocol, which is described in [MS-OXCMSG]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+address book: A collection of Address Book objects, each of which are contained in any number 
+of address lists. 
+
+Address Book object: An entity in an address book that contains a set of attributes, each 
+attribute with a set of associated values. 
+
+big-endian: Multiple-byte values that are byte-ordered with the most significant byte stored in the 
+memory location with the lowest address. 
+
+Folder object: A messaging construct that is typically used to organize data into a hierarchy of 
+objects containing Message objects and folder associated information (FAI) Message objects. 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+long ID (LID): A 32-bit quantity that, in combination with a GUID, defines a named property. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+named property: A property that is identified by both a GUID and either a string name or a 32-bit 
+identifier. 
+
+named property set: A GUID that groups related named properties into a set. 
+
+property ID: A 16-bit numeric identifier of a specific attribute. A property ID does not include any 
+property type information. 
+
+property name: A string that, in combination with a property set, identifies a named property. 
+
+recipient: An entity that is in an address list, can receive email messages, and contains a set of 
+attributes. Each attribute has a set of associated values. 
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+ROP request: See ROP request buffer. 
+
+ROP response: See ROP response buffer. 
+
+6 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+sharing invitation: A type of Sharing Message object that informs a user that the user was 
+granted access to another user's folder and provides the information necessary to locate that 
+folder. 
+
+Sharing Message object: A Message object that is used to inform a recipient that they were 
+granted access to another user's folder, request access to a recipient's folder, or respond to a 
+request for access to a folder. 
+
+sharing provider: A software agent that is responsible for properly generating and processing a 
+predefined Sharing Message object format. 
+
+sharing request: A type of Sharing Message object that is used to request access to a user's 
+folder. 
+
+sharing response: A type of Sharing Message object that is used to respond to a sharing 
+request. 
+
+special folder: One of a default set of Folder objects that can be used by an implementation to 
+store and retrieve user data objects. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPERM] Microsoft Corporation, "Exchange Access and Operation Permissions Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXOSFLD] Microsoft Corporation, "Special Folders Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+7 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2.2 Informative References 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXODLGT] Microsoft Corporation, "Delegate Access Configuration Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+The Sharing Message Object Protocol allows a user to invite, request, accept, and deny the sharing of 
+that user's mailbox folder. To communicate about the sharing of a folder, this protocol uses the 
+Sharing Message object. The properties that are specific to a Sharing Message object facilitate 
+granting access to a folder, requesting access to a folder, or responding to a request for access to a 
+folder. 
+
+This protocol extends the Message and Attachment Object Protocol, which is described in [MS-
+OXCMSG], in that it defines new properties on a Message object and adds constraints to the existing 
+properties of a Message object. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol has the same dependencies as the Message and Attachment Object Protocol, as 
+described in [MS-OXCMSG]. This protocol is a peer of the Email Object Protocol, which is described in 
+[MS-OXOMSG]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The Sharing Message Object Protocol has the same prerequisites and preconditions as the Message 
+and Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+1.6 Applicability Statement 
+
+The client can use this protocol to send and respond to requests about the sharing of a folder in the 
+user's mailbox. 
+
+The Sharing Message Object Protocol cannot be used to convey information about any type of object 
+other than a Folder object. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+This protocol provides no vendor-extensibility beyond what is specified in [MS-OXCMSG]. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The Sharing Message Object Protocol uses the same underlying transport as that used by the Message 
+and Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+2.2 Message Syntax 
+
+A Sharing Message object can be created and modified by clients and servers. Except where noted, 
+this section defines constraints under which both clients and servers operate. 
+
+Clients operate on Sharing Message objects by using the Email Object Protocol specified in [MS-
+OXOMSG] and the Message and Attachment Object Protocol specified in [MS-OXCMSG]. How a server 
+operates on Sharing Message objects is implementation-dependent, but the results of any such 
+operation MUST be exposed to clients in a manner that is consistent with the Sharing Message Object 
+Protocol. 
+
+Unless otherwise specified, a Sharing Message object adheres to all property constraints specified in 
+[MS-OXPROPS] and all property constraints specified in [MS-OXCMSG].  
+
+Where a property's value is specified as a hexadecimal string representation of a binary value, the 
+characters composing the string represent the hexadecimal digits that reflect the byte sequence of the 
+binary value. For example, the string "00000000DCA740C8" is the hexadecimal string representation 
+of the following byte sequence. 
+
+ 00 00 00 00 DC A7 40 C8 
+
+Where a property's value is specified as a hexadecimal string representation of an integer value, the 
+characters composing the string represent the hexadecimal digits that reflect the integer value in big-
+endian format. Leading "0" characters are not included. For example, the hexadecimal string 
+representation of the integer 0x0000010B is "10B". 
+
+2.2.1 Common Message Object Properties 
+
+The following properties are general properties used by a Sharing Message object.  
+
+ PidTagNormalizedSubject property ([MS-OXCMSG] section 2.2.1.10) 
+
+ PidTagSubjectPrefix property ([MS-OXCMSG] section 2.2.1.9) 
+
+2.2.2 Common Sharing Message Object Properties 
+
+The properties specified in section 2.2.2.1 through section 2.2.2.17 are common to all types of 
+Sharing Message objects. 
+
+2.2.2.1 PidLidSharingCapabilities Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingCapabilities property ([MS-OXPROPS] section 2.237) MUST be set to one of the 
+following values. 
+
+9 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+0x00040290 The Sharing Message object relates to a special folder. 
+
+0x000402B0 The Sharing Message object does not relate to a special folder. 
+
+ 
+
+2.2.2.2 PidNameXSharingCapabilities Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingCapabilities property ([MS-OXPROPS] section 2.488) contains the 
+hexadecimal string representation of the value of the PidLidSharingCapabilities property (section 
+2.2.2.1), as specified in the following table. The string does not include the leading zeros of the 
+hexadecimal value. 
+
+Hex value Value of the PidNameXSharingCapabilities property 
+
+0x00040290 "40290" 
+
+0x000402B0 "402B0" 
+
+ 
+
+2.2.2.3 PidLidSharingConfigurationUrl Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingConfigurationUrl property ([MS-OXPROPS] section 2.238) MUST be set to a 
+zero-length string. 
+
+2.2.2.4 PidNameXSharingConfigUrl Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingConfigUrl property ([MS-OXPROPS] section 2.489) MUST be set to the same 
+value as the PidLidSharingConfigurationUrl property (section 2.2.2.3). 
+
+2.2.2.5 PidLidSharingFlavor Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingFlavor property ([MS-OXPROPS] section 2.245) specifies the type of Sharing 
+Message object. This property MUST be set to one of the following values. 
+
+Value Meaning 
+
+0x00020310 A sharing invitation for a special folder. 
+
+0x00000310 A sharing invitation for a folder that is not a special folder. 
+
+0x00020500 A sharing request for a special folder. 
+
+0x00020710 Both a sharing invitation for a special folder and a sharing request for the recipient's equivalent 
+special folder. 
+
+0x00025100 A sharing response that is denying a sharing request. 
+
+10 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+0x00023310 A sharing response that is accepting a sharing request. 
+
+ 
+
+2.2.2.6 PidNameXSharingFlavor Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingFlavor property ([MS-OXPROPS] section 2.491) MUST be set to the 
+hexadecimal string representation of the value of the PidLidSharingFlavor property (section 
+2.2.2.5), as specified in the following table. The string does not include the leading zeros of the 
+hexadecimal value. 
+
+Hex value Value of the PidNameXSharingFlavor property 
+
+0x00020310 "20310" 
+
+0x00000310 "310" 
+
+0x00020500 "20500" 
+
+0x00020710 "20710" 
+
+0x00025100 "25100" 
+
+0x00023310 "23310" 
+
+ 
+
+2.2.2.7 PidLidSharingInitiatorEntryId Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingInitiatorEntryId property ([MS-OXPROPS] section 2.248) MUST be set to the 
+value of the PidTagEntryId property ([MS-OXOABK] section 2.2.3.2) for the Address Book object 
+of the currently logged on user. 
+
+2.2.2.8 PidLidSharingInitiatorName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingInitiatorName property ([MS-OXPROPS] section 2.249) MUST be set to the value 
+of the PidTagDisplayName property ([MS-OXOABK] section 2.2.3.1) from the Address Book 
+object that is identified by the PidLidSharingInitiatorEntryId property (section 2.2.2.7) and 
+MAY<1> be ignored upon receipt. 
+
+2.2.2.9 PidLidSharingInitiatorSmtp Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingInitiatorSmtp property ([MS-OXPROPS] section 2.250) MUST be set to the value 
+of the PidTagSmtpAddress property ([MS-OXOABK] section 2.2.3.21) from the Address Book 
+object that is identified by the PidLidSharingInitiatorEntryId property (section 2.2.2.7) and 
+MAY<2> be ignored upon receipt. 
+
+11 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.10 PidLidSharingLocalType Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingLocalType property ([MS-OXPROPS] section 2.259) MUST be set to the value of 
+the PidTagContainerClass property ([MS-OXCFOLD] section 2.2.2.2.2.3) of the folder that is to be 
+shared. For a sharing response, the PidLidSharingLocalType property is set to the value of the 
+PidLidSharingLocalType property of the associated sharing request. 
+
+The valid values are listed in the following table. These values specify folder types. For details about 
+these folder types, see ([MS-OXOSFLD] section 2.2.1. 
+
+Type of folder Value 
+
+Calendar "IPF.Appointment" 
+
+Contacts "IPF.Contact" 
+
+Tasks "IPF.Task" 
+
+Notes "IPF.StickyNote" 
+
+Journal "IPF.Journal" 
+
+ 
+
+2.2.2.11 PidNameXSharingLocalType Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingLocalType property ([MS-OXPROPS] section 2.493) MUST be set to the same 
+value as the PidLidSharingLocalType property (section 2.2.2.10). 
+
+2.2.2.12 PidLidSharingProviderGuid Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingProviderGuid property ([MS-OXPROPS] section 2.266) MUST be set to 
+%xAE.F0.06.00.00.00.00.00.C0.00.00.00.00.00.00.46. 
+
+2.2.2.13 PidNameXSharingProviderGuid Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingProviderGuid property ([MS-OXPROPS] section 2.494) MUST be set to the 
+hexadecimal string representation of the value of the PidLidSharingProviderGuid property (section 
+2.2.2.12). That is, "AEF0060000000000C000000000000046". 
+
+2.2.2.14 PidLidSharingProviderName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingProviderName property ([MS-OXPROPS] section 2.267) specifies a user-
+displayable name of the sharing provider that is identified by the PidLidSharingProviderGuid 
+property (section 2.2.2.12). This property MAY<3> be ignored upon receipt.  
+
+12 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.15 PidNameXSharingProviderName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingProviderName property ([MS-OXPROPS] section 2.495) MUST be set to the 
+same value as PidLidSharingProviderName (section 2.2.2.14) and MAY<4> be ignored upon 
+receipt.  
+
+2.2.2.16 PidLidSharingProviderUrl Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingProviderUrl property ([MS-OXPROPS] section 2.268) specifies a Uniform 
+Resource Locator (URL) for the sharing provider that is identified by the 
+PidLidSharingProviderGuid property (section 2.2.2.12). This property MAY<5> be ignored upon 
+receipt.  
+
+2.2.2.17 PidNameXSharingProviderUrl Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingProviderUrl property ([MS-OXPROPS] section 2.496) MUST be set to the 
+same value as the PidLidSharingProviderUrl property (section 2.2.2.16) and MAY<6> be ignored 
+upon receipt.  
+
+2.2.3 Sharing Invitation and Response Acceptance Properties 
+
+The properties specified in section 2.2.3.1 through section 2.2.3.8 apply only to a sharing invitation, 
+which is a Sharing Message object with its PidLidSharingFlavor property (section 2.2.2.5) set to 
+either 0x00020310 or 0x00000310, and to a sharing response acceptance, which is a Sharing 
+Message object with its PidLidSharingFlavor property set to 0x0023310. For all other types of 
+Sharing Message objects, these properties SHOULD NOT<7> be set and MUST be ignored upon 
+receipt. 
+
+2.2.3.1 PidLidSharingRemoteName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingRemoteName property ([MS-OXPROPS] section 2.277) MUST be set to the value 
+of the PidTagDisplayName property ([MS-OXCFOLD] section 2.2.2.2.2.5) of the folder that is being 
+shared. 
+
+2.2.3.2 PidNameXSharingRemoteName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingRemoteName property ([MS-OXPROPS] section 2.497) MUST be set to the 
+same value as the PidLidSharingRemoteName property (section 2.2.3.1). 
+
+2.2.3.3 PidLidSharingRemoteStoreUid Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingRemoteStoreUid property ([MS-OXPROPS] section 2.280) MUST be set to the 
+hexadecimal string representation of the value of the PidTagStoreEntryId property ([MS-OXPROPS] 
+section 2.1030) of the folder that is being shared. 
+
+13 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.3.4 PidNameXSharingRemoteStoreUid Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingRemoteStoreUid property ([MS-OXPROPS] section 2.499) MUST be set to 
+the same value as PidLidSharingRemoteStoreUid (section 2.2.3.3). 
+
+2.2.3.5 PidLidSharingRemoteType Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1)  
+
+The PidLidSharingRemoteType property ([MS-OXPROPS] section 2.281) MUST be set to the same 
+value as the PidLidSharingLocalType property (section 2.2.2.10) and MAY<8> be ignored upon 
+receipt. 
+
+2.2.3.6 PidNameXSharingRemoteType Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingRemoteType property ([MS-OXPROPS] section 2.500) MUST be set to the 
+same value as PidLidSharingRemoteType (section 2.2.3.5) and MAY<9> be ignored.  
+
+2.2.3.7 PidLidSharingRemoteUid Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingRemoteUid property ([MS-OXPROPS] section 2.282) MUST be set to the 
+hexadecimal string representation of the value of the PidTagEntryId property ([MS-OXCPERM] 
+section 2.2.4) of the folder that is being shared. 
+
+2.2.3.8 PidNameXSharingRemoteUid Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameXSharingRemoteUid property ([MS-OXPROPS] section 2.501) MUST be set to the 
+same value as the PidLidSharingRemoteUid property (section 2.2.3.7). 
+
+2.2.4 Sharing Request Properties 
+
+The properties specified in sections 2.2.4.1 and 2.2.4.2 apply only to a sharing request to which the 
+user has responded. A sharing request has its PidLidSharingFlavor property (section 2.2.2.5) set to 
+either 0x00020500 or 0x00020710. For all other types of Sharing Message objects, the properties 
+specified in sections 2.2.4.1 and 2.2.4.2 MUST NOT be set. 
+
+2.2.4.1 PidLidSharingResponseTime Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidSharingResponseTime property ([MS-OXPROPS] section 2.285) specifies the time at 
+which the recipient of the sharing request sent a sharing response. 
+
+2.2.4.2 PidLidSharingResponseType Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+14 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidLidSharingResponseType property ([MS-OXPROPS] section 2.286) specifies the type of 
+sharing response with which the recipient of the sharing request responded. This property MUST 
+be set to one of the following values. 
+
+Value  Meaning 
+
+0x00000001 Acceptance of the sharing request  
+
+0x00000002 Denial of the sharing request  
+
+ 
+
+2.2.5 Additional Property Constraints 
+
+The properties specified in sections 2.2.5.1 and 2.2.5.2 have additional constraints beyond what is 
+specified in [MS-OXCMSG]. These properties apply to all types of Sharing Message objects. 
+
+2.2.5.1 PidNameContentClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameContentClass property ([MS-OXCMSG] section 2.2.1.48) MUST be set to "Sharing". 
+
+2.2.5.2 PidTagMessageClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) MUST be set to "IPM.Sharing" or 
+a value that begins with "IPM.Sharing.". 
+
+2.2.6 Ignored Properties 
+
+The following properties SHOULD NOT<10> be set and MUST be ignored upon receipt: 
+
+ PidLidSharingAnonymity ([MS-OXPROPS] section 2.234) 
+
+ PidLidSharingBindingEntryId ([MS-OXPROPS] section 2.235) 
+
+ PidLidSharingBrowseUrl ([MS-OXPROPS] section 2.236) 
+
+ PidNameXSharingBrowseUrl ([MS-OXPROPS] section 2.487) 
+
+ PidLidSharingDataRangeEnd ([MS-OXPROPS] section 2.239) 
+
+ PidLidSharingDataRangeStart ([MS-OXPROPS] section 2.240) 
+
+ PidLidSharingDetail ([MS-OXPROPS] section 2.241) 
+
+ PidLidSharingExtensionXml ([MS-OXPROPS] section 2.242) 
+
+ PidNameXSharingExendedCaps ([MS-OXPROPS] section 2.490) 
+
+ PidLidSharingFilter ([MS-OXPROPS] section 2.243) 
+
+ PidLidSharingFlags ([MS-OXPROPS] section 2.244) 
+
+ PidLidSharingFolderEntryId ([MS-OXPROPS] section 2.246) 
+
+ PidLidSharingIndexEntryId ([MS-OXPROPS] section 2.247) 
+
+15 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ PidLidSharingInstanceGuid ([MS-OXPROPS] section 2.251) 
+
+ PidNameXSharingInstanceGuid ([MS-OXPROPS] section 2.492) 
+
+ PidLidSharingLastAutoSyncTime ([MS-OXPROPS] section 2.252) 
+
+ PidLidSharingLastSyncTime ([MS-OXPROPS] section 2.253) 
+
+ PidLidSharingLocalComment ([MS-OXPROPS] section 2.254) 
+
+ PidLidSharingLocalLastModificationTime ([MS-OXPROPS] section 2.255) 
+
+ PidLidSharingLocalName ([MS-OXPROPS] section 2.256) 
+
+ PidLidSharingLocalPath ([MS-OXPROPS] section 2.257) 
+
+ PidLidSharingLocalStoreUid ([MS-OXPROPS] section 2.258) 
+
+ PidLidSharingLocalUid ([MS-OXPROPS] section 2.260) 
+
+ PidLidSharingOriginalMessageEntryId ([MS-OXPROPS] section 2.261) 
+
+ PidLidSharingParentBindingEntryId ([MS-OXPROPS] section 2.262) 
+
+ PidLidSharingParticipants ([MS-OXPROPS] section 2.263) 
+
+ PidLidSharingPermissions ([MS-OXPROPS] section 2.264) 
+
+ PidLidSharingProviderExtension ([MS-OXPROPS] section 2.265) 
+
+ PidLidSharingRangeEnd ([MS-OXPROPS] section 2.269) 
+
+ PidLidSharingRangeStart ([MS-OXPROPS] section 2.270) 
+
+ PidLidSharingReciprocation ([MS-OXPROPS] section 2.271) 
+
+ PidLidSharingRemoteByteSize ([MS-OXPROPS] section 2.272) 
+
+ PidLidSharingRemoteComment ([MS-OXPROPS] section 2.273) 
+
+ PidLidSharingRemoteCrc ([MS-OXPROPS] section 2.274) 
+
+ PidLidSharingRemoteLastModificationTime ([MS-OXPROPS] section 2.275) 
+
+ PidLidSharingRemoteMessageCount ([MS-OXPROPS] section 2.276) 
+
+ PidLidSharingRemotePass ([MS-OXPROPS] section 2.278) 
+
+ PidLidSharingRemotePath ([MS-OXPROPS] section 2.279) 
+
+ PidNameXSharingRemotePath ([MS-OXPROPS] section 2.498) 
+
+ PidLidSharingRemoteUser ([MS-OXPROPS] section 2.283) 
+
+ PidLidSharingRemoteVersion ([MS-OXPROPS] section 2.284) 
+
+ PidLidSharingRoamLog ([MS-OXPROPS] section 2.287) 
+
+ PidLidSharingStart ([MS-OXPROPS] section 2.288) 
+
+ PidLidSharingStatus ([MS-OXPROPS] section 2.289) 
+
+ PidLidSharingStop ([MS-OXPROPS] section 2.290) 
+
+16 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ PidLidSharingSyncFlags ([MS-OXPROPS] section 2.291) 
+
+ PidLidSharingSyncInterval ([MS-OXPROPS] section 2.292) 
+
+ PidLidSharingTimeToLive ([MS-OXPROPS] section 2.293) 
+
+ PidLidSharingTimeToLiveAuto ([MS-OXPROPS] section 2.294) 
+
+ PidLidSharingWorkingHoursDays ([MS-OXPROPS] section 2.295) 
+
+ PidLidSharingWorkingHoursEnd ([MS-OXPROPS] section 2.296) 
+
+ PidLidSharingWorkingHoursStart ([MS-OXPROPS] section 2.297) 
+
+ PidLidSharingWorkingHoursTimeZone ([MS-OXPROPS] section 2.298) 
+
+17 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client creates and manipulates a Sharing Message object and in all other ways operates within 
+the client role, as specified in [MS-OXCMSG].  
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+A Sharing Message object extends the Message object. In all other ways, the abstract data model 
+of this protocol does not differ from that specified in [MS-OXCMSG] section 3.1.1. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Creating a Sharing Invitation 
+
+When a user creates a sharing invitation, the client creates a Message object as specified in [MS-
+OXCMSG] and sets properties in accordance with the requirements in section 2.2.1 through section 
+2.2.3 and section 2.2.5. The client then addresses and sends the message as specified in [MS-
+OXOMSG]. 
+
+3.1.4.2 Creating a Sharing Request 
+
+When a user creates a sharing request, the client creates a Message object as specified in [MS-
+OXCMSG] and sets properties in accordance with the requirements in sections 2.2.1, 2.2.2, and 2.2.5. 
+The client then addresses and sends the message as specified in [MS-OXOMSG]. 
+
+3.1.4.3 Creating a Sharing Response – Accept 
+
+When a user creates a sharing response to accept a sharing request, the client creates a Message 
+object as specified in [MS-OXCMSG] and sets properties in accordance with the requirements in 
+section 2.2.1 through section 2.2.3 and section 2.2.5. The client addresses and sends the response as 
+specified in [MS-OXOMSG]. 
+
+The client then opens the sharing request as specified in [MS-OXCMSG] and sets the properties in 
+accordance with the requirements in section 2.2.4 to indicate that the request was accepted. The 
+client saves the sharing request as specified in [MS-OXCMSG]. 
+
+The client can determine the special folder that is being requested for sharing by examining the 
+PidLidSharingLocalType property (section 2.2.2.10) of the sharing request. 
+
+18 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4 Creating a Sharing Response – Deny 
+
+When a user creates a sharing response to deny a sharing request, the client creates a Message 
+object as specified in [MS-OXCMSG] and sets properties in accordance with the requirements in 
+sections 2.2.1, 2.2.2, and 2.2.5. The client addresses and sends the response as specified in [MS-
+OXOMSG]. 
+
+The client then opens the sharing request as specified in [MS-OXCMSG] and sets the properties in 
+accordance with the requirements in section 2.2.4 to indicate that the request was denied. The client 
+saves the sharing request as specified in [MS-OXCMSG]. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+The server processes a client's requests regarding a Sharing Message object and in all other ways 
+operates within the server role as specified in [MS-OXCMSG]. 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+A Sharing Message object extends the Message object. In all other ways, the abstract data model 
+of this protocol does not differ from that specified in [MS-OXCMSG] section 3.2.1. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG] section 3.2.5. 
+
+19 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+20 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+Kendall Keil wants to see Ryan Gregg's calendar special folder. Kendall sends a sharing request to 
+Ryan and Ryan responds. 
+
+The following is a description of what a client might do to accomplish this scenario and the responses 
+a server might return. For details about the remote operations (ROPs) used in this example, see 
+[MS-OXCPRPT] and [MS-OXCMSG]. 
+
+Before manipulating Sharing Message objects, the client sends a RopGetPropertyIdsFromNames 
+ROP request ([MS-OXCROPS] section 2.2.8.1) to ask the server to map each named property to a 
+property ID. The following table lists each named property with its named property set GUID and 
+its long ID (LID) or property name. The server's RopGetPropertyIdsFromNames ROP 
+response provides the corresponding property IDs, as shown in the subsequent table. 
+
+LID or property 
+Named property Property set GUID name 
+
+PidNameContentClass (section 2.2.5.1) {00020386-0000-0000-c000- Content-class 
+000000000046} 
+
+PidLidSharingProviderGuid (section 2.2.2.12) {00062040-0000-0000-C000- 0x00008A01 
+000000000046} 
+
+PidNameXSharingProviderGuid (section {00020386-0000-0000-C000- X-Sharing-Provider-
+2.2.2.13) 000000000046} GUID 
+
+PidLidSharingProviderName (section {00062040-0000-0000-C000- 0x00008A02 
+2.2.2.14) 000000000046} 
+
+PidNameXSharingProviderName (section {00020386-0000-0000-C000- X-Sharing-Provider-
+2.2.2.15) 000000000046} Name 
+
+PidLidSharingProviderUrl (section 2.2.2.16) {00062040-0000-0000-C000- 0x00008A03 
+000000000046} 
+
+PidNameXSharingProviderUrl (section {00020386-0000-0000-C000- X-Sharing-Provider-
+2.2.2.17) 000000000046} URL 
+
+PidLidSharingConfigurationUrl (section {00062040-0000-0000-C000- 0x00008A24 
+2.2.2.3) 000000000046} 
+
+PidNameXSharingConfigUrl (section 2.2.2.4) {00020386-0000-0000-C000- X-Sharing-Config-URL 
+000000000046} 
+
+PidLidSharingFlavor (section 2.2.2.5) {00062040-0000-0000-C000- 0x00008A18 
+000000000046} 
+
+PidNameXSharingFlavor (section 2.2.2.6) {00020386-0000-0000-C000- X-Sharing-Flavor 
+000000000046} 
+
+PidLidSharingCapabilities (section 2.2.2.1) {00062040-0000-0000-C000- 0x00008A17 
+000000000046} 
+
+PidNameXSharingCapabilities (section {00020386-0000-0000-C000- X-Sharing-Capabilities 
+2.2.2.2) 000000000046} 
+
+PidLidSharingLocalType (section 2.2.2.10) {00062040-0000-0000-C000- 0x00008A14 
+000000000046} 
+
+PidNameXSharingLocalType (section {00020386-0000-0000-C000- X-Sharing-Local-Type 
+2.2.2.11) 000000000046} 
+
+21 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+LID or property 
+Named property Property set GUID name 
+
+PidLidSharingInitiatorEntryId (section {00062040-0000-0000-C000- 0x00008A09 
+2.2.2.7) 000000000046} 
+
+PidLidSharingInitiatorName (section 2.2.2.8) {00062040-0000-0000-C000- 0x00008A07 
+000000000046} 
+
+PidLidSharingInitiatorSmtp (section 2.2.2.9) {00062040-0000-0000-C000- 0x00008A08 
+000000000046} 
+
+PidLidSharingRemoteName (section 2.2.3.1) {00062040-0000-0000-C000- 0x00008A05 
+000000000046} 
+
+PidNameXSharingRemoteName (section {00020386-0000-0000-C000- X-Sharing-Remote-
+2.2.3.2) 000000000046} Name 
+
+PidLidSharingRemoteType (section 2.2.3.5) {00062040-0000-0000-C000- 0x00008A1D 
+000000000046} 
+
+PidNameXSharingRemoteType (section {00020386-0000-0000-C000- X-Sharing-Remote-
+2.2.3.6) 000000000046} Type 
+
+PidLidSharingRemoteUid (section 2.2.3.7) {00062040-0000-0000-C000- 0x00008A06 
+000000000046} 
+
+PidNameXSharingRemoteUid (section {00020386-0000-0000-C000- X-Sharing-Remote-Uid 
+2.2.3.8) 000000000046} 
+
+PidLidSharingRemoteStoreUid (section {00062040-0000-0000-C000- 0x00008A48 
+2.2.3.3) 000000000046} 
+
+PidNameXSharingRemoteStoreUid (section {00020386-0000-0000-C000- X-Sharing-Remote-
+2.2.3.4) 000000000046} Store-Uid 
+
+PidLidSharingResponseType (section 2.2.4.2) {00062040-0000-0000-C000- 0x00008A27 
+000000000046} 
+
+PidLidSharingResponseTime (section 2.2.4.1) {00062040-0000-0000-C000- 0x00008A28 
+000000000046} 
+
+The server sends a RopGetPropertyIdsFromNames ROP response with the following property IDs, 
+which will be used in the examples that follow. (The actual property IDs are at the discretion of the 
+server.) 
+
+Property  Property ID  
+
+PidNameContentClass  0x806D 
+
+PidLidSharingProviderGuid  0x8243 
+
+PidNameXSharingProviderGuid  0x836F 
+
+PidLidSharingProviderName  0x8244 
+
+PidNameXSharingProviderName  0x8370 
+
+PidLidSharingProviderUrl 0x8245 
+
+PidNameXSharingProviderUrl 0x8371 
+
+PidLidSharingConfigurationUrl 0x83D0 
+
+22 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property  Property ID  
+
+PidNameXSharingConfigUrl  0x8377 
+
+PidLidSharingFlavor  0x823D 
+
+PidNameXSharingFlavor  0x836D 
+
+PidLidSharingCapabilities  0x823C 
+
+PidNameXSharingCapabilities  0x836C 
+
+PidLidSharingLocalType  0x824F 
+
+PidNameXSharingLocalType  0x8379 
+
+PidLidSharingInitiatorEntryId 0x8249 
+
+PidLidSharingInitiatorName  0x8029 
+
+PidLidSharingInitiatorSmtp  0x8248 
+
+PidLidSharingRemoteName  0x8026 
+
+PidNameXSharingRemoteName 0x8373 
+
+PidLidSharingRemoteType 0x8247 
+
+PidNameXSharingRemoteType  0x8376 
+
+PidLidSharingRemoteUid 0x8246 
+
+PidNameXSharingRemoteUid  0x8374 
+
+PidLidSharingRemoteStoreUid 0x83E1 
+
+PidNameXSharingRemoteStoreUid  0x8375 
+
+PidLidSharingResponseType  0x83E4 
+
+PidLidSharingResponseTime 0x83E3 
+
+ 
+
+4.1 Sending a Sharing Request 
+
+Kendall's client creates a sharing request by using the RopCreateMessage ROP ([MS-OXCROPS] 
+section 2.2.6.2). The server returns a success code and a handle to a Message object. 
+
+The client then sets the properties on the sharing request by using the RopSetProperties ROP ([MS-
+OXCROPS] section 2.2.8.6), as shown in the following table. 
+
+Property 
+Property ID Property type Value 
+
+PidTagMessageClass ([MS- 0x001A PtypString "IPM.Sharing" 
+OXCMSG] section 2.2.1.3) ([MS-OXCDATA] 
+
+section 2.11.1) 
+
+PidNameContentClass (section 0x806D PtypString "Sharing" 
+2.2.5.1) 
+
+PidTagNormalizedSubject ([MS- 0x0E1D PtypString "Sharing request: calendar" 
+
+23 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type Value 
+
+OXCMSG] section 2.2.1.10) 
+
+PidTagSubjectPrefix ([MS- 0x003D PtypString "" (a zero-length string) 
+OXCMSG] section 2.2.1.9) 
+
+PidLidSharingProviderGuid 0x8243 PtypBinary * 
+(section 2.2.2.12) ([MS-OXCDATA] 
+
+section 2.11.1) 
+
+PidNameXSharingProviderGuid 0x836F PtypString "AEF0060000000000C000000000000046" 
+(section 2.2.2.13) 
+
+PidLidSharingProviderName 0x8244 PtypString "Microsoft Exchange" 
+(section 2.2.2.14) 
+
+PidNameXSharingProviderName 0x8370 PtypString "Microsoft Exchange" 
+(section 2.2.2.15) 
+
+PidLidSharingProviderUrl 0x8245 PtypString "HTTP://www.microsoft.com/exchange" 
+(section 2.2.2.16) 
+
+PidNameXSharingProviderUrl 0x8371 PtypString "HTTP://www.microsoft.com/exchange" 
+(section 2.2.2.17) 
+
+PidLidSharingConfigurationUrl 0x83D0 PtypString "" (a zero-length string) 
+(section 2.2.2.3) 
+
+PidNameXSharingConfigUrl 0x8377 PtypString "" (a zero-length string) 
+(section 2.2.2.4) 
+
+PidLidSharingFlavor (section 0x823D PtypInteger32 0x00020500 
+2.2.2.5) ([MS-OXCDATA] 
+
+section 2.11.1) 
+
+PidNameXSharingFlavor (section 0x836D PtypString "20500" 
+2.2.2.6) 
+
+PidLidSharingCapabilities 0x823C PtypInteger32 0x00040290 
+(section 2.2.2.1) 
+
+PidNameXSharingCapabilities 0x836C PtypString "40290" 
+(section 2.2.2.2) 
+
+PidLidSharingLocalType (section 0x824F PtypString "IPF.Appointment" 
+2.2.2.10) 
+
+PidNameXSharingLocalType 0x8379 PtypString "IPF.Appointment" 
+(section 2.2.2.11) 
+
+PidLidSharingInitiatorEntryId 0x8249 PtypBinary ** 
+(section 2.2.2.7) 
+
+PidLidSharingInitiatorName 0x8029 PtypString "user12" 
+(section 2.2.2.8) 
+
+PidLidSharingInitiatorSmtp 0x8248 PtypString "user12@fabrikam.com" 
+(section 2.2.2.9) 
+
+* The following data shows the value of the PidLidSharingProviderGuid property. The size of the 
+value is 16 bytes. 
+
+24 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 0000: AE F0 06 00 00 00 00 00 C0 00 00 00 00 00 00 46 ...............F 
+
+** The following data shows the value of the PidLidSharingInitiatorEntryId property. The size of 
+the value is 125 bytes. 
+
+ 0000: 00 00 00 00 DC A7 40 C8 C0 42 10 1A B4 B9 08 00 ......@..B...... 
+ 0010: 2B 2F E1 82 01 00 00 00 00 00 00 00 2F 6F 3D 46 +/........../o=F 
+ 0020: 69 72 73 74 20 4F 72 67 61 6E 69 7A 61 74 69 6F irst Organizatio 
+ 0030: 6E 2F 6F 75 3D 45 78 63 68 61 6E 67 65 20 41 64 n/ou=Exchange Ad 
+ 0040: 6D 69 6E 69 73 74 72 61 74 69 76 65 20 47 72 6F ministrative Gro 
+ 0050: 75 70 20 28 46 59 44 49 42 4F 48 46 32 33 53 50 up (FYDIBOHF23SP 
+ 0060: 44 4C 54 29 2F 63 6E 3D 52 65 63 69 70 69 65 6E DLT)/cn=Recipien 
+ 0070: 74 73 2F 63 6E 3D 75 73 65 72 31 32 00          ts/cn=user12. 
+
+After addressing the message as described in [MS-OXOMSG], the client sends the message to Ryan by 
+using the RopSubmitMessage ROP ([MS-OXCROPS] section 2.2.7.1) and then releases the Message 
+object by using the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3). 
+
+4.2 Denying a Sharing Request 
+
+Ryan wants to send a sharing response denying the sharing request that is described in section 
+4.1. The client creates a new Message object by using the RopCreateMessage ROP ([MS-
+OXCROPS] section 2.2.6.2). The server returns a success code and a handle to a Message object. 
+
+The client then sets the properties on the sharing response by using the RopSetProperties ROP 
+([MS-OXCROPS] section 2.2.8.6), as shown in the following table. 
+
+Property 
+Property ID Property type Value 
+
+PidTagMessageClass ([MS- 0x001A PtypString "IPM.Sharing" 
+OXCMSG] section 2.2.1.3) ([MS-OXCDATA] 
+
+section 2.11.1) 
+
+PidNameContentClass (section 0x806d PtypString "Sharing" 
+2.2.5.1) 
+
+0x0E1D PtypString "Denied: sharing request: calendar" 
+PidTagNormalizedSubject ([MS-
+OXCMSG] section 2.2.1.10) 
+
+PidTagSubjectPrefix ([MS- 0x003D PtypString "" (a zero-length string) 
+OXCMSG] section 2.2.1.9) 
+
+PidLidSharingProviderGuid 0x8243 PtypBinary * 
+(section 2.2.2.12) ([MS-OXCDATA] 
+
+section 2.11.1) 
+
+PidNameXSharingProviderGuid 0x836F PtypString "AEF0060000000000C000000000000046" 
+(section 2.2.2.13) 
+
+PidLidSharingProviderName 0x8244 PtypString "Microsoft Exchange" 
+(section 2.2.2.14) 
+
+PidNameXSharingProviderName 0x8370 PtypString "Microsoft Exchange" 
+(section 2.2.2.15) 
+
+PidLidSharingProviderUrl 0x8245 PtypString "HTTP://www.microsoft.com/exchange" 
+(section 2.2.2.16) 
+
+25 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type Value 
+
+PidNameXSharingProviderUrl 0x8371 PtypString "HTTP://www.microsoft.com/exchange" 
+(section 2.2.2.17) 
+
+PidLidSharingConfigurationUrl 0x83D0 PtypString "" (a zero-length string) 
+(section 2.2.2.3) 
+
+PidNameXSharingConfigUrl 0x8377 PtypString "" (a zero-length string) 
+(section 2.2.2.4) 
+
+PidLidSharingFlavor (section 0x823D PtypInteger32 0x00025100 
+2.2.2.5) ([MS-OXCDATA] 
+
+section 2.11.1) 
+
+PidNameXSharingFlavor (section 0x836D PtypString "25100" 
+2.2.2.6) 
+
+PidLidSharingCapabilities 0x823C PtypInteger32 0x00040290 
+(section 2.2.2.1) 
+
+PidNameXSharingCapabilities 0x836C PtypString "40290" 
+(section 2.2.2.2) 
+
+PidLidSharingLocalType (section 0x824F PtypString "IPF.Appointment" 
+2.2.2.10) 
+
+PidNameXSharingLocalType 0x8379 PtypString "IPF.Appointment" 
+(section 2.2.2.11) 
+
+PidLidSharingInitiatorEntryId 0x8249 PtypBinary ** 
+(section 2.2.2.7) 
+
+PidLidSharingInitiatorName 0x8029 PtypString "user12" 
+(section 2.2.2.8) 
+
+PidLidSharingInitiatorSmtp 0x8248 PtypString "user12@fabrikam.com" 
+(section 2.2.2.9) 
+
+* The following data shows the value of the PidLidSharingProviderGuid property. The size of the 
+value is 16 bytes. 
+
+ 0000: AE F0 06 00 00 00 00 00 C0 00 00 00 00 00 00 46 ...............F 
+
+** The following data shows the value of the PidLidSharingInitiatorEntryId property. The size of 
+the value is 125 bytes. 
+
+ 0000: 00 00 00 00 DC A7 40 C8 C0 42 10 1A B4 B9 08 00 ......@..B...... 
+ 0010: 2B 2F E1 82 01 00 00 00 00 00 00 00 2F 6F 3D 46 +/........../o=F 
+ 0020: 69 72 73 74 20 4F 72 67 61 6E 69 7A 61 74 69 6F irst Organizatio 
+ 0030: 6E 2F 6F 75 3D 45 78 63 68 61 6E 67 65 20 41 64 n/ou=Exchange Ad 
+ 0040: 6D 69 6E 69 73 74 72 61 74 69 76 65 20 47 72 6F ministrative Gro 
+ 0050: 75 70 20 28 46 59 44 49 42 4F 48 46 32 33 53 50 up (FYDIBOHF23SP 
+ 0060: 44 4C 54 29 2F 63 6E 3D 52 65 63 69 70 69 65 6E DLT)/cn=Recipien 
+ 0070: 74 73 2F 63 6E 3D 75 73 65 72 31 32 00          ts/cn=user12. 
+
+After addressing the message as described in [MS-OXOMSG], the client sends the message to Kendall 
+by using the RopSubmitMessage ROP ([MS-OXCROPS] section 2.2.7.1) and then releases the 
+Message object by using the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3). 
+
+26 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Then, the client opens the sharing request by using the RopOpenMessage ROP ([MS-OXCROPS] 
+section 2.2.6.1). The server returns a success code and a handle to the Message object. 
+
+The client sets properties on the sharing request to indicate that the client has sent a sharing response 
+denying the request and to specify the time at which the response was sent, as shown in the following 
+table. The client sets these properties by using the RopSetProperties ROP ([MS-OXCROPS] section 
+2.2.8.6).  
+
+Property 
+Property ID Property type Data Value 
+
+PidLidSharingResponseType 0x83E4 PtypInteger32 ([MS- 02 00 00 0x00000002 
+(section 2.2.4.2) OXCDATA] section 00 
+
+2.11.1) 
+
+PidLidSharingResponseTime 0x83E3 PtypTime ([MS- 00 9A C2 2008/03/06 
+(section 2.2.4.1) OXCDATA] section CF E3 7F 23:43:00.000 
+
+2.11.1) C8 01 
+
+The client saves the changes by using the RopSaveChangesMessage ROP ([MS-OXCROPS] section 
+2.2.6.3) and releases the Message object by using the RopRelease ROP. 
+
+4.3 Accepting a Sharing Request 
+
+Ryan wants to send a sharing response accepting the sharing request that is described in section 
+4.1. The client creates a new Message object by using the RopCreateMessage ROP ([MS-
+OXCROPS] section 2.2.6.2). The server returns a success code and a handle to a Message object. 
+
+The client sets the properties on a sharing response by using the RopSetProperties ROP ([MS-
+OXCROPS] section 2.2.8.6), as shown in the following table. 
+
+Property 
+Property  ID  Property type  Value  
+
+PidTagMessageClass ([MS-OXCMSG] 0x001A PtypString "IPM.Sharing" 
+section 2.2.1.3) ([MS-
+
+OXCDATA] 
+section 2.11.1) 
+
+PidNameContentClass (section 0x806d PtypString  "Sharing" 
+2.2.5.1) 
+
+PidTagNormalizedSubject ([MS- 0x0E1D PtypString  "Allowed: sharing request: calendar" 
+OXCMSG] section 2.2.1.10) 
+
+PidTagSubjectPrefix ([MS-OXCMSG] 0x003D PtypString  "" (a zero-length string) 
+section 2.2.1.9) 
+
+PidLidSharingProviderGuid (section 0x8243 PtypBinary  * 
+2.2.2.12) 
+
+PidNameXSharingProviderGuid 0x836F PtypString  "AEF0060000000000C0000000
+(section 2.2.2.13) 00000046" 
+
+PidLidSharingProviderName (section 0x8244 PtypString  "Microsoft Exchange" 
+2.2.2.14) 
+
+PidNameXSharingProviderName 0x8370 PtypString  "Microsoft Exchange" 
+(section 2.2.2.15) 
+
+PidLidSharingProviderUrl (section 0x8245 PtypString  "HTTP://www.microsoft.com/exchan
+
+27 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property  ID  Property type  Value  
+
+2.2.2.16) ge" 
+
+PidNameXSharingProviderUrl 0x8371 PtypString  "HTTP://www.microsoft.com/exchan
+(section 2.2.2.17) ge" 
+
+PidLidSharingConfigurationUrl 0x83D0 PtypString  "" (a zero-length string) 
+(section 2.2.2.3) 
+
+PidNameXSharingConfigUrl (section 0x8377 PtypString  "" (a zero-length string) 
+2.2.2.4) 
+
+PidLidSharingFlavor (section 2.2.2.5) 0x823D PtypInteger3 0x00023310 
+2 ([MS-
+OXCDATA] 
+section 2.11.1) 
+
+PidNameXSharingFlavor (section 0x836D PtypString  "23310" 
+2.2.2.6) 
+
+PidLidSharingCapabilities (section 0x823C PtypInteger3 0x00040290 
+2.2.2.1) 2  
+
+PidNameXSharingCapabilities 0x836C PtypString  "40290" 
+(section 2.2.2.2) 
+
+PidLidSharingLocalType (section 0x824F PtypString  "IPF.Appointment" 
+2.2.2.10) 
+
+PidNameXSharingLocalType (section 0x8379 PtypString  "IPF.Appointment" 
+2.2.2.11) 
+
+PidLidSharingInitiatorEntryId 0x8249 PtypBinary ** 
+(section 2.2.2.7) ([MS-
+
+OXCDATA] 
+section 2.11.1) 
+
+PidLidSharingInitiatorName (section 0x8029 PtypString  "user10" 
+2.2.2.8) 
+
+PidLidSharingInitiatorSmtp (section 0x8248 PtypString  "user10@fabrikam.com" 
+2.2.2.9) 
+
+PidLidSharingRemoteName (section 0x8026 PtypString  "Calendar" 
+2.2.3.1) 
+
+PidNameXSharingRemoteName 0x8373 PtypString  "Calendar" 
+(section 2.2.3.2) 
+
+PidLidSharingRemoteType (section 0x8247 PtypString  "IPF.Appointment" 
+2.2.3.5) 
+
+PidNameXSharingRemoteType 0x8376 PtypString  "IPF.Appointment" 
+(section 2.2.3.6) 
+
+PidLidSharingRemoteUid (section 0x8246 PtypString  "00000000B0FCA4F63C21A642
+2.2.3.7) BD4B8F1BDBA04BC60100612A
+
+7BAB49F64E4B9C52DBFB5A53
+AA1C000000F04EEF0000" 
+
+28 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property  ID  Property type  Value  
+
+PidNameXSharingRemoteUid 0x8374 PtypString  "00000000B0FCA4F63C21A642B
+(section 2.2.3.8) D4B8F1BDBA04BC60100612A7
+
+BAB49F64E4B9C52DBFB5A53A
+A1C000000F04EEF0000" 
+
+PidLidSharingRemoteStoreUid 0x83E1 PtypString  "0000000038A1BB1005E5101A
+(section 2.2.3.3) A1BB08002B2A56C20000454D
+
+534D44422E444C4C000000000
+00000001B55FA20AA6611CD9
+BC800AA002FC45A0C00000033
+36353952392D413131002F6F3
+D4669727374204F7267616E69
+7A6174696F6E2F6F753D45786
+368616E67652041646D696E69
+73747261746976652047726F7
+570202846594449424F484632
+335350444C54292F636E3D526
+563697069656E74732F636E3D
+75736572313000" 
+
+0x8375 PtypString  "0000000038A1BB1005E5101AA
+PidNameXSharingRemoteStoreUid 1BB08002B2A56C20000454D5
+(section 2.2.3.4)  34D44422E444C4C0000000000
+
+0000001B55FA20AA6611CD9B
+C800AA002FC45A0C000000333
+6353952392D413131002F6F3D
+4669727374204F7267616E697
+A6174696F6E2F6F753D457863
+68616E67652041646D696E697
+3747261746976652047726F75
+70202846594449424F4846323
+35350444C54292F636E3D5265
+63697069656E74732F636E3D7
+5736572313000" 
+
+* The following data shows the value of the PidLidSharingProviderGuid property. The size of the 
+value is 16 bytes. 
+
+ 0000: AE F0 06 00 00 00 00 00 C0 00 00 00 00 00 00 46 ...............F 
+
+** The following data shows the value of the PidLidSharingInitiatorEntryId property. The size of 
+the value is 125 bytes. 
+
+ 0000: 00 00 00 00 DC A7 40 C8 C0 42 10 1A B4 B9 08 00 ......@..B...... 
+ 0010: 2B 2F E1 82 01 00 00 00 00 00 00 00 2F 6F 3D 46 +/........../o=F 
+ 0020: 69 72 73 74 20 4F 72 67 61 6E 69 7A 61 74 69 6F irst Organizatio 
+ 0030: 6E 2F 6F 75 3D 45 78 63 68 61 6E 67 65 20 41 64 n/ou=Exchange Ad 
+ 0040: 6D 69 6E 69 73 74 72 61 74 69 76 65 20 47 72 6F ministrative Gro 
+ 0050: 75 70 20 28 46 59 44 49 42 4F 48 46 32 33 53 50 up (FYDIBOHF23SP 
+ 0060: 44 4C 54 29 2F 63 6E 3D 52 65 63 69 70 69 65 6E DLT)/cn=Recipien 
+ 0070: 74 73 2F 63 6E 3D 75 73 65 72 31 30 00          ts/cn=user10. 
+
+After properly addressing the message as described in [MS-OXOMSG], the client sends the message to 
+Kendall by using the RopSubmitMessage ROP ([MS-OXCROPS] section 2.2.7.1) and then  releases 
+the Message object by using the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3). 
+
+The client then grants Kendall permission to the folder as described in [MS-OXODLGT]. 
+
+29 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Then the client opens the sharing request by using the RopOpenMessage ROP ([MS-OXCROPS] 
+section 2.2.6.1). The server returns a success code and a handle to the Message object. 
+
+The client sets the properties on the sharing request to indicate that the client has sent a sharing 
+response accepting the request and to specify the time at which the response was sent, as shown in 
+the following table. The client sets these properties by using the RopSetProperties ROP ([MS-
+OXCROPS] section 2.2.8.6). 
+
+Property 
+Property  ID  Property type  Data  Value  
+
+PidLidSharingResponseType 0x83E4 PtypInteger32 ([MS- 01 00 00 0x00000001 
+(section 2.2.4.2) OXCDATA] section 00 
+
+2.11.1) 
+
+PidLidSharingResponseTime 0x83E3 PtypTime ([MS- 00 9A C2 2008/03/06 
+(section 2.2.4.1) OXCDATA] section CF E3 7F 23:43:00.000 
+
+2.11.1) C8 01 
+
+The client saves the changes by using the RopSaveChangesMessage ROP ([MS-OXCROPS] section 
+2.2.6.3) and releases the Message object by using the RopRelease ROP. 
+
+30 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no security considerations specific to the Sharing Message Object Protocol. General security 
+considerations pertaining to the underlying transport apply, as described in [MS-OXCMSG]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+31 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.2.8: Office Outlook 2007 sets the value of the PidLidSharingInitiatorName 
+property (section 2.2.2.8) but, upon receipt, ignores the property and queries the address book for 
+its value based on the PidLidSharingInitiatorEntryId property (section 2.2.2.7). 
+
+<2> Section 2.2.2.9: Office Outlook 2007 sets the value of the PidLidSharingInitiatorSmtp 
+property (section 2.2.2.9) but, upon receipt, ignores the property and queries the address book for its 
+value based on the PidLidSharingInitiatorEntryId property (section 2.2.2.7). 
+
+<3> Section 2.2.2.14: Office Outlook 2007 sets the value of the PidLidSharingProviderName 
+property (section 2.2.2.14) but, upon receipt, ignores the property and instead uses a custom value 
+based on the PidLidSharingProviderGuid property (section 2.2.2.12). 
+
+<4> Section 2.2.2.15: Office Outlook 2007 sets the value of the PidNameXSharingProviderName 
+property (section 2.2.2.15) but, upon receipt, ignores the property and instead uses a custom value 
+based on the PidLidSharingProviderGuid property (section 2.2.2.12). 
+
+<5> Section 2.2.2.16: Office Outlook 2007 sets the value of the PidLidSharingProviderUrl property 
+(section 2.2.2.16) but, upon receipt, ignores the property and instead uses a custom value based on 
+the PidLidSharingProviderGuid property (section 2.2.2.12). 
+
+32 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+<6> Section 2.2.2.17: Office Outlook 2007 sets the value of the PidNameXSharingProviderUrl 
+property (section 2.2.2.17) but, upon receipt, ignores the property and instead uses a custom value 
+based on the PidLidSharingProviderGuid property (section 2.2.2.12). 
+
+<7> Section 2.2.3: Office Outlook 2007 sets these properties regardless of the type of Sharing 
+Message object. 
+
+<8> Section 2.2.3.5:  Office Outlook 2007 sets the PidLidSharingRemoteType property to the 
+same value as the PidLidSharingLocalType property (section 2.2.2.10) but, upon receipt, ignores 
+the property and uses only the PidLidSharingLocalType property to determine behavior. 
+
+<9> Section 2.2.3.6:  Office Outlook 2007 sets the PidNameXSharingRemoteType property to the 
+same value as the PidLidSharingLocalType property (section 2.2.2.10) but, upon receipt, ignores 
+the property and uses only the PidLidSharingLocalType property to determine behavior. 
+
+<10> Section 2.2.6: Office Outlook 2007 sets differing subsets of these properties in different 
+scenarios, but their values have no meaning in the context of this protocol. 
+
+33 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+34 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A Examples 
+    accepting a sharing request 27 
+Abstract data model    denying a sharing request 25 
+   client 18    sending a sharing request 23 
+   server 19  
+Accepting a sharing request example 27 F 
+Additional property constraints  
+   PidNameContentClass property 15 Fields - vendor-extensible 8 
+   PidTagMessageClass property 15  
+Additional Property Constraints message 15 G 
+Applicability 8  
+ Glossary 6 
+C  
+ H 
+Capability negotiation 8  
+Change tracking 34 Higher-layer triggered events 
+Client    server 19 
+   abstract data model 18 Higher-layer triggered events - client 
+   initialization 18    creating a sharing invitation 18 
+   message processing 19    creating a sharing request 18 
+   other local events 19    creating a sharing response - accept 18 
+   overview 18    creating a sharing response - deny 19 
+   sequencing rules 19  
+   timer events 19 I 
+   timers 18  
+Client - higher-layer triggered events Ignored Properties message 15 
+   creating a sharing invitation 18 Implementer - security considerations 31 
+   creating a sharing request 18 Index of security parameters 31 
+   creating a sharing response - accept 18 Informative references 8 
+   creating a sharing response - deny 19 Initialization 
+Common Message Object Properties message 9    client 18 
+Common Sharing Message object properties    server 19 
+   PidLidSharingCapabilities property 9 Introduction 6 
+   PidLidSharingConfigurationUrl property 10  
+   PidLidSharingFlavor property 10 M 
+   PidLidSharingInitiatorEntryId property 11  
+   PidLidSharingInitiatorName property 11 Message processing 
+   PidLidSharingInitiatorSmtp property 11    client 19 
+   PidLidSharingLocalType property 12    server 19 
+   PidLidSharingProviderGuid property 12 Messages 
+   PidLidSharingProviderName property 12    Additional Property Constraints 15 
+   PidLidSharingProviderUrl property 13    Common Message Object Properties 9 
+   PidNameXSharingCapabilities property 10    Common Sharing Message Object Properties 9 
+   PidNameXSharingConfigUrl property 10    Ignored Properties 15 
+   PidNameXSharingFlavor property 11    Sharing Invitation and Response Acceptance 
+   PidNameXSharingLocalType property 12 Properties 13 
+   PidNameXSharingProviderGuid property 12    Sharing Request Properties 14 
+   PidNameXSharingProviderName property 13    syntax 9 
+   PidNameXSharingProviderUrl property 13    transport 9 
+Common Sharing Message Object Properties  
+
+message 9 
+N 
+
+ 
+ 
+
+D 
+Normative references 7 
+
+  
+Data model - abstract 
+
+O 
+   client 18 
+
+ 
+   server 19 
+
+Other local events 
+Denying a sharing request example 25 
+
+   client 19 
+ 
+
+   server 20 
+E Overview (synopsis) 8 
+  
+
+35 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+P R 
+  
+Parameters - security index 31 References 7 
+PidLidSharingCapabilities common Sharing Message    informative 8 
+
+object property 9    normative 7 
+PidLidSharingConfigurationUrl common Sharing Relationship to other protocols 8 
+
+Message object property 10  
+PidLidSharingFlavor common Sharing Message object S 
+
+property 10  
+PidLidSharingInitiatorEntryId common Sharing Security 
+
+Message object property 11    implementer considerations 31 
+PidLidSharingInitiatorName common Sharing    parameter index 31 
+
+Message object property 11 Sending a sharing request example 23 
+PidLidSharingInitiatorSmtp common Sharing Sequencing rules 
+
+Message object property 11    client 19 
+PidLidSharingLocalType common Sharing Message    server 19 
+
+object property 12 Server 
+PidLidSharingProviderGuid common Sharing Message    abstract data model 19 
+
+object property 12    higher-layer triggered events 19 
+PidLidSharingProviderName common Sharing    initialization 19 
+
+Message object property 12    message processing 19 
+PidLidSharingProviderUrl common Sharing Message    other local events 20 
+
+object property 13    overview 19 
+PidLidSharingRemoteName sharing invitation and    sequencing rules 19 
+
+response property 13    timer events 20 
+PidLidSharingRemoteStoreUid sharing invitation and    timers 19 
+
+response property 13 Sharing invitation and response acceptance 
+PidLidSharingRemoteType sharing invitation and properties 
+
+response property 14    PidLidSharingRemoteName property 13 
+PidLidSharingRemoteUid sharing invitation and    PidLidSharingRemoteStoreUid property 13 
+
+response property 14    PidLidSharingRemoteType property 14 
+PidLidSharingResponseTime sharing request property    PidLidSharingRemoteUid property 14 
+
+14    PidNameXSharingRemoteName property 13 
+PidLidSharingResponseType sharing request property    PidNameXSharingRemoteStoreUid property 14 
+
+14    PidNameXSharingRemoteType property 14 
+PidNameContentClass additional property constraints    PidNameXSharingRemoteUid property 14 
+
+15 Sharing Invitation and Response Acceptance 
+PidNameXSharingCapabilities common Sharing Properties message 13 
+
+Message object property 10 Sharing request properties 
+PidNameXSharingConfigUrl common Sharing    PidLidSharingResponseTime property 14 
+
+Message object property 10    PidLidSharingResponseType property 14 
+PidNameXSharingFlavor common Sharing Message Sharing Request Properties message 14 
+
+object property 11 Standards assignments 8 
+PidNameXSharingLocalType common Sharing Syntax 9 
+
+Message object property 12  
+PidNameXSharingProviderGuid common Sharing T 
+
+Message object property 12  
+PidNameXSharingProviderName common Sharing Timer events 
+
+Message object property 13    client 19 
+PidNameXSharingProviderUrl common Sharing    server 20 
+
+Message object property 13 Timers 
+PidNameXSharingRemoteName sharing invitation    client 18 
+
+and response property 13    server 19 
+PidNameXSharingRemoteStoreUid sharing invitation Tracking changes 34 
+
+and response property 14 Transport 9 
+PidNameXSharingRemoteType sharing invitation and Triggered events - client 
+
+response property 14    creating a sharing invitation 18 
+PidNameXSharingRemoteUid sharing invitation and    creating a sharing request 18 
+
+response property 14    creating a sharing response - accept 18 
+PidTagMessageClass additional property constraints    creating a sharing response - deny 19 
+
+15 Triggered events - higher-layer 
+Preconditions 8    server 19 
+Prerequisites 8  
+Product behavior 32 V 
+  
+
+36 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Vendor-extensible fields 8 
+Versioning 8 
+
+ 
+
+37 / 37 
+
+[MS-OXSHARE] - v20250520 
+Sharing Message Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

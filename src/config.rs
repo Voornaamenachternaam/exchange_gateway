@@ -3,14 +3,26 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::fs;
 use url::Url;
+use validator::{Validate, ValidationError};
 use zeroize::Zeroizing;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Validate)]
 pub struct Config {
+    #[validate(length(min = 1, message = "bind address is required"))]
     pub bind: String,
+
+    #[validate(url(message = "caldav_base must be a valid URL"))]
     pub caldav_base: String,
+
+    #[validate(url(message = "worker_url must be a valid URL"))]
     pub worker_url: String,
+
+    #[validate(length(min = 16, message = "worker_secret must be at least 16 characters"))]
+    #[serde(skip_serializing)]
     pub worker_secret: SecretString,
+
+    #[validate(length(min = 32, message = "hmac_secret must be at least 32 characters"))]
+    #[serde(skip_serializing)]
     pub hmac_secret: SecretString,
 
     #[serde(default)]
@@ -26,7 +38,11 @@ impl Config {
         let mut cfg: Config = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
 
-        cfg.validate()?;
+        // Use validator for automatic validation
+        cfg.validate()
+            .map_err(|e| anyhow::anyhow!("Config validation failed: {}", e))?;
+
+        cfg.validate_custom()?;
 
         if cfg.gateway_host.is_empty() {
             cfg.gateway_host =
@@ -44,40 +60,16 @@ impl Config {
         self.hmac_secret.expose_secret()
     }
 
-    pub fn validate(&self) -> anyhow::Result<()> {
-        if self.bind.is_empty() {
-            return Err(anyhow::anyhow!("Config: 'bind' address is required"));
-        }
+    /// Custom validation that can't be expressed with validator derive
+    fn validate_custom(&self) -> anyhow::Result<()> {
         if !self.bind.contains(':') {
             return Err(anyhow::anyhow!(
                 "Config: 'bind' must be in format 'host:port'"
             ));
         }
-        if self.caldav_base.is_empty() {
-            return Err(anyhow::anyhow!("Config: 'caldav_base' URL is required"));
-        }
+
         validate_url(&self.caldav_base, "caldav_base")?;
-
-        if self.worker_url.is_empty() {
-            return Err(anyhow::anyhow!("Config: 'worker_url' is required"));
-        }
         validate_url(&self.worker_url, "worker_url")?;
-
-        if self.worker_secret.expose_secret().is_empty() {
-            return Err(anyhow::anyhow!("Config: 'worker_secret' is required"));
-        }
-        if self.worker_secret.expose_secret().len() < 16 {
-            tracing::warn!(
-                "Config: worker_secret is shorter than 16 characters — this is insecure"
-            );
-        }
-
-        if self.hmac_secret.expose_secret().is_empty() {
-            return Err(anyhow::anyhow!("Config: 'hmac_secret' is required"));
-        }
-        if self.hmac_secret.expose_secret().len() < 32 {
-            tracing::warn!("Config: hmac_secret is shorter than 32 characters — this is insecure");
-        }
 
         if !self.gateway_host.is_empty() && self.gateway_host.contains("://") {
             return Err(anyhow::anyhow!(

@@ -1,4 +1,5 @@
 // src/calendar.rs
+use crate::ical_parser::{self as ical, unescape_ical_text, parse_ical_param};
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -399,20 +400,32 @@ fn unescape_ical_text(input: &str) -> String {
     out
 }
 
+/// Parse iCalendar content into a vector of (key, value) property pairs.
+/// 
+/// This function uses nom-based parser combinators for better performance
+/// and error handling compared to manual string manipulation.
+#[must_use]
 pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
-    let mut properties = Vec::new();
-    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
-    for line in unfolded.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(colon_idx) = line.find(':') {
-            let key = line[..colon_idx].to_string();
-            let value = line[colon_idx + 1..].to_string();
-            properties.push((key, value));
+    // Use nom parser for better performance
+    match ical::parse_property_lines(&ical::unfold_ical_content(ics)) {
+        Ok(("", properties)) => properties,
+        _ => {
+            // Fallback to legacy parsing if nom parser fails
+            let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
+            let mut properties = Vec::new();
+            for line in unfolded.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(colon_idx) = line.find(':') {
+                    let key = line[..colon_idx].to_string();
+                    let value = line[colon_idx + 1..].to_string();
+                    properties.push((key, value));
+                }
+            }
+            properties
         }
     }
-    properties
 }
 
 fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
@@ -439,25 +452,13 @@ fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
     blocks
 }
 
+/// Extract VTIMEZONE block from iCalendar content using nom parser.
+#[must_use]
 fn extract_vtimezone_block(ics: &str) -> Option<String> {
-    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
-    let mut lines = Vec::new();
-    let mut in_vtimezone = false;
-    for line in unfolded.lines() {
-        match line.trim() {
-            "BEGIN:VTIMEZONE" => {
-                in_vtimezone = true;
-                lines.push("BEGIN:VTIMEZONE".to_string());
-            }
-            "END:VTIMEZONE" if in_vtimezone => {
-                lines.push("END:VTIMEZONE".to_string());
-                break;
-            }
-            _ if in_vtimezone => lines.push(line.to_string()),
-            _ => {}
-        }
+    match ical::parse_vtimezone_block(ics) {
+        Ok((_, Some(block))) => Some(block),
+        _ => None,
     }
-    (!lines.is_empty()).then(|| lines.join("\r\n"))
 }
 
 fn parse_categories_value(value: &str) -> Vec<String> {
@@ -468,8 +469,10 @@ fn parse_categories_value(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse TZID parameter from a property key using nom parser.
+#[must_use]
 fn parse_tzid_from_key(key: &str) -> Option<String> {
-    parse_ical_param(key, "TZID").map(|v| v.trim_matches('"').to_string())
+    parse_ical_param(key, "TZID")
 }
 
 fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::DateTime<Utc>> {
@@ -520,21 +523,15 @@ fn format_ical_datetime_with_timezone(
     (None, dt.format("%Y%m%dT%H%M%SZ").to_string())
 }
 
+/// Parse duration in ISO 8601 format using nom parser.
+/// Returns the number of minutes, where negative values represent time before an event
+/// (e.g., reminders). A negative sign in the input (-PT15M) returns a negative number (-15).
+#[must_use]
 fn parse_duration_minutes(trigger: &str) -> Option<i32> {
-    let negative = trigger.starts_with('-');
-    let value = trigger
-        .trim_start_matches('-')
-        .trim_start_matches('P')
-        .trim_start_matches('T');
-    if let Some(raw) = value.strip_suffix('M') {
-        let mins = raw.parse::<i32>().ok()?;
-        return Some(if negative { mins } else { -mins });
+    match ical::parse_ical_duration_minutes(trigger) {
+        Ok((_, mins)) => Some(mins),
+        Err(_) => None,
     }
-    if let Some(raw) = value.strip_suffix('H') {
-        let hours = raw.parse::<i32>().ok()?;
-        return Some(if negative { hours * 60 } else { -(hours * 60) });
-    }
-    None
 }
 
 fn fold_ics_line(line: &str) -> String {
@@ -754,6 +751,9 @@ struct CalendarEventFields {
     deleted: bool,
 }
 
+/// Parse an iCalendar VEVENT from raw ICS content.
+/// Returns a CalendarItem if parsing succeeds, or None if the content is invalid.
+#[must_use]
 pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     let timezone_blob = extract_vtimezone_block(ics);
     let mut master: Option<CalendarItem> = None;
@@ -850,6 +850,9 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     Some(item)
 }
 
+/// Render a CalendarItem to iCalendar (RFC 5545) format.
+/// Returns a complete VEVENT component as a String.
+#[must_use]
 pub fn render_ics(item: &CalendarItem) -> String {
     let dtstamp = item
         .dtstamp

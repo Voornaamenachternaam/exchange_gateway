@@ -1,0 +1,2027 @@
+﻿[MS-OXWSGTRM]:  
+
+Get Rooms List Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0 Major Initial Availability. 
+
+11/4/2009 1.1.0 Minor Updated the technical content. 
+
+2/10/2010 1.1.0 None Version 1.1.0 release 
+
+5/5/2010 1.1.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 1.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 1.2 None 
+
+technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 1.2 None 
+
+technical content. 
+
+8/5/2011 1.3 Minor Clarified the meaning of the technical content. 
+
+10/7/2011 2.0 Major Significantly changed the technical content. 
+
+1/20/2012 3.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 3.0 None 
+
+technical content. 
+
+7/16/2012 3.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 3.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 3.2 None 
+
+technical content. 
+
+7/26/2013 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 4.0 None 
+
+technical content. 
+
+4/30/2014 4.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 4.1 None 
+
+technical content. 
+
+10/30/2014 4.2 Minor Clarified the meaning of the technical content. 
+
+3/16/2015 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 5.0 None 
+
+technical content. 
+
+2 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+7/24/2018 6.0 Major Significantly changed the technical content. 
+
+10/1/2018 7.0 Major Significantly changed the technical content. 
+
+4/22/2021 8.0 Major Significantly changed the technical content. 
+
+8/17/2021 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 9.0 None 
+
+technical content. 
+
+5/20/2025 10.0 Major Significantly changed the technical content. 
+
+3 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Common Message Syntax ................................................................................. 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Messages ................................................................................................... 10 
+2.2.3 Elements ................................................................................................... 10 
+2.2.4 Complex Types ........................................................................................... 11 
+2.2.5 Simple Types ............................................................................................. 11 
+2.2.6 Attributes .................................................................................................. 11 
+2.2.7 Groups ...................................................................................................... 11 
+2.2.8 Attribute Groups ......................................................................................... 11 
+
+3 Protocol Details ..................................................................................................... 12 
+3.1 ExchangeServicePortType Server Details ............................................................. 12 
+
+3.1.1 Abstract Data Model .................................................................................... 12 
+3.1.2 Timers ...................................................................................................... 12 
+3.1.3 Initialization ............................................................................................... 12 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 12 
+
+3.1.4.1 GetRoomLists Operation ........................................................................ 12 
+3.1.4.1.1 Messages ....................................................................................... 13 
+
+3.1.4.1.1.1 tns:GetRoomListsSoapIn Message ................................................ 13 
+3.1.4.1.1.2 tns:GetRoomListsSoapOut Message ............................................. 14 
+
+3.1.4.1.2 Elements ........................................................................................ 14 
+3.1.4.1.2.1 m:GetRoomLists Element ............................................................ 15 
+3.1.4.1.2.2 m:GetRoomListsResponse Element .............................................. 15 
+
+3.1.4.1.3 Complex Types ............................................................................... 15 
+3.1.4.1.3.1 m:GetRoomListsResponseMessageType Complex Type ................... 15 
+3.1.4.1.3.2 m:GetRoomListsType Complex Type ............................................ 16 
+
+3.1.4.1.4 Simple Types .................................................................................. 16 
+3.1.4.1.5 Attributes ....................................................................................... 16 
+3.1.4.1.6 Groups ........................................................................................... 16 
+3.1.4.1.7 Attribute Groups.............................................................................. 16 
+
+3.1.4.2 GetRooms Operation ............................................................................. 16 
+3.1.4.2.1 Messages ....................................................................................... 17 
+
+3.1.4.2.1.1 tns:GetRoomsSoapIn Message .................................................... 17 
+3.1.4.2.1.2 tns:GetRoomsSoapOut Message .................................................. 18 
+
+3.1.4.2.2 Elements ........................................................................................ 18 
+3.1.4.2.2.1 tns:GetRooms Element ............................................................... 19 
+3.1.4.2.2.2 tns:GetRoomsResponse Element .................................................. 19 
+
+3.1.4.2.3 Complex Types ............................................................................... 19 
+3.1.4.2.3.1 m:GetRoomsResponseMessageType Complex Type ........................ 19 
+3.1.4.2.3.2 m:GetRoomsType Complex Type ................................................. 20 
+
+4 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3.3 t:ArrayOfRoomsType Complex Type ............................................. 21 
+3.1.4.2.3.4 t:DirectoryEntryType Complex Type ............................................. 21 
+3.1.4.2.3.5 t:RoomType Complex Type ......................................................... 21 
+
+3.1.4.2.4 Simple Types .................................................................................. 22 
+3.1.4.2.5 Attributes ....................................................................................... 22 
+3.1.4.2.6 Groups ........................................................................................... 22 
+3.1.4.2.7 Attribute Groups.............................................................................. 22 
+
+3.1.5 Timer Events .............................................................................................. 22 
+3.1.6 Other Local Events ...................................................................................... 22 
+
+4 Protocol Examples ................................................................................................. 23 
+4.1 Getting Room Lists ........................................................................................... 23 
+4.2 Getting Rooms within a Room List ...................................................................... 23 
+
+5 Security ................................................................................................................. 25 
+5.1 Security Considerations for Implementers ........................................................... 25 
+5.2 Index of Security Parameters ............................................................................ 25 
+
+6 Appendix A: Full WSDL .......................................................................................... 26 
+
+7 Appendix B: Full XML Schema ................................................................................ 28 
+7.1 Messages Schema ............................................................................................ 28 
+7.2 Types Schema ................................................................................................. 29 
+
+8 Appendix C: Product Behavior ............................................................................... 30 
+
+9 Change Tracking .................................................................................................... 31 
+
+10 Index ..................................................................................................................... 32 
+
+ 
+
+5 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Get Rooms List Web Service Protocol enables clients to retrieve information about meeting rooms 
+from the server.  
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+6 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[RFC3066] Alvestrand, H., "Tags for the Identification of Languages", BCP 47, RFC 3066, January 
+2001, https://www.rfc-editor.org/info/rfc3066 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+7 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+This protocol enables clients to retrieve information about meeting rooms from the server. Clients can 
+use the data types and operations described by this protocol to retrieve the collection of room lists 
+that exist within the server organization, and to retrieve the collection of rooms that belong to a 
+specific room list.  
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP protocol, as described in [SOAP1.1], to specify the structure information 
+exchanged between the client and the server. This protocol uses the XML protocol, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content sent to and from the server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following layering diagram. 
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web Service 
+Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup Protocol, as 
+described in [MS-OXDSCLI], is required to form the HTTP request to the Web server that hosts this 
+
+8 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+protocol. To retrieve the endpoint as described in either the Autodiscover Publishing Lookup SOAP-
+Based Web Service Protocol or the Autodiscover Publishing and Lookup Protocol, the client needs to 
+have a valid mail-enabled account. The operations that this protocol defines cannot be accessed 
+unless the correct endpoint is identified in the HTTP Web requests that target this protocol. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client applications that use Web services to retrieve information about 
+meeting rooms for use in scheduling meetings. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as described in section 2.1 and in 
+[SOAP1.1]. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version.  The WSDL version 
+of the request is identified by using the RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the ServerVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the Web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes text strings in various messages.  
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+Messages are transported by using SOAP version 1.1, as specified in [SOAP1.1]. 
+
+This protocol relies on the Web server that hosts the application to perform authentication. The 
+protocol MUST support SOAP over HTTP, as specified in [RFC2616], and SHOULD support SOAP over 
+HTTPS, as specified in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and WSDL, as defined in 
+[WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces by using the mechanisms 
+specified in [XMLNS]. Although this specification associates a specific XML namespace prefix with 
+each XML namespace that is used, the choice of any particular XML namespace prefix is 
+implementation-specific and is not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+s http://www.w3.org/2001/XMLSchema [XMLSCHEMA1], [XMLSCHEMA2] 
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1], [XMLSCHEMA2] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+10 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+This specification does not define any common XML schema complex type definitions.  
+
+2.2.5 Simple Types 
+
+This specification does not define any common XML schema simple type definitions. 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+11 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol defines a single port type with two operations. These operations enable client 
+implementations to retrieve a collection of rooms or room lists from the server. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of operations as defined by this specification. 
+
+Operation name Description 
+
+GetRoomLists (section Retrieves a collection of all room lists in the organization. 
+3.1.4.1) 
+
+GetRooms (section 3.1.4.2) Retrieves a collection of all rooms in the specified room list in the 
+organization. 
+
+ 
+
+3.1.4.1 GetRoomLists Operation 
+
+The GetRoomLists operation retrieves a collection of all room lists in the organization. 
+
+The following is the WSDL port type specification for the GetRoomLists operation. 
+
+ <wsdl:operation name="GetRoomLists"> 
+    <wsdl:input message="tns:GetRoomListsSoapIn"/> 
+    <wsdl:output message="tns:GetRoomListsSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for the GetRoomLists operation. 
+
+ <wsdl:operation name="GetRoomLists"> 
+    <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetRoomLists"/> 
+    <wsdl:input> 
+
+12 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <soap:body parts="GetRoomListsRequest" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapIn" part="RequestVersion" use="literal"/> 
+    </wsdl:input> 
+    <wsdl:output> 
+        <soap:body parts="GetRoomListsResult" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapOut" part="ServerVersion" use="literal"/> 
+    </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.1.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to the 
+GetRoomLists operation, as specified in section 3.1.4.1. 
+
+Message name Description 
+
+GetRoomListsSoapIn (section Specifies the SOAP message that requests a collection of all room 
+3.1.4.1.1.1) lists in the organization. 
+
+GetRoomListsSoapOut (section Specifies the SOAP message returned by the server in the response. 
+3.1.4.1.1.2) 
+
+ 
+
+3.1.4.1.1.1 tns:GetRoomListsSoapIn Message 
+
+The GetRoomListsSoapIn WSDL message specifies the GetRoomLists operation request to 
+retrieve a collection of all room lists in the organization. For more details about the GetRoomLists 
+operation, see section 3.1.4.1. 
+
+ <wsdl:message name="GetRoomListsSoapIn"> 
+    <wsdl:part name="GetRoomListsRequest" element="tns:GetRoomLists"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetRoomListsSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetRoomLists. 
+
+The parts of the GetRoomListsSoapIn message are described in the following table. 
+
+Part name Element/type Description 
+
+GetRoomListsRequest tns:GetRoomLists (section Specifies the SOAP body of the request. 
+3.1.4.1.2.1) 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.3) user whom the client application is 
+
+impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.6) culture to use for accessing the mailbox. 
+
+The cultures are defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the GetRoomLists 
+
+13 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+operation request. 
+
+ 
+
+3.1.4.1.1.2 tns:GetRoomListsSoapOut Message 
+
+The GetRoomListsSoapOut WSDL message specifies the server response to the GetRoomLists 
+operation request to retrieve a collection of all room lists in the organization. For more details about 
+the GetRoomLists operation, see section 3.1.4.1. 
+
+ <wsdl:message name="GetRoomListsSoapOut"> 
+    <wsdl:part name="GetRoomListsResult" element="tns:GetRoomListsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetRoomListsSoapOut WSDL message is the output for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetRoomLists. 
+
+The parts of the GetRoomListsSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetRoomListsResult tns:GetRoomListsResponse Specifies the SOAP body of the response 
+(section 3.1.4.1.2.2) message. 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.10) schema version for the 
+
+GetRoomListsSOAPOut message. 
+
+A successful GetRoomLists operation returns a GetRoomListsResponse element, as specified in 
+section 3.1.4.1.2.2, with the ResponseClass attribute of the GetRoomListsResponse element set 
+to "Success". The ResponseCode element, as specified in [MS-OXWSCDATA] section 2.2.4.65, of the 
+GetRoomListsResponse element is set to "NoError". 
+
+If the request is unsuccessful, the GetRoomLists operation returns a GetRoomListsResponse 
+element with the ResponseClass attribute of the GetRoomListsResponse element set to "Error". 
+The ResponseCode element of the GetRoomListsResponse element is set to a value of the 
+ResponseCodeType simple type, as specified in [MS-OXWSCDATA] section 2.2.5.24.  
+
+  
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to the 
+GetRoomLists operation, as specified in section 3.1.4.1. 
+
+Element name Description 
+
+GetRoomLists (section Specifies the request for the GetRoomLists operation that is used by 
+3.1.4.1.2.1) clients to retrieve a collection of all room lists in the organization. 
+
+GetRoomListsResponse (section Specifies a response to a GetRoomLists operation request. 
+3.1.4.1.2.2) 
+
+ 
+
+14 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.2.1 m:GetRoomLists Element 
+
+The GetRoomLists element is used by the client in a GetRoomLists operation request to retrieve a 
+collection of all room lists in the organization. For more details about the GetRoomLists operation, 
+see section 3.1.4.1. 
+
+ <xs:element name="GetRoomLists" 
+  type="m:GetRoomListsType" 
+ /> 
+ 
+
+3.1.4.1.2.2 m:GetRoomListsResponse Element 
+
+The GetRoomListsResponse element specifies the server response to a GetRoomLists operation 
+request. For more details about the GetRoomLists operation, see section 3.1.4.1. 
+
+ <xs:element name="GetRoomListsResponse" 
+  type="m:GetRoomListsResponseMessageType" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to the 
+GetRoomLists operation, as specified in section 3.1.4.1. 
+
+Complex type Description 
+
+GetRoomListsResponseMessageType (section Specifies the server response to a GetRoomLists 
+3.1.4.1.3.1) operation request. 
+
+GetRoomListsType (section 3.1.4.1.3.2) Specifies a request to retrieve the room lists available 
+within the server organization. 
+
+ 
+
+3.1.4.1.3.1 m:GetRoomListsResponseMessageType Complex Type 
+
+The GetRoomListsResponseMessageType complex type specifies the server response to a 
+GetRoomLists operation request. For more details about the GetRoomLists operation, see section 
+3.1.4.1. This complex type extends the ResponseMessageType complex type, as specified in [MS-
+OXWSCDATA] section 2.2.4.65.  
+
+ <xs:complexType name="m:GetRoomListsResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="RoomLists" 
+          type="t:ArrayOfEmailAddressesType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+15 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table lists the child element of the GetRoomListsResponseMessageType complex 
+type. 
+
+Element 
+name Type Description 
+
+RoomLists t:ArrayOfEmailAddressesType ([MS- Contains the collection of room lists available within 
+OXWSCDATA] section 2.2.4.7) the organization. The ItemId element, as specified 
+
+in [MS-OXWSCDATA] section 2.2.4.31, is not 
+returned in the response. 
+
+ 
+
+3.1.4.1.3.2 m:GetRoomListsType Complex Type 
+
+The GetRoomListsType complex type specifies a request to retrieve the room lists available within 
+the server organization. This complex type extends the BaseRequestType complex type, as specified 
+in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="m:GetRoomListsType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.1.4 Simple Types 
+
+None. 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.4.2 GetRooms Operation 
+
+The GetRooms operation retrieves a collection of all rooms in the specified room list in the 
+organization. 
+
+The following is the WSDL port type specification for the GetRooms operation. 
+
+ <wsdl:operation name="GetRooms"> 
+    <wsdl:input message="tns:GetRoomsSoapIn"/> 
+    <wsdl:output message="tns:GetRoomsSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for the GetRooms operation. 
+
+16 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <wsdl:operation name="GetRooms"> 
+    <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetRooms"/> 
+    <wsdl:input> 
+        <soap:body parts="GetRoomsRequest" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapIn" part="RequestVersion" use="literal"/> 
+    </wsdl:input> 
+    <wsdl:output> 
+        <soap:body parts="GetRoomsResult" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapOut" part="ServerVersion" use="literal"/> 
+    </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.2.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to the 
+GetRooms operation, as specified in section 3.1.4.2.  
+
+Message name Description 
+
+GetRoomsSoapIn (section Specifies the SOAP message that requests the collection of rooms that 
+3.1.4.2.1.1) belong to a particular room list. 
+
+GetRoomsSoapOut (section Specifies the SOAP message returned by the server in the response. 
+3.1.4.2.1.2) 
+
+ 
+
+3.1.4.2.1.1 tns:GetRoomsSoapIn Message 
+
+The GetRoomsSoapIn WSDL message specifies the GetRooms operation request to retrieve a 
+collection of all rooms in the specified room list. For more details about the GetRooms operation, see 
+section 3.1.4.2. 
+
+ <wsdl:message name="GetRoomsSoapIn"> 
+    <wsdl:part name="GetRoomsRequest" element="tns:GetRooms"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetRoomsSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetRooms. 
+
+The parts of the GetRoomsSoapIn message are described in the following table. 
+
+Part name Element/type Description 
+
+GetRoomsRequest tns:GetRooms (section 3.1.4.2.2.1) Specifies the SOAP body of the request. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.3) user whom the client application is 
+
+impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.6) culture to use for accessing the mailbox. The 
+
+cultures are defined by [RFC3066]. 
+
+17 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the GetRooms operation 
+
+request. 
+
+ 
+
+3.1.4.2.1.2 tns:GetRoomsSoapOut Message 
+
+The GetRoomsSoapOut WSDL message specifies the server response to the GetRooms operation 
+request to retrieve a collection of all rooms in a specified room list. For more details about the 
+GetRooms operation, see section 3.1.4.2. 
+
+ <wsdl:message name="GetRoomsSoapOut"> 
+    <wsdl:part name="GetRoomsResult" element="tns:GetRoomsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetRoomsSoapOut WSDL message is the output for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetRooms. 
+
+The parts of the GetRoomsSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetRoomsResult tns:GetRoomsResponse (section Specifies the SOAP body of the response 
+3.1.4.2.2.2) message. 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.10) schema version for the GetRoomsSoapOut 
+
+message. 
+
+A successful GetRooms operation returns a GetRoomsResponse element, as specified in section 
+3.1.4.2.2.2, with the ResponseClass attribute of the GetRoomsResponse element, as specified in 
+[MS-OXWSCDATA] section 2.2.4.65, set to "Success". The ResponseCode element, as specified in 
+[MS-OXWSCDATA] section 2.2.4.65, of the GetRoomsResponse element is set to "NoError". 
+
+If the request is unsuccessful, the GetRoomsResponse operation returns a GetRoomsResponse 
+element with the ResponseClass attribute of the GetRoomsResponse element set to "Error". The 
+ResponseCode element of the GetRoomsResponse element is set to a value of the 
+ResponseCodeType simple type, as specified in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.2.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to the 
+GetRooms operation, as specified in section 3.1.4.2. 
+
+Element name Description 
+
+GetRooms (section 3.1.4.2.2.1) Specifies the request for the GetRooms operation that is used by clients to 
+retrieve a collection of all rooms within a particular room list. 
+
+GetRoomsResponse (section Specifies a response to the GetRooms operation request. 
+3.1.4.2.2.2) 
+
+ 
+
+18 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.2.1 tns:GetRooms Element 
+
+The GetRooms element is used by the client in a GetRooms operation request to retrieve all of the 
+rooms within a particular room list. For more details about the GetRooms operation, see section 
+3.1.4.2. 
+
+ <xs:element name="tns:GetRooms" 
+  type="m:GetRoomsType" 
+ /> 
+ 
+
+3.1.4.2.2.2 tns:GetRoomsResponse Element 
+
+The GetRoomsResponse element specifies the server response to a GetRooms operation request. 
+For more details about the GetRooms operation, see section 3.1.4.2. 
+
+ <xs:element name="tns:GetRoomsResponse" 
+  type="m:GetRoomsResponseMessageType" 
+ /> 
+ 
+
+3.1.4.2.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to the 
+GetRooms operation, as specified in section 3.1.4.2. 
+
+Complex type Description 
+
+GetRoomsResponseMessageType (section Specifies the server response to a GetRooms operation 
+3.1.4.2.3.1) request. 
+
+GetRoomsType (section 3.1.4.2.3.2) Specifies a request to retrieve the collection of rooms 
+within a particular room list. 
+
+ArrayOfRoomsType (section 3.1.4.2.3.3) Specifies the collection of rooms that belong to the 
+requested room list. 
+
+DirectoryEntryType (section 3.1.4.2.3.4) Specifies the item identifier for the e-mail address of a 
+room. 
+
+RoomType (section 3.1.4.2.3.5) Specifies the name and e-mail address of a room. 
+
+ 
+
+3.1.4.2.3.1 m:GetRoomsResponseMessageType Complex Type 
+
+The GetRoomsResponseMessageType complex type specifies the server response to a GetRooms 
+operation request. For more details about the GetRooms operation, see section 3.1.4.2. This complex 
+type extends the ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 
+2.2.4.65. 
+
+ <xs:complexType name="m:GetRoomsResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="Rooms" 
+          type="t:ArrayOfRoomsType" 
+
+19 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the GetRoomsResponseMessageType complex type. 
+
+Element 
+name Type Description 
+
+Rooms t:ArrayOfRoomsType (section Specifies a collection of rooms that belong to the 
+3.1.4.2.3.3) requested room list. 
+
+ 
+
+3.1.4.2.3.2 m:GetRoomsType Complex Type 
+
+The GetRoomsType complex type specifies a request to retrieve the collection rooms within a 
+particular room list. This complex type extends the BaseRequestType complex type, as specified in 
+[MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetRoomsType" 
+  mixed="false" 
+ > 
+  <xs:complexContent 
+    mixed="false" 
+  > 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="RoomList" 
+          type="t:EmailAddressType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the GetRoomsType complex type. 
+
+Element 
+name Type Description 
+
+RoomList t:EmailAddressType ([MS-OXWSCDATA] section Specifies the requested room 
+2.2.4.31) list. 
+
+ 
+
+3.1.4.2.3.3 t:ArrayOfRoomsType Complex Type 
+
+The ArrayOfRoomsType complex type specifies the collection of rooms that belong to the requested 
+room list. 
+
+ <xs:complexType name="t:ArrayOfRoomsType"> 
+
+20 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:sequence> 
+    <xs:element name="Room" 
+      type="t:RoomType" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the ArrayOfRoomsType complex type. 
+
+Element Type Description 
+
+Room t:RoomType (section 3.1.4.2.3.5) Specifies the name and e-mail address of a room. 
+
+ 
+
+3.1.4.2.3.4 t:DirectoryEntryType Complex Type 
+
+The DirectoryEntryType complex type specifies the item identifier for the e-mail address of a room. 
+
+ <xs:complexType name="DirectoryEntryType"> 
+  <xs:sequence> 
+    <xs:element name="Id" 
+      type="t:EmailAddressType" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the DirectoryEntryType complex type. 
+
+Element Type Description 
+
+Id t:EmailAddressType ([MS-OXWSCDATA] section Specifies the item identifier for the e-mail 
+2.2.4.31) address of a room. 
+
+ 
+
+3.1.4.2.3.5 t:RoomType Complex Type 
+
+The RoomType complex type specifies the name and e-mail address of a room. This complex type 
+extends the DirectoryEntryType complex type, as specified in section 3.1.4.2.3.4. 
+
+ <xs:complexType name="t:RoomType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:DirectoryEntryType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+ 
+
+3.1.4.2.4 Simple Types 
+
+None. 
+
+21 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+None. 
+
+3.1.4.2.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+22 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Getting Room Lists 
+
+The following example demonstrates a client request to retrieve a collection of all room lists in the 
+organization, and the server response. In this example, there is only one room list in the organization. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+     xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+     xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+     xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version ="Exchange2010_SP1"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:GetRoomLists /> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="14" MinorVersion="1" MajorBuildNumber="164" 
+MinorBuildNumber="0" Version="Exchange2010_SP1" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetRoomListsResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <m:RoomLists xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+        <t:Address xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <t:Name>Room List</t:Name> 
+          <t:EmailAddress>RoomList@contoso.com</t:EmailAddress> 
+          <t:RoutingType>SMTP</t:RoutingType> 
+          <t:MailboxType>PublicDL</t:MailboxType> 
+        </t:Address> 
+      </m:RoomLists> 
+    </GetRoomListsResponse> 
+  </s:Body> 
+ </s:Envelope>  
+
+4.2 Getting Rooms within a Room List 
+
+The following example demonstrates a client request to retrieve a collection of the rooms in the 
+specified room list, and the server response. In this example, there are two rooms in the specified 
+room list. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+
+23 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <soap:Envelope xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+     xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+     xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+     xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version ="Exchange2010_SP1"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:GetRooms> 
+      <m:RoomList> 
+        <t:EmailAddress>RoomList@contoso.com</t:EmailAddress> 
+      </m:RoomList> 
+    </m:GetRooms> 
+  </soap:Body> 
+ </s:Envelope> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="14" MinorVersion="1" MajorBuildNumber="164" 
+MinorBuildNumber="0" Version="Exchange2010_SP1" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetRoomsResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <m:Rooms xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+        <t:Room xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <t:Id> 
+            <t:Name>Room01</t:Name> 
+            <t:EmailAddress>Room01@contoso.com</t:EmailAddress> 
+            <t:RoutingType>SMTP</t:RoutingType> 
+            <t:MailboxType>Mailbox</t:MailboxType> 
+          </t:Id> 
+        </t:Room> 
+        <t:Room xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <t:Id> 
+            <t:Name>Room02</t:Name> 
+            <t:EmailAddress>Room02@contoso.com</t:EmailAddress> 
+            <t:RoutingType>SMTP</t:RoutingType> 
+            <t:MailboxType>Mailbox</t:MailboxType> 
+          </t:Id> 
+        </t:Room> 
+      </m:Rooms> 
+    </GetRoomsResponse> 
+  </s:Body> 
+ </s:Envelope>  
+
+24 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None.  
+
+5.2 Index of Security Parameters 
+
+None. 
+
+25 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document. 
+
+File name Description Section 
+
+MS-OXWSGTRM.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSGTRM- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWSGTRM-types.xsd Contains the XML schema type definitions that are used in this 7.2  
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSGTRM-types.xsd or MS-
+OXWSGTRM-messages.xsd schemas have to be placed in the common folder with these files.  
+
+This section contains the contents of the MS-OXWSGTRM.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:s="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+      <xs:include schemaLocation="MS-OXWSGTRM-messages.xsd"/> 
+       
+    </xs:schema> 
+    <xs:schema id="types" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+      <!-- Add global elements and types from types.xsd --> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:message name="GetRoomListsSoapIn"> 
+    <wsdl:part name="GetRoomListsRequest" element="tns:GetRoomLists"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetRoomListsSoapOut"> 
+    <wsdl:part name="GetRoomListsResult" element="tns:GetRoomListsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetRoomsSoapIn"> 
+    <wsdl:part name="GetRoomsRequest" element="tns:GetRooms"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+
+26 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <wsdl:message name="GetRoomsSoapOut"> 
+    <wsdl:part name="GetRoomsResult" element="tns:GetRoomsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="GetRoomLists"> 
+      <wsdl:input message="tns:GetRoomListsSoapIn"/> 
+      <wsdl:output message="tns:GetRoomListsSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetRooms"> 
+      <wsdl:input message="tns:GetRoomsSoapIn"/> 
+      <wsdl:output message="tns:GetRoomsSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="GetRoomLists"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetRoomLists"/> 
+      <wsdl:input> 
+        <soap:body parts="GetRoomListsRequest" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapIn" part="RequestVersion" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetRoomListsResult" use="literal"/> 
+        <soap:header message="tns:GetRoomListsSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetRooms"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetRooms"/> 
+      <wsdl:input> 
+        <soap:body parts="GetRoomsRequest" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapIn" part="RequestVersion" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetRoomsResult" use="literal"/> 
+        <soap:header message="tns:GetRoomsSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding>   
+ </wsdl:definitions> 
+
+27 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSGTRM-types.xsd or MS-
+OXWSGTRM-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWSGTRM-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSGTRM-messages.xsd includes the file listed in the following table. To operate correctly, this 
+file has to be present in the folder that contains the WSDL, types schema, and messages schema files 
+for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1  
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+ 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSGTRM-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/>   
+   
+   
+  <xs:complexType name="GetRoomListsType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetRoomLists" type="m:GetRoomListsType"/> 
+  <xs:complexType name="GetRoomListsResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="RoomLists" type="t:ArrayOfEmailAddressesType" minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetRoomListsResponse" type="m:GetRoomListsResponseMessageType"/> 
+  <xs:complexType name="GetRoomsType" mixed="false"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="RoomList" type="t:EmailAddressType"/> 
+        </xs:sequence> 
+
+28 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetRooms" type="m:GetRoomsType"/> 
+  <xs:complexType name="GetRoomsResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="Rooms" type="t:ArrayOfRoomsType" minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetRoomsResponse" type="m:GetRoomsResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSGTRM-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSGTRM-types.xsd includes the file listed in the following table. To operate correctly, this file 
+has to be present in the folder that contains the WSDL, types schema, and messages schema files for 
+this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+   
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd" /> 
+   
+    <xs:complexType name="DirectoryEntryType"> 
+    <xs:sequence> 
+      <xs:element name="Id" type="t:EmailAddressType" minOccurs="0" /> 
+    </xs:sequence> 
+  </xs:complexType> 
+ 
+  <xs:complexType name="RoomType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:DirectoryEntryType"> 
+        <!-- We don't need anything additional at this time --> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+ 
+  <xs:complexType name="ArrayOfRoomsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="Room" type="t:RoomType" /> 
+    </xs:sequence> 
+  </xs:complexType> 
+ </xs:schema> 
+
+29 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+30 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+31 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A    server 12 
+ Messages 
+Abstract data model    attribute groups 11 
+   server 12    attributes 11 
+Applicability 9    complex types 11 
+Attribute groups 11    elements 10 
+Attributes 11    enumerated 10 
+    groups 11 
+
+C    namespaces 10 
+
+    simple types 11 
+
+Capability negotiation 9    syntax 10 
+
+Change tracking 31    transport 10 
+
+Complex types 11  
+
+ N 
+D  
+
+ Namespaces 10 
+
+Data model - abstract Normative references 7 
+
+   server 12  
+
+ O 
+E  
+
+ Operations 
+
+Events    GetRoomLists Operation 12 
+
+   local - server 22    GetRooms Operation 16 
+
+   timer - server 22 Overview (synopsis) 8 
+
+Examples  
+
+   getting room lists 23 P 
+   getting rooms within a room list 23  
+ Parameters - security index 25 
+
+F Preconditions 8 
+
+ Prerequisites 8 
+
+Fields - vendor-extensible 9 Product behavior 30 
+
+Full WSDL 26 Protocol Details 
+
+Full XML schema 28    overview 12 
+
+   Messages Schema 28  
+
+   Types Schema 29 R 
+  
+
+G References 7 
+
+    informative 8 
+
+Getting room lists example 23    normative 7 
+
+Getting rooms within a room list example 23 Relationship to other protocols 8 
+
+Glossary 6  
+
+Groups 11 S 
+  
+
+I Security 
+
+    implementer considerations 25 
+
+Implementer - security considerations 25    parameter index 25 
+
+Index of security parameters 25 Sequencing rules 
+
+Informative references 8    server 12 
+
+Initialization Server 
+
+   server 12    abstract data model 12 
+
+Introduction 6    GetRoomLists Operation operation 12 
+
+    GetRooms Operation operation 16 
+
+L    initialization 12 
+
+    local events 22 
+
+Local events    message processing 12 
+
+   server 22    sequencing rules 12 
+
+    timer events 22 
+   timers 12 
+
+M 
+Simple types 11 
+
+ 
+Standards assignments 9 
+
+Message processing 
+Syntax 
+
+32 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   messages - overview 10 
+ 
+T 
+ 
+Timer events 
+   server 22 
+Timers 
+   server 12 
+Tracking changes 31 
+Transport 10 
+Types 
+   complex 11 
+   simple 11 
+ 
+V 
+ 
+Vendor-extensible fields 9 
+Versioning 9 
+ 
+W 
+ 
+WSDL 26 
+ 
+X 
+ 
+XML schema 28 
+   Messages Schema 28 
+   Types Schema 29 
+
+ 
+
+33 / 33 
+
+[MS-OXWSGTRM] - v20250520 
+Get Rooms List Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

@@ -10,6 +10,13 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
+use opentelemetry::{
+    global,
+    trace::TracerProvider,
+    KeyValue,
+};
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::{runtime, trace::BatchConfig};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -20,7 +27,8 @@ use tower_http::{
     timeout::RequestBodyTimeoutLayer,
     trace::TraceLayer,
 };
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, Layer, Registry};
+use tracing_opentelemetry::OpenTelemetryLayer;
 
 // Use modules from the library crate instead of re-declaring them
 use exchange_gateway::{
@@ -75,9 +83,16 @@ fn build_response(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    // Initialize OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is set
+    // This also initializes the tracing subscriber with the OpenTelemetry layer
+    let _otel_guard = init_telemetry()?;
+    
+    // If OpenTelemetry was not initialized, set up basic tracing
+    if _otel_guard.is_none() {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
+    }
 
     let config_path = std::env::var("GATEWAY_CONFIG")
         .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
@@ -166,6 +181,56 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Initialize OpenTelemetry tracing with OTLP exporter.
+/// Returns a guard that should be kept alive for the duration of the program.
+fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::TracerGuard>> {
+    // Only initialize if endpoint is configured
+    let endpoint = match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        Ok(e) => e,
+        Err(_) => {
+            tracing::info!("OpenTelemetry not configured (OTEL_EXPORTER_OTLP_ENDPOINT not set)");
+            return Ok(None);
+        }
+    };
+
+    let service_name = std::env::var("OTEL_SERVICE_NAME")
+        .unwrap_or_else(|_| "exchange-gateway".to_string());
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(format!("{}/v1/traces", endpoint))
+        .build()?;
+
+    let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_config(
+            opentelemetry_sdk::trace::Config::default()
+                .with_resource(opentelemetry_sdk::Resource::new(vec![
+                    KeyValue::new("service.name", service_name),
+                    KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+                ]))
+        )
+        .with_batch_exporter(exporter, runtime::Tokio)
+        .build();
+
+    let tracer = tracer_provider.tracer("exchange-gateway");
+    
+    // Set global tracer provider
+    let guard = global::set_tracer_provider(tracer_provider);
+    
+    // Create and register OpenTelemetry layer with tracing subscriber
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+    
+    tracing_subscriber::Registry::default()
+        .with(otel_layer)
+        .with(tracing_subscriber::fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
+    
+    tracing::info!("OpenTelemetry tracing initialized (endpoint: {})", endpoint);
+    
+    Ok(Some(guard))
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {

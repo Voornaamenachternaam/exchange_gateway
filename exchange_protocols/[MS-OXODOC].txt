@@ -1,0 +1,1420 @@
+﻿[MS-OXODOC]:  
+
+Document Object Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+3/4/2009 1.04 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 4.1.0 Minor Updated the technical content. 
+
+5/5/2010 4.1.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 4.2 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 4.3 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 4.3 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 4.3 None 
+
+technical content. 
+
+10/7/2011 4.4 Minor Clarified the meaning of the technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+4/27/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 6.0 None 
+
+technical content. 
+
+10/8/2012 6.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 6.1 None 
+
+technical content. 
+
+2 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 6.1 None 
+
+technical content. 
+
+3/16/2015 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.0 None 
+
+technical content. 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+4/22/2021 10.0 Major Significantly changed the technical content. 
+
+8/17/2021 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 11.0 None 
+
+technical content. 
+
+8/20/2024 12.0 Major Significantly changed the technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 7 
+1.6 Applicability Statement ....................................................................................... 7 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Document-Specific Properties ......................................................................... 9 
+2.2.1.1 PidNameTitle Property ............................................................................. 9 
+2.2.1.2 PidNameSubject Property ......................................................................... 9 
+2.2.1.3 PidNameAuthor Property .......................................................................... 9 
+2.2.1.4 PidNameKeywords Property ...................................................................... 9 
+2.2.1.5 PidNameComments Property .................................................................. 10 
+2.2.1.6 PidNameTemplate Property .................................................................... 10 
+2.2.1.7 PidNameLastAuthor Property .................................................................. 10 
+2.2.1.8 PidNameRevisionNumber Property .......................................................... 10 
+2.2.1.9 PidNameApplicationName Property .......................................................... 10 
+2.2.1.10 PidNameEditTime Property ..................................................................... 10 
+2.2.1.11 PidNameLastPrinted Property .................................................................. 10 
+2.2.1.12 PidNameCreateDateTimeReadOnly Property ............................................. 10 
+2.2.1.13 PidNameLastSaveDateTime Property ....................................................... 11 
+2.2.1.14 PidNamePageCount Property .................................................................. 11 
+2.2.1.15 PidNameWordCount Property .................................................................. 11 
+2.2.1.16 PidNameCharacterCount Property ........................................................... 11 
+2.2.1.17 PidNameSecurity Property ...................................................................... 11 
+2.2.1.18 PidNameCategory Property ..................................................................... 11 
+2.2.1.19 PidNamePresentationFormat Property ...................................................... 11 
+2.2.1.20 PidNameManager Property ..................................................................... 11 
+2.2.1.21 PidNameCompany Property .................................................................... 12 
+2.2.1.22 PidNameByteCount Property ................................................................... 12 
+2.2.1.23 PidNameLineCount Property ................................................................... 12 
+2.2.1.24 PidNameParagraphCount Property ........................................................... 12 
+2.2.1.25 PidNameSlideCount Property .................................................................. 12 
+2.2.1.26 PidNameNoteCount Property .................................................................. 12 
+2.2.1.27 PidNameHiddenCount Property ............................................................... 12 
+2.2.1.28 PidNameMultimediaClipCount Property..................................................... 12 
+2.2.1.29 PidNameDocumentParts Property ............................................................ 13 
+2.2.1.30 PidNameHeadingPairs Property ............................................................... 13 
+2.2.1.31 PidNameLinksDirty Property ................................................................... 13 
+2.2.1.32 PidNameScale Property .......................................................................... 13 
+2.2.1.33 PidNameThumbnail Property ................................................................... 13 
+2.2.1.34 PidLidPendingStateForSiteMailboxDocument Property ................................ 13 
+
+2.2.2 Additional Property Constraints .................................................................... 14 
+2.2.2.1 PidTagMessageClass Property ................................................................. 14 
+2.2.2.2 PidTagDisplayName Property .................................................................. 14 
+2.2.2.3 Attachment to the Message Object .......................................................... 14 
+
+4 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details ..................................................................................................... 15 
+3.1 Client Details ................................................................................................... 15 
+
+3.1.1 Abstract Data Model .................................................................................... 15 
+3.1.2 Timers ...................................................................................................... 15 
+3.1.3 Initialization ............................................................................................... 15 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 15 
+
+3.1.4.1 Creating a Document Object ................................................................... 15 
+3.1.4.2 Opening a Document Object ................................................................... 15 
+3.1.4.3 Deleting a Document Object ................................................................... 16 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 16 
+3.1.6 Timer Events .............................................................................................. 16 
+3.1.7 Other Local Events ...................................................................................... 16 
+
+3.2 Server Details .................................................................................................. 16 
+3.2.1 Abstract Data Model .................................................................................... 16 
+3.2.2 Timers ...................................................................................................... 16 
+3.2.3 Initialization ............................................................................................... 17 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 17 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 17 
+3.2.6 Timer Events .............................................................................................. 17 
+3.2.7 Other Local Events ...................................................................................... 17 
+
+4 Protocol Examples ................................................................................................. 18 
+4.1 PidTagMessageClass Property Values for Different File Types ................................. 18 
+4.2 Creating a Document Object .............................................................................. 18 
+
+4.2.1 Creating the Document Object ..................................................................... 18 
+4.2.2 Creating the Attachment.............................................................................. 18 
+4.2.3 Setting Properties on the Document Object .................................................... 19 
+4.2.4 Saving the Document Object ........................................................................ 19 
+
+5 Security ................................................................................................................. 20 
+5.1 Security Considerations for Implementers ........................................................... 20 
+5.2 Index of Security Parameters ............................................................................ 20 
+
+6 Appendix A: Product Behavior ............................................................................... 21 
+
+7 Change Tracking .................................................................................................... 22 
+
+8 Index ..................................................................................................................... 23 
+
+ 
+
+5 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Document Object Protocol enables representation of an ordinary file, such as a document 
+generated by a word-processing application, in a mail folder for later retrieval. This protocol extends 
+the Message and Attachment Object Protocol, which is described in [MS-OXCMSG]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Attachment object: A set of properties that represents a file, Message object, or structured 
+storage that is attached to a Message object and is visible through the attachments table for a 
+Message object. 
+
+Document object: A Message object that represents a single file, such as a document generated 
+by a word-processing application. The Message object contains the file as an Attachment 
+object and includes additional properties to describe the file. 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+public folder: A Folder object that is stored in a location that is publicly available. 
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+site mailbox: A repository comprised of a mailbox and a web-based collaboration environment 
+that is presented to users as a mailbox in an email client. A site mailbox uses team membership 
+to determine which users have access to the repository. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+6 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+1.2.2 Informative References 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+The Document Object Protocol allows a user to store an ordinary file, such as a document generated 
+by a word-processing application, in a mail folder. For example, a user might store a few files in mail 
+folders so that the files can be accessed on any computer that provides access to the user's e-mail. To 
+represent the stored file, this protocol defines a Document object. The stored file is embedded within 
+the Document object; the embedded file is referred to as an attachment. 
+
+The Document Object Protocol extends the Message and Attachment Object Protocol, described in 
+[MS-OXCMSG], by defining new properties for a Message object and by adding constraints to 
+existing properties of Message object. 
+
+1.4 Relationship to Other Protocols 
+
+The Document Object Protocol relies on the same protocols as the Message and Attachment Object 
+Protocol, which the Document Object Protocol extends. For more information about the Message and 
+Attachment Object Protocol, see [MS-OXCMSG]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The Document Object Protocol has the same prerequisites and preconditions as the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+1.6 Applicability Statement 
+
+The client can use this protocol to store ordinary files in a user's mail folders and to expose the files 
+that are stored in the mail folders. 
+
+7 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+This protocol provides no extensibility beyond what is already specified in [MS-OXCMSG]. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The Document Object Protocol uses the same underlying transport as that used by the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+2.2 Message Syntax 
+
+A Document object can be created and modified by both clients and servers. Except where noted, 
+this section defines constraints under which both clients and servers operate. 
+
+Clients operate on a Document object by using the Message and Attachment Object Protocol, as 
+specified in [MS-OXCMSG], and by using the Property and Stream Object Protocol, as specified in [MS-
+OXCPRPT]. The manner in which a server operates on a Document object is implementation-
+dependent, but the results of any such operations MUST be exposed to clients in a manner that is that 
+is consistent with the Document Object Protocol. 
+
+Unless otherwise stated in sections 2.2.1 and 2.2.2, a Document object MUST adhere to all property 
+constraints specified in both [MS-OXPROPS] and [MS-OXCMSG].  
+
+2.2.1 Document-Specific Properties 
+
+A Document object encapsulates the behavior of the attached file. As such, properties on the file can 
+be promoted as properties on the Message object. Document object-specific properties that can be 
+set on the Message object are specified in section 2.2.1.1 through section 2.2.1.34. 
+
+2.2.1.1 PidNameTitle Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameTitle property ([MS-OXPROPS] section 2.481) specifies the title of the file attached to 
+the Document object. 
+
+2.2.1.2 PidNameSubject Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameSubject property ([MS-OXPROPS] section 2.478) specifies the subject of the file 
+attached to the Document object.  
+
+2.2.1.3 PidNameAuthor Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameAuthor property ([MS-OXPROPS] section 2.374) specifies the original author of the file 
+attached to the Document object.  
+
+2.2.1.4 PidNameKeywords Property 
+
+Type: PtypMultipleString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameKeywords property ([MS-OXCMSG] section 2.2.1.17) specifies the categories of the file 
+attached to the Document object.  
+
+9 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.5 PidNameComments Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameComments property ([MS-OXPROPS] section 2.410) specifies the comments of the file 
+attached to the Document object.  
+
+2.2.1.6 PidNameTemplate Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameTemplate property ([MS-OXPROPS] section 2.479) specifies the template of the file 
+attached to the Document object.  
+
+2.2.1.7 PidNameLastAuthor Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameLastAuthor property ([MS-OXPROPS] section 2.452) specifies the most recent author 
+of the file attached to the Document object.  
+
+2.2.1.8 PidNameRevisionNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameRevisionNumber property ([MS-OXPROPS] section 2.473) specifies the revision 
+number of the file attached to the Document object.  
+
+2.2.1.9 PidNameApplicationName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameApplicationName property ([MS-OXPROPS] section 2.367) specifies the application 
+that can be used to open the file attached to the Document object.  
+
+2.2.1.10 PidNameEditTime Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameEditTime property ([MS-OXPROPS] section 2.423) specifies the time that the file was 
+last edited.  
+
+2.2.1.11 PidNameLastPrinted Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameLastPrinted property ([MS-OXPROPS] section 2.453) specifies the time that the file 
+was last printed.  
+
+2.2.1.12 PidNameCreateDateTimeReadOnly Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameCreateDateTimeReadOnly property ([MS-OXPROPS] section 2.415) specifies the time 
+that the file was created.  
+
+10 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.13 PidNameLastSaveDateTime Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameLastSaveDateTime property ([MS-OXPROPS] section 2.454) specifies the time that the 
+file was last saved.  
+
+2.2.1.14 PidNamePageCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNamePageCount property ([MS-OXPROPS] section 2.468) specifies the number of pages in 
+the file attached to the Document object.  
+
+2.2.1.15 PidNameWordCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameWordCount property ([MS-OXPROPS] section 2.482) specifies the number of words in 
+the file attached to the Document object.  
+
+2.2.1.16 PidNameCharacterCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameCharacterCount property ([MS-OXPROPS] section 2.409) specifies the number of 
+characters in the file attached to the Document object.  
+
+2.2.1.17 PidNameSecurity Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameSecurity property ([MS-OXPROPS] section 2.476) specifies the security level of the file 
+attached to the Document object.  
+
+2.2.1.18 PidNameCategory Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameCategory property ([MS-OXPROPS] section 2.408) specifies the category of the file 
+attached to the Document object.  
+
+2.2.1.19 PidNamePresentationFormat Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNamePresentationFormat property ([MS-OXPROPS] section 2.471) specifies the 
+presentation format of the file attached to the Document object.  
+
+2.2.1.20 PidNameManager Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameManager property ([MS-OXPROPS] section 2.458) specifies the manager of the file 
+attached to the Document object.  
+
+11 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.21 PidNameCompany Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameCompany property ([MS-OXPROPS] section 2.411) specifies the company for which the 
+file was created.  
+
+2.2.1.22 PidNameByteCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameByteCount property ([MS-OXPROPS] section 2.379) specifies the size, in bytes, of the 
+file attached to the Document object.  
+
+2.2.1.23 PidNameLineCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameLineCount property ([MS-OXPROPS] section 2.455) specifies the number of lines in the 
+file attached to the Document object.  
+
+2.2.1.24 PidNameParagraphCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameParagraphCount property ([MS-OXPROPS] section 2.469) specifies the number of 
+paragraphs in the file attached to the Document object.  
+
+2.2.1.25 PidNameSlideCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameSlideCount property ([MS-OXPROPS] section 2.477) specifies the number of slides in 
+the file attached to the Document object.  
+
+2.2.1.26 PidNameNoteCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameNoteCount property ([MS-OXPROPS] section 2.462) specifies the number of notes in 
+the file attached to the Document object.  
+
+2.2.1.27 PidNameHiddenCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameHiddenCount property ([MS-OXPROPS] section 2.443) specifies the hidden value of the 
+file attached to the Document object.  
+
+2.2.1.28 PidNameMultimediaClipCount Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameMultimediaClipCount property ([MS-OXPROPS] section 2.461) specifies the number of 
+multimedia clips in the file attached to the Document object.  
+
+12 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.29 PidNameDocumentParts Property 
+
+Type: PtypMultipleString ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameDocumentParts property ([MS-OXPROPS] section 2.422) specifies the title of each part 
+of the file attached to the Document object.  
+
+2.2.1.30 PidNameHeadingPairs Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameHeadingPairs property ([MS-OXPROPS] section 2.442) specifies which group of 
+headings is indented in the file attached to the Document object.  
+
+2.2.1.31 PidNameLinksDirty Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameLinksDirty property ([MS-OXPROPS] section 2.456) indicates whether the links are up-
+to-date in the file attached to the Document object. The value TRUE indicates that the links are up-
+to-date; FALSE indicates otherwise.  
+
+2.2.1.32 PidNameScale Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameScale property ([MS-OXPROPS] section 2.475) indicates whether the image attached to 
+the Document object is to be scaled or is to be cropped. The value TRUE indicates thumbnail scaling; 
+FALSE indicates cropping. 
+
+2.2.1.33 PidNameThumbnail Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameThumbnail property ([MS-OXPROPS] section 2.480) specifies the data representing the 
+thumbnail image of the file attached to the Document object.  
+
+2.2.1.34 PidLidPendingStateForSiteMailboxDocument Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPendingStateForSiteMailboxDocument property ([MS-OXPROPS] section 2.201) 
+specifies the synchronization state of the Document object that is in the Document Libraries folder of 
+the site mailbox.<1>  
+
+The valid values for this property are shown in the following table. 
+
+Value Meaning 
+
+0 The document has been uploaded to a shared location. 
+
+1 The document has been added to the Document Libraries folder and is waiting to be uploaded to a 
+shared location. 
+
+ 
+
+13 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2 Additional Property Constraints 
+
+Additional property constraints beyond what is specified in [MS-OXCMSG] are specified in section 
+2.2.2.1 through section 2.2.2.3. 
+
+2.2.2.1 PidTagMessageClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) specifies the type of the 
+Message object. For a message to be treated as a Document object by a client, the value of this 
+property MUST be "IPM.document.<FileType>", where the "<FileType>" substring indicates the type 
+of the attached file. The value of the substring that follows "IPM.document." is implementation-
+dependent. 
+
+2.2.2.2 PidTagDisplayName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagDisplayName property ([MS-OXCFOLD] section 2.2.2.2.2.5) specifies the name of the 
+attachment. A Document object SHOULD have this property set.  
+
+2.2.2.3 Attachment to the Message Object 
+
+A Document object MUST have at least one attachment and SHOULD NOT have more than one. For 
+details about how attachments are stored within a message, see [MS-OXCMSG].  
+
+14 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client creates and manipulates a Document object and otherwise operates within the client role 
+as specified in [MS-OXCMSG].  
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.1.1 with the 
+following adaptations: 
+
+ The Document object is an extension of the Message object. 
+
+ A Document object is created in the folder chosen by the user. 
+
+ A Document object is placed in the Document Libraries folder of the site mailbox to have the 
+attached file of the Document object uploaded to a shared location.  
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Creating a Document Object 
+
+The client creates a Document object as a Message object with an attachment when the user 
+drags a file from any file folder into either a mail folder of the user's mailbox or the Document 
+Libraries folder of the site mailbox.<2> The file is attached to the Document object. For details about 
+the attachment to a Document object, see section 2.2.2.3. For details about the remote operations 
+(ROPs) involved in creating a Message object and an Attachment object, see [MS-OXCMSG]. 
+
+The client SHOULD set the PidTagMessageClass ([MS-OXCMSG] section 2.2.1.3) and 
+PidTagDisplayName ([MS-OXCFOLD] section 2.2.2.2.2.5) properties as specified in section 2.2.2.1 
+and section 2.2.2.2. If the Document object is created in the the Document Libraries folder of the site 
+mailbox, the client MUST set the PidLidPendingStateForSiteMailboxDocument property (section 
+2.2.1.34) to 1. 
+
+3.1.4.2 Opening a Document Object 
+
+When a user opens a message, the client opens the Message object as specified in [MS-OXCMSG] 
+section 3.1.4.1. The client determines the message type by examining the PidTagMessageClass 
+property ([MS-OXCMSG] section 2.2.1.3), as specified in section 2.2.2.1. 
+
+15 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+If the value of PidTagMessageClass does not begin with "IPM.document.", the message is not a 
+Document object, and the client handles the message in a way that is appropriate for that particular 
+type of Message object. If the value of the PidTagMessageClass property does begin with 
+"IPM.document.", the message is a Document object, and the client retrieves the attachment as 
+specified in [MS-OXCMSG] section 3.1.4.11. If there are zero attachments, the client displays an error. 
+If there is more than one attachment, the client can either display an error or pick one of the 
+attachments. For details about attachments to a Document object, see section 2.2.2.3. When a 
+Document object is opened, the client can open the message's underlying attachment directly, thereby 
+behaving in the most optimal fashion from a user's perspective. 
+
+3.1.4.3 Deleting a Document Object 
+
+When a user deletes a Document object from a mail folder, the client deletes the Document object in 
+the same way that it deletes any Message object, as specified in [MS-OXCFOLD]. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+The server processes a client's requests regarding a Document object and otherwise operates within 
+the server role as specified in [MS-OXCMSG].  
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.2.1 with the 
+following adaptations: 
+
+ The Document object is an extension of the Message object. 
+
+ A Document object is created in the folder chosen by the user. 
+
+ A Document object is placed in the Document Libraries folder of the site mailbox to have the 
+attached file of the Document object uploaded to a shared location. 
+
+3.2.2 Timers 
+
+None. 
+
+16 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+When a Document object is created in the Document Libraries folder of the site mailbox, as 
+specified in section 3.1.4.1, the server uploads the object's attached file to a shared location and sets 
+properties as follows.<3> The attached file is no longer stored on the server after the server uploads 
+the attached file to the shared location. 
+
+ PidTagAttachMethod property ([MS-OXCMSG] section 2.2.2.9): Set to afByReference 
+(0x00000002). 
+
+ PidTagAttachLongPathname property ([MS-OXCMSG] section 2.2.2.13): Set to the URL of the 
+shared location to which the document is uploaded. 
+
+ PidLidPendingStateForSiteMailboxDocument property (section 2.2.1.34): Set to 0 (zero). 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG] section 3.2.5. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+17 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 PidTagMessageClass Property Values for Different File Types 
+
+The following table shows how the PidTagMessageClass property might be set for different file 
+types. 
+
+File extension PidTagMessageClass property value 
+
+.doc IPM.document.Word.document.8 
+
+.docx IPM.document.Word.document.12 
+
+.xls IPM.document.Excel.Sheet.8 
+
+.xlsx IPM.document.Excel.Sheet.12 
+
+.ppt IPM.document.PowerPoint.Show.8 
+
+.pptx IPM.document.PowerPoint.Show.12 
+
+.txt IPM.document.txtfile 
+
+ 
+
+4.2 Creating a Document Object 
+
+Joe drags a file named testDocObj.txt from his desktop into one of his mail folders. Descriptions of 
+what a client might do to accomplish Joe's intentions and the responses that a server might return are 
+provided in section 4.2.1 through section 4.2.4. 
+
+4.2.1 Creating the Document Object 
+
+To create a Document object, the client uses the RopCreateMessage ROP ([MS-OXCROPS] section 
+2.2.6.2).  
+
+The server returns a success code and a handle to a Message object. 
+
+4.2.2 Creating the Attachment 
+
+The client creates the Attachment object by using the RopCreateAttachment ROP ([MS-
+OXCROPS] section 2.2.6.13). Then, the client writes out the contents of the file into the attachment by 
+using the RopOpenStream ROP ([MS-OXCROPS] section 2.2.9.1) and the RopSetStreamSize ROP 
+([MS-OXCROPS] section 2.2.9.7), followed by the RopWriteStream ROP ([MS-OXCROPS] section 
+2.2.9.3). 
+
+The client then sets various properties on the attachment by using the RopSetProperties ROP ([MS-
+OXCROPS] section 2.2.8.6). Some of the properties that would be set on the attachment are shown in 
+the following table. The data types are described in [MS-OXCDATA] section 2.11.1. 
+
+Property 
+Property ID Data type Value 
+
+PidTagAttachLongFilename ([MS-OXCMSG] 0x3707 0x001F "testDocObj.txt" 
+section 2.2.2.10)  (PtypString) 
+
+PidTagAttachExtension ([MS-OXCMSG] section 0x3703 0x001F ".txt" 
+
+18 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Data type Value 
+
+2.2.2.12)  
+
+PidTagCreationTime ([MS-OXCMSG] section 0x3007 0x0040 2008/02/15 
+2.2.2.3)  (PtypTime) 19:57:52.557 
+
+Now the client saves the attachment by using the RopSaveChangesAttachment ROP ([MS-
+OXCROPS] section 2.2.6.15). 
+
+4.2.3 Setting Properties on the Document Object 
+
+The protocol client transmits the data to the protocol server by using the RopSetProperties ROP 
+([MS-OXCROPS] section 2.2.8.6). Some of the relevant properties that need to be set for a 
+Document object are shown in the following table. The data types are described in [MS-OXCDATA] 
+section 2.11.1. 
+
+Property 
+Property ID Data type Value 
+
+PidTagDisplayName ([MS-OXCFOLD] section 0x3001 0x001F "testDocObj.txt" 
+2.2.2.2.2.5) (PtypString) 
+
+PidTagMessageClass ([MS-OXCMSG] section 0x001A 0x001F  "IPM.document.txtfile" 
+2.2.1.3) 
+
+ 
+
+4.2.4 Saving the Document Object 
+
+The protocol client commits the properties on the protocol server by using the 
+RopSaveChangesMessage ROP ([MS-OXCROPS] section 2.2.6.3) and then releases the object by 
+using the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3). The values of some properties will 
+change during the execution of the RopSaveChangesMessage ROP, but none of the properties 
+specified in this protocol will change. 
+
+19 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+The file that the Document object stores as an attachment can be any file on the hard drive. When a 
+user opens a Document object, one behavior is to open the attached file directly. This file could do 
+harmful things when opened. While this is less of an issue for a user's personal mail folders, it 
+becomes much more of an issue for public folders. It is up to the client to choose what kind of 
+behavior to follow when a user opens a Document object. 
+
+5.2 Index of Security Parameters 
+
+Security parameter Section 
+
+PidNameSecurity property Section 2.2.1.17 
+
+ 
+
+20 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.1.34:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, Office 
+Outlook 2007, and Microsoft Outlook 2010 do not support the 
+PidLidPendingStateForSiteMailboxDocument property (section 2.2.1.34) and the site mailbox. 
+
+<2> Section 3.1.4.1: Office Outlook 2003, Office Outlook 2007, and Outlook 2010 do not support the 
+site mailbox. 
+
+<3> Section 3.2.4: Exchange 2003, Exchange 2007, and Exchange 2010 do not support the site 
+mailbox and the PidLidPendingStateForSiteMailboxDocument property (section 2.2.1.34). 
+
+21 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+22 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A    PidNameLastSaveDateTime property 11 
+    PidNameLineCount property 12 
+Abstract data model    PidNameLinksDirty property 13 
+   client 15    PidNameManager property 11 
+   server 16    PidNameMultimediaClipCount property 12 
+Additional property constraints    PidNameNoteCount property 12 
+   attachment to the Message object 14    PidNamePageCount property 11 
+   PidTagDisplayName property 14    PidNameParagraphCount property 12 
+   PidTagMessageClass property 14    PidNamePresentationFormat property 11 
+Additional Property Constraints message 14    PidNameRevisionNumber property 10 
+Applicability 7    PidNameScale property 13 
+Attachment to the Message object additional    PidNameSecurity property 11 
+
+property constraints 14    PidNameSlideCount property 12 
+    PidNameSubject property 9 
+
+C    PidNameTemplate property 10 
+
+    PidNameThumbnail property 13 
+
+Capability negotiation 8    PidNameTitle property 9 
+
+Change tracking 22    PidNameWordCount property 11 
+
+Client Document-Specific Properties message 9 
+
+   abstract data model 15  
+
+   initialization 15 E 
+   message processing 16  
+   other local events 16 Examples 
+   overview 15    creating a Document object 18 
+   sequencing rules 16    PidTagMessageClass property values for different 
+   timer events 16 file types 18 
+   timers 15  
+Client - higher-layer triggered events F 
+   creating a Document object 15  
+   deleting a Document object 16 Fields - vendor-extensible 8 
+   opening a Document object 15  
+Creating a Document object example G 
+   creating the attachment 18  
+   creating the object 18 Glossary 6 
+   final save 19  
+   overview 18 H 
+   setting properties on the Document object 19  
+ Higher-layer triggered events 
+D    server 17 
+ Higher-layer triggered events - client 
+Data model - abstract    creating a Document object 15 
+   client 15    deleting a Document object 16 
+   server 16    opening a Document object 15 
+Document-specific properties  
+   PidLidPendingStateForSiteMailboxDocument I 
+
+property 13  
+   PidNameApplicationName property 10 Implementer - security considerations 20 
+   PidNameAuthor property 9 Index of security parameters 20 
+   PidNameByteCount property 12 Informative references 7 
+   PidNameCategory property 11 Initialization 
+   PidNameCharacterCount property 11    client 15 
+   PidNameComments property 10    server 17 
+   PidNameCompany property 12 Introduction 6 
+   PidNameCreateDateTimeReadOnly property 10  
+   PidNameDocumentParts property 13 M 
+   PidNameEditTime property 10  
+   PidNameHeadingPairs property 13 Message processing 
+   PidNameHiddenCount property 12    client 16 
+   PidNameKeywords property 9    server 17 
+   PidNameLastAuthor property 10 Messages 
+   PidNameLastPrinted property 10    Additional Property Constraints 14 
+
+23 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   Document-Specific Properties 9 PidTagMessageClass property values for different file 
+   syntax 9 types example 18 
+   transport 9 Preconditions 7 
+ Prerequisites 7 
+N Product behavior 21 
+  
+Normative references 7 R 
+  
+O References 6 
+    informative 7 
+Other local events    normative 7 
+   client 16 Relationship to other protocols 7 
+   server 17  
+Overview (synopsis) 7 S 
+  
+P Security 
+    implementer considerations 20 
+Parameters - security index 20    parameter index 20 
+PidLidPendingStateForSiteMailboxDocument Sequencing rules 
+
+document-specific property 13    client 16 
+PidNameApplicationName document-specific property    server 17 
+
+10 Server 
+PidNameAuthor document-specific property 9    abstract data model 16 
+PidNameByteCount document-specific property 12    higher-layer triggered events 17 
+PidNameCategory document-specific property 11    initialization 17 
+PidNameCharacterCount document-specific property    message processing 17 
+
+11    other local events 17 
+PidNameComments document-specific property 10    overview 16 
+PidNameCompany document-specific property 12    sequencing rules 17 
+PidNameCreateDateTimeReadOnly document-specific    timer events 17 
+
+property 10    timers 16 
+PidNameDocumentParts document-specific property Standards assignments 8 
+
+13 Syntax 9 
+PidNameEditTime document-specific property 10  
+PidNameHeadingPairs document-specific property 13 T 
+PidNameHiddenCount document-specific property 12  
+PidNameKeywords document-specific property 9 Timer events 
+PidNameLastAuthor document-specific property 10    client 16 
+PidNameLastPrinted document-specific property 10    server 17 
+PidNameLastSaveDateTime document-specific Timers 
+
+property 11    client 15 
+PidNameLineCount document-specific property 12    server 16 
+PidNameLinksDirty document-specific property 13 Tracking changes 22 
+PidNameManager document-specific property 11 Transport 9 
+PidNameMultimediaClipCount document-specific Triggered events - client 
+
+property 12    creating a Document object 15 
+PidNameNoteCount document-specific property 12    deleting a Document object 16 
+PidNamePageCount document-specific property 11    opening a Document object 15 
+PidNameParagraphCount document-specific property Triggered events - higher-layer 
+
+12    server 17 
+PidNamePresentationFormat document-specific  
+
+property 11 V 
+PidNameRevisionNumber document-specific property  
+
+10 Vendor-extensible fields 8 
+PidNameScale document-specific property 13 Versioning 8 
+PidNameSecurity document-specific property 11 
+PidNameSlideCount document-specific property 12  
+PidNameSubject document-specific property 9 
+PidNameTemplate document-specific property 10 
+PidNameThumbnail document-specific property 13 
+PidNameTitle document-specific property 9 
+PidNameWordCount document-specific property 11 
+PidTagDisplayName property constraints 14 
+PidTagMessageClass property constraints 14 
+
+24 / 24 
+
+[MS-OXODOC] - v20250520 
+Document Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

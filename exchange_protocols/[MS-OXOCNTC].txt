@@ -1,0 +1,5118 @@
+﻿[MS-OXOCNTC]:  
+
+Contact Object Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 Major Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.0.1 Editorial Revised and edited technical content. 
+
+9/3/2008 1.0.2 Editorial Revised and edited technical content. 
+
+12/3/2008 1.0.3 Editorial Revised and edited technical content. 
+
+3/4/2009 1.0.4 Editorial Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated technical content for new product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 5.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 6.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 6.1 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 6.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 6.2 None 
+
+technical content. 
+
+8/5/2011 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 7.0 None 
+
+technical content. 
+
+1/20/2012 8.0 Major Significantly changed the technical content. 
+
+4/27/2012 8.1 Minor Clarified the meaning of the technical content. 
+
+7/16/2012 8.2 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 9.0 Major Significantly changed the technical content. 
+
+2/11/2013 10.0 Major Significantly changed the technical content. 
+
+7/26/2013 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 11.0 None 
+
+technical content. 
+
+4/30/2014 11.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 11.1 None 
+
+technical content. 
+
+2 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+10/30/2014 11.2 Minor Clarified the meaning of the technical content. 
+
+3/16/2015 12.0 Major Significantly changed the technical content. 
+
+5/26/2015 13.0 Major Significantly changed the technical content. 
+
+9/14/2015 14.0 Major Significantly changed the technical content. 
+
+6/13/2016 15.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 15.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/17/2016 15.0 None 
+
+technical content. 
+
+7/24/2018 16.0 Major Significantly changed the technical content. 
+
+10/1/2018 17.0 Major Significantly changed the technical content. 
+
+12/11/2018 17.1 Minor Clarified the meaning of the technical content. 
+
+4/22/2021 18.0 Major Significantly changed the technical content. 
+
+8/17/2021 19.0 Major Significantly changed the technical content. 
+
+8/20/2024 20.0 Major Significantly changed the technical content. 
+
+5/20/2025 21.0 Major Significantly changed the technical content. 
+
+3 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ........................................................................................................ 8 
+
+1.1 Glossary ........................................................................................................8 
+1.2 References ................................................................................................... 10 
+
+1.2.1 Normative References ............................................................................... 10 
+1.2.2 Informative References ............................................................................. 11 
+
+1.3 Overview ..................................................................................................... 11 
+1.4 Relationship to Other Protocols ........................................................................ 12 
+1.5 Prerequisites/Preconditions ............................................................................. 12 
+1.6 Applicability Statement .................................................................................. 12 
+1.7 Versioning and Capability Negotiation ............................................................... 12 
+1.8 Vendor-Extensible Fields................................................................................. 12 
+1.9 Standards Assignments .................................................................................. 12 
+
+2 Messages .......................................................................................................... 13 
+2.1 Transport ..................................................................................................... 13 
+2.2 Message Syntax ............................................................................................ 13 
+
+2.2.1 Contact Object Properties .......................................................................... 13 
+2.2.1.1 Contact Name Properties ..................................................................... 13 
+
+2.2.1.1.1 PidTagNickname Property ............................................................... 13 
+2.2.1.1.2 PidTagGeneration Property ............................................................. 13 
+2.2.1.1.3 PidTagDisplayNamePrefix Property ................................................... 13 
+2.2.1.1.4 PidTagSurname Property ................................................................ 13 
+2.2.1.1.5 PidTagMiddleName Property ............................................................ 14 
+2.2.1.1.6 PidTagGivenName Property ............................................................. 14 
+2.2.1.1.7 PidTagInitials Property ................................................................... 14 
+2.2.1.1.8 PidTagDisplayName Property ........................................................... 14 
+2.2.1.1.9 PidLidYomiFirstName Property ......................................................... 14 
+2.2.1.1.10 PidLidYomiLastName Property ......................................................... 14 
+2.2.1.1.11 PidLidFileUnder Property ................................................................. 14 
+2.2.1.1.12 PidLidFileUnderId Property .............................................................. 14 
+2.2.1.1.13 PidLidFileUnderList Property ............................................................ 16 
+
+2.2.1.2 Electronic Address Properties ................................................................ 16 
+2.2.1.2.1 PidLidEmail1DisplayName, PidLidEmail2DisplayName, 
+
+PidLidEmail3DisplayName Properties ................................................ 17 
+2.2.1.2.2 PidLidEmail1AddressType, PidLidEmail2AddressType, 
+
+PidLidEmail3AddressType Properties ................................................. 18 
+2.2.1.2.3 PidLidEmail1EmailAddress, PidLidEmail2EmailAddress, 
+
+PidLidEmail3EmailAddress Properties ................................................ 18 
+2.2.1.2.4 PidLidEmail1OriginalDisplayName, PidLidEmail2OriginalDisplayName, 
+
+PidLidEmail3OriginalDisplayName Properties ...................................... 18 
+2.2.1.2.5 PidLidEmail1OriginalEntryId, PidLidEmail2OriginalEntryId, 
+
+PidLidEmail3OriginalEntryId Properties .............................................. 18 
+2.2.1.2.6 PidTagPrimaryFaxNumber, PidTagBusinessFaxNumber, 
+
+PidTagHomeFaxNumber Properties ................................................... 19 
+2.2.1.2.7 PidLidFax1AddressType, PidLidFax2AddressType, PidLidFax3AddressType 
+
+Properties .................................................................................... 19 
+2.2.1.2.8 PidLidFax1EmailAddress, PidLidFax2EmailAddress, PidLidFax3EmailAddress 
+
+Properties .................................................................................... 19 
+2.2.1.2.9 PidLidFax1OriginalDisplayName, PidLidFax2OriginalDisplayName, 
+
+PidLidFax3OriginalDisplayName Properties ......................................... 19 
+2.2.1.2.10 PidLidFax1OriginalEntryId, PidLidFax2OriginalEntryId, 
+
+PidLidFax3OriginalEntryId Properties ................................................ 19 
+2.2.1.2.11 PidLidAddressBookProviderEmailList Property ..................................... 20 
+2.2.1.2.12 PidLidAddressBookProviderArrayType Property ................................... 20 
+
+2.2.1.3 Physical Address Properties .................................................................. 21 
+
+4 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.3.1 PidLidWorkAddressStreet, PidTagHomeAddressStreet, 
+PidTagOtherAddressStreet, PidTagStreetAddress Properties .................. 22 
+
+2.2.1.3.2 PidLidWorkAddressCity, PidTagHomeAddressCity, PidTagOtherAddressCity, 
+PidTagLocality Properties ................................................................ 22 
+
+2.2.1.3.3 PidLidWorkAddressState, PidTagHomeAddressStateOrProvince, 
+PidTagOtherAddressStateOrProvince, PidTagStateOrProvince Properties . 22 
+
+2.2.1.3.4 PidLidWorkAddressPostalCode, PidTagHomeAddressPostalCode, 
+PidTagOtherAddressPostalCode, PidTagPostalCode Properties ............... 22 
+
+2.2.1.3.5 PidLidWorkAddressCountry, PidTagHomeAddressCountry, 
+PidTagOtherAddressCountry, PidTagCountry Properties........................ 22 
+
+2.2.1.3.6 PidLidWorkAddressCountryCode, PidLidHomeAddressCountryCode, 
+PidLidOtherAddressCountryCode, PidLidAddressCountryCode Properties . 22 
+
+2.2.1.3.7 PidLidWorkAddressPostOfficeBox, PidTagHomeAddressPostOfficeBox, 
+PidTagOtherAddressPostOfficeBox, PidTagPostOfficeBox Properties ........ 23 
+
+2.2.1.3.8 PidLidWorkAddress, PidLidHomeAddress, PidLidOtherAddress, 
+PidTagPostalAddress Properties ....................................................... 23 
+
+2.2.1.3.9 PidLidPostalAddressId Property ........................................................ 23 
+2.2.1.4 Telephone Properties ........................................................................... 24 
+
+2.2.1.4.1 PidTagPagerTelephoneNumber Property ............................................ 24 
+2.2.1.4.2 PidTagCallbackTelephoneNumber Property......................................... 24 
+2.2.1.4.3 PidTagBusinessTelephoneNumber Property ........................................ 24 
+2.2.1.4.4 PidTagHomeTelephoneNumber Property ............................................ 24 
+2.2.1.4.5 PidTagPrimaryTelephoneNumber Property ......................................... 25 
+2.2.1.4.6 PidTagBusiness2TelephoneNumber Property ...................................... 25 
+2.2.1.4.7 PidTagMobileTelephoneNumber Property ........................................... 25 
+2.2.1.4.8 PidTagRadioTelephoneNumber Property ............................................ 25 
+2.2.1.4.9 PidTagCarTelephoneNumber Property ............................................... 25 
+2.2.1.4.10 PidTagOtherTelephoneNumber Property ............................................ 25 
+2.2.1.4.11 PidTagAssistantTelephoneNumber Property........................................ 25 
+2.2.1.4.12 PidTagHome2TelephoneNumber Property .......................................... 25 
+2.2.1.4.13 PidTagTelecommunicationsDeviceForDeafTelephoneNumber Property ..... 25 
+2.2.1.4.14 PidTagCompanyMainTelephoneNumber Property ................................. 26 
+2.2.1.4.15 PidTagTelexNumber Property .......................................................... 26 
+2.2.1.4.16 PidTagIsdnNumber Property ............................................................ 26 
+
+2.2.1.5 Event Properties ................................................................................. 26 
+2.2.1.5.1 PidTagBirthday Property ................................................................. 26 
+2.2.1.5.2 PidLidBirthdayLocal Property ........................................................... 26 
+2.2.1.5.3 PidLidBirthdayEventEntryId Property ................................................ 26 
+2.2.1.5.4 PidTagWeddingAnniversary Property ................................................. 27 
+2.2.1.5.5 PidLidWeddingAnniversaryLocal Property ........................................... 27 
+2.2.1.5.6 PidLidAnniversaryEventEntryId Property ............................................ 27 
+
+2.2.1.6 Professional Properties ........................................................................ 27 
+2.2.1.6.1 PidTagTitle Property....................................................................... 27 
+2.2.1.6.2 PidTagCompanyName Property ........................................................ 27 
+2.2.1.6.3 PidTagDepartmentName Property .................................................... 27 
+2.2.1.6.4 PidLidDepartment Property ............................................................. 27 
+2.2.1.6.5 PidTagOfficeLocation Property ......................................................... 28 
+2.2.1.6.6 PidTagManagerName Property ......................................................... 28 
+2.2.1.6.7 PidTagAssistant Property ................................................................ 28 
+2.2.1.6.8 PidLidYomiCompanyName Property .................................................. 28 
+2.2.1.6.9 PidTagProfession Property............................................................... 28 
+
+2.2.1.7 Business Card Properties ..................................................................... 28 
+2.2.1.7.1 PidLidBusinessCardDisplayDefinition Property ..................................... 28 
+
+2.2.1.7.1.1 FieldInfo Structure ................................................................... 31 
+2.2.1.7.1.1.1 Properties Used for a Business Card Text Field ......................... 32 
+
+2.2.1.7.2 PidLidBusinessCardCardPicture Property ............................................ 33 
+2.2.1.7.3 PidLidContactUserField1, PidLidContactUserField2, PidLidContactUserField3, 
+
+PidLidContactUserField4 Properties ................................................... 33 
+
+5 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.8 Contact Photo Properties ...................................................................... 34 
+2.2.1.8.1 PidLidHasPicture Property ............................................................... 34 
+2.2.1.8.2 PidTagAttachmentContactPhoto Property ........................................... 34 
+2.2.1.8.3 Contact Photo Attachment .............................................................. 34 
+
+2.2.1.9 Contact Aggregation Properties ............................................................. 34 
+2.2.1.9.1 PidLidContactLinkedGlobalAddressListEntryId Property ........................ 34 
+2.2.1.9.2 PidLidContactLinkGlobalAddressListLinkId Property ............................. 35 
+2.2.1.9.3 PidLidContactLinkGlobalAddressListLinkState Property ......................... 35 
+2.2.1.9.4 PidLidContactLinkLinkRejectHistory Property ...................................... 35 
+2.2.1.9.5 PidLidContactLinkSMTPAddressCache Property ................................... 35 
+2.2.1.9.6 PidLidIsContactLinked Property ........................................................ 35 
+2.2.1.9.7 PidTagOscSyncEnabled Property ...................................................... 35 
+
+2.2.1.10 Other Contact Properties ...................................................................... 36 
+2.2.1.10.1 PidLidReferenceEntryId Property ...................................................... 36 
+2.2.1.10.2 PidTagHobbies Property .................................................................. 36 
+2.2.1.10.3 PidTagSpouseName Property ........................................................... 36 
+2.2.1.10.4 PidTagLanguage Property ............................................................... 36 
+2.2.1.10.5 PidTagLocation Property ................................................................. 36 
+2.2.1.10.6 PidLidInstantMessagingAddress Property ........................................... 36 
+2.2.1.10.7 PidTagOrganizationalIdNumber Property ........................................... 36 
+2.2.1.10.8 PidTagCustomerId Property............................................................. 36 
+2.2.1.10.9 PidTagGovernmentIdNumber Property .............................................. 37 
+2.2.1.10.10 PidLidFreeBusyLocation Property ...................................................... 37 
+2.2.1.10.11 PidTagAccount Property .................................................................. 37 
+2.2.1.10.12 PidLidHtml Property ....................................................................... 37 
+2.2.1.10.13 PidTagPersonalHomePage Property................................................... 37 
+2.2.1.10.14 PidTagBusinessHomePage Property .................................................. 37 
+2.2.1.10.15 PidTagFtpSite Property ................................................................... 37 
+2.2.1.10.16 PidTagComputerNetworkName Property ............................................ 37 
+2.2.1.10.17 PidTagChildrensNames Property....................................................... 38 
+2.2.1.10.18 PidLidContactCharacterSet Property ................................................. 38 
+2.2.1.10.19 PidLidAutoLog Property .................................................................. 38 
+2.2.1.10.20 PidTagGender Property................................................................... 38 
+2.2.1.10.21 PidTagReferredByName Property...................................................... 38 
+2.2.1.10.22 PidLidContactItemData Property ...................................................... 38 
+2.2.1.10.23 PidTagUserX509Certificate Property.................................................. 39 
+2.2.1.10.24 PidLidBilling Property ..................................................................... 39 
+
+2.2.1.11 Additional Property Constraints ............................................................. 39 
+2.2.1.11.1 PidTagNormalizedSubject Property ................................................... 39 
+2.2.1.11.2 PidTagMessageClass Property .......................................................... 40 
+
+2.2.2 Personal Distribution List Properties ............................................................ 40 
+2.2.2.1 Personal Distribution List Name Properties .............................................. 40 
+
+2.2.2.1.1 PidTagDisplayName Property ........................................................... 40 
+2.2.2.1.2 PidLidDistributionListName Property ................................................. 40 
+2.2.2.1.3 PidLidFileUnder Property ................................................................. 40 
+2.2.2.1.4 PidLidFileUnderId Property .............................................................. 40 
+
+2.2.2.2 Personal Distribution List Member Properties ........................................... 41 
+2.2.2.2.1 PidLidDistributionListMembers Property ............................................. 41 
+2.2.2.2.2 PidLidDistributionListOneOffMembers Property ................................... 41 
+2.2.2.2.3 PidLidDistributionListChecksum Property ........................................... 41 
+2.2.2.2.4 PidLidDistributionListStream Property ............................................... 41 
+
+2.2.2.2.4.1 DistListMemberInfo Structure..................................................... 43 
+2.2.2.2.4.1.1 WrappedEntryId Structure.................................................... 44 
+
+2.2.2.3 Other Personal Distribution List Properties .............................................. 45 
+2.2.2.3.1 PidLidAddressBookProviderArrayType Property ................................... 45 
+
+2.2.2.4 Additional Property Constraints ............................................................. 46 
+2.2.2.4.1 PidTagNormalizedSubject Property ................................................... 46 
+2.2.2.4.2 PidTagMessageClass Property .......................................................... 46 
+
+6 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.3 Contacts-Related Folders ........................................................................... 46 
+
+3 Protocol Details ................................................................................................. 47 
+3.1 Client Details ................................................................................................ 47 
+
+3.1.1 Abstract Data Model ................................................................................. 47 
+3.1.2 Timers ................................................................................................... 47 
+3.1.3 Initialization ............................................................................................ 47 
+3.1.4 Higher-Layer Triggered Events ................................................................... 47 
+
+3.1.4.1 Contact Object Events ......................................................................... 47 
+3.1.4.1.1 Creating a Contact ........................................................................ 47 
+3.1.4.1.2 Deleting a Contact ......................................................................... 47 
+3.1.4.1.3 Modifying a Contact ....................................................................... 47 
+
+3.1.4.2 Personal Distribution List Events ........................................................... 48 
+3.1.4.2.1 Creating a Personal Distribution List ................................................. 48 
+3.1.4.2.2 Deleting a Personal Distribution List ................................................. 48 
+3.1.4.2.3 Modifying a Personal Distribution List ................................................ 48 
+
+3.1.5 Message Processing Events and Sequencing Rules ......................................... 48 
+3.1.5.1 Modifying a Contact Name Property ....................................................... 48 
+3.1.5.2 Modifying a Physical Address Property .................................................... 49 
+3.1.5.3 Modifying an E-Mail Address Property ..................................................... 50 
+3.1.5.4 Updating a FAX Number....................................................................... 51 
+3.1.5.5 Modifying an Event Property ................................................................. 51 
+3.1.5.6 Modifying a Business Card Property ....................................................... 53 
+3.1.5.7 Modifying a Contact Photo Property ....................................................... 53 
+3.1.5.8 Naming a Personal Distribution List ........................................................ 53 
+3.1.5.9 Adding a Member to a Personal Distribution List ....................................... 54 
+3.1.5.10 Removing a Member from a Personal Distribution List ............................... 54 
+3.1.5.11 Updating the Checksum of a Personal Distribution List .............................. 54 
+
+3.1.6 Timer Events ........................................................................................... 55 
+3.1.7 Other Local Events ................................................................................... 55 
+
+3.2 Server Details ............................................................................................... 55 
+3.2.1 Abstract Data Model ................................................................................. 55 
+3.2.2 Timers ................................................................................................... 55 
+3.2.3 Initialization ............................................................................................ 55 
+3.2.4 Higher-Layer Triggered Events ................................................................... 55 
+3.2.5 Message Processing Events and Sequencing Rules ......................................... 55 
+3.2.6 Timer Events ........................................................................................... 55 
+3.2.7 Other Local Events ................................................................................... 55 
+
+4 Protocol Examples ............................................................................................. 56 
+4.1 Creating a Contact......................................................................................... 56 
+4.2 Creating a Personal Distribution List ................................................................. 64 
+
+5 Security ............................................................................................................ 69 
+5.1 Security Considerations for Implementers ......................................................... 69 
+5.2 Index of Security Parameters .......................................................................... 69 
+
+6 Appendix A: Product Behavior ............................................................................ 70 
+
+7 Change Tracking ................................................................................................ 72 
+
+8 Index ................................................................................................................ 73 
+
+ 
+
+7 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Contact Object Protocol serves as the basic organizational unit for the personal information of a 
+user's associates and acquaintances. This protocol also serves as the basic organizational unit for lists 
+of email addresses. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+action: A discrete operation that is executed on an incoming Message object when all 
+conditions in the same rule are TRUE. A rule contains one or more actions. 
+
+Address Book object: An entity in an address book that contains a set of attributes, each 
+attribute with a set of associated values. 
+
+address type: An identifier for the type of email address, such as SMTP and EX. 
+
+Appointment object: A Calendar object that has an organizer but no attendees. 
+
+Attachment object: A set of properties that represents a file, Message object, or structured 
+storage that is attached to a Message object and is visible through the attachments table for a 
+Message object. 
+
+character set: The range of characters used to represent textual data within a MIME body part, as 
+described in [RFC2046]. 
+
+condition: A logical expression comparing one or more properties in all incoming Message 
+objects against a set of clauses. This logical expression can evaluate to TRUE or FALSE. 
+
+contact: A person, company, or other entity that is stored in a directory and is associated with one 
+or more unique identifiers and attributes, such as an Internet message address or login name. 
+
+Contact object: A Message object that contains properties pertaining to a contact. 
+
+Contacts folder: A Folder object that contains Contact objects. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+cyclic redundancy check (CRC): An algorithm used to produce a checksum (a small, fixed 
+number of bits) against a block of data, such as a packet of network traffic or a block of a 
+computer file. The CRC is a broad class of functions used to detect errors after transmission or 
+storage. A CRC is designed to catch random errors, as opposed to intentional errors. If errors 
+might be introduced by a motivated and intelligent adversary, a cryptographic hash function has 
+to be used instead. 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+email address: A string that identifies a user and enables the user to receive Internet messages. 
+
+EntryID: A sequence of bytes that is used to identify and access an object. 
+
+8 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+File Transfer Protocol (FTP): A member of the TCP/IP suite of protocols that is used to copy files 
+between two computers on the Internet if both computers support their respective FTP roles. 
+One computer is an FTP client and the other is an FTP server. 
+
+flags: A set of values used to configure or report options or settings. 
+
+Folder object: A messaging construct that is typically used to organize data into a hierarchy of 
+objects containing Message objects and folder associated information (FAI) Message objects. 
+
+free/busy status: A property of an appointment that indicates how an appointment on the 
+calendar of an attendee or resource affects their availability. 
+
+Global Address List (GAL): An address list that conceptually represents the default address list 
+for an address book. 
+
+globally unique identifier (GUID): A term used interchangeably with universally unique 
+identifier (UUID) in Microsoft protocol technical documents (TDs). Interchanging the usage of 
+these terms does not imply or require a specific algorithm or mechanism to generate the value. 
+Specifically, the use of this term does not imply or require that the algorithms described in 
+[RFC4122] or [C706] have to be used for generating the GUID. See also universally unique 
+identifier (UUID). 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+Integrated Services Digital Network (ISDN): A high-speed digital technology that uses 
+existing telephone lines to provide Internet access and digital network services. 
+
+Joint Photographic Experts Group (JPEG): A raster graphics file format for displaying high-
+resolution color graphics. JPEG graphics apply a user-specified compression scheme that can 
+significantly reduce the file sizes of photo-realistic color graphics. A higher level of compression 
+results in lower quality, whereas a lower level of compression results in higher quality. JPEG-
+format files have a .jpg or .jpeg file name extension. 
+
+Journal object: A Message object that represents an entry in a journal or log and adheres to the 
+property descriptions that are described in in [MS-OXOJRNL]. 
+
+little-endian: Multiple-byte values that are byte-ordered with the least significant byte stored in 
+the memory location with the lowest address. 
+
+locale: A collection of rules and data that are specific to a language and a geographical area. A 
+locale can include information about sorting rules, date and time formatting, numeric and 
+monetary conventions, and character classification. 
+
+long ID (LID): A 32-bit quantity that, in combination with a GUID, defines a named property. 
+
+mail user: An Address Book object that represents a person or entity that can receive 
+deliverable messages. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+9 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+multivalue property: A property that can contain multiple values of the same type. 
+
+one-off EntryID: A special address object EntryID that encapsulates electronic address 
+information, as described in [MS-OXCDATA]. 
+
+Personal Distribution List object: A Message object that contains properties pertaining 
+specifically to user-created distribution lists. 
+
+point: A unit of measurement for fonts and spacing. A point is equal to 1/72 of an inch. 
+
+Portable Network Graphics (PNG): A bitmap graphics file format that uses lossless data 
+compression and supports variable transparency of images (alpha channels) and control of 
+image brightness on different computers (gamma correction). PNG-format files have a .png file 
+name extension. 
+
+property ID: A 16-bit numeric identifier of a specific attribute. A property ID does not include any 
+property type information. 
+
+property name: A string that, in combination with a property set, identifies a named property. 
+
+recipient: An entity that is in an address list, can receive email messages, and contains a set of 
+attributes. Each attribute has a set of associated values. 
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+ROP request: See ROP request buffer. 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+Unicode: A character encoding standard developed by the Unicode Consortium that represents 
+almost all of the written languages of the world. The Unicode standard [UNICODE5.0.0/2007] 
+provides three forms (UTF-8, UTF-16, and UTF-32) and seven schemes (UTF-8, UTF-16, UTF-16 
+BE, UTF-16 LE, UTF-32, UTF-32 LE, and UTF-32 BE). 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[ISO/IEC8802-3] ISO/IEC, "Information technology -- Telecommunications and information exchange 
+between systems -- Local and metropolitan area networks -- Specific requirements -- Part 3", Carrier 
+sense multiple access with collision detection (CSMA/CD) access method and physical layer 
+
+10 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+specifications, ISO/IEC 8802-3:2000, 
+http://www.iso.org/iso/iso_catalogue/catalogue_tc/catalogue_detail.htm?csnumber=31002 
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCICAL] Microsoft Corporation, "iCalendar to Appointment Object Conversion Algorithm". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol". 
+
+[MS-OXOCAL] Microsoft Corporation, "Appointment and Meeting Object Protocol". 
+
+[MS-OXOCNTC] Microsoft Corporation, "Contact Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2247] Kille, S., Wahl, M., Grimstad, A., et al., "Using Domains in LDAP/X.500 Distinguished 
+Names", RFC 2247, January 1998, https://www.rfc-editor.org/info/rfc2247 
+
+[RFC5321] Klensin, J., "Simple Mail Transfer Protocol", RFC 5321, October 2008, http://rfc-
+editor.org/rfc/rfc5321.txt 
+
+[RFC959] Postel, J., and Reynolds, J., "File Transfer Protocol (FTP)", RFC 959, October 1985, 
+https://www.rfc-editor.org/info/rfc959 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSCOS] Microsoft Corporation, "Unified Contact Store Web Service Protocol". 
+
+1.3 Overview 
+
+The Contact Object Protocol defines a Contact object for storing and maintaining information about 
+an associate of the user. The properties of a Contact object specify the associate's phone numbers, 
+email addresses, mailing addresses, and other information. Details about all of a user's associates 
+can be easily maintained through the use of Contact objects. This protocol also defines a Personal 
+Distribution List object for storing a collection of email addresses. The Personal Distribution List 
+object simplifies email distribution to multiple recipients. An email that is addressed to the 
+distribution list is sent to all recipients in the distribution list, thereby eliminating the need to 
+address the email to each recipient. A Contact object and a Personal Distribution List object are 
+created within the Contacts folder in a message store. 
+
+The Contact Object Protocol extends the Message and Attachment Object Protocol by defining new 
+properties on a Message object and by adding constraints to the existing properties of a Message 
+object. For information about the Message and Attachment Object Protocol, see [MS-OXCMSG].  
+
+11 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.4 Relationship to Other Protocols 
+
+The Contact Object Protocol extends the Message and Attachment Object Protocol, and, therefore, has 
+the same dependencies. For information about the Message and Attachment Object Protocol, see [MS-
+OXCMSG].  
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The Contact Object Protocol has the same prerequisites and preconditions as the Message and 
+Attachment Object Protocol, as described in [MS-OXCMSG].  
+
+1.6 Applicability Statement 
+
+A client can use this protocol to organize a user's contact information and distribution lists in the 
+user's mailbox.<1> 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+This protocol provides no vendor-extensibility beyond what is already specified in [MS-OXCMSG]. 
+
+1.9 Standards Assignments 
+
+None. 
+
+12 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The Contact Object Protocol uses the same underlying transport as that used by the Message and 
+Attachment Object protocol, which is specified in [MS-OXCMSG]. 
+
+2.2 Message Syntax 
+
+Contact objects and Personal Distribution List objects can be created and modified by clients and 
+servers. Except where noted, this section defines constraints under which both clients and servers 
+operate. 
+
+Protocol clients operate on Contact objects and Personal Distribution List objects by using the Message 
+and Attachment Object Protocol, as specified in [MS-OXCMSG], and the Folder Object Protocol, as 
+specified in [MS-OXCFOLD]. The details of how a protocol server operates on Contact objects and 
+Personal Distribution List objects are implementation-dependent, but the results of any such 
+operations MUST be exposed to clients in a manner that is consistent with this protocol. 
+
+Unless otherwise specified, a Contact object and a Personal Distribution List object adhere to all 
+property constraints specified in [MS-OXPROPS] and [MS-OXCMSG]. 
+
+2.2.1 Contact Object Properties 
+
+Properties that are used in groups to define components of a Contact object are specified in sections 
+2.2.1.1 through 2.2.1.9. Standalone properties of a Contact object are specified in sections 2.2.1.10 
+and 2.2.1.11. Each property is set only when user data needs to be stored. 
+
+2.2.1.1 Contact Name Properties 
+
+Contact Name properties can be set on a Contact object to specify the name of the person 
+represented by the contact. 
+
+2.2.1.1.1 PidTagNickname Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagNickname property ([MS-OXPROPS] section 2.809) specifies the nickname of the 
+contact. This property is optional. 
+
+2.2.1.1.2 PidTagGeneration Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagGeneration property ([MS-OXPROPS] section 2.714) specifies the generation suffix of the 
+contact, such as "Jr.", "Sr.", or "III". This property is optional. 
+
+2.2.1.1.3 PidTagDisplayNamePrefix Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagDisplayNamePrefix property ([MS-OXPROPS] section 2.678) specifies the title of the 
+contact, such as "Mr." or "Mrs.". This property is optional. 
+
+2.2.1.1.4 PidTagSurname Property 
+
+13 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSurname property ([MS-OXPROPS] section 2.1038) specifies the surname (family name) 
+of the contact. This property is optional. 
+
+2.2.1.1.5 PidTagMiddleName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMiddleName property ([MS-OXPROPS] section 2.804) specifies the middle name(s) of the 
+contact. This property is optional. 
+
+2.2.1.1.6 PidTagGivenName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagGivenName property ([MS-OXPROPS] section 2.715) specifies the given name (first 
+name) of the contact. This property is optional. 
+
+2.2.1.1.7 PidTagInitials Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagInitials property ([MS-OXPROPS] section 2.742) specifies the initials of the contact. This 
+property is optional. 
+
+2.2.1.1.8 PidTagDisplayName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagDisplayName property ([MS-OXPROPS] section 2.677) specifies the full name of the 
+contact. The full name is formatted according to an implementation-dependent algorithm that uses 
+the values of the PidTagDisplayNamePrefix (section 2.2.1.1.3), PidTagGivenName (section 
+2.2.1.1.6), PidTagMiddleName (section 2.2.1.1.5), PidTagSurname (section 2.2.1.1.4), and 
+PidTagGeneration (section 2.2.1.1.2) properties. This property is optional. 
+
+2.2.1.1.9 PidLidYomiFirstName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidYomiFirstName property ([MS-OXPROPS] section 2.364) specifies the phonetic 
+pronunciation of the contact's given name. This property is optional. 
+
+2.2.1.1.10 PidLidYomiLastName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidYomiLastName property ([MS-OXPROPS] section 2.365) specifies the phonetic 
+pronunciation of the contact's surname. This property is optional. 
+
+2.2.1.1.11 PidLidFileUnder Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFileUnder property ([MS-OXPROPS] section 2.132) specifies the name under which to file 
+this contact when displaying a list of contacts. The client SHOULD treat this property as an empty 
+string if it is missing from the Contact object. This property is optional. 
+
+2.2.1.1.12 PidLidFileUnderId Property 
+
+14 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFileUnderId property ([MS-OXPROPS] section 2.133) specifies how to format the value of 
+the PidLidFileUnder property (section 2.2.1.1.11) by using the values of other Contact Name 
+properties. 
+
+The valid values of The PidLidFileUnderId property are shown in the following table. If the 
+PidLidFileUnderId property is either missing or set to a value that is not valid, the client can choose 
+its own logic to format the value of the PidLidFileUnder property (section 2.2.1.1.11) as other 
+Contact Name properties change. 
+
+In the following table, the notation <PropertyName> is used to represent the value of the property 
+specified by PropertyName. For example, if the value of the PidTagGivenName property (section 
+2.2.1.1.6) is "Ben", then "<PidTagGivenName>" specifies the string "Ben". Other notation: "\r" 
+specifies a carriage return character, "\n" specifies a line feed character, and <space> represents a 
+space character. The table shows the format of the PidLidFileUnder property when all of the Contact 
+Name properties are present. If a Contact Name property is not present, the separator characters 
+surrounding it can be removed by the client. 
+
+Value of the 
+PidLidFileUnd
+erId property Format of the PidLidFileUnder property 
+
+0x00000000 Empty string. 
+
+0x00003001 "<PidTagDisplayName>" 
+
+0x00003A06 "<PidTagGivenName>" 
+
+0x00003A11  "<PidTagSurname>" 
+
+0x00003A16 "<PidTagCompanyName>" 
+
+0x00008017  "<PidTagSurname>,<space><PidTagGivenName><space><PidTagMiddleName>" 
+
+0x00008018  "<PidTagCompanyName>\r\n<PidTagSurname>,<space><PidTagGivenName><space>
+< PidTagMiddleName >" 
+
+0x00008019  "<PidTagSurname>,<space><PidTagGivenName><space><PidTagMiddleName>\r\n<P
+idTagCompanyName>" 
+
+0x00008030  "<PidTagSurname>< PidTagGivenName ><space>< PidTagMiddleName >"  
+
+0x00008031  "<PidTagSurname><space><PidTagGivenName><space>< PidTagMiddleName >" 
+
+0x00008032 "<PidTagCompanyName>\r\n<PidTagSurname><PidTagGivenName><space><PidTag
+MiddleName>" 
+
+0x00008033 "<PidTagCompanyName>\r\n<PidTagSurname><space><PidTagGivenName><space>
+<PidTagMiddleName>" 
+
+0x00008034 "<PidTagSurname><PidTagGivenName><space>< PidTagMiddleName 
+>\r\n<PidTagCompanyName>" 
+
+0x00008035 "<PidTagSurname><space><PidTagGivenName><space><PidTagMiddleName>\r\n<Pi
+dTagCompanyName>" 
+
+0x00008036 "<PidTagSurname><space><PidTagGivenName><space><PidTagMiddleName><space
+><PidTagGeneration>" 
+
+0x00008037 "<PidTagGivenName><space><PidTagMiddleName><space><PidTagSurname><space
+><PidTagGeneration>" 
+
+15 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value of the 
+PidLidFileUnd
+erId property Format of the PidLidFileUnder property 
+
+0x00008038 "<PidTagSurname><PidTagGivenName><space><PidTagMiddleName><space><PidTa
+gGeneration>" 
+
+0xFFFFFFFD The client or server uses the current value of the PidLidFileUnder property and other contact 
+properties to find a best match to one of the previous values in this table. 
+
+0xFFFFFFFE The client or server chooses the default values based on the implementation. 
+
+0xFFFFFFFF The value of the PidLidFileUnder property is a user-provided string. In this case, the value of 
+the PidLidFileUnder property is not changed when the value of another Contact Name 
+property changes. 
+
+ 
+
+2.2.1.1.13 PidLidFileUnderList Property 
+
+Type: PtypMultipleInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFileUnderList property ([MS-OXPROPS] section 2.134) specifies a list of possible values 
+for the PidLidFileUnderId property (section 2.2.1.1.12). Each value in this multivalue property 
+MUST be one of the allowed values for the PidLidFileUnderId property. The PidLidFileUnderList 
+property is set by the client, but it is never used by either the client or the server. This property is 
+optional. 
+
+2.2.1.2 Electronic Address Properties 
+
+The Contact object has built-in properties for up to three different email addresses (Email1, 
+Email2, and Email3) and three different fax addresses (Primary Fax, Business Fax, and Home Fax). 
+Each of these electronic addresses is optional, and each consists of a group of related properties 
+associated with it. 
+
+Unless otherwise specified, when creating or modifying a Contact object, all properties in a group 
+MUST be set, changed, or deleted together at the same time. Specifications of similar properties are 
+grouped together in sections 2.2.1.2.1 through section 2.2.1.2.12. The following table specifies the 
+properties in each Electronic Address group. 
+
+Group name  Description Properties in group 
+
+Email1 Defines the first email address for a PidLidEmail1DisplayName (section 2.2.1.2.1) 
+contact. PidLidEmail1AddressType (section 2.2.1.2.2) 
+
+PidLidEmail1EmailAddress (section 2.2.1.2.3) 
+
+PidLidEmail1OriginalDisplayName (section 
+2.2.1.2.4) 
+
+PidLidEmail1OriginalEntryId (section 2.2.1.2.5) 
+
+Email2 Defines the second email address for a PidLidEmail2DisplayName (section 2.2.1.2.1)  
+contact. PidLidEmail2AddressType (section 2.2.1.2.2)  
+
+PidLidEmail2EmailAddress (section 2.2.1.2.3)  
+
+PidLidEmail2OriginalDisplayName (section 
+2.2.1.2.4)  
+
+PidLidEmail2OriginalEntryId (section 2.2.1.2.5) 
+
+Email3 Defines the third email address for a PidLidEmail3DisplayName (section 2.2.1.2.1)  
+contact. PidLidEmail3AddressType (section 2.2.1.2.2)  
+
+16 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Group name  Description Properties in group 
+
+PidLidEmail3EmailAddress (section 2.2.1.2.3)  
+
+PidLidEmail3OriginalDisplayName (section 
+2.2.1.2.4)  
+
+PidLidEmail3OriginalEntryId (section 2.2.1.2.5) 
+
+Primary Defines the primary fax address for a PidTagPrimaryFaxNumber (section 2.2.1.2.6)  
+Fax contact. PidLidFax1AddressType (section 2.2.1.2.7)  
+
+PidLidFax1EmailAddress (section 2.2.1.2.8)  
+
+PidLidFax1OriginalDisplayName (section 
+2.2.1.2.9)  
+
+PidLidFax1OriginalEntryId (section 2.2.1.2.10) 
+
+Business Defines the business fax address for a PidTagBusinessFaxNumber (section 2.2.1.2.6) 
+Fax contact. PidLidFax2AddressType (section 2.2.1.2.7) 
+
+PidLidFax2EmailAddress (section 2.2.1.2.8) 
+
+PidLidFax2OriginalDisplayName (section 
+2.2.1.2.9) 
+
+PidLidFax2OriginalEntryId (section 2.2.1.2.10) 
+
+Home Fax Defines the home fax address for a PidTagHomeFaxNumber (section 2.2.1.2.6) 
+contact. PidLidFax3AddressType (section 2.2.1.2.7)  
+
+PidLidFax3EmailAddress (section 2.2.1.2.8) 
+
+PidLidFax3OriginalDisplayName (section 
+2.2.1.2.9) 
+
+PidLidFax3OriginalEntryId (section 2.2.1.2.10) 
+
+If any of the email addresses are defined for the contact, then the properties 
+PidLidAddressBookProviderArrayType (section 2.2.1.2.12) and 
+PidLidAddressBookProviderEmailList (section 2.2.1.2.11) MUST be defined as well. 
+
+For each email address, if one property is defined, then the entire set of properties MUST be defined, 
+and PidLidAddressBookProviderArrayType and PidLidAddressBookProviderEmailList MUST be 
+defined as well. 
+
+If PidTagPrimaryFaxNumber, PidTagBusinessFaxNumber, or PidTagHomeFaxNumber is 
+defined, then the PidLidAddressBookProviderArrayType and 
+PidLidAddressBookProviderEmailList properties SHOULD be defined, as well as the rest of the 
+Primary Fax, Business Fax, or Home Fax properties, respectively. The client sets the 
+PidLidAddressBookProviderEmailList and PidLidAddressBookProviderArrayType and Primary 
+Fax, Business Fax, or Home Fax properties only if the client is able to interpret the value of the 
+PidTagPrimaryFaxNumber, PidTagBusinessFaxNumber, or PidTagHomeFaxNumber property, 
+respectively, as an actual fax phone number. The server sets the 
+PidLidAddressBookProviderEmailList and PidLidAddressBookProviderArrayType properties 
+whenever the PidTagPrimaryFaxNumber, PidTagBusinessFaxNumber, or 
+PidTagHomeFaxNumber property is set.<2> 
+
+2.2.1.2.1 PidLidEmail1DisplayName, PidLidEmail2DisplayName, 
+PidLidEmail3DisplayName Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidEmail1DisplayName ([MS-OXPROPS] section 2.101), PidLidEmail2DisplayName ([MS-OXPROPS] 
+section 2.106), and PidLidEmail3DisplayName ([MS-OXPROPS] section 2.111) properties specify the user-
+readable display name for the email address of the contact. 
+
+17 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.2.2 PidLidEmail1AddressType, PidLidEmail2AddressType, 
+PidLidEmail3AddressType Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidEmail1AddressType ([MS-OXPROPS] section 2.100), PidLidEmail2AddressType ([MS-
+OXPROPS] section 2.105), and PidLidEmail3AddressType ([MS-OXPROPS] section 2.110) properties 
+specify the address type of the electronic address for the contact. If one of these properties is 
+present, the property value MUST be a valid address type. The RopGetAddressTypes remote 
+operation (ROP) ([MS-OXCROPS] section 2.2.7.3) can be used to get a list of the valid address 
+types; a third-party-defined address type is also valid. Address types commonly used by the client and 
+server are "SMTP" and "EX". 
+
+2.2.1.2.3 PidLidEmail1EmailAddress, PidLidEmail2EmailAddress, 
+PidLidEmail3EmailAddress Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidEmail1EmailAddress ([MS-OXPROPS] section 2.102), PidLidEmail2EmailAddress 
+([MS-OXPROPS] section 2.107), and PidLidEmail3EmailAddress ([MS-OXPROPS] section 2.112) 
+properties specify the email address of the contact. The format of an email address is determined 
+by its address type. Therefore, the values of these properties MUST conform to the address types 
+specified for these email addresses. Address types are specified by the PidLidEmail1AddressType 
+(section 2.2.1.2.2), PidLidEmail2AddressType (section 2.2.1.2.2), and PidLidEmail3AddressType 
+(section 2.2.1.2.2) properties. The client and server commonly use the "SMTP" and "EX" address 
+types. The format of an "SMTP" email address is specified in [RFC5321]; the format of an "EX" email 
+address is specified in [RFC2247].  
+
+The address type is intended to provide an avenue for various third-party delivery mechanisms to 
+define their own email address format. A Contact object merely stores the address type and the 
+email address; the address type and the email address have no special meaning in the context of this 
+protocol. 
+
+2.2.1.2.4 PidLidEmail1OriginalDisplayName, PidLidEmail2OriginalDisplayName, 
+PidLidEmail3OriginalDisplayName Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidEmail1OriginalDisplayName ([MS-OXPROPS] section 2.103), 
+PidLidEmail2OriginalDisplayName ([MS-OXPROPS] section 2.108), and 
+PidLidEmail3OriginalDisplayName ([MS-OXPROPS] section 2.113) properties specify the Simple 
+Mail Transfer Protocol (SMTP) email address corresponding to the email address specified in 
+section 2.2.1.2.3 for the Contact object. If the value of the PidLidEmail1AddressType (section 
+2.2.1.2.2), PidLidEmail2AddressType (section 2.2.1.2.2), or PidLidEmail3AddressType (section 
+2.2.1.2.2) property is "SMTP", then the value of the respective PidLidEmail1OriginalDisplayName, 
+PidLidEmail2OriginalDisplayName, or PidLidEmail3OriginalDisplayName property SHOULD 
+equal the value of the respective PidLidEmail1EmailAddress (section 2.2.1.2.3), 
+PidLidEmail2EmailAddress (section 2.2.1.2.3), or PidLidEmail3EmailAddress (section 2.2.1.2.3) 
+property; otherwise, the values do not have to be equal. The purpose of the 
+PidLidEmail1OriginalDisplayName, PidLidEmail2OriginalDisplayName, and 
+PidLidEmail3OriginalDisplayName properties is to display an alternative user-friendly address that 
+is equivalent to the one in the PidLidEmail1EmailAddress, PidLidEmail2EmailAddress, or 
+PidLidEmail3EmailAddress property. 
+
+2.2.1.2.5 PidLidEmail1OriginalEntryId, PidLidEmail2OriginalEntryId, 
+PidLidEmail3OriginalEntryId Properties 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+18 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidLidEmail1OriginalEntryId ([MS-OXPROPS] section 2.104), PidLidEmail2OriginalEntryId 
+([MS-OXPROPS] section 2.109) and PidLidEmail3OriginalEntryId ([MS-OXPROPS] section 2.114) 
+properties specify the EntryID of the object corresponding to this electronic address. It MUST be 
+either a one-off EntryID for this electronic address or a valid Address Book object EntryID. 
+
+2.2.1.2.6 PidTagPrimaryFaxNumber, PidTagBusinessFaxNumber, 
+PidTagHomeFaxNumber Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagPrimaryFaxNumber property ([MS-OXOABK] section 2.2.4.29), 
+PidTagBusinessFaxNumber property ([MS-OXOCNTC] section 2.2.1.2.6), and 
+PidTagHomeFaxNumber property ([MS-OXOCNTC] section 2.2.1.2.6) properties specify the fax 
+number for the contact. The string MUST NOT be longer than 255 characters, not including the 
+terminating null character. There are no other restrictions on the format of these properties. 
+
+2.2.1.2.7 PidLidFax1AddressType, PidLidFax2AddressType, PidLidFax3AddressType 
+Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFax1AddressType property ([MS-OXOCNTC] section 2.2.1.2.7), 
+PidLidFax2AddressType property ([MS-OXOCNTC] section 2.2.1.2.7), and 
+PidLidFax3AddressType property ([MS-OXOCNTC] section 2.2.1.2.7) properties specify the 
+address type of the electronic address for the contact. These properties, if present, MUST be set to 
+"FAX". 
+
+2.2.1.2.8 PidLidFax1EmailAddress, PidLidFax2EmailAddress, PidLidFax3EmailAddress 
+Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFax1EmailAddress property ([MS-OXOCNTC] section 2.2.1.2.8), 
+PidLidFax2EmailAddress property ([MS-OXOCNTC] section 2.2.1.2.8), and 
+PidLidFax3EmailAddress property ([MS-OXOCNTC] section 2.2.1.2.8) properties specify a user-
+friendly combination of the display name and the corresponding fax number for the contact. These 
+properties, if present, SHOULD each contain a user-readable display name, followed by the "@" 
+character, followed by a fax number. 
+
+2.2.1.2.9 PidLidFax1OriginalDisplayName, PidLidFax2OriginalDisplayName, 
+PidLidFax3OriginalDisplayName Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFax1OriginalDisplayName property ([MS-OXOCNTC] section 2.2.1.2.9) 
+PidLidFax2OriginalDisplayName property ([MS-OXOCNTC] section 2.2.1.2.9 ), and 
+PidLidFax3OriginalDisplayName property ([MS-OXOCNTC] section 2.2.1.2.9) properties specify the 
+normalized subject for the contact. These properties, if present, MUST each be set to the same value 
+as PidTagNormalizedSubject ([MS-OXCMSG] section 2.2.1.10), as specified in section 2.2.1.11.1. 
+
+2.2.1.2.10 PidLidFax1OriginalEntryId, PidLidFax2OriginalEntryId, 
+PidLidFax3OriginalEntryId Properties 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFax1OriginalEntryId property ([MS-OXOCNTC] section 2.2.1.2.10), 
+PidLidFax2OriginalEntryId property ([MS-OXOCNTC] section 2.2.1.2.10), and 
+
+19 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+PidLidFax3OriginalEntryId property ([MS-OXOCNTC] section 2.2.1.2.10) properties specify the 
+one-off EntryID corresponding to this fax address. 
+
+2.2.1.2.11 PidLidAddressBookProviderEmailList Property 
+
+Type: PtypMultipleInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidAddressBookProviderEmailList property ([MS-OXPROPS] section 2.2) specifies which 
+Electronic Address properties are set on the Contact object. Each PtypInteger32 value in this 
+property MUST be unique in the property and MUST be set to one of the values in the following table. 
+If this property is set, the PidLidAddressBookProviderArrayType property (section 2.2.1.2.12) 
+MUST also be set. These two properties MUST be kept synchronized with each other. 
+
+For example, if one of the values in the PidLidAddressBookProviderEmailList property is 
+0x00000000, then the PidLidAddressBookProviderArrayType property would have the bit 
+0x00000001 set. 
+
+Value  Meaning  
+
+0x00000000 Email1 is defined for the contact. 
+
+0x00000001 Email2 is defined for the contact. 
+
+0x00000002 Email3 is defined for the contact. 
+
+0x00000003 Business Fax is defined for the contact. 
+
+0x00000004 Home Fax is defined for the contact. 
+
+0x00000005 Primary Fax is defined for the contact. 
+
+ 
+
+2.2.1.2.12 PidLidAddressBookProviderArrayType Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidAddressBookProviderArrayType property ([MS-OXPROPS] section 2.1) specifies the 
+state of the contact's electronic addresses and represents a set of bit flags. The value of the 
+PidLidAddressBookProviderArrayType property MUST be a combination of flags that specify the 
+state of the Contact object. Individual flags are specified in the following table. If this property is set, 
+the PidLidAddressBookProviderEmailList property (section 2.2.1.2.11) MUST be set as well. These 
+two properties MUST be kept in sync with each other. 
+
+For example, if this property has the bit 0x00000001 set, then one of the values of the 
+PidLidAddressBookProviderEmailList property would be 0x00000000. 
+
+Bit  Meaning 
+
+0x00000001 Email1 is defined for the contact. 
+
+0x00000002 Email2 is defined for the contact. 
+
+0x00000004 Email3 is defined for the contact. 
+
+0x00000008 Business Fax is defined for the contact. 
+
+0x00000010 Home Fax is defined for the contact. 
+
+0x00000020 Primary Fax is defined for the contact. 
+
+20 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.1.3 Physical Address Properties 
+
+The Contact object provides built-in support for three physical addresses: Home Address, Work 
+Address, and Other Address. One of the addresses can be marked as the Mailing Address. Each of 
+these physical addresses is optional, and each consists of a group of related properties. 
+
+When creating or modifying a Contact object, all properties in a group MUST be set, changed, or 
+deleted together at the same time, unless otherwise specified in sections 2.2.1.3.1 through section 
+2.2.1.3.9. Specifications of similar properties are grouped together in sections 2.2.1.3.1 through 
+2.2.1.3.9. 
+
+The following table specifies the properties in each Physical Address group. 
+
+Group name Properties in group 
+
+Home Address PidTagHomeAddressStreet (section 2.2.1.3.1)  
+
+PidTagHomeAddressCity (section 2.2.1.3.2) 
+
+PidTagHomeAddressStateOrProvince (section 2.2.1.3.3)  
+
+PidTagHomeAddressPostalCode (section 2.2.1.3.4)  
+
+PidTagHomeAddressCountry (section 2.2.1.3.5)  
+
+PidLidHomeAddressCountryCode (section 2.2.1.3.6)  
+
+PidTagHomeAddressPostOfficeBox (section 2.2.1.3.7) 
+
+PidLidHomeAddress (section 2.2.1.3.8) 
+
+Work Address PidLidWorkAddressStreet (section 2.2.1.3.1) 
+
+PidLidWorkAddressCity (section 2.2.1.3.2) 
+
+PidLidWorkAddressState (section 2.2.1.3.3) 
+
+PidLidWorkAddressPostalCode (section 2.2.1.3.4) 
+
+PidLidWorkAddressCountry (section 2.2.1.3.5) 
+
+PidLidWorkAddressCountryCode (section 2.2.1.3.6) 
+
+PidLidWorkAddressPostOfficeBox (section 2.2.1.3.7) 
+
+PidLidWorkAddress (section 2.2.1.3.8) 
+
+Other Address PidTagOtherAddressStreet (section 2.2.1.3.1)  
+
+PidTagOtherAddressCity (section 2.2.1.3.2) 
+
+PidTagOtherAddressStateOrProvince (section 2.2.1.3.3) 
+
+PidTagOtherAddressPostalCode (section 2.2.1.3.4) 
+
+PidTagOtherAddressCountry (section 2.2.1.3.5) 
+
+PidLidOtherAddressCountryCode (section 2.2.1.3.6) 
+
+PidTagOtherAddressPostOfficeBox (section 2.2.1.3.7) 
+
+PidLidOtherAddress (section 2.2.1.3.8) 
+
+Mailing Address PidTagStreetAddress (section 2.2.1.3.1)  
+
+PidTagLocality (section 2.2.1.3.2) 
+
+PidTagStateOrProvince (section 2.2.1.3.3)  
+
+PidTagPostalCode (section 2.2.1.3.4) 
+
+PidTagCountry (section 2.2.1.3.5) 
+
+PidLidAddressCountryCode (section 2.2.1.3.6)  
+
+PidTagPostOfficeBox (section 2.2.1.3.7) 
+
+PidTagPostalAddress (section 2.2.1.3.8) 
+
+ 
+
+21 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.3.1 PidLidWorkAddressStreet, PidTagHomeAddressStreet, 
+PidTagOtherAddressStreet, PidTagStreetAddress Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWorkAddressStreet ([MS-OXPROPS] section 2.361), PidTagHomeAddressStreet ([MS-
+OXOABK] section 2.2.4.20), PidTagOtherAddressStreet ([MS-OXPROPS] section 2.855), and 
+PidTagStreetAddress ([MS-OXOABK] section 2.2.4.14) properties specify the street portion of the 
+contact's Work, Home, Other, or Mailing Address. These properties can also be used to store the post 
+office box part of the address, if it exists. 
+
+2.2.1.3.2 PidLidWorkAddressCity, PidTagHomeAddressCity, PidTagOtherAddressCity, 
+PidTagLocality Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWorkAddressCity ([MS-OXPROPS] section 2.355), PidTagHomeAddressCity ([MS-
+OXPROPS] section 2.726), PidTagOtherAddressCity ([MS-OXPROPS] section 2.850), and 
+PidTagLocality ([MS-OXOABK] section 2.2.4.16) properties specify the city or locality portion of the 
+contact's Work, Home, Other, or Mailing Address. 
+
+2.2.1.3.3 PidLidWorkAddressState, PidTagHomeAddressStateOrProvince, 
+PidTagOtherAddressStateOrProvince, PidTagStateOrProvince Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWorkAddressState ([MS-OXPROPS] section 2.360), 
+PidTagHomeAddressStateOrProvince ([MS-OXPROPS] section 2.730), 
+PidTagOtherAddressStateOrProvince ([MS-OXPROPS] section 2.854), and 
+PidTagStateOrProvince [MS-OXOABK] section 2.2.4.17) properties specify the state or province 
+portion of the contact's Work, Home, Other, or Mailing Address. 
+
+2.2.1.3.4 PidLidWorkAddressPostalCode, PidTagHomeAddressPostalCode, 
+PidTagOtherAddressPostalCode, PidTagPostalCode Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWorkAddressPostalCode ([MS-OXPROPS] section 2.358), 
+PidTagHomeAddressPostalCode ([MS-OXPROPS] section 2.728), 
+PidTagOtherAddressPostalCode ([MS-OXPROPS] section 2.852), and PidTagPostalCode ([MS-
+OXOABK] section 2.2.4.18) properties specify the postal code (ZIP code) portion of the contact's 
+Work, Home, Other, or Mailing Address. 
+
+2.2.1.3.5 PidLidWorkAddressCountry, PidTagHomeAddressCountry, 
+PidTagOtherAddressCountry, PidTagCountry Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWorkAddressCountry ([MS-OXPROPS] section 2.356), PidTagHomeAddressCountry 
+([MS-OXPROPS] section 2.727), PidTagOtherAddressCountry ([MS-OXPROPS] section 2.851), and 
+PidTagCountry ([MS-OXOABK] section 2.2.4.19) properties specify the country or region portion of 
+the contact's Work, Home, Other, or Mailing Address. 
+
+2.2.1.3.6 PidLidWorkAddressCountryCode, PidLidHomeAddressCountryCode, 
+PidLidOtherAddressCountryCode, PidLidAddressCountryCode Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+22 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidLidWorkAddressCountryCode ([MS-OXPROPS] section 2.357), 
+PidLidHomeAddressCountryCode ([MS-OXPROPS] section 2.145), 
+PidLidOtherAddressCountryCode ([MS-OXPROPS] section 2.198), and 
+PidLidAddressCountryCode ([MS-OXPROPS] section 2.3) properties specify the country/region code 
+portion of the contact's Work, Home, Other, or Mailing Address. 
+
+2.2.1.3.7 PidLidWorkAddressPostOfficeBox, PidTagHomeAddressPostOfficeBox, 
+PidTagOtherAddressPostOfficeBox, PidTagPostOfficeBox Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWorkAddressPostOfficeBox ([MS-OXPROPS] section 2.359), 
+PidTagHomeAddressPostOfficeBox ([MS-OXPROPS] section 2.729), 
+PidTagOtherAddressPostOfficeBox ([MS-OXPROPS] section 2.853) and PidTagPostOfficeBox 
+[MS-OXOABK] section 2.2.4.15) properties specify the post office box portion of the contact's Work, 
+Home, Other, or Mailing Address. The client and the server do not use these properties when 
+generating the full address or when parsing the full address into components. Instead, they place the 
+post office box data as part of the street address. 
+
+When a property in a physical address group is changed, as specified in section 3.1.5.2, these 
+properties do not need to be updated. 
+
+2.2.1.3.8 PidLidWorkAddress, PidLidHomeAddress, PidLidOtherAddress, 
+PidTagPostalAddress Properties 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWorkAddress ([MS-OXPROPS] section 2.354), PidLidHomeAddress ([MS-OXPROPS] 
+section 2.144), PidLidOtherAddress ([MS-OXPROPS] section 2.197), and PidTagPostalAddress 
+([MS-OXPROPS] section 2.866) properties specify the complete address of the contact's Work, Home, 
+Other, or Mailing Address. Each of these properties SHOULD be a combination of other Physical 
+Address properties and is based on client locale. 
+
+2.2.1.3.9 PidLidPostalAddressId Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostalAddressId property ([MS-OXPROPS] section 2.203) specifies which physical 
+address is the Mailing Address for this contact. If present, the property MUST have one of the values 
+specified in the following table. If not set, the client SHOULD assume that the value is 0x00000000. 
+This property is optional. 
+
+Value Meaning 
+
+0x00000000 No address is selected as the Mailing Address. PidTagStreetAddress (section 2.2.1.3.1), 
+PidTagLocality (section 2.2.1.3.2), PidTagStateOrProvince (section 2.2.1.3.3), 
+PidTagPostalCode (section 2.2.1.3.4), PidTagCountry (section 2.2.1.3.5), 
+PidLidAddressCountryCode (section 2.2.1.3.6), and PidTagPostalAddress (section 2.2.1.3.8) 
+all MUST NOT be set. 
+
+0x00000001 The Home Address is the Mailing Address. 
+
+The values of the PidTagStreetAddress, PidTagLocality, PidTagStateOrProvince, 
+PidTagPostalCode, PidTagPostOfficeBox (section 2.2.1.3.7), PidTagCountry, 
+PidLidAddressCountryCode, and PidTagPostalAddress properties MUST be equal to the 
+values of the PidTagHomeAddressStreet (section 2.2.1.3.1), PidTagHomeAddressCity 
+(section 2.2.1.3.2), PidTagHomeAddressStateOrProvince (section 2.2.1.3.3), 
+PidTagHomeAddressPostalCode (section 2.2.1.3.4), PidTagHomeAddressPostOfficeBox 
+(section 2.2.1.3.7), PidTagHomeAddressCountry (section 2.2.1.3.5), 
+PidLidHomeAddressCountryCode (section 2.2.1.3.6), and PidLidHomeAddress (section 
+
+23 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+2.2.1.3.8) properties, respectively. 
+
+0x00000002 The Work Address is the Mailing Address. The values of the PidTagStreetAddress, 
+PidTagLocality, PidTagStateOrProvince, PidTagPostalCode, PidTagPostOfficeBox, 
+PidTagCountry, PidLidAddressCountryCode, and PidTagPostalAddress properties MUST be 
+equal to the values of the PidLidWorkAddressStreet (section 2.2.1.3.1), 
+PidLidWorkAddressCity (section 2.2.1.3.2), PidLidWorkAddressState (section 2.2.1.3.3), 
+PidLidWorkAddressPostalCode (section 2.2.1.3.4), PidLidWorkAddressPostOfficeBox 
+(section 2.2.1.3.7), PidLidWorkAddressCountry (section 2.2.1.3.5), 
+PidLidWorkAddressCountryCode (section 2.2.1.3.6), and PidLidWorkAddress (section 
+2.2.1.3.8) properties, respectively. 
+
+0x00000003 The Other Address is the Mailing Address. The values of the PidTagStreetAddress, 
+PidTagLocality, PidTagStateOrProvince, PidTagPostalCode, PidTagPostOfficeBox, 
+PidTagCountry, PidLidAddressCountryCode, and PidTagPostalAddress properties MUST be 
+equal to the values of the PidTagOtherAddressStreet (section 2.2.1.3.1), 
+PidTagOtherAddressCity (section 2.2.1.3.2), PidTagOtherAddressStateOrProvince (section 
+2.2.1.3.3), PidTagOtherAddressPostalCode (section 2.2.1.3.4), 
+PidTagOtherAddressPostOfficeBox (section 2.2.1.3.7), PidTagOtherAddressCountry 
+(section 2.2.1.3.5), PidLidOtherAddressCountryCode (section 2.2.1.3.6), and 
+PidLidOtherAddress (section 2.2.1.3.8) properties, respectively. 
+
+ 
+
+2.2.1.4 Telephone Properties 
+
+Telephone properties specify telephone numbers for the contact. If present, each property MUST NOT 
+exceed a length of 255 characters, excluding the terminating null character. Each property in this 
+section is optional. 
+
+2.2.1.4.1 PidTagPagerTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagPagerTelephoneNumber property ([MS-OXOABK] section 2.2.4.28) specifies the pager 
+telephone number for the contact. 
+
+2.2.1.4.2 PidTagCallbackTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagCallbackTelephoneNumber property ([MS-OXPROPS] section 2.627) specifies the 
+callback telephone number for the contact. 
+
+2.2.1.4.3 PidTagBusinessTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagBusinessTelephoneNumber property ([MS-OXOABK] section 2.2.4.21) specifies the 
+business telephone number for the contact. 
+
+2.2.1.4.4 PidTagHomeTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagHomeTelephoneNumber property ([MS-OXOABK] section 2.2.4.22) specifies the home 
+telephone number for the contact. 
+
+24 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.4.5 PidTagPrimaryTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagPrimaryTelephoneNumber property ([MS-OXPROPS] section 2.872) specifies the 
+primary telephone number for the contact. 
+
+2.2.1.4.6 PidTagBusiness2TelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagBusiness2TelephoneNumber property ([MS-OXOABK] section 2.2.4.23) specifies the 
+second business telephone number for the contact. 
+
+2.2.1.4.7 PidTagMobileTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMobileTelephoneNumber property ([MS-OXOABK] section 2.2.4.27) specifies the mobile 
+telephone number for the contact. 
+
+2.2.1.4.8 PidTagRadioTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagRadioTelephoneNumber property ([MS-OXPROPS] section 2.879) specifies the radio 
+telephone number for the contact. 
+
+2.2.1.4.9 PidTagCarTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagCarTelephoneNumber property ([MS-OXPROPS] section 2.629) specifies the car 
+telephone number for the contact. 
+
+2.2.1.4.10 PidTagOtherTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagOtherTelephoneNumber property ([MS-OXPROPS] section 2.856) specifies an alternate 
+telephone number for the contact. 
+
+2.2.1.4.11 PidTagAssistantTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagAssistantTelephoneNumber property ([MS-OXOABK] section 2.2.4.31) specifies the 
+telephone number of the contact's assistant. 
+
+2.2.1.4.12 PidTagHome2TelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagHome2TelephoneNumber property ([MS-OXOABK] section 2.2.4.25) specifies a second 
+home telephone number for the contact. 
+
+2.2.1.4.13 PidTagTelecommunicationsDeviceForDeafTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+25 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidTagTelecommunicationsDeviceForDeafTelephoneNumber property ([MS-OXPROPS] 
+section 2.1042) specifies the telephone number for the contact's text telephone (TTY) or 
+telecommunication device for the deaf (TDD). 
+
+2.2.1.4.14 PidTagCompanyMainTelephoneNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagCompanyMainTelephoneNumber property ([MS-OXPROPS] section 2.639) specifies the 
+company phone number for the contact. 
+
+2.2.1.4.15 PidTagTelexNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagTelexNumber property ([MS-OXOABK] section 2.2.4.30) specifies the telex number for 
+the contact. 
+
+2.2.1.4.16 PidTagIsdnNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagIsdnNumber property ([MS-OXPROPS] section 2.758) specifies the Integrated Services 
+Digital Network (ISDN) number for the contact. 
+
+2.2.1.5 Event Properties 
+
+ Two events are associated with a contact: a birthday and an anniversary. Each event is defined by 
+two properties: a PtypTime property and an object PtypBinary property. If one of the two properties 
+is set for an event, the other MUST also be set. If either of the two events is defined for a contact, the 
+PidLidReferenceEntryId property (section 2.2.1.10.1) SHOULD be set to the EntryID for this 
+Contact object. 
+
+2.2.1.5.1 PidTagBirthday Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagBirthday property ([MS-OXPROPS] section 2.616) specifies the birthday of the contact, 
+at 11:59 in Coordinated Universal Time (UTC). 
+
+2.2.1.5.2 PidLidBirthdayLocal Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidBirthdayLocal property ([MS-OXPROPS] section 2.44) specifies the birthday of the 
+contact, at 0:00 in the client's local time zone. It is saved without any time zone conversions. 
+
+2.2.1.5.3 PidLidBirthdayEventEntryId Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidBirthdayEventEntryId property ([MS-OXPROPS] section 2.43) specifies the object 
+EntryID of an optional Appointment object that represents the contact's birthday. The 
+Appointment object specified by the EntryID MUST be linked to this contact by using the 
+PidLidContactLinkEntry ([MS-OXCMSG] section 2.2.1.59.1), PidLidContactLinkSearchKey ([MS-
+OXCMSG] section 2.2.1.59.4), and PidLidContactLinkName ([MS-OXCMSG] section 2.2.1.59.3) 
+properties, as specified in [MS-OXCMSG] section 2.2.1.59. 
+
+26 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+For details about Appointment objects, see [MS-OXOCAL]. 
+
+2.2.1.5.4 PidTagWeddingAnniversary Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagWeddingAnniversary property ([MS-OXPROPS] section 2.1064) specifies the wedding 
+anniversary of the contact, at 11:59 in Coordinated Universal Time (UTC). 
+
+2.2.1.5.5 PidLidWeddingAnniversaryLocal Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidWeddingAnniversaryLocal property ([MS-OXPROPS] section 2.351) specifies the 
+wedding anniversary of the contact, at 0:00 in the client's local time zone. It is saved without any 
+time zone conversions. 
+
+2.2.1.5.6 PidLidAnniversaryEventEntryId Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidAnniversaryEventEntryId property ([MS-OXPROPS] section 2.7) specifies the object 
+EntryID of the Appointment object that represents the contact's anniversary. The Appointment 
+object specified by the EntryID MUST be linked to this contact by using PidLidContactLinkEntry 
+([MS-OXCMSG] section 2.2.1.59.1), PidLidContactLinkSearchKey ([MS-OXCMSG] section 
+2.2.1.59.4), and PidLidContactLinkName ([MS-OXCMSG] section 2.2.1.59.3), as specified in [MS-
+OXCMSG] section 2.2.1.59. 
+
+For details about Appointment objects, see [MS-OXOCAL]. 
+
+2.2.1.6 Professional Properties 
+
+Professional properties are used to store professional details for the person represented by the 
+contact. 
+
+2.2.1.6.1 PidTagTitle Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagTitle property ([MS-OXOABK] section 2.2.4.4) specifies the job title of the contact. This 
+property is optional. 
+
+2.2.1.6.2 PidTagCompanyName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagCompanyName property ([MS-OXOABK] section 2.2.4.7) specifies the company that 
+employs the contact. This property is optional. 
+
+2.2.1.6.3 PidTagDepartmentName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagDepartmentName property ([MS-OXOABK] section 2.2.4.6) specifies the name of the 
+department to which the contact belongs. This property is optional. 
+
+2.2.1.6.4 PidLidDepartment Property 
+
+27 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidDepartment property ([MS-OXPROPS] section 2.93) is not used and MUST be ignored by 
+the server. The client MUST set this property to an empty string. 
+
+2.2.1.6.5 PidTagOfficeLocation Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagOfficeLocation property ([MS-OXOABK] section 2.2.4.5) specifies the location of the 
+office that the contact works in. This property is optional. 
+
+2.2.1.6.6 PidTagManagerName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagManagerName property ([MS-OXPROPS] section 2.781) specifies the name of the 
+contact's manager. This property is optional. 
+
+2.2.1.6.7 PidTagAssistant Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagAssistant property ([MS-OXOABK] section 2.2.4.8) specifies the name of the contact's 
+assistant. This property is optional. 
+
+2.2.1.6.8 PidLidYomiCompanyName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidYomiCompanyName property ([MS-OXPROPS] section 2.363) specifies the phonetic 
+pronunciation of the contact's company name. This property is optional. 
+
+2.2.1.6.9 PidTagProfession Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagProfession property ([MS-OXPROPS] section 2.875) specifies the profession of the 
+contact. This property is optional. 
+
+2.2.1.7 Business Card Properties 
+
+Business Card properties can be used to customize the display of contact information in business card 
+format.<3> The business card format is a collection of information about how to display contact data 
+to the user. The server ignores the Business Card properties. 
+
+2.2.1.7.1 PidLidBusinessCardDisplayDefinition Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidBusinessCardDisplayDefinition ([MS-OXPROPS] section 2.46) property specifies user-
+customization details for displaying a contact as a business card. This property is optional. 
+
+The layout of a business card can be represented as an image and a number of text fields. The image 
+can be either a contact photo, specified in section 2.2.1.8, or a card picture, specified in section 
+2.2.1.7.2. Text fields consist of a value from another PtypString property set on the Contact object 
+and an optional customized label string provided by the user. 
+
+28 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following diagram specifies the format of the PidLidBusinessCardDisplayDefinition property. 
+Note that multiple-byte values are stored in little-endian format in the buffer. 
+
+ 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+MajorVersion MinorVersion TemplateID CountOfFields 
+
+FieldInfoSize ExtraInfoSize ImageAlignment ImageSource 
+
+BackgroundColor 
+
+ImageArea Reserved 
+
+... FieldInfoN (variable) 
+
+... 
+
+ExtraInfo (variable) 
+
+... 
+
+ 
+
+MajorVersion (1 byte):  An 8-bit value that specifies the major version number. This field MUST be 
+set to 0x03 or greater. 
+
+MinorVersion (1 byte):  An 8-bit value that specifies the minor version number. This field SHOULD 
+be set to 0x00. 
+
+TemplateID (1 byte):  An 8-bit value that specifies the layout of the business card. The valid values 
+for this field are specified in the following table. 
+
+ 
+
+Value Meaning 
+
+0x00 The image area will be left aligned, stretching the full height of the card vertically; text fields will appear 
+to the right of the image area. 
+
+0x01 The image area will be right aligned, stretching the full height of the card vertically; text fields will 
+appear to the left of the image area. 
+
+0x02 The image area will be aligned to the top, stretching the full width of the card horizontally; text fields will 
+appear under the image area. 
+
+0x03 The image area will be aligned to the bottom, stretching the full width of the card horizontally; text fields 
+will appear above the image area. 
+
+0x04 No image area is included in the card, only text fields are included. In this case, the 
+PidLidBusinessCardCardPicture property (section 2.2.1.7.2) SHOULD NOT be set on the Contact 
+object. 
+
+0x05 The image area will be used as a background for the card, stretching the full height and width of the 
+card. Text fields are displayed on top of the image area. 
+
+29 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+CountOfFields (1 byte):  An integer that specifies the number of FieldInfo structures, as specified 
+in section 2.2.1.7.1.1, contained in the FieldInfoN field. 
+
+FieldInfoSize (1 byte):  An integer that specifies the size, in bytes, of each FieldInfo structure that 
+is contained in the FieldInfoN field. This field MUST be set to 16. 
+
+ExtraInfoSize (1 byte):  An integer that specifies the size, in bytes, of the ExtraInfo field. 
+
+ImageAlignment (1 byte):  An 8-bit value that specifies the alignment of the image within the 
+image area. If the value of the TemplateID field is 0x04, indicating a text-only card, this field is 
+ignored. The valid values for this field are specified in the following table. 
+
+ 
+
+Value Meaning 
+
+0x00 Image is stretched to fit. 
+
+0x01 Align top left. 
+
+0x02 Align top center. 
+
+0x03 Align top right. 
+
+0x04 Align middle left. 
+
+0x05 Align middle center. 
+
+0x06 Align middle right. 
+
+0x07 Align bottom left. 
+
+0x08 Align bottom center. 
+
+0x09 Align bottom right. 
+
+ImageSource (1 byte):  An 8-bit value that specifies the source of the image that is used for the 
+business card. The business card can display up to one image on the card. That image can be 
+obtained from either the contact photo, as specified in section 2.2.1.8.1, or the card picture, as 
+specified in section 2.2.1.7.2. If the value of the ImageSource field is 0x00, the contact photo 
+SHOULD be used; otherwise, the card picture SHOULD be used. 
+
+If the value of this field is 0x00, the PidLidBusinessCardCardPicture property ([MS-OXPROPS] 
+section 2.45) SHOULD NOT exist on the Contact object. This field MUST NOT be set to 0x00 when 
+the value of the PidLidHasPicture property (section 2.2.1.8.1) is zero (FALSE). If the value of 
+the TemplateID field is 0x04, indicating a text-only card, this field is ignored. 
+
+BackgroundColor (4 bytes):  A 32-bit value that specifies the background color of the business 
+card. This field has the format 0x00BBGGRR, where the high byte is 0x00 and the three lower 
+bytes, represented by BBGGRR, specify blue, green, and red intensities, respectively. 
+
+ImageArea (1 byte):  An integer that specifies the percent of space that the image will occupy on 
+the business card. The value of this field SHOULD be between 4 and 50. The value of this field is 
+ignored for text-only cards (TemplateID field is set to 0x04) and background image cards 
+(TemplateID field is set to 0x05). 
+
+Reserved (4 bytes):  This field MUST be set to zero when sent and MUST be ignored when received. 
+
+FieldInfoN (variable):  An array of zero or more FieldInfo structures (section 2.2.1.7.1.1), each of 
+which contains details about the text field of a business card. Each text field is associated with a 
+
+30 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+user-customized label that is listed in the ExtraInfo field. The number of FieldInfo structures 
+contained in this field is specified by the CountOfFields field. 
+
+ExtraInfo (variable):  An array of null-terminated Unicode strings, each of which specifies a 
+business card label that has been provided by the user. Each business card label SHOULD be 
+limited to 16 Unicode characters, including the terminating null character. Each business card label 
+is associated with a text field of the business card and is referenced by the LabelOffset field of 
+one of the FieldInfo structures contained in the FieldInfoN field. The total size, in bytes, of the 
+ExtraInfo field is specified by the ExtraInfoSize field. 
+
+2.2.1.7.1.1 FieldInfo Structure 
+
+The FieldInfo structure contains details about a text field on the business card. The following diagram 
+specifies the buffer format of the FieldInfo structure. 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+TextPropertyID TextFormat LabelFormat 
+
+FontSize Reserved LabelOffset 
+
+ValueFontColor 
+
+LabelFontColor 
+
+TextPropertyID (2 bytes):  A 16-bit value that specifies the property to be used for the text field. 
+The value of the TextPropertyID field MUST be either 0x0000, representing an empty text field, 
+or the property ID of one of the properties specified in section 2.2.1.7.1.1.1. 
+
+TextFormat (1 byte):  An 8-bit value that specifies the alignment and formatting for the text field. 
+The following diagram shows the bits and their meanings. If none of the bits are set, the text field 
+is displayed as a single line, left-aligned. The Right align and Center align bits MUST be mutually 
+exclusive. 
+
+ 
+
+Figure 1: TextFormat byte table 
+
+LabelFormat (1 byte):  An 8-bit value that specifies the alignment of a user-provided label that is 
+associated with the text field. The following diagram shows the bits and their meanings. If none of 
+the bits are set, the text field has no label. The Label to the right and Label to the left bits MUST 
+be mutually exclusive. 
+
+31 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+Figure 2: LabelFormat byte table 
+
+FontSize (1 byte):  An integer that specifies the font size, in points, of the text field. The font size 
+MUST be between 3 and 32. The font size MUST zero if the text field is displayed as an empty line. 
+
+Reserved (1 byte):  This field MUST be set to zero when sent and MUST be ignored when received. 
+
+LabelOffset (2 bytes):  An integer that specifies the byte offset into the ExtraInfo field of the 
+PidLidBusinessCardDisplayDefinition property (section 2.2.1.7.1). The offset points to the 
+start of the label string in the ExtraInfo field. The offset MUST be less than the value of the 
+ExtraInfoSize field, which specifies the total size of the ExtraInfo field. If the text field does not 
+have a label, the value of the LabelOffset field MUST be 0xFFFE. 
+
+ValueFontColor (4 bytes):  An integer that specifies the color of the text field. The value of the 
+ValueFontColor field has the format 0x00BBGGRR, where the high byte is 0x00, the next highest 
+byte identifies the blue intensity, the next highest byte identifies the green intensity, and the 
+lowest byte identifies the red intensity. 
+
+LabelFontColor (4 bytes):  An integer that specifies the color of the label. The value of the 
+LabelFontColor field has the format 0x00BBGGRR, where the high byte is 0x00, the next highest 
+byte identifies the blue intensity, the next highest byte identifies the green intensity, and the 
+lowest byte identifies the red intensity. 
+
+2.2.1.7.1.1.1 Properties Used for a Business Card Text Field 
+
+The following properties can be used for the text field of a business card. The property to be used for 
+the text field is specified in the TextPropertyID field of the FieldInfo structure section 2.2.1.7.1.1. 
+All properties in the list are PtypString properties ([MS-OXCDATA] section 2.11.1). 
+
+PidTagDisplayName (section 2.2.1.1.8) 
+
+PidTagTitle ([MS-OXOABK] section 2.2.4.4) 
+
+PidTagDepartmentName ([MS-OXOABK] section 2.2.4.6) 
+
+PidTagCompanyName ([MS-OXOABK] section 2.2.4.7) 
+
+PidTagBusinessTelephoneNumber ([MS-OXOABK] section 2.2.4.21) 
+
+PidTagBusiness2TelephoneNumber ([MS-OXOABK] section 2.2.4.23) 
+
+PidTagBusinessFaxNumber (section 2.2.1.2.6) 
+
+PidTagCompanyMainTelephoneNumber (section 2.2.1.4.14) 
+
+32 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+PidTagHomeTelephoneNumber ([MS-OXOABK] section 2.2.4.22) 
+
+PidTagHome2TelephoneNumber ([MS-OXOABK] section 2.2.4.25) 
+
+PidTagHomeFaxNumber (section 2.2.1.2.6) 
+
+PidTagMobileTelephoneNumber ([MS-OXOABK] section 2.2.4.27) 
+
+PidTagAssistantTelephoneNumber ([MS-OXOABK] section 2.2.4.31) 
+
+PidTagOtherTelephoneNumber (section 2.2.1.4.10) 
+
+PidTagTelecommunicationsDeviceForDeafTelephoneNumber (section 2.2.1.4.13) 
+
+PidTagPrimaryTelephoneNumber (section 2.2.1.4.5) 
+
+PidTagPrimaryFaxNumber ([MS-OXOABK] section 2.2.4.29) 
+
+PidTagPagerTelephoneNumber ([MS-OXOABK] section 2.2.4.28) 
+
+PidLidWorkAddress (section 2.2.1.3.8) 
+
+PidLidHomeAddress (section 2.2.1.3.8) 
+
+PidLidOtherAddress (section 2.2.1.3.8) 
+
+PidLidInstantMessagingAddress (section 2.2.1.10.6) 
+
+PidTagBusinessHomePage (section 2.2.1.10.14) 
+
+PidTagPersonalHomePage (section 2.2.1.10.13) 
+
+PidLidContactUserField1 (section 2.2.1.7.3) 
+
+PidLidContactUserField2 (section 2.2.1.7.3) 
+
+PidLidContactUserField3 (section 2.2.1.7.3) 
+
+PidLidContactUserField4 (section 2.2.1.7.3) 
+
+PidLidEmail1OriginalDisplayName (section 2.2.1.2.4) 
+
+PidLidEmail2OriginalDisplayName (section 2.2.1.2.4) 
+
+PidLidEmail3OriginalDisplayName (section 2.2.1.2.4) 
+
+2.2.1.7.2 PidLidBusinessCardCardPicture Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidBusinessCardCardPicture property ([MS-OXPROPS] section 2.45) contains the image to 
+be used on a business card, whose value MUST be either a Portable Network Graphics (PNG) or 
+Joint Photographic Experts Group (JPEG) stream. This property SHOULD be used in conjunction 
+with the PidLidBusinessCardDisplayDefinition property (section 2.2.1.7.1) as follows: the 
+PidLidBusinessCardCardPicture property SHOULD NOT be present on a Contact object if the 
+PidLidBusinessCardDisplayDefinition property is not present. This property also SHOULD NOT be 
+present if the data in the PidLidBusinessCardDisplayDefinition property does not require a card 
+image. 
+
+2.2.1.7.3 PidLidContactUserField1, PidLidContactUserField2, PidLidContactUserField3, 
+PidLidContactUserField4 Properties 
+
+33 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidContactUserField1 ([MS-OXPROPS] section 2.78). PidLidContactUserField2 ([MS-
+OXPROPS] section 2.79), PidLidContactUserField3 ([MS-OXPROPS] section 2.80), and 
+PidLidContactUserField4 ([MS-OXPROPS] section 2.81) properties can be used to add custom text 
+to a business card representation of a Contact object. These properties contain text that is unrelated 
+to any other contact-specific property. These properties are optional. 
+
+2.2.1.8 Contact Photo Properties 
+
+The PidLidHasPicture property (section 2.2.1.8.1) and the contact photo attachment specified in 
+section 2.2.1.8.3 are optional and represent an optional photo associated with the contact.<4> 
+
+2.2.1.8.1 PidLidHasPicture Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidHasPicture property ([MS-OXPROPS] section 2.143) indicates whether a contact photo 
+attachment, specified in section 2.2.1.8.3, exists. If this property is set to nonzero (TRUE), then the 
+contact photo attachment exists and the client uses it as the contact photo. If this property does not 
+exist, or exists and is set to zero (FALSE), then there is no contact photo attachment. 
+
+2.2.1.8.2 PidTagAttachmentContactPhoto Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagAttachmentContactPhoto property ([MS-OXPROPS] section 2.597) indicates whether an 
+Attachment object is a contact photo attachment. This property is set to nonzero (TRUE) to identify 
+the Attachment object as a contact photo attachment. There SHOULD be only one attachment with the 
+PidTagAttachmentContactPhoto property set to TRUE on a Contact object. If more than one 
+attachment has this property set to TRUE, the client can use any one of the marked attachments as 
+the contact photo. 
+
+2.2.1.8.3 Contact Photo Attachment 
+
+The contact photo attachment is a picture attached to the Contact object. The Attachment object 
+MUST have the PidTagAttachmentContactPhoto property (section 2.2.1.8.2) set to nonzero 
+(TRUE). For more details about Attachment objects, see [MS-OXCMSG] section 2.2.2. Additionally, the 
+following properties MUST be set on the Attachment object, as specified in [MS-OXCMSG]: 
+
+ The value of the PidTagAttachDataBinary property ([MS-OXCMSG] section 2.2.2.7), which is 
+the contents of the attachment, SHOULD be in JPEG format. Support for other formats is as 
+determined by the implementer. 
+
+ The PidTagAttachExtension property ([MS-OXPROPS] section 2.592) SHOULD be set to ".jpg". 
+
+ The PidTagDisplayName (section 2.2.1.1.8) and PidTagAttachFilename ([MS-OXPROPS] 
+section 2.593) properties SHOULD be set to "ContactPicture.jpg". 
+
+2.2.1.9 Contact Aggregation Properties 
+
+The contact aggregation properties are used for importing external contacts and linking duplicate 
+contacts.<5> The linking of duplicate contacts allows the client to show one representation to the 
+user.  
+
+2.2.1.9.1 PidLidContactLinkedGlobalAddressListEntryId Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+34 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidLidContactLinkedGlobalAddressListEntryId property ([MS-OXPROPS] section 2.69) 
+specifies the EntryID of the GAL contact to which the duplicate contact is linked.<6>  
+
+2.2.1.9.2 PidLidContactLinkGlobalAddressListLinkId Property 
+
+Type: PtypGuid ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidContactLinkGlobalAddressListLinkId property ([MS-OXPROPS] section 2.71) specifies 
+the GUID of the GAL contact to which the duplicate contact is linked.<7>  
+
+2.2.1.9.3 PidLidContactLinkGlobalAddressListLinkState Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidContactLinkGlobalAddressListLinkState property ([MS-OXPROPS] section 2.72) 
+specifies the state of the linking between the GAL contact and the duplicate contact.<8>  
+
+The valid values for this property are specified in the following table. 
+
+Value Meaning 
+
+0 The duplicate contact is not linked to the GAL contact or the GAL contact is not downloaded. 
+
+1 The duplicate contact is linked to the GAL contact. 
+
+2 The duplicate contact cannot be automatically linked to the GAL contact. 
+
+ 
+
+2.2.1.9.4 PidLidContactLinkLinkRejectHistory Property 
+
+Type: PtypMultipleBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidContactLinkLinkRejectHistory property ([MS-OXPROPS] section 2.73) contains a list of 
+any contacts that were previously rejected for linking with the duplicate contact.<9> 
+
+2.2.1.9.5 PidLidContactLinkSMTPAddressCache Property 
+
+Type: PtypMultipleString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidContactLinkSMTPAddressCache property ([MS-OXPROPS] section 2.76) contains a list 
+of the SMTP addresses that are used by the GAL contact that are linked to the duplicate 
+contact.<10> 
+
+2.2.1.9.6 PidLidIsContactLinked Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidIsContactLinked property ([MS-OXPROPS] section 2.154) specifies whether the contact is 
+linked to other contacts. The value TRUE indicates that the contact is linked.<11> 
+
+2.2.1.9.7 PidTagOscSyncEnabled Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagOscSyncEnabled property ([MS-OXPROPS] section 2.849) specifies whether contact 
+synchronization with an external source (such as a social networking site) is handled by the server. 
+This property is set on a message that is stored in the contacts folder.<12>  
+
+35 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.10 Other Contact Properties 
+
+2.2.1.10.1 PidLidReferenceEntryId Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidReferenceEntryId property ([MS-OXPROPS] section 2.217) contains a value that is equal 
+to the value of the EntryID of the Contact object unless the Contact object is a copy of an earlier 
+original. 
+
+2.2.1.10.2 PidTagHobbies Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagHobbies property ([MS-OXPROPS] section 2.723) specifies the hobbies of the contact. 
+This property is optional. 
+
+2.2.1.10.3 PidTagSpouseName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSpouseName property ([MS-OXPROPS] section 2.1026) specifies the name of the 
+contact's spouse/partner. This property is optional. 
+
+2.2.1.10.4 PidTagLanguage Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagLanguage property ([MS-OXPROPS] section 2.765) specifies the language that the 
+contact uses. This property is optional. 
+
+2.2.1.10.5 PidTagLocation Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagLocation property ([MS-OXPROPS] section 2.778) specifies the location of the contact. 
+For example, this could be the building and office number of the contact. This property is optional. 
+
+2.2.1.10.6 PidLidInstantMessagingAddress Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidInstantMessagingAddress property ([MS-OXPROPS] section 2.150) specifies the 
+contact's instant messaging address. This property is optional. 
+
+2.2.1.10.7 PidTagOrganizationalIdNumber Property 
+
+Type: PtypString 
+
+The PidTagOrganizationalIdNumber property ([MS-OXPROPS] section 2.824) specifies an 
+organizational ID number for the contact, such as an employee ID number. This property is optional. 
+
+2.2.1.10.8 PidTagCustomerId Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagCustomerId property ([MS-OXPROPS] section 2.658) specifies the contact's customer 
+ID number. This property is optional. 
+
+36 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.10.9 PidTagGovernmentIdNumber Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagGovernmentIdNumber property ([MS-OXPROPS] section 2.716) specifies the contact's 
+government ID number. This property is optional. 
+
+2.2.1.10.10 PidLidFreeBusyLocation Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFreeBusyLocation property ([MS-OXPROPS] section 2.141) specifies a Uniform 
+Resource Locator (URL) path from which a client can retrieve free/busy status information for the 
+contact as an iCalendar file, as specified in [MS-OXCICAL]. This property is optional. 
+
+2.2.1.10.11 PidTagAccount Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagAccount property ([MS-OXPROPS] section 2.508) specifies the account name of the 
+contact. This property is not used by either the client or the server. This property is optional. 
+
+2.2.1.10.12 PidLidHtml Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidHtml property ([MS-OXPROPS] section 2.146) specifies the contact's business web page 
+URL. The value of this property, if present, SHOULD be the same as the value of the 
+PidTagBusinessHomePage property (section 2.2.1.10.14). This property is optional. 
+
+2.2.1.10.13 PidTagPersonalHomePage Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagPersonalHomePage property ([MS-OXPROPS] section 2.864) specifies the contact's 
+personal web page URL. This property is optional. 
+
+2.2.1.10.14 PidTagBusinessHomePage Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagBusinessHomePage property ([MS-OXPROPS] section 2.625) specifies the contact's 
+business Web page URL. The value of this property, if present, SHOULD be the same as the value of 
+the PidLidHtml property (section 2.2.1.10.12). This property is optional. 
+
+2.2.1.10.15 PidTagFtpSite Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagFtpSite property ([MS-OXPROPS] section 2.711) specifies the contact's File Transfer 
+Protocol (FTP) URL. FTP is a protocol used to transfer data, as specified in [RFC959]. This property 
+is optional. 
+
+2.2.1.10.16 PidTagComputerNetworkName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+37 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidTagComputerNetworkName property ([MS-OXPROPS] section 2.641) specifies the name of 
+the network to which the contact's computer is connected. This property is not used by either the 
+client or the server. This property is optional. 
+
+2.2.1.10.17 PidTagChildrensNames Property 
+
+Type: PtypMultipleString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagChildrensNames property ([MS-OXPROPS] section 2.633) specifies the names of the 
+contact's children. This property is optional. 
+
+2.2.1.10.18 PidLidContactCharacterSet Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidContactCharacterSet property ([MS-OXPROPS] section 2.67) specifies the character set 
+used for this Contact object.<13> Clients use this property to aid in generating a character-set-
+dependent list of choices for the properties PidLidFileUnder (section 2.2.1.1.11), 
+PidLidFileUnderList (section 2.2.1.1.13), and PidLidFileUnderId (section 2.2.1.1.12). If the value 
+of the PidLidContactCharacterSet property is 0x00000000 or 0x00000001, clients SHOULD treat 
+this property as not being set. For U.S. English, the client sets the value of the 
+PidLidContactCharacterSet property to 0x00000100, denoting a Western character set. This 
+property is optional. 
+
+2.2.1.10.19 PidLidAutoLog Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidAutoLog property ([MS-OXPROPS] section 2.39) specifies to the client whether to create a 
+Journal object for each action associated with this Contact object. This property is optional. 
+
+2.2.1.10.20 PidTagGender Property 
+
+Type: PtypInteger16 ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagGender property ([MS-OXPROPS] section 2.713) specifies the gender of the contact. If 
+present, the property MUST be one of the following values. This property is optional. 
+
+Value Meaning 
+
+0x0000 The contact's gender is unspecified. 
+
+0x0001 The contact is female. 
+
+0x0002 The contact is male. 
+
+ 
+
+2.2.1.10.21 PidTagReferredByName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagReferredByName property ([MS-OXPROPS] section 2.913) specifies the name of the 
+person who referred this contact to the user. This property is optional. 
+
+2.2.1.10.22 PidLidContactItemData Property 
+
+Type: PtypMultipleInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+38 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidLidContactItemData property ([MS-OXPROPS] section 2.68) can be used to help display the 
+contact information. If present, the property MUST have six entries, each corresponding to a visible 
+field in the client's user interface. This property is optional. 
+
+The meaning of each entry in the PidLidContactItemData property is defined in the following table. 
+
+One-based index into the 
+The value MUST be one of the following Meaning multivalue property 
+
+0x00000001 The client SHOULD display the 1 
+contact's Home Address. 
+
+0x00000002 or 0x00000000 The client SHOULD display the 1 
+contact's Work Address. 
+
+0x00000003 The client SHOULD display the 1 
+contact's Other Address. 
+
+0x00008080 The client SHOULD display 2 
+Email1. 
+
+0x00008090 The client SHOULD display 2 
+Email2. 
+
+0x000080A0 The client SHOULD display 2 
+Email3. 
+
+Property ID of any of the Telephone The client SHOULD display the 3, 4, 5, 6 
+properties specified in section 2.2.1.4 or of corresponding property.  
+any of the fax numbers specified in section 
+2.2.1.2.6. 
+
+ 
+
+2.2.1.10.23 PidTagUserX509Certificate Property 
+
+Type: PtypMultipleBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagUserX509Certificate property ([MS-OXPROPS] section 2.1056) specifies a list of 
+certificates for the contact. The format and semantics of this property are specified in [MS-OXOABK] 
+section 2.2.4.36. This property is optional. 
+
+2.2.1.10.24 PidLidBilling Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidBilling property ([MS-OXPROPS] section 2.42) specifies billing information for the 
+contact. This property is optional. 
+
+2.2.1.11 Additional Property Constraints 
+
+Sections 2.2.1.11.1 and 2.2.1.11.2 specify constraints that this protocol adds to Message object 
+properties as they are defined in [MS-OXCMSG]. 
+
+2.2.1.11.1 PidTagNormalizedSubject Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagNormalizedSubject property ([MS-OXCMSG] section 2.2.1.10) specifies a combination of 
+the full name and company name of the contact. This property is computed by the client according to 
+
+39 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+an implementation-dependent algorithm that uses values of the PidTagGivenName (section 
+2.2.1.1.6), PidTagMiddleName (section 2.2.1.1.5), PidTagSurname (section 2.2.1.1.4), 
+PidTagGeneration (section 2.2.1.1.2), and PidTagCompanyName (section 2.2.1.6.2) properties. 
+The client uses the value of the PidTagNormalizedSubject property as the caption of the window 
+displaying information about this contact. The value of the very similar PidTagDisplayName property 
+(section 2.2.1.1.8) might contain characters that cannot be displayed as a window caption. 
+
+2.2.1.11.2 PidTagMessageClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) specifies the type of the 
+Message object. A Contact object MUST have this property set to either "IPM.Contact" or a string 
+prefixed with "IPM.Contact.". 
+
+2.2.2 Personal Distribution List Properties 
+
+Properties that are used in groups to define components of a Personal Distribution List object are 
+specified in sections 2.2.2.1 and 2.2.2.2. Standalone properties of a Personal Distribution List object 
+are specified in sections 2.2.2.3 and 2.2.2.4. Each property is set only when user data needs to be 
+stored. 
+
+2.2.2.1 Personal Distribution List Name Properties 
+
+The properties specified in section 2.2.2.1.1 to section 2.2.2.1.4 are used to display the name of the 
+Personal Distribution List object. 
+
+2.2.2.1.1 PidTagDisplayName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagDisplayName property ([MS-OXPROPS] section 2.677) specifies the user-visible name of 
+the personal distribution list. 
+
+2.2.2.1.2 PidLidDistributionListName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidDistributionListName property ([MS-OXPROPS] section 2.97) specifies the name of the 
+personal distribution list. The value of this property SHOULD be the same as the value of the 
+PidTagDisplayName property (section 2.2.2.1.1). 
+
+2.2.2.1.3 PidLidFileUnder Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The value of the PidLidFileUnder property ([MS-OXPROPS] section 2.132) MUST be the same as the 
+value of the PidTagDisplayName property (section 2.2.2.1.1). 
+
+2.2.2.1.4 PidLidFileUnderId Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFileUnderId property ([MS-OXPROPS] section 2.133) is not used for Personal 
+Distribution List objects. If present, this property SHOULD<14> be set to 0xFFFFFFFF. 
+
+40 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.2 Personal Distribution List Member Properties 
+
+2.2.2.2.1 PidLidDistributionListMembers Property 
+
+Type: PtypMultipleBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidDistributionListMembers property ([MS-OXPROPS] section 2.96) specifies the list of 
+EntryIDs of the objects corresponding to the members of the personal distribution list. Members of 
+the personal distribution list can be other personal distribution lists, electronic addresses contained in 
+a contact, Global Address List (GAL) members, or one-off email addresses. The format of each 
+EntryID MUST be either a One-Off EntryID structure ([MS-OXCDATA] section 2.2.5.1) or a 
+WrappedEntryId structure (section 2.2.2.2.4.1.1). 
+
+When setting this property, the client or the server MUST ensure its total size is less than 15,000 
+bytes. 
+
+2.2.2.2.2 PidLidDistributionListOneOffMembers Property 
+
+Type: PtypMultipleBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidDistributionListOneOffMembers property ([MS-OXPROPS] section 2.98) specifies the list 
+of one-off EntryIDs corresponding to the members of the personal distribution list. These one-off 
+EntryIDs encapsulate display names and email addresses of the personal distribution list members. 
+
+If the client or the server sets this property,<15> it MUST be synchronized with the 
+PidLidDistributionListMembers property (section 2.2.2.2.1): for each entry in the 
+PidLidDistributionListOneOffMembers property, there MUST be an entry in the same position in 
+the PidLidDistributionListMembers property. 
+
+When setting this property, the client or the server MUST ensure that its total size is less than 15,000 
+bytes. 
+
+2.2.2.2.3 PidLidDistributionListChecksum Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidDistributionListChecksum property ([MS-OXPROPS] section 2.95) specifies the 32-bit 
+cyclic redundancy check (CRC) polynomial checksum, as specified in [ISO/IEC8802-3], calculated 
+on the value of the PidLidDistributionListMembers property (section 2.2.2.2.1), as specified in 
+section 3.1.5.11. 
+
+The value of this property can be used to detect when the PidLidDistributionListMembers property 
+was updated without updating the other Personal Distribution List Member properties (by computing 
+the CRC on the existing value of the PidLidDistributionListMembers property and comparing it with 
+the value of the PidLidDistributionListChecksum property). The server does not set or update this 
+property. 
+
+2.2.2.2.4 PidLidDistributionListStream Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidDistributionListStream property ([MS-OXPROPS] section 2.99) specifies the list of 
+EntryIDs and one-off EntryIDs corresponding to the members of the personal distribution list. 
+Members of the personal distribution list can be other personal distribution lists, electronic addresses 
+contained in a contact, GAL members, or one-off email addresses. The format of each EntryID 
+MUST be as specified in section 2.2.2.2.1, and the format for each one-off EntryID MUST be as 
+specified in section 2.2.2.2.2. 
+
+41 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidLidDistributionListStream property is intended to allow a distribution list to grow past the 
+size limits of the PidLidDistributionListMembers property (section 2.2.2.2.1) and the 
+PidLidDistributionListOneOffMembers property (section 2.2.2.2.2). This property SHOULD<16> 
+be used if the size of either PidLidDistributionListMembers or 
+PidLidDistributionListOneOffMembers would be greater than 15,000 bytes. If this property is set, 
+the PidLidDistributionListMembers, PidLidDistributionListOneOffMembers, and 
+PidLidDistributionListChecksum (section 2.2.2.2.3) properties SHOULD<17> be ignored. 
+
+The following diagram specifies the buffer format of the PidLidDistributionListStream property. 
+
+ 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+StreamVersion Reserved 
+
+BuildVersion 
+
+DistListStreamFlags 
+
+CountOfEntries 
+
+TotalEntryIDSize 
+
+TotalOneOffSize 
+
+TotalExtraSize 
+
+DistListMemberInfoArray (variable) 
+
+... 
+
+Terminator1 
+
+Terminator2 
+
+ 
+
+StreamVersion (2 bytes):  A 16-bit value that specifies the version of the stream. This field MUST 
+be set to 0x0001. 
+
+Reserved (2 bytes):  This field MUST be set to zero when sent and MUST be ignored when received. 
+
+BuildVersion (4 bytes):  A 32-bit value that specifies the build version of the stream. The value of 
+this field is the value of the MajorVersion field of the PidLidBusinessCardDisplayDefinition 
+property (section 2.2.1.7.1) multiplied by 10,000. The value of the MinorVersion field of the 
+PidLidBusinessCardDisplayDefinition property is then added to the result. 
+
+DistListStreamFlags (4 bytes):  A 32-bit value that contains bits that indicate overall behavior of 
+the personal distribution list. The following table specifies the valid flags. 
+
+42 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+Figure 3: DistListStreamFlags byte table 
+
+If the Always Use Stream bit is set, a client MUST save the personal distribution list members in 
+the stream, even if the members would normally fit in the PidLidDistributionListMembers and 
+PidLidDistributionListOneOffMembers properties. 
+
+When modifying the personal distribution list, a client MUST preserve any data in the Reserved 
+portion of this field. When creating a new personal distribution list, this value MUST set the 
+reserved bits to 0. 
+
+CountOfEntries (4 bytes):  An integer that specifies the number of DistListMemberInfo 
+structures, as specified in section 2.2.2.2.4.1, in the DistListMemberInfoArray field. 
+
+TotalEntryIDSize (4 bytes):  An integer that specifies the sum of the sizes (in bytes) of the 
+EntryIDs stored in each DistListMemberInfo structure. 
+
+TotalOneOffSize (4 bytes):  An integer that specifies the sum of the sizes (in bytes) of the one-off 
+EntryIDs stored in each DistListMemberInfo structure. 
+
+TotalExtraSize (4 bytes):  Not used. This field MUST be set to 0x00000000. 
+
+DistListMemberInfoArray (variable):  An array of DistListMemberInfo structures (section 
+2.2.2.2.4.1), each of which contains information about one member of the personal distribution 
+list. 
+
+Terminator1 (4 bytes):  Not used. This field MUST be set to 0x00000000. 
+
+Terminator2 (4 bytes):  Not used. This field MUST be set to 0x00000000. 
+
+2.2.2.2.4.1 DistListMemberInfo Structure 
+
+The DistListMemberInfo structure contains information about one member of the personal 
+distribution list. The following table specifies the format of the DistListMemberInfo structure 
+stored in the PidLidDistributionListStream property (section 2.2.2.2.4). 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+EntryIdSize 
+
+EntryIdData (variable) 
+
+... 
+
+one-offEntryIdSize 
+
+43 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+one-offEntryIdData (variable) 
+
+... 
+
+ExtraMemberInfoSize 
+
+ExtraMemberInfoData (variable) 
+
+... 
+
+EntryIdSize (4 bytes):  An integer that specifies the size, in bytes, of the EntryIdData field. 
+
+EntryIdData (variable):  An array of bytes that specify the EntryID of this member of the personal 
+distribution list. A member can be another personal distribution list, an electronic address 
+contained in a contact, a GAL member, a distribution list, or a one-off email address. The 
+format of the EntryID MUST be either a One-OffEntryID structure ([MS-OXCDATA] section 
+2.2.5.1) or a WrappedEntryId structure (section 2.2.2.2.4.1.1). 
+
+one-offEntryIdSize (4 bytes):  An integer that specifies the size, in bytes, of the one-
+offEntryIdData field. If there is no corresponding one-off EntryID for this member, this value 
+MUST be set to 0x00000000. 
+
+one-offEntryIdData (variable):  An array of bytes that specify the one-off EntryID of this member 
+of the personal distribution list. This one-off EntryID encapsulates the display name and email 
+address of the personal distribution list member. 
+
+ExtraMemberInfoSize (4 bytes):  This field MUST be set to 0. 
+
+ExtraMemberInfoData (variable):  This field is not used by either the client or the server and 
+MUST NOT be present. 
+
+2.2.2.2.4.1.1 WrappedEntryId Structure 
+
+The WrappedEntryId structure specifies the EntryID of a member of a personal distribution list. The 
+following diagram specifies the format of the WrappedEntryId structure. 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+Flags 
+
+ProviderUID 
+
+... 
+
+... 
+
+... 
+
+Type EmbeddedEntryID (variable) 
+
+... 
+
+44 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Flags (4 bytes):  Not used. This field MUST be set to 0x00000000. 
+
+ProviderUID (16 bytes):  This field MUST contain the value 
+"%xC0.91.AD.D3.51.9D.CF.11.A4.A9.00.AA.00.47.FA.A4". 
+
+Type (1 byte):  An 8-bit value that specifies how the EmbeddedEntryID field is interpreted and 
+MUST be a combination of bits from the following table. 
+
+Bit 
+mask Description 
+
+0x0F The lower 4 bits of the Type field are interpreted as an unsigned integer value that specifies what type 
+of EntryID is embedded in this Wrapped EntryID structure. These bits MUST be set to one of the 
+following values: 
+
+ A value of 0 designates a one-off EntryID; the EmbeddedEntryID field MUST be a One-Off 
+EntryID structure ([MS-OXCDATA] section 2.2.5.1). 
+
+ A value of 3 designates the EntryID of a Contact object; the EmbeddedEntryID field MUST be a 
+Message EntryID structure ([MS-OXCDATA] section 2.2.4.2). 
+
+ A value of 4 designates the EntryID of a Personal Distribution List object; the 
+EmbeddedEntryID field MUST be a Message EntryID structure ([MS-OXCDATA] section 
+2.2.4.2). 
+
+ A value of 5 designates the EntryID of a mail user in the GAL; the EmbeddedEntryID field MUST 
+be an Address Book EntryID structure ([MS-OXCDATA] section 2.2.5.2). 
+
+ A value of 6 designates the EntryID of a distribution list in the GAL; the EmbeddedEntryID field 
+MUST be an Address Book EntryID structure ([MS-OXCDATA] section 2.2.5.2). 
+
+0x70 The next 3 bits of the Type field are interpreted as an unsigned integer value. If the 
+EmbeddedEntryID field contains a one-off EntryID, this value MUST be 0. If the EmbeddedEntryID 
+field does not contain the EntryID of a Contact object, this value MUST be 3. 
+
+If the EmbeddedEntryID field contains a the EntryID of a Contact object, this unsigned integer MUST 
+have one of the following values: 
+
+ 0 (denoting a Business Fax electronic address) 
+
+ 1 (denoting a Home Fax electronic address) 
+
+ 2 (denoting a Primary Fax electronic address) 
+
+ 4 (denoting an Email1 address) 
+
+ 5 (denoting an Email2 address) 
+
+ 6 (denoting an Email3 address) 
+
+Note that this value MUST NOT be set to 7. 
+
+0x80 If the EmbeddedEntryID field contains a one-off EntryID, this bit MUST NOT be set. Otherwise, this 
+bit MUST be set. 
+
+EmbeddedEntryID (variable):  An array of bytes that specifies an EntryID that MUST be interpreted 
+according to the value of the Type field, more specifically according to the value contained in the 
+lower 4 bits of the Type field, as specified in the previous table. 
+
+2.2.2.3 Other Personal Distribution List Properties 
+
+2.2.2.3.1 PidLidAddressBookProviderArrayType Property 
+
+45 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidAddressBookProviderArrayType property ([MS-OXPROPS] section 2.1) specifies the 
+state of the contact's electronic addresses. The client SHOULD set this property to 0x00000000. The 
+server does not set this property. 
+
+2.2.2.4 Additional Property Constraints 
+
+This protocol puts additional constraints on the PidTagNormalizedSubject (section 2.2.2.4.1) and 
+PidTagMessageClass (section 2.2.2.4.2) properties beyond what is specified in [MS-OXCMSG]. 
+
+2.2.2.4.1 PidTagNormalizedSubject Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagNormalizedSubject property ([MS-OXCMSG] section 2.2.1.10) specifies the user-visible 
+name of the personal distribution list. The value of this property MUST be the same as the value of the 
+PidTagDisplayName property (section 2.2.2.1.1). 
+
+2.2.2.4.2 PidTagMessageClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) specifies the type of the 
+Message object. A Personal Distribution List object MUST have this property set to either 
+"IPM.DistList" or a string prefixed with "IPM.DistList". 
+
+2.2.3 Contacts-Related Folders 
+
+A contacts-related folder is a Folder object that has the PidTagContainerClass property ([MS-
+OXOCAL] section 2.2.11.1) set to a string that begins with "IPF.Contact". In all other respects, a 
+contacts-related folder conforms to the folder syntax and functionality specified by [MS-OXCFOLD]. 
+The following contacts-related folders are defined.<18> 
+
+Folder name Container class Contents 
+
+Contacts "IPF.Contact" Contact objects and Personal Distribution List 
+objects; subfolders that contain imported contacts. 
+
+Quick Contacts "IPF.Contact.Moc.QuickContacts" Contains Contact objects for the user's favorite contacts 
+and instant messaging contacts. 
+
+IM Contact List "IPF.Contact.Moc.ImContactList" Contains Personal Distribution List objects for the user's 
+favorite contacts. 
+
+<depends on the "IPF.Contact" Contains Contact objects representing external contacts 
+source from which that have been imported from a source such as a social 
+the contact was networking site. The name of the folder reflects the 
+obtained> source of the contact. Each folder that contains external 
+
+contacts is a subfolder of the Contacts folder. 
+
+ 
+
+A Contact object SHOULD be created in the Contacts folder, a subfolder of the Contacts folder, or the 
+Quick Contacts folder. A Personal Distribution List object SHOULD be created in the Contacts folder or 
+the IM Contact List folder. 
+
+46 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client creates and manipulates a Contact object and a Personal Distribution List object and 
+in all other ways operates within the client role as specified in [MS-OXCMSG]. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.1.1 with the 
+following adaptations: 
+
+ The Contact object and the Personal Distribution List object are extensions of the Message 
+object. 
+
+ A Contact object and a Personal Distribution List object are created in the contacts-related folders, 
+as specified in section 2.2.3. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Contact Object Events 
+
+3.1.4.1.1 Creating a Contact 
+
+To create a Contact object, the client creates a Message object, as specified in [MS-OXCMSG] 
+section 3.1.4.2; sets properties in accordance with the requirements in section 2.2.1 of this 
+specification and [MS-OXCPRPT]; and saves the resulting Message object as described in [MS-
+OXCMSG] section 3.1.4.3. 
+
+3.1.4.1.2 Deleting a Contact 
+
+Contact objects have no special semantics in relation to deletion beyond what is specified in [MS-
+OXCFOLD]. 
+
+3.1.4.1.3 Modifying a Contact 
+
+When modifying a Contact object, the client opens a Message object as specified in [MS-OXCMSG] 
+section 3.1.4.1, modifies any of the properties in accordance with the requirements in [MS-OXCPRPT] 
+and in section 2 and section 3.1.5.1  through  section 3.1.5.7 of this specification, and saves the 
+Message object as described in [MS-OXCMSG] section 3.1.4.3. 
+
+47 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2 Personal Distribution List Events 
+
+Personal distribution list events pertain to Personal Distribution List objects, as specified in section 
+3.1.4.2.1 to section 3.1.5.11. 
+
+3.1.4.2.1 Creating a Personal Distribution List 
+
+To create a Personal Distribution List object, the client creates a Message object as specified in 
+[MS-OXCMSG] section 3.1.4.2, sets properties in accordance with the requirements in [MS-OXCPRPT] 
+and in section 2.2.2 of this specification, and saves the resulting Message object as described in [MS-
+OXCMSG] section 3.1.4.3. 
+
+3.1.4.2.2 Deleting a Personal Distribution List 
+
+Personal Distribution List objects have no special semantics in relation to deletion beyond what is 
+specified in [MS-OXCFOLD]. 
+
+3.1.4.2.3 Modifying a Personal Distribution List 
+
+When modifying a Personal Distribution List object, the client opens a Message object as 
+specified in [MS-OXCMSG] section 3.1.4.1, modifies any of the properties in accordance with the 
+requirements in [MS-OXCPRPT] and in section 2 and section 3.1.5.8 through section 3.1.5.11 of this 
+specification, and saves the Message object as described in [MS-OXCMSG] section 3.1.4.3. 
+
+It is possible that personal distribution lists contain circular references to one another. Such circular 
+references SHOULD be avoided but are permitted under this protocol, and the client MUST be able to 
+handle circular references. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+3.1.5.1 Modifying a Contact Name Property 
+
+Contact Name properties MUST be modified at the same time to preserve their relationship. The 
+following table specifies the properties that SHOULD be updated when another property is changed 
+(according to the definition of each property in section 2.2.1 of this specification). More than one 
+condition can be met at the same time. Not all properties will need to be updated every time. Clients 
+use the grouping of specifications in section 2.2.1 and section 2.2.1.2.8 to determine whether an 
+update is required. 
+
+Properties that SHOULD be 
+Changed property Conditions updated  
+
+PidTagGeneration (section 2.2.1.1.2) None. PidTagDisplayName (section 
+2.2.1.1.8), 
+PidTagNormalizedSubject (section 
+2.2.1.11.1) 
+
+PidTagGeneration or PidTagSurname Value of the PidLidFileUnder (section 2.2.1.1.11)  
+(section 2.2.1.1.4) or PidTagMiddleName PidLidFileUnderId 
+(section 2.2.1.1.5) or PidTagGivenName property (section 
+(section 2.2.1.1.6) or 2.2.1.1.12) is not 
+PidTagDisplayName or 0x00000000 or 
+PidTagCompanyName (section 2.2.1.6.2) 0xFFFFFFFF. 
+
+PidTagDisplayNamePrefix (section None. PidTagDisplayName  
+2.2.1.1.3)  
+
+PidTagSurname (section 2.2.1.1.4) or None. PidTagDisplayName, 
+PidTagMiddleName or PidTagNormalizedSubject, 
+
+48 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Properties that SHOULD be 
+Changed property Conditions updated  
+
+PidTagGivenName  PidTagInitials (section 2.2.1.1.7) 
+
+PidTagDisplayName  None. PidTagDisplayNamePrefix, 
+PidTagGivenName, 
+PidTagMiddleName, 
+PidTagSurname, 
+PidTagNormalizedSubject, 
+PidTagGeneration  
+
+The client SHOULD also update the PidLidFax1EmailAddress (section 2.2.1.2.8), 
+PidLidFax2EmailAddress (section 2.2.1.2.8), or PidLidFax3EmailAddress (section 2.2.1.2.8) 
+properties as needed to reflect any updates to the Contact Name properties if the contact has a 
+Primary Fax, Business Fax, or Home Fax address, respectively. 
+
+3.1.5.2 Modifying a Physical Address Property 
+
+Physical Address properties MUST be modified at the same time to preserve their relationship. 
+
+The following table specifies the properties that SHOULD be updated if another property is changed 
+(according to the definition of each property in section 2.2.1 of this specification). Not all properties 
+will need to be updated every time. Clients use the specifications in section 2.2.1.3 to determine 
+whether an update is required. More than one condition can be met at the same time. 
+
+Changed property Conditions Properties that SHOULD be updated 
+
+PidLidPostalAddressId (section None. PidTagPostalAddress (section 2.2.1.3.8), 
+2.2.1.3.9)  PidTagStreetAddress (section 2.2.1.3.1), 
+
+PidTagLocality (section 2.2.1.3.2), 
+PidTagStateOrProvince (section 2.2.1.3.3), 
+PidTagPostalCode (section 2.2.1.3.4), 
+PidTagCountry (section 2.2.1.3.5), 
+PidLidAddressCountryCode (section 2.2.1.3.6) 
+
+PidLidWorkAddress (section 2.2.1.3.8)  None. PidLidWorkAddressStreet (section 2.2.1.3.1), 
+PidLidWorkAddressCity (section 2.2.1.3.2), 
+PidLidWorkAddressState (section 2.2.1.3.3), 
+PidLidWorkAddressPostalCode (section 2.2.1.3.4), 
+PidLidWorkAddressCountry (section 2.2.1.3.5), 
+PidLidWorkAddressCountryCode (section 2.2.1.3.6) 
+
+PidLidHomeAddress (section None. PidTagHomeAddressStreet (section 2.2.1.3.1), 
+2.2.1.3.8) PidTagHomeAddressCity (section 2.2.1.3.2), 
+
+PidTagHomeAddressStateOrProvince (section 
+2.2.1.3.3), PidTagHomeAddressPostalCode (section 
+2.2.1.3.4), PidTagHomeAddressCountry (section 
+2.2.1.3.5), PidLidHomeAddressCountryCode 
+(section 2.2.1.3.6) 
+
+PidLidOtherAddress (section None. PidTagOtherAddressStreet (section 2.2.1.3.1), 
+2.2.1.3.8) PidTagOtherAddressCity (section 2.2.1.3.2), 
+
+PidTagOtherAddressStateOrProvince (section 
+2.2.1.3.3), PidTagOtherAddressPostalCode (section 
+2.2.1.3.4), PidTagOtherAddressCountry (section 
+2.2.1.3.5), PidLidOtherAddressCountryCode 
+(section 2.2.1.3.6) 
+
+PidTagHomeAddressStreet  None. PidLidHomeAddress  
+
+PidLidWorkAddressStreet  None. PidLidWorkAddress  
+
+49 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Changed property Conditions Properties that SHOULD be updated 
+
+PidTagOtherAddressStreet  None. PidLidOtherAddress  
+
+PidTagHomeAddressCity  None. PidLidHomeAddress  
+
+PidLidWorkAddressCity  None. PidLidWorkAddress  
+
+PidTagOtherAddressCity  None. PidLidOtherAddress  
+
+PidTagHomeAddressStateOrProvince  None. PidLidHomeAddress  
+
+PidLidWorkAddressState  None. PidLidWorkAddress  
+
+PidTagOtherAddressStateOrProvince  None. PidLidOtherAddress  
+
+PidTagHomeAddressPostalCode  None. PidLidHomeAddress  
+
+PidLidWorkAddressPostalCode  None. PidLidWorkAddress  
+
+PidTagOtherAddressPostalCode  None. PidLidOtherAddress  
+
+PidTagHomeAddressCountry  None. PidLidHomeAddress  
+
+PidLidWorkAddressCountry  None. PidLidWorkAddress  
+
+PidTagOtherAddressCountry  None. PidLidOtherAddress  
+
+PidLidHomeAddressCountryCode  None. PidLidHomeAddress  
+
+PidLidWorkAddressCountryCode  None. PidLidWorkAddress  
+
+PidLidOtherAddressCountryCode  None. PidLidOtherAddress  
+
+The PidTagPostalAddress, PidTagStreetAddress, PidTagLocality, PidTagStateOrProvince, 
+PidTagPostalCode, PidTagCountry, and PidLidAddressCountryCode properties SHOULD NOT be 
+set without also setting one of the other addresses (either Home Address, Work Address, or Other 
+Address) and PidLidPostalAddressId. 
+
+If the Home Address, Work Address, or Other Address is updated, and the PidLidPostalAddressId 
+property is set and the physical address that it maps to is changed, then the Mailing Address MUST be 
+updated. For more details, see section 2.2.1.3.9. 
+
+3.1.5.3 Modifying an E-Mail Address Property 
+
+Electronic Address properties MUST be modified at the same time to preserve their relationship. The 
+following table specifies the properties that SHOULD be updated when another property is changed 
+(according to the definition of each property in section 2.2.1 of this specification). More than one 
+condition can be met at the same time. The table includes property names only for the properties in 
+the Email1 group (see section 2.2.1.2), but the same logic also applies to the properties in the Email2 
+and Email3 groups. Not all properties need to be updated every time. Clients use the specifications 
+defined in section 2.2.1.2 to determine whether an update is required. 
+
+Changed property Conditions Properties that SHOULD be updated 
+
+PidLidEmail1OriginalEntryId PidLidEmail1OriginalEntryId PidLidEmail1DisplayName (section 
+(section 2.2.1.2.5) is now either an empty 2.2.1.2.1), PidLidEmail1EmailAddress 
+
+PtypBinary or not set. (section 2.2.1.2.3), 
+PidLidEmail1AddressType (section 
+2.2.1.2.2) 
+
+50 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Changed property Conditions Properties that SHOULD be updated 
+
+PidLidEmail1OriginalEntryId  PidLidEmail1OriginalEntryId PidLidEmail1EmailAddress, 
+is now a non-empty PtypBinary.  PidLidEmail1AddressType, 
+
+PidLidEmail1DisplayName, 
+PidLidEmail1OriginalDisplayName 
+(section 2.2.1.2.4) 
+
+PidLidEmail1DisplayName  PidLidEmail1OriginalEntryId PidLidEmail1OriginalEntryId  
+is a one-off EntryID. 
+
+PidLidEmail1AddressType  PidLidEmail1OriginalEntryId PidLidEmail1OriginalEntryId  
+is a one-off EntryID. 
+
+PidLidEmail1EmailAddress  PidLidEmail1OriginalEntryId PidLidEmail1OriginalEntryId  
+is a one-off EntryID. 
+
+PidLidEmail1EmailAddress  None. PidLidEmail1OriginalDisplayName  
+
+The PidLidEmail1OriginalDisplayName property SHOULD be updated only when the other email 
+properties are updated.  
+
+3.1.5.4 Updating a FAX Number 
+
+The electronic fax properties MUST be modified at the same time to preserve their relationship. When 
+one of the fax number properties (PidTagPrimaryFaxNumber, PidTagBusinessFaxNumber, or 
+PidTagHomeFaxNumber, specified in (section 2.2.1.2.6)) is defined, the following properties MUST 
+be set, as specified in section 2.2.1 and the following table. 
+
+The fax properties SHOULD be updated only when the corresponding fax number is updated. 
+
+Fax number Properties that SHOULD be updated or defined 
+
+PidTagPrimaryFaxNumber  PidLidFax1AddressType (section 2.2.1.2.7), PidLidFax1EmailAddress 
+(section 2.2.1.2.8), PidLidFax1OriginalDisplayName (section 2.2.1.2.9), 
+PidLidFax1OriginalEntryId (section 2.2.1.2.10) 
+
+PidTagBusinessFaxNumber  PidLidFax2AddressType (section 2.2.1.2.7), PidLidFax2EmailAddress 
+(section 2.2.1.2.8), PidLidFax2OriginalDisplayName (section 2.2.1.2.9), 
+PidLidFax2OriginalEntryId (section 2.2.1.2.10) 
+
+PidTagHomeFaxNumber  PidLidFax3AddressType (section 2.2.1.2.7), PidLidFax3EmailAddress 
+(section 2.2.1.2.8), PidLidFax3OriginalDisplayName (section 2.2.1.2.9), 
+PidLidFax3OriginalEntryId (section 2.2.1.2.10) 
+
+ 
+
+3.1.5.5 Modifying an Event Property 
+
+Event properties MUST be modified at the same time to preserve their relationship. 
+
+The following table specifies the properties to be updated or defined when another property is changed 
+as specified in section 2.2.1.5. 
+
+Properties to be updated or 
+Changed property Conditions defined 
+
+PidTagBirthday (section None. PidLidReferenceEntryId (section 
+2.2.1.5.1)  2.2.1.10.1), 
+
+PidLidBirthdayEventEntryId 
+
+51 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Properties to be updated or 
+Changed property Conditions defined 
+
+(section 2.2.1.5.3), 
+PidLidBirthdayLocal (section 
+2.2.1.5.2) 
+
+For more details, see the paragraph 
+following the table. 
+
+PidLidBirthdayLocal  None. PidLidReferenceEntryId, 
+PidLidBirthdayEventEntryId, 
+PidTagBirthday. For more details, 
+see the paragraph following the 
+table. 
+
+PidTagWeddingAnniversary None. PidLidReferenceEntryId, 
+(section 2.2.1.5.4)  PidLidAnniversaryEventEntryId 
+
+(section 2.2.1.5.6), 
+PidLidWeddingAnniversaryLocal 
+(section 2.2.1.5.5) 
+
+For more details, see the paragraph 
+following the table. 
+
+PidLidWeddingAnniversaryLocal  None. PidLidReferenceEntryId, 
+PidLidAnniversaryEventEntryId, 
+PidTagWeddingAnniversary  
+
+For more details, see the paragraph 
+following the table. 
+
+PidLidBirthdayEventEntryId  None. PidTagBirthday, 
+PidLidBirthdayLocal 
+
+PidLidAnniversaryEventEntryId  None. PidTagWeddingAnniversary, 
+PidLidWeddingAnniversaryLocal  
+
+PidTagNormalizedSubject PidLidBirthdayEventEntryId or Update the value of the 
+(section 2.2.1.11.1)  PidLidAnniversaryEventEntryId PidTagSubjectPrefix property 
+
+is set. ([MS-OXOMSG] section 2.2.1.60) on 
+the corresponding Appointment 
+object to match the name of the 
+contact. 
+
+PidLidPrivate ([MS-OXCMSG] PidLidBirthdayEventEntryId or Update the value of the 
+section 2.2.1.15)  PidLidAnniversaryEventEntryId PidLidPrivate property on the 
+
+is set. corresponding Appointment object to 
+match the one on the contact.  
+
+When the PidTagBirthday property or the PidLidBirthdayLocal property is updated, the client 
+SHOULD update the Appointment object associated with this contact's birthday 
+(PidLidBirthdayEventEntryId property) to match the time specified in the PidTagBirthday 
+property. If no Appointment object has been created, the client SHOULD create an Appointment 
+object, save the Appointment object's EntryID to the PidLidBirthdayEventEntryId property, and 
+link the Appointment object to the Contact object by using the PidLidContactLinkEntry ([MS-
+OXCMSG] section 2.2.1.59.1), PidLidContactLinkSearchKey ([MS-OXCMSG] section 2.2.1.59.4), 
+and PidLidContactLinkName ([MS-OXCMSG] section 2.2.1.59.3) properties, as specified in [MS-
+OXCMSG] section 2.2.1.59. 
+
+When the PidTagWeddingAnniversary property or the PidLidWeddingAnniversaryLocal property 
+is updated, the client SHOULD update the Appointment object associated with this contact's 
+anniversary (PidLidAnniversaryEventEntryId property) to match the time specified in the 
+PidTagWeddingAnniversary property. If no Appointment object has been created, the client 
+SHOULD create an Appointment object, save the Appointment object's EntryID to the 
+
+52 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+PidLidAnniversaryEventEntryId property, and link the Appointment object to the Contact object 
+using the PidLidContactLinkEntry, PidLidContactLinkSearchKey, and PidLidContactLinkName 
+properties, as specified in [MS-OXCMSG] section 2.2.1.59. 
+
+For details about Appointment objects, see [MS-OXOCAL]. 
+
+3.1.5.6 Modifying a Business Card Property 
+
+Business Card properties MUST be modified at the same time to preserve their relationship. The 
+following table specifies which properties MUST be updated when another property is updated. 
+
+Changed property Conditions Properties that MUST be updated 
+
+PidLidBusinessCardCardPicture On removal or The ImageSource field of the 
+(section 2.2.1.7.2) addition. PidLidBusinessCardDisplayDefinition 
+
+property (section 2.2.1.7.1) MUST be updated to 
+reflect the removal or addition of the card 
+picture. 
+
+PidLidBusinessCardDisplayDefinition  When the value The PidLidBusinessCardCardPicture property 
+of the MUST be added or removed. 
+ImageSource 
+field changes. 
+
+ 
+
+3.1.5.7 Modifying a Contact Photo Property 
+
+Contact Photo properties MUST be modified at the same time to preserve their relationship. The 
+following table specifies which properties MUST be updated when another property is updated. 
+
+Changed property or 
+attachment Conditions Properties that MUST be updated 
+
+Contact Photo Attachment as On removal or The PidLidHasPicture property (section 2.2.1.8.1) MUST 
+specified in section 2.2.1.8.3 addition. be updated to reflect the removal or addition of the contact 
+
+photo. 
+
+ 
+
+3.1.5.8 Naming a Personal Distribution List 
+
+When the client changes the name of a personal distribution list, either by user input or by other 
+means, the properties in the following table MUST be updated. 
+
+Property name Value 
+
+PidTagDisplayName (section 2.2.2.1.1)  The name of the Personal Distribution List object. 
+
+PidLidDistributionListName (section The name of the Personal Distribution List object. 
+2.2.2.1.2)  
+
+PidLidFileUnder (section 2.2.2.1.3)  The name of the Personal Distribution List object. 
+
+PidLidFileUnderId (section 2.2.1.1.12)  This property MUST be set to 0xFFFFFFFF. 
+
+PidTagNormalizedSubject (section This MUST be set to the same value as the value 
+2.2.2.4.1)  PidLidDistributionListName property. 
+
+53 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.5.9 Adding a Member to a Personal Distribution List 
+
+Personal Distribution List objects SHOULD NOT contain duplicate entries for the same members. 
+Whenever a member is added to a personal distribution list, the client SHOULD check that the new 
+member isn't already in the list. Then the client MUST update the PidLidDistributionListMembers 
+(section 2.2.2.2.1) and PidLidDistributionListOneOffMembers (section 2.2.2.2.2) properties. 
+
+The EntryID corresponding to the member MUST be added to the PidLidDistributionListMembers 
+property, and the one-off EntryID corresponding to the member MUST be added to the 
+PidLidDistributionListOneOffMembers property. The new values MUST be added such that the 
+entry is in the same position of both multivalue properties. 
+
+After updating these properties, the client SHOULD update the PidLidDistributionListChecksum 
+property (section 2.2.2.2.3), as specified in section 3.1.5.11. 
+
+3.1.5.10 Removing a Member from a Personal Distribution List 
+
+Whenever a member is removed from a personal distribution list, the client MUST update the 
+PidLidDistributionListMembers (section 2.2.2.2.1) and PidLidDistributionListOneOffMembers 
+(section 2.2.2.2.2) properties. 
+
+The EntryID corresponding to the member MUST be removed from the 
+PidLidDistributionListMembers property, and the one-off EntryID corresponding to the member 
+MUST be removed from the PidLidDistributionListOneOffMembers property. 
+
+After updating these properties, the client SHOULD update the PidLidDistributionListChecksum 
+property (section 2.2.2.2.3), as specified in section 3.1.5.11. 
+
+3.1.5.11 Updating the Checksum of a Personal Distribution List 
+
+Whenever a member is added to or removed from a personal distribution list, the client SHOULD 
+update the value of the PidLidDistributionListChecksum property (section 2.2.2.2.3). The 
+checksum is calculated by iterating through each byte of each PtypBinary value in the multivalue 
+PidLidDistributionListMembers property (section 2.2.2.2.1), as specified by the following 
+algorithm. 
+
+ SET CheckSum = 0 
+ FOR EACH PtypBinaryValue in PidLidDistributionListMembers 
+ FOR EACH byteValue in PtypBinaryValue 
+ Checksum = CRC(Checksum, byteValue) 
+ ENDFOR 
+ ENDFOR 
+
+This algorithm uses the IEEE 802.3 CRC polynomial 0xEDB88320 (x32 + x26 + x23 + x22 + x16 + 
+x12 + x11 + x10 + x8 + x7 + x5 + x4 + x2 + x + 1) with a seed value of 0x00000000. For more 
+details about the polynomial, see [ISO/IEC8802-3] section 3.2.8. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+54 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2 Server Details 
+
+The server processes a client's requests regarding a Contact object and a Personal Distribution 
+List object, and in all other ways operates within the server role as specified in [MS-OXCMSG]. 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.2.1 with the 
+following adaptations: 
+
+ The Contact object and the Personal Distribution List object are extensions of the Message 
+object. 
+
+ A Contact object and a Personal Distribution List object are created in the contacts-related folders, 
+as specified in section 2.2.3. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG]. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+55 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Creating a Contact 
+
+A user creates a contact with a name (Jay Hamlin), email address (someone@example.com), and 
+phone number ((206) 555-0123), and then saves it. The following is an example of what a client 
+might do to accomplish the user's intentions, and the responses a server might return. 
+
+Before manipulating Contact objects, the client needs to ask the server to map property names or 
+long IDs (LIDs) to property IDs by using the RopGetPropertyIdsFromNames ROP ([MS-
+OXCROPS] section 2.2.8.1).  
+
+Property Property set GUID LID 
+
+PidLidFileUnderList (section 2.2.1.1.13) {00062004-0000-0000-C000- 0x00008026 
+000000000046} 
+
+PidLidAutoLog (section 2.2.1.10.19) {00062004-0000-0000-C000- 0x00008025 
+000000000046} 
+
+PidLidAddressBookProviderEmailList (section {00062004-0000-0000-C000- 0x00008028 
+2.2.1.2.11) 000000000046} 
+
+PidLidAddressBookProviderArrayType section {00062004-0000-0000-C000- 0x00008029 
+2.2.1.2.12 000000000046} 
+
+PidLidFileUnder (section 2.2.1.1.11) {00062004-0000-0000-C000- 0x00008005 
+000000000046} 
+
+PidLidFileUnderId (section 2.2.1.1.12) {00062004-0000-0000-C000- 0x00008006 
+000000000046} 
+
+PidLidContactCharacterSet (section 2.2.1.10.18) {00062004-0000-0000-C000- 0x00008023 
+000000000046} 
+
+PidLidEmail1DisplayName (section 2.2.1.2.1) {00062004-0000-0000-C000- 0x00008080 
+000000000046} 
+
+PidLidEmail1AddressType (section 2.2.1.2.2) {00062004-0000-0000-C000- 0x00008082 
+000000000046} 
+
+PidLidEmail1EmailAddress (section 2.2.1.2.3) {00062004-0000-0000-C000- 0x00008083 
+000000000046} 
+
+PidLidEmail1OriginalDisplayName (section {00062004-0000-0000-C000- 0x00008084 
+2.2.1.2.4) 000000000046} 
+
+PidLidEmail1OriginalEntryId (section 2.2.1.2.5) {00062004-0000-0000-C000- 0x00008085 
+000000000046} 
+
+For this example, the server returns the following property IDs in response to the 
+RopGetPropertyIdsFromNames ROP request. The actual property IDs are at the discretion of the 
+server. 
+
+Property Property ID 
+
+PidLidFileUnderList  0x827B 
+
+PidLidAutoLog  0x8280 
+
+PidLidAddressBookProviderEmailList  0x81D4 
+
+56 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property ID 
+
+PidLidAddressBookProviderArrayType  0x81D5 
+
+PidLidFileUnder  0x8016 
+
+PidLidFileUnderId  0x81DA 
+
+PidLidContactCharacterSet  0x8286 
+
+PidLidEmail1DisplayName  0x 8013 
+
+PidLidEmail1AddressType  0x81CE 
+
+PidLidEmail1EmailAddress  0x 8010 
+
+PidLidEmail1OriginalDisplayName  0x801F 
+
+PidLidEmail1OriginalEntryId  0x81CF 
+
+To create a Contact object, the client uses the RopCreateMessage ROP ([MS-OXCROPS] section 
+2.2.6.2). The server returns a success code and a handle to a Message object. 
+
+The properties of the Contact object are set according to data that is specified by the user. After the 
+user has input the data for the Contact object, the client uses the RopSetProperties ROP ([MS-
+OXCROPS] section 2.2.8.6) to transmit the property settings to the server. The properties and their 
+settings for this example are listed in the following table. The property types shown in the table are 
+described in [MS-OXCDATA] section 2.11.1. 
+
+Property Property type Data Meaning 
+
+PidTagDisplayNamePrefix PtypString  
+(section 2.2.1.1.3)  00 00  "" 
+
+PidTagSurname (section PtypString  
+n" 
+
+2.2.1.1.4)  48 00  "Hamli
+
+61 00 
+6D 00 
+6C 00 
+69 00 
+6E 00 
+
+00 00 
+
+PidTagMiddleName (section PtypString  
+" 
+
+2.2.1.1.5  00 00  "
+
+PidTagGivenName (section PtypString  
+2.2.1.1.6)  4A 00  "Jay" 
+
+61 00 
+79 00 
+00 00 
+
+PidLidFileUnderList  PtypMultipleInte  cValues: 0x00000005  
+ger32   05 00 
+
+00 00   lpl: {0x00008017;  
+
+ 17 80  0x00008037;  
+
+00 00   0x00003A16;  
+
+ 37 80  0x00008019;  
+
+00 00   0x00008018} 
+
+ 16 3A 
+00 00  
+ 19 80 
+
+57 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+00 00  
+ 18 80 
+00 00 
+
+PidLidAddressBookProvider PtypMultipleInte  cValues: 0x00000001 
+EmailList  ger32   01 00 
+
+00 00   lpl: {0x00000000} 
+
+ 00 00 
+00 00 
+
+PidLidAddressBookProvider PtypInteger32  Email1 is defined 
+ArrayType   0x0000
+
+0001 
+
+PidLidFileUnder  PtypString  
+ 48 00  "Hamlin, Jay" 
+
+61 00 
+6D 00 
+6C 00 
+69 00 
+6E 00 
+2C 00 
+20 00 
+4A 00 
+61 00 
+79 00 
+
+00 00 
+
+PidLidFileUnderId  PtypInteger32  PidLidFileUnder is 
+ 0x0000 "<PidTagSurname>, 
+8017 
+
+<PidTagGivenName> 
+<PidTagMiddleName>" 
+
+PidTagGeneration (section PtypString  
+2.2.1.1.2)  00 00  "" 
+
+PidTagInitials (section PtypString  
+A 00  "J.H." 
+
+2.2.1.1.7)  4
+2E 00 
+48 00 
+2E 00 
+
+ 00 00 
+
+PidLidAutoLog  PtypBoolean  
+ 0x00  FALSE 
+
+PidTagBusinessTelephoneNu PtypString  
+) 555-0123" 
+
+mber (section 2.2.4.21)  28 00  (206
+
+32 00 
+30 00 
+36 00 
+29 00 
+20 00 
+35 00 
+35 00 
+35 00 
+2D 00 
+30 00 
+31 00 
+32 00 
+33 00 
+
+58 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+00 00 
+
+PidLidContactCharacterSet  PtypInteger32  US character set 
+ 0x0000
+0100 
+
+PidTagDisplayName (section PtypString  
+2.2.1.1.8)  4A 00  "Jay Hamlin" 
+
+61 00 
+79 00 
+20 00 
+48 00 
+61 00 
+6D 00 
+6C 00 
+69 00 
+6E 00 
+
+00 00 
+
+PidLidEmail1DisplayName  PtypString  
+ 73 00  "someone (someone@example.com)" 
+
+6F 00 
+6D 00 
+65 00 
+6F 00 
+6E 00 
+65 00 
+20 00 
+28 00 
+73 00 
+6F 00 
+6D 00 
+65 00 
+6F 00 
+6E 00 
+65 00 
+40 00 
+65 00 
+78 00 
+61 00 
+6D 00 
+70 00 
+6C 00 
+65 00 
+2E 00 
+63 00 
+6F 00 
+6D 00 
+29 00 
+
+00 00 
+
+PidLidEmail1AddressType  PtypString  
+ 45 00  "EX" 
+
+58 00 
+00 00 
+
+PidLidEmail1EmailAddress  PtypString  
+ 2F 00  "/o=First 
+
+6F 00 Organization/ou=Exchange 
+
+3D 00 Administrative Group 
+
+46 00 (FYDIBOHF23SPDLT)/cn=Recipients
+
+ 69 00 /cn=someone" 
+
+72 00 
+73 00 
+
+59 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+74 00 
+ 20 00 
+4F 00 
+72 00 
+67 00 
+ 61 00 
+6E 00 
+69 00 
+7A 00 
+ 61 00 
+74 00 
+69 00 
+6F 00 
+ 6E 00 
+2F 00 
+6F 00 
+75 00 
+ 3D 00 
+45 00 
+78 00 
+63 00 
+ 68 00 
+61 00 
+6E 00 
+67 00 
+ 65 00 
+20 00 
+41 00 
+64 00 
+ 6D 00 
+69 00 
+6E 00 
+69 00 
+ 73 00 
+74 00 
+72 00 
+61 00 
+ 74 00 
+69 00 
+76 00 
+65 00 
+ 20 00 
+47 00 
+72 00 
+6F 00 
+ 75 00 
+70 00 
+20 00 
+28 00 
+ 46 00 
+59 00 
+44 00 
+49 00 
+ 42 00 
+4F 00 
+48 00 
+46 00 
+ 32 00 
+33 00 
+53 00 
+50 00 
+ 44 00 
+4C 00 
+54 00 
+29 00 
+ 2F 00 
+63 00 
+
+60 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+6E 00 
+3D 00 
+ 52 00 
+65 00 
+63 00 
+69 00 
+ 70 00 
+69 00 
+65 00 
+6E 00 
+ 74 00 
+73 00 
+2F 00 
+63 00 
+ 6E 00 
+3D 00 
+73 00 
+6F 00 
+6D 00 
+65 00 
+6F 00 
+6E 00 
+65 00 
+00 00 
+
+PidLidEmail1OriginalDisplay PtypString  
+Name   73 00  "someone@example.com" 
+
+6F 00 
+6D 00 
+65 00 
+6F 00 
+6E 00 
+65 00 
+40 00 
+65 00 
+78 00 
+61 00 
+6D 00 
+70 00 
+6C 00 
+65 00 
+2E 00 
+63 00 
+6F 00 
+6D 00 
+
+00 00 
+
+PidLidEmail1OriginalEntryId  PtypBinary  
+ 7D 00   Size: 125 bytes 
+
+ 00 00  ....@..B 
+
+DC A7  ......+/ 
+
+40 C8  ........ 
+
+C0 42  ../o=Fir 
+
+ 10 1A  st Organ 
+
+B4 B9  ization/ 
+
+08 00  ou=Excha 
+
+2B 2F  nge Admi 
+
+ E1 82  nistrati 
+
+01 00  ve Group 
+
+00 00  (FYDIBO 
+
+00 00  HF23SPDL 
+
+ 00 00  T)/cn=Re 
+
+2F 6F  cipients 
+
+3D 46  /cn=someo 
+
+69 72  ne. 
+
+ 73 74 
+20 4F 
+
+61 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+72 67 
+61 6E 
+ 69 7A 
+61 74 
+69 6F 
+6E 2F 
+ 6F 75 
+3D 45 
+78 63 
+68 61 
+ 6E 67 
+65 20 
+41 64 
+6D 69 
+ 6E 69 
+73 74 
+72 61 
+74 69 
+ 76 65 
+20 47 
+72 6F 
+75 70 
+ 20 28 
+46 59 
+44 49 
+42 4F 
+ 48 46 
+32 33 
+53 50 
+44 4C 
+ 54 29 
+2F 63 
+6E 3D 
+52 65 
+ 63 69 
+70 69 
+65 6E 
+74 73 
+ 2F 63 
+6E 3D 
+73 6F 
+6D 65 
+6F 6E 
+
+65 00 
+
+PidTagRtfCompressed ([MS- PtypBinary  
+OXCMSG] section 2.2.1.58.4)  E6 14  Size: 5350 bytes 
+
+ E2 14  .....R.. 
+
+00 00  LZFub.~. 
+
+93 52  ......`n 
+
+00 00  g102f5.d 
+
+ 4C 5A  .rcp.... 
+
+46 75  2..`c.Df 
+
+62 F8  3150B7.. 
+
+7E BB  stsh.pbt 
+
+ 07 00 
+06 01 
+01 0B 
+60 6E 
+ 67 31 
+30 32 
+66 35 
+00 64 
+ 00 72 
+63 70 
+0D D0 
+0E 00 
+
+62 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+ 32 05 
+0C 60 
+63 0D 
+44 66 
+ 33 31 
+35 30 
+42 37 
+00 F5 
+ 73 74 
+73 68 
+05 70 
+62 74 
+ … 
+(remai
+nder 
+of 
+proper
+ty 
+exclud
+ed for 
+brevit
+
+y) 
+
+PidTagMessageClass (section PtypString  
+2.2.1.11.2)  49 00  "IPM.Contact" 
+
+50 00 
+4D 00 
+2E 00 
+ 43 00 
+6F 00 
+6E 00 
+74 00 
+ 61 00 
+63 00 
+74 00 
+
+00 00 
+
+PidTagIconIndex ([MS- PtypInteger32   
+OXOMSG] section 2.2.1.10)  00 20 512 
+
+00 00 
+
+PidTagSubjectPrefix ([MS- PtypString  
+ 00  "" 
+
+OXOMSG] section 2.2.1.60) 
+
+PidTagSubject ([MS- PtypString  
+OXPROPS] section 2.1035)  4A 00  "Jay Hamlin" 
+
+61 00 
+79 00 
+20 00 
+48 00 
+61 00 
+6D 00 
+6C 00 
+69 00 
+6E 00 
+
+00 00 
+
+When the user is ready to save his or her changes, the client uses the RopSaveChangesMessage 
+ROP ([MS-OXCROPS] section 2.2.6.3) to commit the properties on the server. 
+
+The values of some properties will change during the execution of the RopSaveChangesMessage 
+ROP; however, none of the properties that change are Contact object properties. 
+
+63 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4.2 Creating a Personal Distribution List 
+
+A user creates a personal distribution list that contains the previous sample contact and another 
+email address (user1@example.com). The following is a description of what a client might do to 
+accomplish the user's intentions and what responses a server might return. 
+
+Before manipulating Contact objects, the client needs to ask the server to map property names or 
+long IDs (LIDs) to property IDs by using the RopGetPropertyIdsFromNames ROP ([MS-
+OXCROPS] section 2.2.8.1). 
+
+Property Property set GUID LID 
+
+PidLidAutoLog (section 2.2.1.10.19) {00062004-0000-0000-C000- 0x00008025 
+000000000046} 
+
+PidLidAddressBookProviderArrayType (section {00062004-0000-0000-C000- 0x00008029 
+2.2.2.3.1) 000000000046} 
+
+PidLidFileUnder (section 2.2.2.1.3) {00062004-0000-0000-C000- 0x00008005 
+000000000046} 
+
+PidLidFileUnderId (section 2.2.2.1.4) {00062004-0000-0000-C000- 0x00008006 
+000000000046} 
+
+PidLidDistributionListName (section 2.2.2.1.2) {00062004-0000-0000-C000- 0x00008053 
+000000000046} 
+
+PidLidDistributionListChecksum (section 2.2.2.2.3) {00062004-0000-0000-C000- 0x0000804C 
+000000000046} 
+
+PidLidDistributionListMembers (section 2.2.2.2.1) {00062004-0000-0000-C000- 0x00008055 
+000000000046} 
+
+PidLidDistributionListOneOffMembers (section {00062004-0000-0000-C000- 0x00008054 
+2.2.2.2.2) 000000000046} 
+
+For this example, the server returns the following property IDs in response to the 
+RopGetPropertyIdsFromNames ROP request ([MS-OXCROPS] section 2.2.8.1). The actual 
+property IDs are at the discretion of the server. 
+
+Property Property ID 
+
+PidLidAutoLog  0x8280 
+
+PidLidAddressBookProviderArrayType  0x81D5 
+
+PidLidFileUnder  0x8016 
+
+PidLidFileUnderId  0x81DA 
+
+PidLidDistributionListName  0x81C9 
+
+PidLidDistributionListChecksum  0x81C7 
+
+PidLidDistributionListMembers  0x81C8 
+
+PidLidDistributionListOneOffMembers  0x81CA 
+
+To create a Personal Distribution List object, the client uses the RopCreateMessage ROP ([MS-
+OXCROPS] section 2.2.6.2). The server returns a success code and a handle to a Message object. 
+
+64 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The properties of the Contact object are set according to data that is specified by the user. After the 
+user has input content the data for the Personal Distribution List object, the client uses the 
+RopSetProperties ROP ([MS-OXCROPS] section 2.2.8.6) to transmit the property settings to the 
+server. The properties and their settings for this example are listed in the following table. The property 
+types shown in the table are described in [MS-OXCDATA] section 2.11.1. 
+
+Property Property type Data Meaning 
+
+PidTagDisplayNamePrefix (section PtypString  
+2.2.1.1.3)  00 00  "" 
+
+PidLidAddressBookProviderArrayType PtypInteger32  
+(section 2.2.2.3.1)  0x00000000  0 
+
+PidLidFileUnder  PtypString  
+ 46 00 72 00  "Friends" 
+
+69 00 65 00 
+6E 00 64 00 
+
+73 00 00 00 
+
+PidLidFileUnderId  PtypInteger32  
+ 0xFFFFFFFF  -1 
+
+PidLidAutoLog  PtypBoolean  
+ 0x00  FALSE 
+
+PidTagDisplayName (section 2.2.2.1.1) PtypString  
+ 46 00 72 00  "Friends" 
+
+69 00 65 00 
+6E 00 64 00 
+
+73 00 00 00 
+
+PidLidDistributionListName  PtypString  
+ 46 00 72 00  "Friends" 
+
+69 00 65 00 
+6E 00 64 00 
+
+73 00 00 00 
+
+PidLidDistributionListChecksum  PtypInteger32  
+ 0xD4B0223A  -726654406 
+
+PidLidDistributionListMembers PtypMultipleBinary 
+ 02 00 00 00  2 binary large 
+
+ objects 
+
+ 64 00  (BLOBs) to 
+
+ 00 00 00 00 follow 
+
+81 2B 1F A4  
+
+BE A3  BLOB1 Size: 
+
+ 10 19 9D 6E 100 bytes 
+
+00 DD 01 0F  .....+.. 
+
+54 02   .....n.. 
+
+ 00 00 01 80  ..T..... 
+
+54 00 68 00  T.h.o.m. 
+
+6F 00   a.s. .H. 
+
+ 6D 00 61 00  a.m.b.o. 
+
+73 00 20 00  r.g...S. 
+
+48 00   M.T.P... 
+
+ 61 00 6D 00  u.s.e.r. 
+
+62 00 6F 00  1.@.e.x. 
+
+72 00   a.m.p.l. 
+ e...c.o. 
+
+65 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+ 67 00 00 00  m... 
+53 00 4D 00  
+54 00   BLOB2 Size: 91 
+ 50 00 00 00 bytes 
+75 00 73 00  ........ 
+65 00   Q....... 
+ 72 00 31 00  .G...... 
+40 00 65 00  ..BB.`.. 
+78 00   G..\.w.K 
+ 61 00 6D 00  ...a*{.I 
+70 00 6C 00  .NK.R..Z 
+65 00   S......N 
+ 2E 00 63 00  ...a*{.I 
+6F 00 6D 00  .NK.R..Z 
+00 00   S....... 
+  ...  
+ 5B 00 
+ 00 00 00 00 
+C0 91 AD D3 
+51 9D  
+ CF 11 A4 A9 
+00 AA 00 47 
+FA A4  
+ C3 00 00 00 
+00 C2 42 42 
+82 60  
+ 00 16 47 AD 
+A9 5C 07 77 
+B7 4B  
+ E2 07 00 61 
+2A 7B AB 49 
+F6 4E  
+ 4B 9C 52 DB 
+FB 5A 53 AA 
+1C 00  
+ 00 00 F0 4E 
+A6 00 00 61 
+2A 7B  
+ AB 49 F6 4E 
+4B 9C 52 DB 
+FB 5A  
+ 53 AA 1C 00 
+00 00 F0 D5 
+B0 00  
+ 00 
+
+PidLidDistributionListOneOffMembers  PtypMultipleBinary  
+ 02 00 00 00  2 BLOBs to 
+
+ follow 
+
+ 64 00  
+
+ 00 00 00 00  BLOB1 Size: 
+
+81 2B 1F A4  100 bytes 
+
+ BE A3 10 19  .....+.. 
+
+9D 6E 00 DD   .....n.. 
+
+ 01 0F 54 02  ..T..... 
+
+00 00 01 80   T.h.o.m. 
+
+ 54 00 68 00  a.s. .H. 
+
+6F 00 6D 00   a.m.b.o. 
+
+ 61 00 73 00  r.g...S. 
+
+20 00 48 00   M.T.P... 
+
+ 61 00 6D 00  u.s.e.r. 
+
+62 00 6F 00   1.@.e.x. 
+
+ 72 00 67 00  a.m.p.l. 
+
+00 00 53 00   e...c.o. 
+
+ 4D 00 54 00  m... 
+
+50 00 00 00   
+
+ 75 00 73 00  BLOB2 Size: 
+
+66 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+65 00 72 00  172 bytes 
+ 31 00 40 00  .....+.. 
+65 00 78 00   .....n.. 
+ 61 00 6D 00  ..T..... 
+70 00 6C 00   u.s.e.r. 
+ 65 00 2E 00  1.0. .(. 
+63 00 6F 00   u.s.e.r. 
+ 6D 00 00 00  1.0.@.s. 
+  z.f.k.u. 
+ AC 00  k.-.d.o. 
+ 00 00 00 00  m...e.x. 
+81 2B 1F A4   a.m.p.l. 
+ BE A3 10 19  e...c.o. 
+9D 6E 00 DD   m.)...S. 
+ 01 0F 54 02  M.T.P... 
+00 00 01 80   u.s.e.r. 
+ 75 00 73 00  1.0.@.s. 
+65 00 72 00   z.f.k.u. 
+ 31 00 30 00  k.-.d.o. 
+20 00 28 00   m...e.x. 
+ 75 00 73 00  a.m.p.l. 
+65 00 72 00   e...c.o. 
+ 31 00 30 00  m... 
+40 00 73 00  
+ 7A 00 66 00 
+6B 00 75 00  
+ 6B 00 2D 00 
+64 00 6F 00  
+ 6D 00 2E 00 
+65 00 78 00  
+ 6A 00 6D 00 
+70 00 6C 00  
+ 65 00 2E 00 
+63 00 6F 00  
+ 6D 00 29 00 
+00 00 53 00  
+ 4D 00 54 00 
+50 00 00 00  
+ 75 00 73 00 
+65 00 72 00  
+ 31 00 30 00 
+40 00 73 00  
+ 7A 00 66 00 
+6B 00 75 00  
+ 6B 00 2D 00 
+64 00 6F 00  
+ 6D 00 2E 00 
+65 00 78 00  
+ 6A 00 6D 00 
+70 00 6C 00  
+ 65 00 2E 00 
+63 00 6F 00  
+ 6D 00 00 00 
+
+PidTagMessageClass (section 2.2.2.4.2) PtypString  
+ 49 00 50 00  "IPM.DistList" 
+
+4D 00 2E 00 
+44 00 69 00 
+73 00 74 00 
+4C 00 69 00 
+73 00 74 00 
+
+00 00 
+
+PidTagIconIndex ([MS-OXOMSG] PtypInteger32  
+section 2.2.1.10)  0x00000202  514 
+
+67 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property type Data Meaning 
+
+PidTagSubjectPrefix ([MS-OXOMSG] PtypString   "" 
+section 2.2.1.60)  00 00 
+
+PidTagSubject ([MS-OXPROPS] section PtypString   "Friends" 
+2.1035)  46 00 72 00 
+
+69 00 65 00 
+6E 00 64 00 
+
+73 00 00 00 
+
+When the user is ready to save his or her changes, the client uses the RopSaveChangesMessage 
+ROP ([MS-OXCROPS] section 2.2.6.3) to commit the properties on the server. 
+
+The values of some properties will change during the execution of the RopSaveChangesMessage 
+ROP; however, none of the properties that change are Personal Distribution List object properties. 
+
+68 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no special security considerations specific to the Contact Object Protocol. General security 
+considerations pertaining to the underlying transport apply, as described in [MS-OXCMSG]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+69 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Office Communicator 2007 R2 
+
+ Microsoft Lync 2010 
+
+ Microsoft Lync Client 2013/Skype for Business 
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 1.6:  Lync Client 2013/Skype for Business uses this protocol when connected to 
+Exchange 2010 or Microsoft Lync Server 2010. When Lync Client 2013/Skype for Business is 
+connected to Exchange 2013, Exchange 2016, or Exchange 2019, it uses the Unified Contact Store 
+Web Service Protocol, as described in [MS-OXWSCOS]. 
+
+<2> Section 2.2.1.2: Exchange 2003 sets the PidLidAddressBookProviderArrayType property 
+(section 2.2.1.2.12) to 0x00000000 and never sets the PidLidAddressBookProviderEmailList 
+property (section 2.2.1.2.11) unless an email address is defined for the contact. 
+
+<3> Section 2.2.1.7:  Office Outlook 2003 does not use the Business Card properties. 
+
+70 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+<4> Section 2.2.1.8: Exchange 2003 does not use Contact Photo properties. 
+
+<5> Section 2.2.1.9:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, Office 
+Outlook 2007, and Microsoft Outlook 2010 do not support the contact aggregation properties. 
+
+<6> Section 2.2.1.9.1:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, Office 
+Outlook 2007, and Outlook 2010 do not support the 
+PidLidContactLinkedGlobalAddressListEntryId property (section 2.2.1.9.1). 
+
+<7> Section 2.2.1.9.2:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, Office 
+Outlook 2007, and Outlook 2010 do not support the PidLidContactLinkGlobalAddressListLinkId 
+property (section 2.2.1.9.2). 
+
+<8> Section 2.2.1.9.3:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, Office 
+Outlook 2007, and Outlook 2010 do not support the 
+PidLidContactLinkGlobalAddressListLinkState property (section 2.2.1.9.3). 
+
+<9> Section 2.2.1.9.4:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, Office 
+Outlook 2007, and Outlook 2010 do not support the PidLidContactLinkLinkRejectHistory property 
+(section 2.2.1.9.4). 
+
+<10> Section 2.2.1.9.5:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, 
+Office Outlook 2007, and Outlook 2010 do not support the PidLidContactLinkSMTPAddressCache 
+property (section 2.2.1.9.5). 
+
+<11> Section 2.2.1.9.6:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, 
+Office Outlook 2007, and Outlook 2010 do not support the PidLidIsContactLinked property (section 
+2.2.1.9.6). 
+
+<12> Section 2.2.1.9.7:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, 
+Office Outlook 2007, and Outlook 2010 do not support the PidTagOscSyncEnabled property (section 
+2.2.1.9.7). 
+
+<13> Section 2.2.1.10.18: Exchange 2003 and Exchange 2007 do not set or use the 
+PidLidContactCharacterSet property. 
+
+<14> Section 2.2.2.1.4: Exchange 2007, Exchange 2010, Exchange 2013, Exchange 2016, and 
+Exchange 2019 set the PidLidFileUnderId property (section 2.2.2.1.4) to 0 when it creates a 
+distribution list.  
+
+<15> Section 2.2.2.2.2: Exchange 2003 does not set or update the 
+PidLidDistributionListOneOffMembers property. 
+
+<16> Section 2.2.2.2.4: Exchange 2003, Exchange 2007, and Office Outlook 2003 do not use the 
+PidLidDistributionListStream property (section 2.2.2.2.4). 
+
+<17> Section 2.2.2.2.4: If the PidLidDistributionListStream property (section 2.2.2.2.4) is set, 
+Office Outlook 2003 does not ignore the PidLidDistributionListMembers (section 2.2.2.2.1), 
+PidLidDistributionListOneOffMembers (section 2.2.2.2.2), and PidLidDistributionListChecksum 
+(section 2.2.2.2.3) properties. 
+
+<18> Section 2.2.3:  Exchange 2003, Exchange 2007, Exchange 2010, Office Outlook 2003, Office 
+Outlook 2007, and Outlook 2010 do not support the Quick Contacts folder, the IM Contact List folder, 
+and the contacts folders that contain imported contacts. 
+
+71 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+72 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A  
+ Fields - vendor-extensible 12 
+Abstract data model  
+   client 47 G 
+   server 55  
+Additional property constraints Glossary 8 
+   Contact object properties 39  
+   personal distribution list properties 46 H 
+Applicability 12  
+ Higher-layer triggered events 
+B    server 55 
+ Higher-layer triggered events - client 
+Business Card Contact object properties 28    personal distribution list events 48 
+  
+C I 
+  
+Capability negotiation 12 Implementer - security considerations 69 
+Change tracking 72 Index of security parameters 69 
+Client Informative references 11 
+   abstract data model 47 Initialization 
+   initialization 47    client 47 
+   other local events 55    server 55 
+   overview 47 Introduction 8 
+   timer events 55  
+   timers 47 M 
+Client - higher-layer triggered events - personal  
+
+distribution list events 48 Message processing 
+Contact aggregation Contact object properties 34    server 55 
+Contact Name Contact object properties 13 Message syntax - overview 13 
+Contact object properties Messages 
+   additional property constraints 39    Contact Object Properties 13 
+   Business Card properties 28    Contacts-Related Folders 46 
+   Contact aggregation properties 34    Personal Distribution List Properties 40 
+   Contact Name properties 13    transport 13 
+   Contact Photo properties 34  
+   Electronic Address properties 16 N 
+   event properties 26  
+   Physical Address properties 21 Normative references 10 
+   Professional properties 27  
+   Telephone properties 24 O 
+Contact Object Properties message 13  
+Contact Photo Contact object properties 34 Other local events 
+Contacts-Related Folders message 46    client 55 
+Creating a contact example 56    server 55 
+Creating a personal distribution list example 64 Overview (synopsis) 11 
+  
+D P 
+  
+Data model - abstract Parameters - security index 69 
+   client 47 Personal Distribution List Name personal distribution 
+   server 55 list properties 40 
+ Personal distribution list properties 
+E    additional property constraints 46 
+    Personal Distribution List Name properties 40 
+Electronic Address Contact object properties 16 Personal Distribution List Properties message 40 
+Event Contact object properties 26 Physical Address Contact object properties 21 
+Examples Preconditions 12 
+   creating a contact 56 Prerequisites 12 
+   creating a personal distribution list 64 Product behavior 70 
+ Professional Contact object properties 27 
+F  
+
+73 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+R 
+ 
+References 10 
+   informative 11 
+   normative 10 
+Relationship to other protocols 12 
+ 
+S 
+ 
+Security 
+   implementer considerations 69 
+   parameter index 69 
+Sequencing rules 
+   server 55 
+Server 
+   abstract data model 55 
+   higher-layer triggered events 55 
+   initialization 55 
+   message processing 55 
+   other local events 55 
+   overview 55 
+   sequencing rules 55 
+   timer events 55 
+   timers 55 
+Standards assignments 12 
+ 
+T 
+ 
+Telephone Contact object properties 24 
+Timer events 
+   client 55 
+   server 55 
+Timers 
+   client 47 
+   server 55 
+Tracking changes 72 
+Transport 13 
+Triggered events - client 
+   personal distribution list events 48 
+Triggered events - higher-layer 
+   server 55 
+ 
+V 
+ 
+Vendor-extensible fields 12 
+Versioning 12 
+
+ 
+
+74 / 74 
+
+[MS-OXOCNTC] - v20250520 
+Contact Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

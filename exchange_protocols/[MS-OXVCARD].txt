@@ -1,0 +1,1952 @@
+﻿[MS-OXVCARD]:  
+
+vCard to Contact Object Conversion Algorithm 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/10/2009 .1 Major Initial Availability. 
+
+7/15/2009 1.0 Major Revised and edited for technical content. 
+
+11/4/2009 1.0.1 Editorial Revised and edited the technical content. 
+
+2/10/2010 1.0.1 None Version 1.0.1 release 
+
+5/5/2010 1.1.0 Minor Updated the technical content. 
+
+8/4/2010 1.2 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 1.3 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 2.0 Major Significantly changed the technical content. 
+
+8/5/2011 3.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 3.0 None 
+
+technical content. 
+
+1/20/2012 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 4.0 None 
+
+technical content. 
+
+10/8/2012 4.1 Minor Clarified the meaning of the technical content. 
+
+2/11/2013 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 5.0 None 
+
+technical content. 
+
+4/30/2014 5.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 5.1 None 
+
+technical content. 
+
+5/26/2015 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 6.0 None 
+
+technical content. 
+
+2 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+7/24/2018 7.0 Major Significantly changed the technical content. 
+
+10/1/2018 8.0 Major Significantly changed the technical content. 
+
+12/11/2018 8.1 Minor Clarified the meaning of the technical content. 
+
+6/18/2019 8.2 Minor Clarified the meaning of the technical content. 
+
+11/19/2019 8.3 Minor Clarified the meaning of the technical content. 
+
+11/12/2024 8.4 Minor Clarified the meaning of the technical content. 
+
+5/20/2025 9.0 Major Significantly changed the technical content. 
+
+3 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Protocols and Other Algorithms ...................................................... 7 
+1.5 Applicability Statement ....................................................................................... 8 
+1.6 Standards Assignments ....................................................................................... 8 
+
+2 Algorithm Details..................................................................................................... 9 
+2.1 Common Algorithm Details .................................................................................. 9 
+
+2.1.1 Abstract Data Model ...................................................................................... 9 
+2.1.2 Initialization ................................................................................................. 9 
+2.1.3 Processing Rules ........................................................................................... 9 
+
+2.1.3.1 General Types ........................................................................................ 9 
+2.1.3.1.1 Profile: vCard .................................................................................... 9 
+
+2.1.3.2 Identification Types ................................................................................. 9 
+2.1.3.2.1 Type: FN .......................................................................................... 9 
+2.1.3.2.2 Type: N ............................................................................................ 9 
+2.1.3.2.3 Type: NICKNAME ............................................................................. 10 
+2.1.3.2.4 Type: PHOTO .................................................................................. 10 
+2.1.3.2.5 Type: BDAY .................................................................................... 11 
+
+2.1.3.3 Deliverable Addressing Types ................................................................. 11 
+2.1.3.3.1 Type: ADR ...................................................................................... 11 
+2.1.3.3.2 Type: LABEL ................................................................................... 13 
+
+2.1.3.4 Telecommunications Addressing Types .................................................... 14 
+2.1.3.4.1 Type: TEL ....................................................................................... 14 
+2.1.3.4.2 Type: EMAIL ................................................................................... 15 
+2.1.3.4.3 Type: MAILER ................................................................................. 15 
+
+2.1.3.5 Geographical Types ............................................................................... 16 
+2.1.3.5.1 Type: TZ ........................................................................................ 16 
+2.1.3.5.2 Type: GEO ...................................................................................... 16 
+
+2.1.3.6 Organizational Types ............................................................................. 16 
+2.1.3.6.1 Type: TITLE .................................................................................... 16 
+2.1.3.6.2 Type: ROLE .................................................................................... 16 
+2.1.3.6.3 Type: LOGO .................................................................................... 17 
+2.1.3.6.4 Type: AGENT .................................................................................. 17 
+2.1.3.6.5 Type: ORG ..................................................................................... 17 
+
+2.1.3.7 Explanatory Types................................................................................. 18 
+2.1.3.7.1 Type: CATEGORIES ......................................................................... 18 
+2.1.3.7.2 Type: NOTE .................................................................................... 18 
+2.1.3.7.3 Type: PRODID................................................................................. 18 
+2.1.3.7.4 Type: REV ...................................................................................... 19 
+2.1.3.7.5 Type: SORT-STRING ........................................................................ 19 
+2.1.3.7.6 Type: SOUND ................................................................................. 19 
+2.1.3.7.7 Type: UID ...................................................................................... 19 
+2.1.3.7.8 Type: URL ...................................................................................... 20 
+2.1.3.7.9 Type: VERSION ............................................................................... 20 
+
+2.1.3.8 Security Types ...................................................................................... 20 
+2.1.3.8.1 Type: CLASS ................................................................................... 20 
+2.1.3.8.2 Type: KEY ...................................................................................... 21 
+
+2.1.3.9 Custom Types....................................................................................... 21 
+2.1.3.9.1 EBC Design ..................................................................................... 21 
+2.1.3.9.2 Children ......................................................................................... 21 
+
+4 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.1.3.9.3 User Text ....................................................................................... 22 
+2.1.3.9.4 Instant Messaging Address ............................................................... 22 
+2.1.3.9.5 Telephone Numbers ......................................................................... 22 
+2.1.3.9.6 Anniversary .................................................................................... 23 
+2.1.3.9.7 Spouse/Partner's Name .................................................................... 23 
+2.1.3.9.8 Manager's Name ............................................................................. 23 
+2.1.3.9.9 Assistant's Name ............................................................................. 23 
+2.1.3.9.10 Free/Busy URL ................................................................................ 24 
+2.1.3.9.11 Interests ........................................................................................ 24 
+2.1.3.9.12 Default Postal Address ..................................................................... 24 
+
+3 Algorithm Examples .............................................................................................. 25 
+3.1 Importing a vCard ............................................................................................ 25 
+3.2 Exporting a Contact object ................................................................................ 26 
+
+4 Security ................................................................................................................. 27 
+4.1 Security Considerations for Implementers ........................................................... 27 
+4.2 Index of Security Parameters ............................................................................ 27 
+
+5 Appendix A: Product Behavior ............................................................................... 28 
+
+6 Change Tracking .................................................................................................... 29 
+
+7 Index ..................................................................................................................... 30 
+
+ 
+
+5 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The vCard to Contact Object Conversion Algorithm converts data between a vCard and an object that 
+represents a person. 
+
+Sections 1.6 and 2 of this specification are normative. All other sections and examples in this 
+specification are informative.  
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Attachment object: A set of properties that represents a file, Message object, or structured 
+storage that is attached to a Message object and is visible through the attachments table for a 
+Message object. 
+
+common name (CN): A string attribute of a certificate that is one component of a distinguished 
+name (DN). In Microsoft Enterprise uses, a CN has to be unique within the forest where it is 
+defined and any forests that share trust with the defining forest. The website or email address of 
+the certificate owner is often used as a common name. Client applications often refer to a 
+certification authority (CA) by the CN of its signing certificate. 
+
+Contact object: A Message object that contains properties pertaining to a contact. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+Multipurpose Internet Mail Extensions (MIME): A set of extensions that redefines and 
+expands support for various types of content in email messages, as described in [RFC2045], 
+[RFC2046], and [RFC2047]. 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+Uniform Resource Identifier (URI): A string that identifies a resource. The URI is an addressing 
+mechanism defined in Internet Engineering Task Force (IETF) Uniform Resource Identifier (URI): 
+Generic Syntax [RFC3986]. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+6 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCICAL] Microsoft Corporation, "iCalendar to Appointment Object Conversion Algorithm". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol". 
+
+[MS-OXOCNTC] Microsoft Corporation, "Contact Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2045] Freed, N., and Borenstein, N., "Multipurpose Internet Mail Extensions (MIME) Part One: 
+Format of Internet Message Bodies", RFC 2045, November 1996, https://www.rfc-
+editor.org/info/rfc2045 
+
+[RFC2047] Moore, K., "MIME (Multipurpose Internet Mail Extensions) Part Three: Message Header 
+Extensions for Non-ASCII Text", RFC 2047, November 1996, https://www.rfc-editor.org/info/rfc2047 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2426] Dawson, F., and Howes, T., "vCard MIME Directory Profile", RFC 2426, September 1998, 
+http://www.rfc-editor.org/rfc/rfc2426.txt 
+
+[X520] ITU-T, "X.520: Information technology - Open Systems Interconnection - The Directory: 
+Selected attribute types", ITU-T Recommendation X.520, August 2005, http://www.itu.int/rec/T-REC-
+X.520/en 
+
+1.2.2 Informative References 
+
+[MS-OXCMAIL] Microsoft Corporation, "RFC 2822 and MIME to Email Object Conversion Algorithm". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+A Contact object application, as described in [MS-OXOCNTC], can use this algorithm to import vCard 
+data, as described in [RFC2426], into Contact objects, and also to export Contact objects as vCard 
+data to communicate with other contact applications over non-Message object transport methods. 
+
+1.4 Relationship to Protocols and Other Algorithms 
+
+This document specifies an algorithm that maps vCard data, as described in [RFC2426], and a 
+Contact object, as described in [MS-OXOCNTC]. This algorithm can be updated and sent by using the 
+protocols described in [MS-OXCMSG] and [MS-OXOMSG]. 
+
+When used as a contact, vCard data can be embedded as a Multipurpose Internet Mail Extensions 
+(MIME) part in an email message, as described in [RFC2426] and [MS-OXCMAIL]. 
+
+This document covers versioning issues in the following areas: 
+
+7 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Structure version: The vCard data format defines a VERSION type, as specified in section 
+2.1.3.7.9. 
+
+ Localization: The vCard data format defines a SORT-STRING type to define language-specific 
+sorting rules, as specified in section 2.1.3.7.5. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Applicability Statement 
+
+This algorithm is applicable to scenarios in which Contact object data needs to be transported 
+between a Contact object source and a non-Contact object or indeterminate destination. 
+
+This algorithm is best avoided if 100 percent fidelity is required when transporting contact data 
+between a Contact object source and a Contact object destination. 
+
+Note that [RFC2426] section 3.8 permits the insertion of nonstandard private values by using the 
+extension mechanism defined in [RFC2045]. The primary requirement of these private values is that 
+the name begins with "x-", and as such they are often termed x-components, x-props, and x-
+parameters. This document specifies several x-props that provide additional contact information. 
+
+1.6 Standards Assignments 
+
+None. 
+
+8 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Algorithm Details 
+
+2.1 Common Algorithm Details 
+
+2.1.1 Abstract Data Model 
+
+None. 
+
+2.1.2 Initialization 
+
+None. 
+
+2.1.3 Processing Rules 
+
+This section specifies the transformations required for converting data from the vCard format to 
+Contact objects.  
+
+2.1.3.1 General Types 
+
+The type defined in this section signifies that the information is vCard data. 
+
+2.1.3.1.1 Profile: vCard 
+
+RFC reference: [RFC2426] section 3. 
+
+The vCard MIME Directory Profile Type contains directory information, such as a single directory 
+entry. The information is captured in an attribute schema that is designed for personal contact 
+information. 
+
+2.1.3.2 Identification Types 
+
+The identification types are used in the vCard profile to capture identification and name information 
+about the person or resource identified by a particular vCard. 
+
+2.1.3.2.1 Type: FN 
+
+RFC reference: [RFC2426] section 3.1.1. 
+
+vCard data format: FN: <name> 
+
+Brief description: The name of the object that the vCard represents. The name is in common name 
+(CN) semantics, as specified in [X520]. 
+
+Importing to Contact Objects  
+
+The FN type is imported to the PidTagDisplayName ([MS-OXOCNTC] section 2.2.1.1.8), the 
+PidTagNormalizedSubject ([MS-OXOCNTC] section 2.2.1.11.1), and the 
+PidTagConversationTopic ([MS-OXOMSG] section 2.2.1.5) properties. 
+
+Exporting from Contact Objects 
+
+The FN type is generated from either the PidTagDisplayName or PidTagNormalizedSubject 
+property. If both of these properties are set, the PidTagDisplayName property is used. 
+
+2.1.3.2.2 Type: N 
+
+9 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+RFC reference: [RFC2426] section 3.1.2. 
+
+vCard data format: N:<Family Name>; <Given Name>; <Middle Name>; <Honorific Prefixes>; 
+<Honorific Postfixes> 
+
+Brief description: Structured name of the object that the vCard represents. 
+
+Importing to Contact Objects 
+
+Individual text components are separated by the semicolon (;) character. Text components can 
+contain multiple values that are separated by the comma (,) character. The entire text component 
+SHOULD be assigned to the corresponding property, as shown in the following table. 
+
+vCard text component Contact object property Reference 
+
+Family Name PidTagSurname [MS-OXOCNTC] section 2.2.1.1.4 
+
+Given Name PidTagGivenName [MS-OXOCNTC] section 2.2.1.1.6 
+
+Middle Name PidTagMiddleName [MS-OXOCNTC] section 2.2.1.1.5 
+
+Honorific Prefixes PidTagDisplayNamePrefix [MS-OXOCNTC] section 2.2.1.1.3 
+
+Honorific Postfixes PidTagGeneration [MS-OXOCNTC] section 2.2.1.1.2 
+
+Exporting from Contact Objects 
+
+The PidTagSurname, PidTagGivenName, PidTagMiddleName, PidTagDisplayNamePrefix, and 
+PidTagGeneration properties are exported as semicolon-delimited strings. 
+
+2.1.3.2.3 Type: NICKNAME 
+
+RFC reference: [RFC2426] section 3.1.3. 
+
+vCard data format: NICKNAME: <nickname> 
+
+Brief description: The nickname of the object that the vCard represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The NICKNAME type is imported to and exported from the PidTagNickname ([MS-OXOCNTC] 
+section 2.2.1.1.1) property. 
+
+2.1.3.2.4 Type: PHOTO 
+
+RFC reference: [RFC2426] section 3.1.4. 
+
+vCard data format: PHOTO; ENCODING=b; TYPE=<type>:<data> 
+
+Brief description: An image or photograph that illustrates some aspect of the object that the vCard 
+represents. 
+
+Importing to Contact Objects 
+
+The binary data for the associated photo is stored as an attachment. For more details about Message 
+object attachments, see [MS-OXCMSG] section 2.2.2. The properties listed in the following table 
+MUST be set on the Attachment object, as specified in [MS-OXCMSG]. 
+
+10 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Attachment object property Reference Value 
+
+PidTagAttachmentContactPhoto [MS-OXOCNTC] TRUE. 
+section 2.2.1.8.2 
+
+PidTagAttachDataBinary [MS-OXCMSG] section Photo stream in binary format. 
+2.2.2.7 
+
+PidTagAttachExtension [MS-OXCMSG] section ".jpeg", ".bmp", ".gif", or ".png", according to the 
+2.2.2.12 TYPE parameter. 
+
+PidTagAttachLongFilename [MS-OXCMSG] section "ContactPhoto.<ext>". The extension is the value 
+2.2.2.10 of the TYPE parameter. 
+
+Only binary data types with the ENCODING parameter set to "b" are supported. The TYPE parameter 
+MUST be one of the following image type values: 
+
+ .bmp 
+
+ .gif 
+
+ .jpeg 
+
+ .png 
+
+Exporting from Contact Objects 
+
+The PHOTO type is exported from the Attachment object with the ENCODING parameter set to "b" 
+and the TYPE parameter set to the image type (.bmp, .gif, .jpeg, or .png). The image is exported in 
+binary format, as specified in [RFC2047] section 4. 
+
+2.1.3.2.5 Type: BDAY 
+
+RFC reference: [RFC2426] section 3.1.5. 
+
+vCard data format: BDAY:<date or date-time value> 
+
+Brief description: The birth date of the object that the vCard represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The BDAY type is imported to and exported from the PidTagBirthday ([MS-OXOCNTC] section 
+2.2.1.5.1) property. The time that is associated with the birthday event SHOULD<1> be 0:00 in the 
+client's local time zone. 
+
+2.1.3.3 Deliverable Addressing Types 
+
+The deliverable addressing types are used in the vCard profile to capture information that is related to 
+the delivery addressing or label for the person or resource identified by the vCard. 
+
+2.1.3.3.1 Type: ADR 
+
+RFC reference: [RFC2426] section 3.2.1. 
+
+vCard data format: ADR;TYPE=[Type]:[PO Box];[Extended Address];[Street 
+Address];[Locality];[Region];[Postal Code];[Country Name] 
+
+Brief description: Physical addresses that are associated with the object that the vCard represents. 
+
+Importing to and exporting from Contact Objects 
+
+11 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The Contact object provides built-in support for three physical addresses: Home Address, Work 
+Address, and Other Address. The following table shows the valid values for the vCard TYPE parameter 
+and how they correspond to the Contact object properties. The default TYPE parameter value is "intl, 
+postal, parcel, work". 
+
+TYPE parameter value Contact object address Contact object properties 
+
+work Work Address PidLidWorkAddressPostOfficeBox ([MS-
+OXOCNTC] section 2.2.1.3.7) 
+
+PidLidWorkAddressStreet ([MS-OXOCNTC] 
+section 2.2.1.3.1) 
+
+PidLidWorkAddressCity ([MS-OXOCNTC] 
+section 2.2.1.3.2) 
+
+PidLidWorkAddressState ([MS-OXOCNTC] 
+section 2.2.1.3.3) 
+
+PidLidWorkAddressPostalCode ([MS-
+OXOCNTC] section 2.2.1.3.4) 
+
+PidLidWorkAddressCountry ([MS-OXOCNTC] 
+section 2.2.1.3.5) 
+
+home Home Address PidTagHomeAddressPostOfficeBox ([MS-
+OXOCNTC] section 2.2.1.3.7) 
+
+PidTagHomeAddressStreet ([MS-OXOABK] 
+section 2.2.4.20) 
+
+PidTagHomeAddressCity ([MS-OXOCNTC] 
+section 2.2.1.3.2) 
+
+PidTagHomeAddressStateOrProvince ([MS-
+OXOCNTC] section 2.2.1.3.3) 
+
+PidTagHomeAddressPostalCode ([MS-
+OXOCNTC] section 2.2.1.3.4) 
+
+PidTagHomeAddressCountry ([MS-
+OXOCNTC] section 2.2.1.3.5) 
+
+postal, dom, intl, parcel Other Address PidTagOtherAddressPostOfficeBox ([MS-
+(importing) OXOCNTC] section 2.2.1.3.7) 
+
+postal (exporting) PidTagOtherAddressStreet ([MS-OXOCNTC] 
+section 2.2.1.3.1) 
+
+PidTagOtherAddressCity ([MS-OXOCNTC] 
+section 2.2.1.3.2) 
+
+PidTagOtherAddressStateOrProvince ([MS-
+OXOCNTC] section 2.2.1.3.3) 
+
+PidTagOtherAddressPostalCode ([MS-
+OXOCNTC] section 2.2.1.3.4) 
+
+PidTagOtherAddressCountry ([MS-
+OXOCNTC] section 2.2.1.3.5) 
+
+When importing: If the TYPE parameter contains "pref", the PidLidPostalAddressId property ([MS-
+OXOCNTC] section 2.2.1.3.9) is set to indicate that that address is the contact's mailing address, and 
+the Mailing Address properties of the Contact object are set as specified in [MS-OXOCNTC] section 
+2.2.1.3.9. 
+
+When exporting: The address that is selected as the mailing address by the PidLidPostalAddressId 
+property gets the value "pref" included in its TYPE parameter. 
+
+The following table shows how the Home Address, Work Address, and Other Address properties of the 
+Contact object correspond to each vCard property.  
+
+12 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+vCard property Contact object properties 
+
+PO Box PidLidWorkAddressPostOfficeBox ([MS-OXOCNTC] section 2.2.1.3.7)  
+
+PidTagHomeAddressPostOfficeBox ([MS-OXOCNTC] section 2.2.1.3.7)  
+
+PidTagOtherAddressPostOfficeBox ([MS-OXPROPS] section 2.853)  
+
+Extended Address, Street PidLidWorkAddressStreet ([MS-OXOCNTC] section 2.2.1.3.1) 
+Address PidTagHomeAddressStreet ([MS-OXPROPS] section 2.731) 
+
+PidTagOtherAddressStreet ([MS-OXPROPS] section 2.855) 
+
+Locality PidLidWorkAddressCity ([MS-OXOCNTC] section 2.2.1.3.2) 
+
+PidTagHomeAddressCity ([MS-OXOCNTC] section 2.2.1.3.2)  
+
+PidTagOtherAddressCity ([MS-OXOCNTC] section 2.2.1.3.2) 
+
+Region PidLidWorkAddressState property ([MS-OXOCNTC] section 2.2.1.3.3)  
+
+PidTagHomeAddressStateOrProvince ([MS-OXOCNTC] section 
+2.2.1.3.3)  
+
+PidTagOtherAddressStateOrProvince ([MS-OXOCNTC] section 
+2.2.1.3.3)  
+
+Postal Code PidLidWorkAddressPostalCode ([MS-OXPROPS] section 2.358) 
+
+PidTagHomeAddressPostalCode ([MS-OXPROPS] section 2.728)  
+
+PidTagOtherAddressPostalCode ([MS-OXOCNTC] section 2.2.1.3.4) 
+
+Country Name PidLidWorkAddressCountry ([MS-OXOCNTC] section 2.2.1.3.5)  
+
+PidTagHomeAddressCountry ([MS-OXOCNTC] section 2.2.1.3.5)  
+
+PidTagOtherAddressCountry ([MS-OXPROPS] section 2.851) 
+
+ 
+
+2.1.3.3.2 Type: LABEL 
+
+RFC reference: [RFC2426] section 3.2.2. 
+
+vCard data format: LABEL;TYPE=[Type]:[Formatted Address] 
+
+Brief description: Structured mailing label for the object that the vCard represents. 
+
+Importing to Contact Objects 
+
+The LABEL type is ignored on import. 
+
+Exporting from Contact Objects 
+
+The physical address objects are exported as a formatted string that represents a mailing label. Labels 
+are constructed from the Contact object fields that are listed in the following table. 
+
+Address label Contact object properties 
+
+Work PidLidWorkAddressStreet ([MS-OXOCNTC] section 2.2.1.3.1) 
+
+PidLidWorkAddressCity ([MS-OXOCNTC] section 2.2.1.3.2) 
+
+PidLidWorkAddressState ([MS-OXOCNTC] section 2.2.1.3.3) 
+
+PidLidWorkAddressPostalCode ([MS-OXOCNTC] section 2.2.1.3.4) 
+
+PidLidWorkAddressCountry ([MS-OXOCNTC] section 2.2.1.3.5) 
+
+Home PidTagHomeAddressStreet ([MS-OXOABK] section 2.2.4.20) 
+
+PidTagHomeAddressCity ([MS-OXOCNTC] section 2.2.1.3.2) 
+
+13 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Address label Contact object properties 
+
+PidTagHomeAddressStateOrProvince ([MS-OXOCNTC] section 2.2.1.3.3) 
+
+PidTagHomeAddressPostalCode ([MS-OXOCNTC] section 2.2.1.3.4) 
+
+PidTagHomeAddressCountry ([MS-OXOCNTC] section 2.2.1.3.5) 
+
+Postal PidTagOtherAddressStreet ([MS-OXOCNTC] section 2.2.1.3.1) 
+
+PidTagOtherAddressCity ([MS-OXOCNTC] section 2.2.1.3.2) 
+
+PidTagOtherAddressStateOrProvince ([MS-OXOCNTC] section 2.2.1.3.3) 
+
+PidTagOtherAddressPostalCode ([MS-OXOCNTC] section 2.2.1.3.4) 
+
+PidTagOtherAddressCountry ([MS-OXOCNTC] section 2.2.1.3.5) 
+
+ 
+
+2.1.3.4 Telecommunications Addressing Types 
+
+The telecommunications addressing types are used in the vCard profile to capture telecommunications 
+information, such as telephone numbers and email addresses for the person or resource identified by 
+the vCard. 
+
+2.1.3.4.1 Type: TEL 
+
+RFC reference: [RFC2426] section 3.3.1. 
+
+vCard data format: TEL; TYPE=[Type]:[Phone Number] 
+
+Brief description: A telephone number that is associated with the object that the vCard represents. 
+
+Importing to Contact Objects 
+
+Telephone numbers are imported to the Contact object based on the TYPE parameter, as shown in 
+the following table. If the TYPE parameter is not specified in the vCard, the default value is "voice".  
+
+TYPE 
+parameter 
+value Contact object properties 
+
+home PidTagHomeTelephoneNumber ([MS-OXOABK] section 2.2.4.22) 
+
+A second TEL type with the TYPE parameter set to "home" is imported to 
+PidTagHome2TelephoneNumber ([MS-OXOABK] section 2.2.4.25). 
+
+msg, voice, The first TEL type with the TYPE parameter set to "msg", "voice", "video", "bbs", or "modem" 
+video, bbs, is imported to PidTagOtherTelephoneNumber ([MS-OXOCNTC] section 2.2.1.4.10). 
+modem Additional TEL types with the TYPE parameter set to "msg", "voice", "video", "bbs", or 
+
+"modem" are ignored. 
+
+work PidTagBusinessTelephoneNumber ([MS-OXOABK] section 2.2.4.21) 
+
+A second TEL type with the TYPE parameter set to "work" is imported to 
+PidTagBusiness2TelephoneNumber ([MS-OXOABK] section 2.2.4.23). 
+
+cell PidTagMobileTelephoneNumber ([MS-OXOABK] section 2.2.4.27) 
+
+pager PidTagPagerTelephoneNumber ([MS-OXOABK] section 2.2.4.28) 
+
+car PidTagCarTelephoneNumber ([MS-OXOCNTC] section 2.2.1.4.9) 
+
+isdn PidTagIsdnNumber ([MS-OXOCNTC] section 2.2.1.4.16) 
+
+home;fax PidTagHomeFaxNumber ([MS-OXOCNTC] section 2.2.1.2.6) 
+
+14 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+TYPE 
+parameter 
+value Contact object properties 
+
+work;fax PidTagBusinessFaxNumber ([MS-OXOCNTC] section 2.2.1.2.6) 
+
+pcs Dropped 
+
+pref PidTagPrimaryTelephoneNumber ([MS-OXOCNTC] section 2.2.1.4.5) 
+
+Exporting from Contact Objects 
+
+Each telephone number is exported as a formatted TEL type. The value of the 
+PidTagOtherTelephoneNumber property is exported with the TYPE parameter set to "voice". 
+
+2.1.3.4.2 Type: EMAIL 
+
+RFC reference: [RFC2426] section 3.3.2. 
+
+vCard data format: EMAIL;TYPE=[Type]:[Email] 
+
+Brief description: Email address of the object described by this vCard in either SMTP or X.400 format. 
+
+Importing to Contact Objects 
+
+The contents of one to three EMAIL types are imported into Contact object properties depending on 
+the TYPE parameter that is specified. The EMAIL type is imported as shown in the following table. 
+
+TYPE parameter value Contact object properties 
+
+internet (or no TYPE parameter value PidLidEmail1EmailAddress [MS-OXOCNTC] section 2.2.1.2.3 
+specified) PidLidEmail2EmailAddress 
+
+PidLidEmail3EmailAddress 
+
+Any additional EMAIL types are ignored. 
+
+im PidLidInstantMessagingAddress [MS-OXOCNTC] section 
+2.2.1.10.6 
+
+Exported as X-MS-IMADDRESS as specified in section 2.1.3.9.4. 
+
+tlx PidTagTelexNumber ([MS-OXOABK] section 2.2.4.30) 
+
+If multiple TYPE parameter values are set on an EMAIL type, the first recognized TYPE parameter 
+value is used. If no TYPE parameter value is recognized, "internet" is used. 
+
+Exporting from Contact Objects 
+
+The PidLidEmail1EmailAddress, PidLidEmail2EmailAddress, and PidLidEmail3EmailAddress 
+properties are exported to the vCard. 
+
+The PidLidInstantMessagingAddress property is exported as an X-MS-IMADDRESS type. 
+
+2.1.3.4.3 Type: MAILER 
+
+RFC reference: [RFC2426] section 3.3.3. 
+
+vCard data format: MAILER:[Mailer] 
+
+Brief description: The name of the program that generated the vCard. 
+
+Importing to Contact Objects 
+
+15 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The MAILER type is not imported. 
+
+Exporting from Contact Objects 
+
+The MAILER type is set to a value that is determined by the implementer.<2> 
+
+2.1.3.5 Geographical Types 
+
+The geographical types capture geographical locations that are associated with the object that the 
+vCard represents. 
+
+2.1.3.5.1 Type: TZ 
+
+RFC reference: [RFC2426] section 3.4.1. 
+
+vCard data format: TZ:[UTC-Offset] 
+
+Brief description: The time zone where the object that is represented by the vCard is located. 
+
+Importing to and Exporting from Contact Objects 
+
+The TZ type is neither imported to the Contact object nor exported when a vCard is created. 
+
+2.1.3.5.2 Type: GEO 
+
+RFC reference: [RFC2426] section 3.4.2. 
+
+vCard data format: GEO:[Decimal latitude]; [Decimal longitude] 
+
+Brief description: The decimal latitude and longitude of the location of the object that the vCard 
+represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The GEO type is neither imported to the Contact object nor exported when a vCard is created. 
+
+2.1.3.6 Organizational Types 
+
+These types capture information about the organization or organizational units of the object that the 
+vCard represents. 
+
+2.1.3.6.1 Type: TITLE 
+
+RFC reference: [RFC2426] section 3.5.1. 
+
+vCard data format: TITLE:[Formatted title] 
+
+Brief description: Job title, functional position, or function of the object that the vCard represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The TITLE type is imported to and exported from the PidTagTitle property ([MS-OXOABK] section 
+2.2.4.4). 
+
+2.1.3.6.2 Type: ROLE 
+
+RFC reference: [RFC2426] section 3.5.2. 
+
+vCard data format: ROLE:[Formatted role] 
+
+16 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Brief description: The role, occupation, or business category of the object that is represented by the 
+vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The ROLE type is imported to and exported from the PidTagProfession property ([MS-OXOCNTC] 
+section 2.2.1.6.9). 
+
+2.1.3.6.3 Type: LOGO 
+
+RFC reference: [RFC2426] section 3.5.3. 
+
+vCard data format: 
+
+LOGO;Encoding=b;TYPE=[Type]:[Data] 
+
+LOGO;VALUE=uri:[URI] 
+
+Brief description: A graphic image of a logo that is associated with the object that is represented by 
+the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The LOGO type is neither imported to the Contact object nor exported when a vCard is created. 
+
+2.1.3.6.4 Type: AGENT 
+
+RFC reference: [RFC2426] section 3.5.4. 
+
+vCard data format: 
+
+AGENT;VALUE=uri:[Unique identifier] 
+
+AGENT:BEGIN: VCARD\n[vCard data]\nEND:VCARD\n 
+
+Brief description: Information about another person who will act on behalf of the object that is 
+represented by the vCard. 
+
+Importing to Contact Objects 
+
+Only the second (vCard) form of the AGENT type is imported. All values in the AGENT type vCard are 
+dropped except for the FN and TEL types. Contact object properties are assigned as shown in the 
+following table. 
+
+AGENT vCard type Contact object property 
+
+FN PidTagAssistant ([MS-OXOABK] section 2.2.4.8) 
+
+TEL PidTagAssistantTelephoneNumber ([MS-OXOABK] section 2.2.4.31) 
+
+The last TEL type in the AGENT type vCard is used as the assistant's telephone number. 
+
+Exporting from Contact Objects 
+
+The PidTagAssistant and PidTagAssistantTelephoneNumber properties are exported as the X-
+MS-ASSISTANT (section 2.1.3.9.9) and X-MS-TEL (section 2.1.3.9.5);TYPE=ASSISTANT types. 
+
+2.1.3.6.5 Type: ORG 
+
+RFC reference: [RFC2426] section 3.5.5. 
+
+17 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+vCard data format: ORG:[Organization];[SubUnit1];[SubUnit2]; <repeats> 
+
+Brief description: The organizational name and units that are associated with the object that is 
+represented by the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The fields of the ORG type are imported to and exported from Contact object properties as shown in 
+the following table. 
+
+ORG type field Contact object property 
+
+Organization PidTagCompanyName ([MS-OXOABK] section 2.2.4.7) 
+
+SubUnit1 PidTagDepartmentName ([MS-OXOABK] section 2.2.4.6) 
+
+SubUnit2 
+
+ 
+
+2.1.3.7 Explanatory Types 
+
+The explanatory types capture additional information about the person or resource that is identified by 
+the vCard. 
+
+2.1.3.7.1 Type: CATEGORIES 
+
+RFC reference: [RFC2426] section 3.6.1. 
+
+vCard data format:  CATEGORIES:[value1],[value2],<repeats> 
+
+Brief description: Comma-separated category information that is associated with the object that is 
+represented by the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The categories type is imported to and exported from the PidLidCategories property ([MS-OXCMSG] 
+section 2.2.1.22). 
+
+2.1.3.7.2 Type: NOTE 
+
+RFC reference: [RFC2426] section 3.6.2. 
+
+Contact object reference: N/A. 
+
+vCard data format: NOTE:[Note] 
+
+Brief description: Supplemental information or comment that is associated with the object that is 
+represented by the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The NOTE type is imported to and exported from the PidTagBody property ([MS-OXCMSG] section 
+2.2.1.58.1). 
+
+2.1.3.7.3 Type: PRODID 
+
+RFC reference: [RFC2426] section 3.6.3. 
+
+vCard data format: PRODID:[Product] 
+
+18 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Brief description: Identifier of the product that created the vCard. 
+
+Importing to Contact Objects 
+
+The PRODID type is not imported. 
+
+Exporting from Contact Objects 
+
+The PRODID type is set to a value that is determined by the implementer.<3> 
+
+2.1.3.7.4 Type: REV 
+
+RFC reference: [RFC2426] section 3.6.4. 
+
+vCard data format: REV:[Revision] 
+
+Brief description: Distinguishes the current revision of the information in the vCard from other 
+renditions of the information. 
+
+Importing to and Exporting from Contact Objects 
+
+The REV type is imported to and exported from the PidTagLastModificationTime property ([MS-
+OXCMSG] section 2.2.2.2). 
+
+2.1.3.7.5 Type: SORT-STRING 
+
+RFC reference: [RFC2426] section 3.6.5. 
+
+vCard data format: SORT-STRING:[Sort text] 
+
+Brief description: Text to be used for national/regional-language-specific sorting of the FN and N 
+types. 
+
+Importing to and Exporting from Contact Objects 
+
+The SORT-STRING type is neither imported to the Contact object nor exported when a vCard is 
+created. 
+
+2.1.3.7.6 Type: SOUND 
+
+RFC reference: [RFC2426] section 3.6.6. 
+
+vCard data format: 
+
+SOUND;TYPE=[Format];VALUE=uri:cid:[Uri] 
+
+SOUND:TYPE=[Format];ENCODING=b:[data] 
+
+Brief description: Digital sound content associated with the object that is represented by the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The SOUND type is neither imported to the Contact object nor exported when a vCard is created. 
+
+2.1.3.7.7 Type: UID 
+
+RFC reference: [RFC2426] section 3.6.7. 
+
+vCard data format: UID:[Unique identifier] 
+
+19 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Brief description: Globally unique identifier that corresponds to the object that is represented by the 
+vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The UID type is neither imported to the Contact object nor exported when a vCard is created. 
+
+2.1.3.7.8 Type: URL 
+
+RFC reference: [RFC2426] section 3.6.8. 
+
+vCard data format:  URL; TYPE=[Type]:[Uri] 
+
+Brief description: Uniform Resource Identifier (URI) that is associated with the object that is 
+represented by the vCard. 
+
+Importing to Contact Objects 
+
+The URL type is imported to the Contact object based on the TYPE parameter.  
+
+TYPE parameter value Contact object property 
+
+home PidTagPersonalHomePage ([MS-OXOCNTC] section 2.2.1.10.13) 
+
+work PidTagBusinessHomePage ([MS-OXOCNTC] section 2.2.1.10.14) 
+
+If the TYPE parameter is not specified, the URL type is imported to the PidTagPersonalHomePage 
+property; one additional URL type is imported to the PidTagBusinessHomePage property; any 
+other instances are ignored. 
+
+Exporting from Contact Objects 
+
+One URL type is exported from the PidTagBusinessHomePage property with the TYPE parameter 
+set to "work", and another URL type is exported from the PidTagPersonalHomePage property with 
+the TYPE parameter set to "home". 
+
+2.1.3.7.9 Type: VERSION 
+
+RFC reference: [RFC2426] section 3.6.9. 
+
+vCard data format: VERSION:[Version] 
+
+Brief description: The version of the vCard specification that is used to format the vCard. 
+
+Importing to Contact Objects 
+
+The VERSION type is not imported to the Contact object. 
+
+Exporting from Contact Objects 
+
+The VERSION type is set to 3.0. 
+
+2.1.3.8 Security Types 
+
+The security types capture security information for the vCard. 
+
+2.1.3.8.1 Type: CLASS 
+
+RFC reference: [RFC2426] section 3.7.1. 
+
+20 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+vCard data format: CLASS:[Access classification] 
+
+Brief description: Specifies the access classification for a vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The CLASS type is imported to and exported from the PidTagSensitivity property ([MS-OXCMSG] 
+section 2.2.1.13), as shown in the following table. 
+
+CLASS type value PidTagSensitivity value 
+
+Public 0 
+
+Personal 1 
+
+Private 2 
+
+Confidential 3 
+
+If the CLASS type value is not one of the values shown in the preceding table or if the CLASS type is 
+not included in the vCard, the PidTagSensitivity property is set to 0. 
+
+2.1.3.8.2 Type: KEY 
+
+RFC reference: [RFC2426] section 3.7.2. 
+
+vCard data format: KEY;ENCODING=b:[data] 
+
+Brief description: A public key or authentication certificate that is associated with the object that the 
+vCard represents. 
+
+Importing to and Exporting from Contact Objects 
+
+If the KEY type represents an X.509 certificate, the KEY type is imported to and exported from the 
+PidTagUserX509Certificate property ([MS-OXOABK] section 2.2.4.36). Other certificate types are 
+not imported. 
+
+2.1.3.9 Custom Types 
+
+The following types are extended types that use the nonstandard mechanism that is defined in 
+[RFC2045]. 
+
+2.1.3.9.1 EBC Design 
+
+vCard header: X-MS-OL-DESIGN: 
+
+vCard data format: X-MS-OL-DESIGN:[data] 
+
+Brief description: Electronic business card that is associated with the object that the vCard represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-OL-DESIGN type is imported to and exported from the 
+PidLidBusinessCardDisplayDefinition property ([MS-OXOCNTC] section 2.2.1.7.1). 
+
+2.1.3.9.2 Children 
+
+vCard header: X-MS-CHILD:, X-CHILD: 
+
+vCard data format: X-MS-CHILD:[Children's names] 
+
+21 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Brief description: The names of children who are associated with the object that the vCard represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-CHILD and X-CHILD types are imported to the PidTagChildrensNames property ([MS-
+OXOCNTC] section 2.2.1.10.17). The PidTagChildrensNames property is exported to the X-MS-
+CHILD type; the X-CHILD type is not used for export. 
+
+2.1.3.9.3 User Text 
+
+vCard header: X-MS-TEXT:, X-CUSTOM: 
+
+vCard data format: X-MS-TEXT:[Text] 
+
+Brief description: Custom text that is associated with the object that the vCard represents. 
+
+Importing to Contact Objects 
+
+The X-MS-TEXT type is saved to the PidLidContactUserField1, PidLidContactUserField2, 
+PidLidContactUserField3, and PidLidContactUserField4 properties ([MS-OXOCNTC] section 
+2.2.1.7.3) in the order in which they are received. A maximum of four X-MS-TEXT types can be 
+saved; additional instances are discarded. 
+
+Exporting from Contact Objects 
+
+The contents of the PidLidContactUserField1, PidLidContactUserField2, 
+PidLidContactUserField3, and PidLidContactUserField4 properties are exported as X-MS-TEXT 
+types. 
+
+2.1.3.9.4 Instant Messaging Address 
+
+vCard header: X-MS-IMADDRESS:, X-MS-RM-IMACCOUNT:, EMAIL;IM: 
+
+vCard data format: X-MS-IMADDRESS;[IM Address] 
+
+Brief description: Instant messaging address that is associated with the object that the vCard 
+represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-IMADDRESS type is imported to and exported from the 
+PidLidInstantMessagingAddress property ([MS-OXOCNTC] section 2.2.1.10.6). Any additional X-
+MS-IMADDRESS types are ignored. 
+
+2.1.3.9.5 Telephone Numbers 
+
+vCard header: X-MS-TEL: 
+
+vCard data format: X-MS-TEL;TYPE=[type]:[Phone Number] 
+
+Brief description: The telephone number properties listed in the following table are imported to and 
+exported from properties as X-MS-TEL types. 
+
+TYPE parameter 
+value Contact object property 
+
+ASSISTANT PidTagAssistantTelephoneNumber ([MS-OXOCNTC] section 2.2.1.4.11) 
+
+CALLBACK PidTagCallbackTelephoneNumber ([MS-OXOCNTC] section 2.2.1.4.2) 
+
+22 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+TYPE parameter 
+value Contact object property 
+
+COMPANY PidTagCompanyMainTelephoneNumber ([MS-OXOCNTC] section 2.2.1.4.14) 
+
+RADIO PidTagRadioTelephoneNumber ([MS-OXOCNTC] section 2.2.1.4.8) 
+
+TTYTDD PidTagTelecommunicationsDeviceForDeafTelephoneNumber ([MS-OXOCNTC] 
+section 2.2.1.4.13) 
+
+ 
+
+2.1.3.9.6 Anniversary 
+
+vCard header: X-MS-ANNIVERSARY:, X-ANNIVERSARY: 
+
+vCard data format: X-MS-ANNIVERSARY:[date or date/time value] 
+
+Required: No. 
+
+Brief description: The wedding anniversary that is associated with the object that is represented by 
+the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-ANNIVERSARY type is imported to and exported from the PidTagWeddingAnniversary 
+property ([MS-OXOCNTC] section 2.2.1.5.4). The time that is associated with the anniversary event 
+SHOULD<4> be 0:00 in the client's local time zone. 
+
+2.1.3.9.7 Spouse/Partner's Name 
+
+vCard header: X-MS-SPOUSE;N: 
+
+vCard data format: X-MS-SPOUSE;N:[Formatted name] 
+
+Brief description: The name of the spouse/partner who is associated with the object that is 
+represented by the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-SPOUSE;N type is imported to and exported from the PidTagSpouseName property 
+([MS-OXOCNTC] section 2.2.1.10.3). 
+
+2.1.3.9.8 Manager's Name 
+
+vCard header: X-MS-MANAGER;N: 
+
+vCard data format: X-MS-MANAGER;N:[Formatted name] 
+
+Brief description: The name of the manager who is associated with the object that the vCard 
+represents. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-MANAGER;N type is imported to and exported from the PidTagManagerName property 
+([MS-OXOCNTC] section 2.2.1.6.6). 
+
+2.1.3.9.9 Assistant's Name 
+
+vCard header: X-MS-ASSISTANT;N:, X-ASSISTANT 
+
+23 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+vCard data format: X-MS-ASSISTANT;N:[Formatted name] 
+
+Brief description: The name of a person who is authorized to act on behalf of the object that is 
+represented by the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-ASSISTANT;N type is imported to and exported from the PidTagAssistant property 
+([MS-OXOABK] section 2.2.4.8). The X-MS-TEL;ASSISTANT and X-MS-ASSISTANT;N: types are 
+used instead of the vCard AGENT type. 
+
+2.1.3.9.10 Free/Busy URL 
+
+vCard header: FBURL 
+
+vCard data format: FBURL:[Uri] 
+
+Brief description: A URI from which a client can retrieve free/busy information for the object that is 
+represented by the vCard as an iCal file, as specified in [MS-OXCICAL]. 
+
+Importing to and Exporting from Contact Objects 
+
+The FBURL type is imported to and exported from the PidLidFreeBusyLocation property ([MS-
+OXOCNTC] section 2.2.1.10.10). 
+
+2.1.3.9.11 Interests 
+
+vCard header: X-MS-INTERESTS:, X-INTERESTS: 
+
+vCard data format: X-MS-INTERESTS:[List of interests] 
+
+Brief description: The hobbies or other interests that are associated with the object that is represented 
+by the vCard. 
+
+Importing to and Exporting from Contact Objects 
+
+The X-MS-INTERESTS type is imported to and exported from the PidTagHobbies property ([MS-
+OXOCNTC] section 2.2.1.10.2). 
+
+2.1.3.9.12 Default Postal Address 
+
+vCard header: X-MS-OL-DEFAULT-POSTAL-ADDRESS: 
+
+vCard data format: X-MS-OL-DEFAULT-POSTAL-ADDRESS:[Postal address Id] 
+
+Brief description: Specifies the default postal delivery address. 
+
+Exporting from Contact Objects  
+
+The X-MS-OL-DEFAULT-POSTAL-ADDRESS type is exported from the PidLidPostalAddressId 
+property ([MS-OXOCNTC] section 2.2.1.3.9) to indicate which address is the contact's default mailing 
+address. ADR "pref" value is imported to and exported from the PidLidPostalAddressId property, as 
+specified in section 2.1.3.3.1. 
+
+24 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Algorithm Examples 
+
+The following examples show how a vCard is imported to and exported from a Contact object. 
+
+3.1 Importing a vCard 
+
+The following is a text representation of a vCard. 
+
+ BEGIN:vCard 
+ VERSION:3.0 
+ FN:Dan Fennell 
+ ORG:Contoso, Ltd. 
+ ADR;TYPE=WORK,POSTAL,PARCEL:;;7890 Elm Street;Boulder;CO;33041;U.S. 
+ TEL;TYPE=VOICE,MSG,WORK:+1-206-555-0102 
+ TEL;TYPE=FAX,WORK:+1-206-555-0162 
+ EMAIL;TYPE=INTERNET,PREF:dan.fennell@contoso.com 
+ EMAIL;TYPE=INTERNET:dfennell@fabrikam.com 
+ URL;TYPE=WORK:http://www.contoso.com/ 
+ END:vCard 
+
+The information in the vCard is imported to a Contact object, as shown in the following table. 
+
+vCard type Contact object property Value 
+
+FN: PidTagDisplayName Dan Fennell 
+
+ORG: PidTagCompanyName Contoso, Ltd. 
+
+ADR; TYPE=WORK, PidLidWorkAddressStreet 7890 Elm St. 
+
+postal,parcel: PidTagOtherAddressStreet 
+
+ADR; TYPE=WORK, PidLidWorkAddressCity Boulder 
+
+postal,parcel: PidTagOtherAddressCity 
+
+ADR; TYPE=WORK, PidLidWorkAddressState CO 
+
+postal,parcel: PidTagOtherAddressStateOrProvince 
+
+ADR; TYPE=WORK, PidLidWorkAddressPostalCode 33041 
+
+postal,parcel: PidTagOtherAddressPostalCode 
+
+ADR; TYPE=WORK, PidLidWorkAddressCountry U.S. 
+
+postal,parcel: PidTagOtherAddressCountry 
+
+TEL; TYPE=VOICE,MSG, PidTagBusinessTelephoneNumber +1-206-555-0102 
+
+WORK: PidTagOtherTelephoneNumber 
+
+TEL; TYPE=FAX, PidTagBusinessFaxNumber +1-206-555-0162 
+
+WORK: 
+
+EMAIL; TYPE=INTERNET, PidLidEmail1EmailAddress dan.fennell@contoso.com 
+
+PREF: 
+
+EMAIL; TYPE=INTERNET: PidLidEmail2EmailAddress dfennell@fabrikam.com 
+
+URL; TYPE=WORK: PidTagBusinessHomePage http://www.contoso.com/ 
+
+ 
+
+25 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2 Exporting a Contact object 
+
+The following table contains the values stored in a Contact object. 
+
+Contact object property Value 
+
+PidLidEmail1EmailAddress dan.fennell@contoso.com 
+
+PidLidEmail2EmailAddress dfennell@fabrikam.com 
+
+PidTagAssistant Jeff Price 
+
+PidTagAssistantTelephoneNumber +1-206-555-0188 
+
+PidTagBusinessTelephoneNumber +1-206-555-0102 
+
+PidTagCompanyMainTelephoneNumber +1-206-555-0100 
+
+PidTagCompanyName Contoso, Ltd. 
+
+PidLidWorkAddressCountry USA 
+
+PidTagGivenName Dan 
+
+PidTagHomeAddressCountry USA 
+
+PidTagHomeAddressCity Boulder 
+
+PidTagHomeAddressPostalCode 33041 
+
+PidTagHomeAddressStateOrProvince CO 
+
+PidTagHomeAddressStreet 345 Aspen Street 
+
+PidLidWorkAddressCity Boulder 
+
+PidTagMobileTelephoneNumber +1-425-555-0199 
+
+PidLidWorkAddressPostalCode 33041 
+
+PidLidWorkAddressState CO 
+
+PidLidWorkAddressStreet 7890 Elm Street 
+
+PidTagSurname Fennell 
+
+The following vCard is generated from the preceding table. 
+
+ BEGIN:vCard 
+ VERSION:3.0 
+ PRODID:Microsoft Exchange 
+ FN:Dan Fennell 
+ N:Fennell;Dan;;; 
+ ORG:Contoso, Ltd 
+ ADR;TYPE=work,pref:;;7890 Elm Street;Boulder;CO;33041;U.S. 
+ ADR;TYPE=home:;;345 Aspen Street;Boulder;CO;33041;U.S. 
+ EMAIL:TYPE=internet,pref:dan.fennell@contoso.com 
+ EMAIL:TYPE=internet:dfennell@fabrikam.com 
+ TEL;TYPE=work,pref:+1-206-555-0102 
+ TEL;TYPE=cell:+1-425-555-0199 
+ X-MS-TEL;TYPE=COMPANY:+1-206-555-0100 
+ X-MS-ASSISTANT;TYPE=N: Jeff Price 
+ X-MS-TEL;TYPE=ASSISTANT:+1-206-555-0188 
+
+26 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Security 
+
+4.1 Security Considerations for Implementers 
+
+The vCard format can carry cryptographic keys or certificates, as specified in section 2.1.3.8.2. 
+
+Section 2.1.3.8.1 specifies a security classification policy for a vCard. Note that the security policy is 
+not enforced in any way. 
+
+vCards have no inherent authentication or privacy features, but they can be sent by any security 
+mechanism that transfers MIME objects with security or privacy. Where the threat exists of invalid 
+vCard information, it is recommended that you send the vCard by such a mechanism. 
+
+The information contained in a vCard might become out of date. In cases where the data is important 
+to the originator of the vCard, it is recommended that you specify the URL type specified in section 
+2.1.3.7.8. In addition, you can use the REV type specified in section 2.1.3.7.4 to indicate the last time 
+that the vCard data was updated. 
+
+4.2 Index of Security Parameters 
+
+ 
+
+Security parameter Section 
+
+CLASS type 2.1.3.8.1 
+
+KEY type 2.1.3.8.2 
+
+REV type 2.1.3.7.4 
+
+URL type 2.1.3.7.8 
+
+ 
+
+27 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.1.3.2.5:  If the vCard is imported via the Simple Mail Transfer Protocol (SMTP), 
+the client's time zone will be unavailable. In this case, Exchange 2010, Exchange 2013, Exchange 
+2016, and Exchange 2019 use the time 0:00 Coordinated Universal Time (UTC) when setting the 
+PidTagBirthday property and the resulting date might be off by one day. 
+
+<2> Section 2.1.3.4.3: The MAILER type is set to "Microsoft Exchange" for Exchange Server. 
+
+<3> Section 2.1.3.7.3: The PRODID type is set to "Microsoft Exchange" for Exchange Server. 
+
+<4> Section 2.1.3.9.6: If the vCard is imported via the Simple Mail Transfer Protocol (SMTP), the 
+client's time zone will be unavailable. In this case, Exchange 2010, Exchange 2013, Exchange 2016, 
+and Exchange 2019 use the time 0:00 UTC when setting the PidTagWeddingAnniversary property 
+and the resulting date might be off by one day. 
+
+28 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+5 Appendix A: Product Behavior Updated list of supported products. Major 
+
+29 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Index
+A  
+ S 
+Applicability 8  
+ Security 
+C    implementer considerations 27 
+    parameter index 27 
+Change tracking 29 Standards assignments 8 
+  
+
+E T 
+  
+Examples Tracking changes 29 
+   Exporting a Contact object 26 
+   Importing a vCard 25  
+
+   overview 25 
+Exporting a Contact object example 26 
+ 
+G 
+ 
+Glossary 6 
+ 
+I 
+ 
+Implementer - security considerations 27 
+Importing a vCard example 25 
+Index of security parameters 27 
+Informative references 7 
+Introduction 6 
+ 
+N 
+ 
+Normative references 7 
+ 
+O 
+ 
+Overview (synopsis) 7 
+ 
+P 
+ 
+Parameters - security index 27 
+Processing rules 
+   custom types 21 
+   deliverable addressing types 11 
+   explanatory types 18 
+   general types 9 
+   geographical types 16 
+   identification types 9 
+   organizational types 16 
+   security types 20 
+   telecommunications addressing types 14 
+Product behavior 28 
+ 
+R 
+ 
+References 
+   informative 7 
+   normative 7 
+Relationship to 
+   other protocols 
+      Relationship to 
+         other algorithms 7 
+
+30 / 30 
+
+[MS-OXVCARD] - v20250520 
+vCard to Contact Object Conversion Algorithm 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

@@ -1,0 +1,1501 @@
+﻿[MS-ASMS]:  
+
+Exchange ActiveSync: Short Message Service (SMS) 
+Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/10/2009 0.1.0 Major Initial Availability. 
+
+7/15/2009 1.0.0 Major Revised and edited for technical content. 
+
+11/4/2009 2.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 3.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 4.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 5.0 None 
+
+technical content. 
+
+3/18/2011 5.1 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 6.0 None 
+
+technical content. 
+
+1/20/2012 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 7.0 None 
+
+technical content. 
+
+10/8/2012 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 8.0 None 
+
+technical content. 
+
+7/26/2013 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 9.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 9.0 None 
+
+technical content. 
+
+4/30/2014 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 10.0 None 
+
+technical content. 
+
+10/30/2014 10.1 Minor Clarified the meaning of the technical content. 
+
+5/26/2015 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/30/2015 11.0 None 
+
+technical content. 
+
+9/14/2015 12.0 Major Significantly changed the technical content. 
+
+6/9/2016 13.0 Major Significantly changed the technical content. 
+
+2/28/2017 14.0 Major Significantly changed the technical content. 
+
+2 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+7/24/2018 15.0 Major Significantly changed the technical content. 
+
+10/1/2018 16.0 Major Significantly changed the technical content. 
+
+5/20/2025 17.0 Major Significantly changed the technical content. 
+
+3 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Namespaces ................................................................................................ 9 
+2.2.2 Elements ..................................................................................................... 9 
+
+2.2.2.1 SMS Class Elements .............................................................................. 10 
+2.2.2.1.1 Body .............................................................................................. 10 
+2.2.2.1.2 ConversationId ................................................................................ 10 
+2.2.2.1.3 ConversationIndex .......................................................................... 10 
+2.2.2.1.4 DateReceived .................................................................................. 10 
+2.2.2.1.5 Flag ............................................................................................... 10 
+2.2.2.1.6 From .............................................................................................. 10 
+2.2.2.1.7 Importance ..................................................................................... 11 
+2.2.2.1.8 InternetCPID .................................................................................. 11 
+2.2.2.1.9 Read .............................................................................................. 11 
+2.2.2.1.10 To ................................................................................................. 11 
+
+2.2.2.2 Additional Elements ............................................................................... 11 
+2.2.2.2.1 Class ............................................................................................. 11 
+
+2.2.2.2.1.1 Class (GetItemEstimate) ............................................................. 11 
+2.2.2.2.1.2 Class (Sync) .............................................................................. 12 
+
+2.2.2.2.2 EnableOutboundSMS ........................................................................ 12 
+2.2.2.2.3 PhoneNumber ................................................................................. 12 
+
+3 Protocol Details ..................................................................................................... 13 
+3.1 Client Details ................................................................................................... 13 
+
+3.1.1 Abstract Data Model .................................................................................... 13 
+3.1.2 Timers ...................................................................................................... 13 
+3.1.3 Initialization ............................................................................................... 13 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 13 
+
+3.1.4.1 Synchronizing SMS Items....................................................................... 13 
+3.1.4.1.1 Options .......................................................................................... 13 
+
+3.1.4.1.1.1 Sticky Options ........................................................................... 13 
+3.1.4.1.1.2 Filtering .................................................................................... 14 
+
+3.1.4.1.2 Making Changes Involving SMS Items ................................................ 14 
+3.1.4.1.3 Special Case for Synchronization of Outbox ........................................ 14 
+
+3.1.4.2 Estimating the Number of Changes ......................................................... 14 
+3.1.4.3 Provisioning for Relay of Outbound SMS Messages .................................... 15 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 15 
+3.1.5.1 Sending Outbound SMS Messages ........................................................... 15 
+
+3.1.6 Timer Events .............................................................................................. 16 
+3.1.7 Other Local Events ...................................................................................... 16 
+
+3.2 Server Details .................................................................................................. 16 
+
+4 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.1 Abstract Data Model .................................................................................... 16 
+3.2.2 Timers ...................................................................................................... 16 
+3.2.3 Initialization ............................................................................................... 16 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 16 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 16 
+
+3.2.5.1 Processing a Sync Request ..................................................................... 16 
+3.2.5.2 Processing a GetItemEstimate Request .................................................... 17 
+3.2.5.3 Processing a Settings Request ................................................................ 17 
+
+3.2.6 Timer Events .............................................................................................. 17 
+3.2.7 Other Local Events ...................................................................................... 17 
+
+4 Protocol Examples ................................................................................................. 18 
+4.1 Synchronizing E-Mail Items and SMS Items ......................................................... 18 
+4.2 Synchronizing Only SMS Items .......................................................................... 18 
+4.3 SMS Message Added by the Server ..................................................................... 19 
+4.4 Enabling Outbound SMS Messages ..................................................................... 19 
+
+5 Security ................................................................................................................. 21 
+5.1 Security Considerations for Implementers ........................................................... 21 
+5.2 Index of Security Parameters ............................................................................ 21 
+
+6 Appendix A: Full XML Schema ................................................................................ 22 
+
+7 Appendix B: Product Behavior ............................................................................... 23 
+
+8 Change Tracking .................................................................................................... 24 
+
+9 Index ..................................................................................................................... 25 
+
+ 
+
+5 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Exchange ActiveSync: Short Message Service (SMS) Protocol describes an XML-based format that 
+provides the mechanisms for a mobile device to synchronize SMS messages with the server and for 
+the server to send SMS messages through the mobile device. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+code page: An ordered set of characters of a specific script in which a numerical index (code-point 
+value) is associated with each character. Code pages are a means of providing support for 
+character sets and keyboard layouts used in different countries. Devices such as the display and 
+keyboard can be configured to use a specific code page and to switch from one code page (such 
+as the United States) to another (such as Portugal) at the user's request. 
+
+conversation: A single representation of a send/response series of email messages. A 
+conversation appears in the Inbox as one unit and allows the user to view and read the series of 
+related email messages in a single effort. 
+
+conversation ID: A unique value that is associated with a conversation. It is assigned to each 
+Message object that is part of a conversation and it is used to identify the conversation to which 
+the message belongs. 
+
+conversation index: A value that specifies the location of a message within a conversation. A 
+client can use this value to identify the parent and child messages of a message, and then 
+generate a tree view of the conversation that contains those messages. 
+
+Inbox folder: A special folder that is the default location for Message objects received by a user or 
+resource. 
+
+non-delivery report: A report message that is generated and sent by a server to the sender of a 
+message if an email message could not be received by an intended recipient. 
+
+Outbox folder: A special folder that contains Message objects that are submitted to be sent. 
+
+Sent Items folder: A special folder that is the default location for storing copies of Message 
+objects after they are submitted or sent. 
+
+Short Message Service (SMS): A communications protocol that is designed for sending text 
+messages between mobile phones. 
+
+Wireless Application Protocol (WAP) Binary XML (WBXML): A compact binary representation 
+of XML that is designed to reduce the transmission size of XML documents over narrowband 
+communication channels. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+
+6 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol". 
+
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol". 
+
+[MS-ASCON] Microsoft Corporation, "Exchange ActiveSync: Conversations Protocol". 
+
+[MS-ASDTYPE] Microsoft Corporation, "Exchange ActiveSync: Data Types". 
+
+[MS-ASEMAIL] Microsoft Corporation, "Exchange ActiveSync: Email Class Protocol". 
+
+[MS-ASWBXML] Microsoft Corporation, "Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XML] World Wide Web Consortium, "Extensible Markup Language (XML) 1.0 (Fourth Edition)", W3C 
+Recommendation 16 August 2006, edited in place 29 September 2006, 
+http://www.w3.org/TR/2006/REC-xml-20060816/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+This protocol is an XML-based format that is used to do the following: 
+
+ Enable a mobile device to synchronize SMS messages with the server. 
+
+ Provision the server to send outgoing SMS messages through the mobile device. 
+
+7 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+This protocol also includes XML elements to represent SMS message data. The SMS data is included in 
+protocol command requests when SMS data is being sent from the client to the server, and is included 
+in protocol command responses when SMS data is retrieved from the server. SMS data includes some 
+of the same header information as e-mail data such as to and from, as well as body, flag, and 
+importance. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol consists of a series of XML elements that are embedded inside a command request or a 
+command response. For information about command requests and responses, see [MS-ASCMD]. The 
+Wireless Application Protocol (WAP) Binary XML (WBXML), described in [MS-ASWBXML], is 
+used to transmit the XML markup that constitutes the request body and the response body. 
+
+This protocol defines elements according to the data type definitions that are described in [MS-
+ASDTYPE]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable for synchronizing SMS messages from mobile devices to the server and 
+relaying outbound SMS messages from the server to the mobile device. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol consists of a series of XML elements that are embedded inside a command request or a 
+command response. The XML markup that constitutes the request body or the response body is 
+transmitted between client and server by using WBXML, as specified in [MS-ASWBXML]. 
+
+The mobile device uses standard mobile network protocols, such as GSM and CDMA, to send outbound 
+SMS messages. 
+
+2.2 Message Syntax 
+
+The XML schemas for the Email, Email2, and AirSyncBase namespaces are described in section 6. 
+
+The markup that is used by this protocol MUST be well-formed XML, as specified in [XML]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and is not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+airsync AirSync [MS-ASCMD] section 2.2.1.21 
+
+airsyncbase AirSyncBase [MS-ASAIRS] 
+
+email Email [MS-ASEMAIL] 
+
+email2 Email2 [MS-ASEMAIL] 
+
+settings Settings [MS-ASCMD] section 2.2.1.18 
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] 
+
+getitemestimate GetItemEstimate [MS-ASCMD] section 2.2.1.9 
+
+ 
+
+2.2.2 Elements 
+
+Elements of the SMS class are defined in three namespaces: Email, Email2, and AirSyncBase. The 
+namespace in which an element is defined is indicated by the presence of a namespace prefix, as 
+defined in section 2.2.1. 
+
+The XML schema elements that are specific to the SMS class are specified in section 2.2.2.1. 
+Additional XML schema elements that are used for the SMS class are specified in section 2.2.2.2. 
+Elements that are specific to a particular operation are specified further in sections 3.1.4, 3.1.5, and 
+3.2.5. 
+
+Protocol Versions 
+
+9 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The SMS class is supported only by protocol versions 14.0, 14.1, 16, and 16.1. Therefore, the 
+elements that are defined by this specification MUST be used with protocol version 14.0, 14.1, 16.0, 
+or 16.1 for any operation involving the SMS class. 
+
+When protocol version 14.0 is used, operations on SMS items are supported only for certain folders. 
+For details, see section 3.1.4.1 and section 3.1.4.2. 
+
+2.2.2.1 SMS Class Elements 
+
+This section specifies elements that constitute the SMS class. The SMS class represents an SMS 
+message. The SMS class elements are children of the airsync:ApplicationData element in the Sync 
+command. 
+
+For details about the airsync:ApplicationData element, see [MS-ASCMD] section 2.2.3.11. 
+
+2.2.2.1.1 Body 
+
+The airsyncbase:Body element (as specified in [MS-ASAIRS] section 2.2.2.9) is an optional child 
+element of the SMS class (represented by the airsync:ApplicationData element). It contains details 
+about the body of the SMS message. This element is part of the AirSyncBase namespace, as 
+specified in [MS-ASAIRS].  
+
+2.2.2.1.2 ConversationId 
+
+The email2:ConversationId element (as specified in [MS-ASCON] section 2.2.2.3.3) is a required 
+child element of the SMS class (represented by the airsync:ApplicationData element) in Sync 
+command responses. It specifies a unique identifier for a conversation. 
+
+2.2.2.1.3 ConversationIndex 
+
+The email2:ConversationIndex element (as specified in [MS-ASCON] section 2.2.2.4) is a required 
+child element of the SMS class (represented by the airsync:ApplicationData element) in Sync 
+command responses. It specifies a set of timestamps that is used by a client to generate a tree view 
+of a conversation. 
+
+2.2.2.1.4 DateReceived 
+
+The email:DateReceived element ([MS-ASEMAIL] section 2.2.2.24) is an optional child element of 
+the SMS class (represented by the airsync:ApplicationData element) in Sync command requests 
+and responses. The DateReceived element specifies the date and time when the SMS message was 
+either received by the device or sent by the device. If the SMS message is in the Sent Items folder, 
+this element specifies the date and time when the SMS message was sent; otherwise, this element 
+specifies the date and time when the SMS message was received. 
+
+The value of this element is a dateTime data type, as specified in [MS-ASDTYPE] section 2.3. 
+
+2.2.2.1.5 Flag 
+
+The email:Flag element (as specified in [MS-ASEMAIL] section 2.2.2.34) is an optional child element 
+of the SMS class (represented by the airsync:ApplicationData element). It specifies the flag that is 
+associated with the SMS message, along with the current status of the SMS message.  
+
+2.2.2.1.6 From 
+
+The email:From element ([MS-ASEMAIL] section 2.2.2.36) is an optional child element of the SMS 
+class (represented by the airsync:ApplicationData element) in Sync command requests and 
+responses. It specifies the telephone number of the individual who sent the SMS message. 
+
+10 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. The format 
+of the string is as follows, including the quotes and square brackets: 
+
+"Sender's Name" [MOBILE:Sender's phone number] 
+
+Sender's Name specifies the name of the sender and is optional. Sender's phone number specifies the 
+mobile telephone number of the sender. 
+
+2.2.2.1.7 Importance 
+
+The email:Importance element (as specified in [MS-ASEMAIL] section 2.2.2.38) is an optional child 
+element of the SMS class (represented by the airsync:ApplicationData element). It specifies the 
+importance of the SMS message, as determined by the sender. 
+
+2.2.2.1.8 InternetCPID 
+
+The email:InternetCPID element (as specified in [MS-ASEMAIL] section 2.2.2.40) is a required child 
+element of the SMS class (represented by the airsync:ApplicationData element). It specifies the 
+code page ID of the SMS message. 
+
+2.2.2.1.9 Read 
+
+The email:Read element (as specified in [MS-ASEMAIL] section 2.2.2.58) is an optional child element 
+of the SMS class (represented by the airsync:ApplicationData element). It specifies whether the 
+SMS message has been viewed by the current recipient. 
+
+2.2.2.1.10 To 
+
+The email:To element ([MS-ASEMAIL] section 2.2.2.79) is an optional child element of the SMS class 
+(represented by the airsync:ApplicationData element) in Sync command requests and responses. It 
+specifies the list of primary recipients. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. The value 
+comprises the name and phone number of one or more recipients. Multiple recipients are separated by 
+commas. The format of each recipient-entry is as follows, including the quotes and square brackets: 
+
+"Recipient's Name" [MOBILE: Recipient's phone number] 
+
+Recipient's Name specifies the name of the recipient and is optional. Recipient's phone number 
+specifies the mobile telephone number of the recipient. 
+
+2.2.2.2 Additional Elements 
+
+This section specifies elements that are used in ActiveSync commands involving SMS items. 
+
+2.2.2.2.1 Class 
+
+The airsync:Class element is used in the following command requests and responses: 
+
+ GetItemEstimate command requests 
+
+ Sync command requests 
+
+ Sync command responses 
+
+The definition of the airsync:Class element differs according to the context in which it is used. For 
+more details, see section 2.2.2.2.1.1 and section 2.2.2.2.1.2. 
+
+2.2.2.2.1.1 Class (GetItemEstimate) 
+
+11 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The airsync:Class element ([MS-ASCMD] section 2.2.3.27.2) is an optional child element of the 
+airsync:Options element ([MS-ASCMD] section 2.2.3.125.2) in the GetItemEstimate command 
+request. It specifies the class to which the options apply.  
+
+The value of this element is a string, as specified in [MS-ASDTYPE] section 2.7. For SMS messages, 
+the value of this element is "SMS". 
+
+2.2.2.2.1.2 Class (Sync) 
+
+For options: The airsync:Class element ([MS-ASCMD] section 2.2.3.27.6) is an optional child element 
+of the airsync:Options element ([MS-ASCMD] section 2.2.3.125.6) in the Sync command request. It 
+specifies the class to which the options apply. 
+
+For adding, changing, and deleting: The airsync:Class element is an optional child element of the 
+airsync:Add ([MS-ASCMD] section 2.2.3.7.2), airsync:Change ([MS-ASCMD] section 2.2.3.24), and 
+airsync:Delete ([MS-ASCMD] section 2.2.3.42.2) elements in the Sync command response, but the 
+airsync:Class element is not present in the Sync response for an SMS deletion when protocol 
+version 14.0 is used. The airsync:Class element is an optional child element of the airsync:Add 
+element in the Sync command request. The airsync:Class element specifies the class of the item 
+that is being added, changed, or deleted. 
+
+The value of this element is a string, as specified in [MS-ASDTYPE] section 2.7. For SMS messages, 
+the value is "SMS". 
+
+2.2.2.2.2 EnableOutboundSMS 
+
+The settings:EnableOutboundSMS element ([MS-ASCMD] section 2.2.3.60) is an optional child 
+element of the settings:Set element ([MS-ASCMD] section 2.2.3.167) in the Settings command 
+request. It is used to provision the server for sending outbound SMS messages through the mobile 
+device. (Outbound SMS messages are sent only through mobile devices that enable it.) 
+
+The value of this element is an integer, as specified in [MS-ASDTYPE] section 2.6. If this element is 
+set to 1, then the mobile device can be used to send outbound SMS messages. If this element is set to 
+0, then the mobile device will not be used to send outbound SMS messages. Devices that were 
+previously enabled, but no longer want to act as SMS transport agents for the server, can reset the 
+property to zero on the server by sending a Settings command request with the 
+settings:EnableOutboundSMS element set to 0. The default value of this element is 0.  
+
+2.2.2.2.3 PhoneNumber 
+
+The settings:PhoneNumber element ([MS-ASCMD] section 2.2.3.134) is an optional child element of 
+the settings:Set element in the Settings command request. It specifies the telephone number that 
+identifies the mobile device.  
+
+The value of this element is a string, as specified in [MS-ASDTYPE] section 2.7. 
+
+The telephone number facilitates troubleshooting and device management by providing a well-known, 
+unique identifier for the device. The value of the settings:PhoneNumber element can be up to 1024 
+characters in length. The server does not validate the value of the settings:PhoneNumber 
+element.<1>   
+
+12 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Synchronizing SMS Items 
+
+A client initiates synchronization of data with the server by sending a Sync command request to the 
+server. The Sync command request synchronizes the client's data with the data currently stored by 
+the server.   
+
+When protocol version 14.0 is used, synchronization of SMS items is supported only for the Inbox 
+folder, the Outbox folder, and the Sent Items folder. Protocol versions 14.1, 16.0 and 16.1 
+support synchronization of SMS items on any folder that contains email messages. Other protocol 
+versions do not support synchronization of SMS items. 
+
+The Sync command request is further specified in [MS-ASCMD] section 2.2.1.21.  
+
+3.1.4.1.1 Options 
+
+If the client wants to synchronize SMS messages for a given folder, the airsync:Options block of the 
+Sync command request includes the airsync:Class element ([MS-ASCMD] section 2.2.3.27.6) set to 
+the value "SMS". If the airsync:Class element is not included in the airsync:Options block, that set 
+of options applies to the default class of the given folder, in which case, only the items of the default 
+class for the given folder are synchronized. If no airsync:Options block is included in the Sync 
+command request, only items of the default class for the given folder are synchronized. 
+
+A maximum of two airsync:Options blocks are allowed within a airsync:Collection block([MS-
+ASCMD] section 2.2.3.29.2), namely one for the default class of the given folder and one for SMS 
+messages. The airsync:Class element MUST be set to "SMS" to indicate that the options apply to 
+SMS messages. An SMS airsync:Options block can be included within any airsync:Collection block 
+that specifies an e-mail folder. 
+
+For more details about the airsync:Class element as a child of the airsync:Options element, see 
+section 2.2.2.2.1.2. 
+
+3.1.4.1.1.1 Sticky Options 
+
+Sticky options allow a client to send a Sync command request that does not include an 
+airsync:Options block. In this case, the server uses the previous set of options.  
+
+13 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Sticky options require that the client send all sets of options if any option has changed. For example, if 
+the truncation limit has increased for SMS items and the client is synchronizing both SMS items and e-
+mail items for a given folder, the Sync request will include two airsync:Options blocks. If one set of 
+options is omitted from the request, the server presumes that the item class that corresponds to the 
+missing set of options is no longer desired. The server removes items of that item class from the 
+synchronization by including an airsync:SoftDelete element in the Sync response, as specified in 
+[MS-ASCMD] section 2.2.3.172. 
+
+3.1.4.1.1.2 Filtering 
+
+A filter can be applied to the synchronization of SMS items. The airsync:FilterType element specifies 
+a time window. When synchronizing SMS items, the time-window restricts the items that the server 
+sends to the client. The same filter values (0 through 5) that are used to filter e-mail items are also 
+used to filter SMS items. For more details about filtering and the airsync:FilterType element, see 
+[MS-ASCMD] section 2.2.3.68.2. 
+
+3.1.4.1.2 Making Changes Involving SMS Items 
+
+SMS items can be changed (updated) or deleted the same way that e-mail items are changed or 
+deleted. SMS items can also be added. When an SMS item is added, changed, or deleted, the client 
+sends a Sync command request that includes the airsync:Add ([MS-ASCMD] section 2.2.3.7.2), 
+airsync:Change ([MS-ASCMD] section 2.2.3.24), and airsync:Delete ([MS-ASCMD] section 
+2.2.3.42.2) elements, respectively.  
+
+The SMS data is specified in the SMS class elements, which MUST be children of the 
+airsync:ApplicationData element, as specified in [MS-ASCMD] section 2.2.3.11. The following 
+restrictions apply: 
+
+ Sync request with airsync:Add: The conversation ID and conversation index cannot be sent 
+to the server by clients when adding an SMS item to the server; the conversation ID and 
+conversation index, specified in the email2:ConversationId ([MS-ASEMAIL] section 2.2.2.21) 
+and email2:ConversationIndex ([MS-ASEMAIL] section 2.2.2.22) elements, respectively, are 
+returned by the server in the Sync command response, along with the server ID specified in the 
+airsync:ServerId element ([MS-ASCMD] section 2.2.3.166.8) for the SMS item that was added. 
+
+ Sync request with airsync:Change: The client is allowed to update only the read status and the 
+flags of an SMS item. Therefore, only the email:Read element ([MS-ASEMAIL] section 2.2.2.58) 
+and child elements of the email:Flag element ([MS-ASEMAIL] section 2.2.2.34) can be specified 
+as part of the airsync:Change element in the Sync command request. 
+
+For more details about the SMS class elements, see section 2.2.2.1.  
+
+3.1.4.1.3 Special Case for Synchronization of Outbox 
+
+When a mobile device is enabled to send an outbound SMS message, the mobile device MUST 
+synchronize the SMS items in the user's Outbox folder. It SHOULD do so at regular, short intervals 
+(about every 15 minutes) or use the Sync command with the airsync:Wait element ([MS-ASCMD] 
+section 2.2.3.198) or the airsync:HeartbeatInterval element ([MS-ASCMD] section 2.2.3.88.2), as 
+specified in [MS-ASCMD] section 3.1.5.4, to provide the user with the best experience in sending SMS 
+items. 
+
+3.1.4.2 Estimating the Number of Changes 
+
+The client sends a GetItemEstimate command request to the server to get an estimate of the 
+number of changes to SMS items for a given email folder. (An email folder is one that contains email 
+messages.)  
+
+14 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+This operation on SMS items is supported only for the Inbox folder, the Outbox folder, and the 
+Sent Items folder when protocol version 14.0 is used; it is supported for all email folders when 
+protocol version 14.1 or 16.0 is used. Other protocol versions do not support this operation on SMS 
+items. 
+
+The estimate of changes will include changes to SMS items for an email folder only if the request 
+includes an airsync:Options block with the airsync:Class element ([MS-ASCMD] section 2.2.3.27.2) 
+set to "SMS". A maximum of two airsync:Options blocks are allowed within a 
+getitemestimate:Collection block, namely one for the default class of the given email folder and 
+one for SMS items. The airsync:Class element MUST be set to "SMS" to indicate that the options 
+apply to SMS items. 
+
+The GetItemEstimate command request is further specified in [MS-ASCMD] section 2.2.1.9. 
+
+3.1.4.3 Provisioning for Relay of Outbound SMS Messages 
+
+The client sends a Settings command request to provision the server for sending outbound SMS 
+messages through the mobile device. Outbound SMS messages are sent only through mobile devices 
+that enable it. To enable outbound SMS messages, the following elements are included as children of 
+the settings:Set element in the settings:DeviceInformation block of the Settings command 
+request: 
+
+ settings:EnableOutboundSMS, set to 1. See section 2.2.2.2.2. 
+
+ settings:PhoneNumber, specifying the mobile device's telephone number. 
+
+To disable outbound SMS, the settings:EnableOutboundSMS element is set to 0. In this case, the 
+settings:PhoneNumber element is not needed. 
+
+For more details about the Settings command request, see [MS-ASCMD] section 2.2.1.18. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+3.1.5.1 Sending Outbound SMS Messages 
+
+The mobile device performs the following tasks to send an outgoing SMS message: 
+
+1. The client MUST synchronize the SMS items in the user's Outbox folder. See section 3.1.4.1 for 
+details about synchronizing SMS items. Any SMS items that the server adds to the Outbox folder 
+are outgoing SMS messages. It is important that the client synchronize the Outbox folder as 
+specified in section 3.1.4.1.3. Doing so allows the client to send SMS items in the shortest possible 
+interval. 
+
+2. The client MUST send the outgoing SMS items via the mobile device's wireless network. The client 
+sends the given SMS item to all of the mobile recipients provided by the server. The client MUST 
+logically split the item's body as necessary to comply with its network and MUST enable the 
+reassembling of the body on the receiver's phone. 
+
+3. If a problem occurs with the message delivery, the client SHOULD generate a non-delivery 
+report and post it in the user's Inbox folder by sending a Sync request that includes the 
+airsync:Add element. See section 3.1.4.1.2 for details about adding SMS items to a folder. 
+
+4. The client MUST delete the outgoing SMS items by sending a Sync request that includes the 
+airsync:Delete element. For more details about deleting SMS items from a folder, see section 
+3.1.4.1.2.  
+
+For more details about synchronization processing and sequencing, see [MS-ASCMD] section 3.1.5.3 
+and [MS-ASCMD] section 3.1.5.4. 
+
+15 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+3.2.1 Abstract Data Model 
+
+None. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+3.2.5.1 Processing a Sync Request 
+
+Synchronization of SMS items is initiated by the client, as specified in section 3.1.4.1. The server 
+responds with a Sync command response. To send SMS class data back to the client, the server 
+includes an airsync:ApplicationData element ([MS-ASCMD] section 2.2.3.11) in the Sync command 
+response. The SMS class data is contained in the SMS class elements, as specified in section 2.2.2.1, 
+which MUST be children of the airsync:ApplicationData element. 
+
+The server MUST NOT send SMS items to the client if the client did not request them. 
+
+The server returns status code 4 (protocol error) in the Sync command response for the following 
+situations: 
+
+ The Sync command request specifies a filter value that is not in the allowed range of values (0 
+through 5). For more details about filtering, see section 3.1.4.1.1.2. 
+
+ The Sync command request includes more than two airsync:Options blocks. 
+
+ The Sync command request includes an airsync:Options block that specifies a class other than 
+"SMS" or "Email" for a collection containing e-mail items. 
+
+ The Sync command request includes an airsync:Options block that specifies the "SMS" or 
+"Email" class for a collection that does not contain e-mail items. 
+
+The Sync command response is further specified in [MS-ASCMD] section 2.2.1.21. For more details 
+about synchronization processing and sequencing, see [MS-ASCMD] section 3.1.5.3 and [MS-ASCMD] 
+section 3.1.5.4. 
+
+16 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.5.2 Processing a GetItemEstimate Request 
+
+The client sends a GetItemEstimate command request, as specified in section 3.1.4.2. The server 
+sends a GetItemEstimate command response with an estimate of the total number of changes for a 
+given folder. The estimate includes the changes to items of the classes specified in the request. The 
+estimate includes changes to SMS items for the specified e-mail folders only if the request includes an 
+airsync:Options block with the airsync:Class element ([MS-ASCMD] section 2.2.3.27.2) set to 
+"SMS". 
+
+The server returns status code 4 (protocol error) in the GetItemEstimate command response for the 
+following situations: 
+
+ The GetItemEstimate command request includes more than two airsync:Options blocks. 
+
+ The GetItemEstimate command request includes an airsync:Options block that specifies a 
+class other than the SMS or Email class for a collection containing e-mail items. 
+
+ The GetItemEstimate command request includes an airsync:Options block that specifies the 
+SMS or Email class for a collection that does not contain e-mail items. 
+
+The GetItemEstimate command response is further specified in [MS-ASCMD] section 2.2.2.7.2. 
+
+3.2.5.3 Processing a Settings Request 
+
+The client sends a Settings command request, as specified in section 3.1.4.3. If the Settings 
+command request includes the settings:EnableOutboundSMS element set to 1 and no telephone 
+number is specified for the mobile device, the server returns status code 5 (invalid arguments) in the 
+Settings command response. 
+
+If the Settings command request indicates that the mobile device can be used to send outbound SMS 
+messages, the server SHOULD propagate the mobile device's outbound SMS state to all clients of the 
+server, allowing any of these clients to send SMS items via the given mobile device. 
+
+The Settings command response is further specified in [MS-ASCMD] section 2.2.1.18. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+17 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Synchronizing E-Mail Items and SMS Items 
+
+The following is an example of how the options are specified when the client synchronizes e-mail items 
+and SMS items. 
+
+Client's Sync command request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync:" xmlns:airsyncbase="AirSyncBase:">  
+  <Collections> 
+    <Collection> 
+      <SyncKey>601771687</SyncKey> 
+      <CollectionId>15</CollectionId> 
+      <DeletesAsMoves/> 
+      <GetChanges/> 
+      <WindowSize>100</WindowSize> 
+      <Options> 
+        <Class>SMS</Class> 
+        <FilterType>0</FilterType> 
+        <airsyncbase:BodyPreference> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+          <airsyncbase:TruncationSize>102400</airsyncbase:TruncationSize> 
+        </airsyncbase:BodyPreference> 
+      </Options> 
+      <Options> 
+        <FilterType>2</FilterType> 
+        
+<airsyncbase:BodyPreference><airsyncbase:Type>1</airsyncbase:Type></airsyncbase:BodyPreferenc
+e> 
+        
+<airsyncbase:BodyPreference><airsyncbase:Type>2</airsyncbase:Type></airsyncbase:BodyPreferenc
+e> 
+        <airsyncbase:BodyPreference> 
+          <airsyncbase:Type>4</airsyncbase:Type> 
+          <airsyncbase:TruncationSize>102400</airsyncbase:TruncationSize> 
+        </airsyncbase:BodyPreference> 
+        <MIMESupport>0</MIMESupport> 
+        <Conflict>1</Conflict> 
+      </Options> 
+      <Commands> 
+         ... 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+4.2 Synchronizing Only SMS Items 
+
+The following is an example of how the options are specified when the client synchronizes only SMS 
+items. 
+
+Client's Sync command request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync:" xmlns:airsyncbase="AirSyncBase:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>601771687</SyncKey> 
+      <CollectionId>15</CollectionId> 
+      <DeletesAsMoves/> 
+      <GetChanges/> 
+
+18 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <WindowSize>100</WindowSize> 
+      <Options> 
+        <Class>SMS</Class> 
+        <FilterType>0</FilterType> 
+        <airsyncbase:BodyPreference> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+          <airsyncbase:TruncationSize>102400</airsyncbase:TruncationSize> 
+        </airsyncbase:BodyPreference> 
+      </Options> 
+      <Commands> 
+         ... 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+4.3 SMS Message Added by the Server 
+
+The following is an example of an SMS item being added by the server to the client. Note that the 
+SMS class data is included within the ApplicationData element, whereas the class of the item is 
+specified by the Class element in the Add element. 
+
+Server's Sync command response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync:" xmlns:airsyncbase="AirSyncBase:" xmlns:email="Email:" 
+xmlns:email2="Email2:" > 
+  <Collections> 
+    <Collection> 
+      <SyncKey>525665452</SyncKey> 
+      <CollectionId>55</CollectionId> 
+      <Status>1</Status> 
+      <Commands> 
+        <Add> 
+          <Class>SMS</Class> 
+          <ServerId>55:11</ServerId> 
+          <ApplicationData> 
+            <email:To>"14255550143" [MOBILE:14255550143]</email:To> 
+            <email:From>"+14255550123" [MOBILE:+14255550123]</email:From> 
+            <email:DateReceived>2009-01-08T00:14:36.000Z</email:DateReceived> 
+            <email:Importance>1</email:Importance> 
+            <email:Read>0</email:Read> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>1</airsyncbase:Type> 
+              <airsyncbase:EstimatedDataSize>29</airsyncbase:EstimatedDataSize> 
+              <airsyncbase:Data>Make sure you get some rest! 
+ </airsyncbase:Data> 
+            </airsyncbase:Body> 
+            <email:InternetCPID>1252</email:InternetCPID> 
+            <email:Flag/> 
+            <email2:ConversationId>ñòaöÏMDÿ‹döX3&#xF;0&#x0;</email2:ConversationId> 
+            <email2:ConversationIndex>Éq&amp;HÞ</email2:ConversationIndex> 
+          </ApplicationData> 
+        </Add> 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+4.4 Enabling Outbound SMS Messages 
+
+The following example shows how a mobile-device client enables the server to use that mobile-device 
+client for relaying outbound SMS messages. 
+
+19 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Mobile-device client's Settings command request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Settings xmlns="Settings:"> 
+  <DeviceInformation> 
+    <Set> 
+      <Model>Manufacturer-Name-Number</Model> 
+      <IMEI>123456789012345</IMEI> 
+      <FriendlyName>My PPC Phone</FriendlyName> 
+      <OS>PPC</OS> 
+      <OSLanguage>us-EN</OSLanguage> 
+      <PhoneNumber>206-555-0112</PhoneNumber> 
+      <EnableOutboundSMS>1</EnableOutboundSMS> 
+      <MobileOperator>T-Mojo</MobileOperator> 
+    </Set> 
+  </DeviceInformation> 
+ </Settings> 
+
+20 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+21 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full XML Schema 
+
+For ease of implementation, this section provides the full XML schemas for this protocol. The schema 
+comprises portions of the Email.xsd, Email2.xsd and AirSyncBase.xsd files. 
+
+The portion of the Email.xsd file that is used by the SMS class is as follows. The complete contents of 
+the Email.xsd file are provided in [MS-ASEMAIL] section 6.1. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:tns="Email:" xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="Email:" elementFormDefault="qualified" attributeFormDefault="unqualified"> 
+  <xs:import namespace="AirSyncBase:" schemaLocation="AirSyncBase.xsd"/> 
+  <xs:element name="To"> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:maxLength value="32768"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:element> 
+  <xs:element name="From"> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:maxLength value="32768"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:element> 
+  <xs:element name="DateReceived" type="xs:dateTime"/> 
+  <xs:element name="Importance" type="xs:unsignedByte"/> 
+  <xs:element name="Read" type="xs:boolean"/> 
+  <xs:element name="InternetCPID" type="xs:string"/> 
+  <xs:element name="Flag"/> 
+ </xs:schema> 
+ 
+
+The portion of the Email2.xsd file that is used by the SMS class is as follows. The complete contents of 
+the Email2.xsd file are provided in [MS-ASEMAIL] section 6.2. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:tns="Email2:" xmlns:xs="http://www.w3.org/2001/XMLSchema"  
+ targetNamespace="Email2:" elementFormDefault="qualified"  
+ attributeFormDefault="unqualified"> 
+  <xs:element name="ConversationId" type="xs:string"/> 
+  <xs:element name="ConversationIndex" type="xs:string"/> 
+ </xs:schema> 
+ 
+
+The portion of the AirSyncBase.xsd file that is used by the SMS class is as follows. The complete 
+contents of the AirSyncBase.xsd file are provided in [MS-ASAIRS] section 6. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:airsyncbase="AirSyncBase:" xmlns:xs="http://www.w3.org/2001/XMLSchema"  
+ targetNamespace="AirSyncBase:" elementFormDefault="qualified"  
+ attributeFormDefault="unqualified"> 
+  <xs:element name="Body"/> 
+ </xs:schema> 
+ 
+
+22 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.2.2.3:  The initial release version of Exchange 2010 requires the 
+settings:PhoneNumber element to have a value when the settings:EnableOutboundSMS 
+element, as specified in section 2.2.2.2.2, is set to 1. Under these conditions, if the 
+settings:PhoneNumber element does not have a value, the server returns a value of 5 in the a 
+settings:Status element, as specified in [MS-ASCMD] section 2.2.3.177.15. Microsoft Exchange 
+Server 2010 Service Pack 1 (SP1), Exchange 2013, Exchange 2016, and Exchange 2019 do not 
+require the settings:PhoneNumber element to have a value when the 
+settings:EnableOutboundSMS element is set to 1. 
+
+23 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+7 Appendix B: Product Behavior Updated list of supported products. Major 
+
+24 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Index
+A Messages 
+    Elements 9 
+Abstract data model    Namespaces 9 
+   client 13    transport 9 
+   server 16  
+Applicability 8 N 
+  
+C Namespaces message 9 
+ Normative references 7 
+Capability negotiation 8  
+Change tracking 24 O 
+Client  
+   abstract data model 13 Other local events 
+   initialization 13    client 16 
+   other local events 16    server 17 
+   timer events 16 Overview (synopsis) 7 
+   timers 13  
+ P 
+D  
+ Parameters - security index 21 
+Data model - abstract Preconditions 8 
+   client 13 Prerequisites 8 
+   server 16 Product behavior 23 
+  
+E R 
+  
+Elements message 9 References 7 
+Enabling outbound SMS messages example 19    informative 7 
+Examples    normative 7 
+   enabling outbound SMS messages 19 Relationship to other protocols 8 
+   SMS message added by the server 19  
+   synchronizing email items and SMS items 18 S 
+   synchronizing only SMS items 18  
+ Security 
+F    implementer considerations 21 
+    parameter index 21 
+Fields - vendor-extensible 8 Server 
+Full XML schema 22    abstract data model 16 
+    higher-layer triggered events 16 
+G    initialization 16 
+    other local events 17 
+Glossary 6    timer events 17 
+    timers 16 
+
+H SMS message added by the server example 19 
+
+ Standards assignments 8 
+
+Higher-layer triggered events Synchronizing email items and SMS items example 
+
+   server 16 18 
+
+ Synchronizing only SMS items example 18 
+
+I  
+
+ T 
+Implementer - security considerations 21  
+
+Index of security parameters 21 Timer events 
+
+Informative references 7    client 16 
+
+Initialization    server 17 
+
+   client 13 Timers 
+
+   server 16    client 13 
+
+Introduction 6    server 16 
+
+ Tracking changes 24 
+
+M Transport 9 
+
+ Triggered events - higher-layer 
+   server 16 
+
+25 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+ 
+X 
+ 
+XML schema 22 
+
+ 
+
+26 / 26 
+
+[MS-ASMS] - v20250520 
+Exchange ActiveSync: Short Message Service (SMS) Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025
