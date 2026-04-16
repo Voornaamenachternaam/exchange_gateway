@@ -1,0 +1,1343 @@
+﻿[MS-OXWSPED]:  
+
+Password Expiration Date Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+10/7/2011 1.0 New Released new document. 
+
+1/20/2012 2.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 2.0 None 
+
+technical content. 
+
+10/8/2012 2.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 2.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 2.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 2.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 2.1 None 
+
+technical content. 
+
+4/30/2014 3.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 3.0 None 
+
+technical content. 
+
+10/30/2014 3.1 Minor Clarified the meaning of the technical content. 
+
+5/26/2015 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 4.0 None 
+
+technical content. 
+
+7/24/2018 5.0 Major Significantly changed the technical content. 
+
+10/1/2018 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 6.0 None 
+
+technical content. 
+
+5/20/2025 7.0 Major Significantly changed the technical content. 
+
+2 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 5 
+
+1.1 Glossary ........................................................................................................... 5 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 6 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Common Message Syntax ................................................................................... 9 
+
+2.2.1 Namespaces ................................................................................................ 9 
+2.2.2 Messages ..................................................................................................... 9 
+2.2.3 Elements ..................................................................................................... 9 
+2.2.4 Complex Types ........................................................................................... 10 
+2.2.5 Simple Types ............................................................................................. 10 
+2.2.6 Attributes .................................................................................................. 10 
+2.2.7 Groups ...................................................................................................... 10 
+2.2.8 Attribute Groups ......................................................................................... 10 
+
+3 Protocol Details ..................................................................................................... 11 
+3.1 ExchangeServerPortType Server Details .............................................................. 11 
+
+3.1.1 Abstract Data Model .................................................................................... 11 
+3.1.2 Timers ...................................................................................................... 11 
+3.1.3 Initialization ............................................................................................... 11 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 11 
+
+3.1.4.1 GetPasswordExpirationDate Operation ..................................................... 11 
+3.1.4.1.1 Messages ....................................................................................... 12 
+
+3.1.4.1.1.1 GetPasswordExpirationDateSoapIn Message .................................. 12 
+3.1.4.1.1.2 GetPasswordExpirationDateSoapOut Message ................................ 13 
+
+3.1.4.1.2 Elements ........................................................................................ 13 
+3.1.4.1.2.1 m:GetPasswordExpirationDate Element ........................................ 14 
+3.1.4.1.2.2 m:GetPasswordExpirationDateResponse Element ........................... 14 
+
+3.1.4.1.3 Complex Types ............................................................................... 14 
+3.1.4.1.3.1 m:GetPasswordExpirationDateType Complex Type ......................... 14 
+3.1.4.1.3.2 m:GetPasswordExpirationDateResponseMessageType ..................... 15 
+
+3.1.4.1.4 Simple Types .................................................................................. 15 
+3.1.4.1.5 Attributes ....................................................................................... 15 
+3.1.4.1.6 Groups ........................................................................................... 15 
+3.1.4.1.7 Attribute Groups.............................................................................. 15 
+
+3.1.5 Timer Events .............................................................................................. 15 
+3.1.6 Other Local Events ...................................................................................... 16 
+
+4 Protocol Examples ................................................................................................. 17 
+4.1 GetPasswordExpirationDate Request ................................................................... 17 
+
+5 Security ................................................................................................................. 18 
+5.1 Security Considerations for Implementers ........................................................... 18 
+5.2 Index of Security Parameters ............................................................................ 18 
+
+6 Appendix A: Full WSDL .......................................................................................... 19 
+
+3 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema ................................................................................ 21 
+
+8 Appendix C: Product Behavior ............................................................................... 22 
+
+9 Change Tracking .................................................................................................... 23 
+
+10 Index ..................................................................................................................... 24 
+
+ 
+
+4 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Password Expiration Date Web Service Protocol enables client applications to query a server to 
+determine the date when a user's password will expire so that the application can warn the user to 
+change the password. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+email address: A string that identifies a user and enables the user to receive Internet messages. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+
+5 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[RFC3066] Alvestrand, H., "Tags for the Identification of Languages", BCP 47, RFC 3066, January 
+2001, https://www.rfc-editor.org/info/rfc3066 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+6 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+The Password Expiration Date Web Service Protocol provides an operation that a client application can 
+use to request a user's password expiration date from a server. The application can use this 
+information to present the user with an opportunity to update the password before it expires. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP Protocol, as described in [SOAP1.1], to specify the structure information 
+that is exchanged between the client and the server. This protocol uses the XML Protocol, as described 
+in [XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content that is sent to and from the 
+server. 
+
+The Password Expiration Date Web Service Protocol uses SOAP over HTTP, as described in 
+[RFC2616], and SOAP over HTTPS, as described in [RFC2818], as shown in the following layering 
+diagram. 
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+7 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], is required to form the HTTP request to the web server that 
+hosts this protocol. The operation that this protocol defines cannot be accessed unless the correct 
+endpoint is identified in the HTTP web requests that target this protocol. 
+
+To get the endpoint URL, the client application needs a valid mail-enabled account to authenticate with 
+the server. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client applications that inform the user about the expiration date of 
+passwords stored on the server. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as specified in section 2.1. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. The WSDL version 
+of the request is identified by using the t:RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the t:ServerVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes text strings in various messages. Localization considerations 
+for such strings are specified in section 3.1.4. 
+
+ Capability Negotiation: None.  
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None.  
+
+8 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1. For details, see [SOAP1.1]. 
+
+This protocol relies on the web server that hosts the application to perform authentication. The 
+protocol MUST support HTTP, as specified in [RFC2616].The protocol SHOULD use secure 
+communications by means of HTTPS, as specified in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and Web Services 
+Description Language (WSDL), as defined in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1]  
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] [XMLSCHEMA2] 
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL]  
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+9 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+This specification does not define any common XML schema complex type definitions. 
+
+2.2.5 Simple Types 
+
+This specification does not define any common XML schema simple type definitions. 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+10 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+3.1 ExchangeServerPortType Server Details 
+
+The Password Expiration Date Web Service Protocol defines a single port type that enables clients to 
+retrieve the password expiration date for a mailbox account. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model, as long as their external behavior is consistent with that specified in this 
+document. 
+
+This protocol is used to retrieve password expiration dates from the server so that client applications 
+can pass this information on to users. Note that the client in each case is not required to maintain the 
+password expiration date. Rather, the client can use this protocol to request the password expiration 
+date whenever it is needed. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+This protocol includes the operation that is listed and described in the following table. 
+
+Operation name Description 
+
+GetPasswordExpirationDate  Gets the password expiration date for a mailbox account. 
+
+ 
+
+3.1.4.1 GetPasswordExpirationDate Operation 
+
+The GetPasswordExpirationDate operation provides the mailbox account with the password 
+expiration date. 
+
+The following is the WSDL port type specification for this operation. 
+
+ <wsdl:portType name="ExchangeServicePortType"> 
+   <wsdl:operation name="GetPasswordExpirationDate"> 
+      <wsdl:input message="tns:GetPasswordExpirationDateSoapIn" /> 
+      <wsdl:output message="tns:GetPasswordExpirationDateSoapOut" /> 
+   </wsdl:operation> 
+
+11 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </wsdl:portType> 
+
+The following is the WSDL binding specification for this operation. 
+
+ <wsdl:operation name="GetPasswordExpirationDate"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetPasswordExpiratio
+nDate" /> 
+      <wsdl:input> 
+         <soap:header message="tns:GetPasswordExpirationDateSoapIn" part="MailboxCulture" 
+use="literal"/> 
+         <soap:header message="tns:GetPasswordExpirationDateSoapIn" part="RequestVersion" 
+use="literal"/> 
+         <soap:body parts="request" use="literal" /> 
+      </wsdl:input> 
+      <wsdl:output> 
+         <soap:body parts="GetPasswordExpirationDateResult" use="literal" /> 
+         <soap:header message="tns:GetPasswordExpirationDateSoapOut" part="ServerVersion" 
+use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.1.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to the 
+GetPasswordExpirationDate operation. 
+
+Message name Description 
+
+GetPasswordExpirationDateSoapIn Specifies the SOAP message that requests the password expiration 
+date. 
+
+GetPasswordExpirationDateSoapOut Specifies the SOAP message that is returned by the server in 
+response. 
+
+ 
+
+3.1.4.1.1.1 GetPasswordExpirationDateSoapIn Message 
+
+The GetPasswordExpirationDateSoapIn WSDL message specifies the 
+GetPasswordExpirationDate operation request to return the password expiration date. 
+
+ <wsdl:message name="GetPasswordExpirationDateSoapIn"> 
+   <wsdl:part name="request" element="tns:GetPasswordExpirationDate"/> 
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture" /> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion" /> 
+ </wsdl:message> 
+
+The GetPasswordExpirationDateSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetPasswordExpirationDate. 
+
+The parts of the GetPasswordExpirationDateSoapIn message are listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+request m:GetPasswordExpirationDate Specifies the SOAP body of the request containing 
+(section 3.1.4.1.2.1) the information that is required to check the 
+
+12 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+mailbox account password expiration date. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.6) culture to be used for accessing the mailbox. The 
+
+cultures are defined in [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the GetPasswordExpirationDate 
+
+operation request. 
+
+ 
+
+3.1.4.1.1.2 GetPasswordExpirationDateSoapOut Message 
+
+The GetPasswordExpirationDateSoapOut WSDL message specifies the server response to a 
+GetPasswordExpirationDate operation request. 
+
+ <wsdl:message name="GetPasswordExpirationDateSoapOut"> 
+   <wsdl:part name="GetPasswordExpirationDateResult" 
+element="tns:GetPasswordExpirationDateResponse" /> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo" /> 
+ </wsdl:message> 
+
+The GetPasswordExpirationDateSoapOut WSDL message is the output message for the SOAP 
+action http://schemas.microsoft.com/exchange/services/2006/messages/GetPasswordExpirationDate. 
+
+The parts of the GetPasswordExpirationDateSoapOut WSDL message are listed and described in 
+the following table. 
+
+Part name Element/type Description 
+
+GetPasswordExpirationDateResult m:GetPasswordExpirationDateResponse Specifies the SOAP 
+(section 3.1.4.1.2.2) body of the response 
+
+that contains the 
+requested password 
+expiration date. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP 
+section 2.2.3.10) header that identifies 
+
+the server version for 
+the response. 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to the 
+GetPasswordExpirationDate operation. 
+
+Element name  Description 
+
+GetPasswordExpirationDate Specifies the root element in a GetPasswordExpirationDate 
+operation request. 
+
+GetPasswordExpirationDateResponse Specifies the root element in the response to a 
+GetPasswordExpirationDate operation request. 
+
+13 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.1.2.1 m:GetPasswordExpirationDate Element 
+
+The GetPasswordExpirationDate element specifies the root element in a 
+GetPasswordExpirationDate operation request. 
+
+ <xs:element name="GetPasswordExpirationDate" type="m:GetPasswordExpirationDateType" /> 
+
+3.1.4.1.2.2 m:GetPasswordExpirationDateResponse Element 
+
+The GetPasswordExpirationDateResponse element specifies the root element in the response to a 
+GetPasswordExpirationDate operation request. 
+
+ <xs:element name="GetPasswordExpirationDateResponse" 
+type="m:GetPasswordExpirationDateResponseMessageType"/> 
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to the 
+GetPasswordExpirationDate operation. 
+
+Complex type name Description 
+
+GetPasswordExpirationDateType Specifies the parameters that are used to obtain the 
+password expiration date. 
+
+GetPasswordExpirationDateResponseMessageType Specifies the data to be returned in the response. 
+
+ 
+
+3.1.4.1.3.1 m:GetPasswordExpirationDateType Complex Type 
+
+The GetPasswordExpirationDateType complex type specifies the parameters that are used to 
+obtain the password expiration date. The GetPasswordExpirationDateType complex type extends 
+the BaseRequestType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetPasswordExpirationDateType"> 
+   <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+         <xs:sequence> 
+            <xs:element name="MailboxSmtpAddress" type="xs:string" minOccurs="0" 
+maxOccurs="1"/> 
+         </xs:sequence> 
+      </xs:extension> 
+   </xs:complexContent> 
+ </xs:complexType> 
+
+The following table lists and describes the child element of the GetPasswordExpirationDateType 
+complex type. 
+
+Element name Type Description 
+
+MailboxSmtpAddress xs:string Specifies the email address of the mailbox account for which 
+[XMLSCHEMA2] password expiration information will be returned. 
+
+If it is present, it MUST appear only once. If it is empty or 
+
+14 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+omitted, the email address of the logged on user is used. 
+
+ 
+
+3.1.4.1.3.2 m:GetPasswordExpirationDateResponseMessageType 
+
+The GetPasswordExpirationDateResponseMessageType complex type specifies the password 
+expiration date information returned in a GetPasswordExpirationDate operation response. The 
+GetPasswordExpirationDateResponseMessageType complex type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetPasswordExpirationDateResponseMessageType"> 
+   <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+         <xs:sequence> 
+            <xs:element name="PasswordExpirationDate" type="xs:dateTime"/> 
+         </xs:sequence> 
+      </xs:extension> 
+   </xs:complexContent> 
+ </xs:complexType> 
+
+The following table lists and describes the child element of the 
+GetPasswordExpirationDateResponseMessageType complex type. 
+
+Element name Type Description 
+
+PasswordExpirationDate xs:dateTime Specifies the password expiration date for a mailbox 
+[XMLSCHEMA2] account.  
+
+This element MUST be present, and it MUST appear 
+only once.  
+
+ 
+
+3.1.4.1.4 Simple Types 
+
+None. 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+15 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.6 Other Local Events 
+
+None. 
+
+16 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 GetPasswordExpirationDate Request 
+
+The following XML example is a request to the GetPasswordExpirationDate operation, as described 
+in section 3.1.4.1. 
+
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <soap:Header> 
+  </soap:Header> 
+  <soap:Body> 
+    <tns:GetPasswordExpirationDate> 
+      <tns:MailboxSmtpAddress>user1@contoso.com</tns:MailboxSmtpAddress> 
+    </tns:GetPasswordExpirationDate> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+17 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+18 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document.  
+
+File name Description Section 
+
+MS-OXWSPED.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSPED- Contains the XML schema type definitions that are used in this 7 
+messages.xsd protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSPED-messages.xsd schema have 
+to be placed in the common folder with these files. 
+
+This section contains the contents of the MS-OXWSPED.wsdl file. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"  
+ xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"  
+ xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+ xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages"  
+ targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+   <wsdl:types> 
+   <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016"  
+      xmlns:t="http://schemas.microsoft.com/exchange/services/2006/tpes"  
+      xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+      targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+         <xs:include schemaLocation="MS-OXWSPED-messages.xsd" /> 
+      </xs:schema> 
+ </wsdl:types> 
+   <wsdl:message name="GetPasswordExpirationDateSoapIn"> 
+      <wsdl:part name="request" element="tns:GetPasswordExpirationDate"/> 
+      <wsdl:part name="MailboxCulture" element="t:MailboxCulture" /> 
+      <wsdl:part name="RequestVersion" element="t:RequestServerVersion" /> 
+   </wsdl:message> 
+   <wsdl:message name="GetPasswordExpirationDateSoapOut"> 
+      <wsdl:part name="GetPasswordExpirationDateResult" 
+element="tns:GetPasswordExpirationDateResponse" /> 
+      <wsdl:part name="ServerVersion" element="t:ServerVersionInfo" /> 
+   </wsdl:message> 
+    
+   <wsdl:portType name="ExchangeServicePortType"> 
+        <wsdl:operation name="GetPasswordExpirationDate"> 
+          <wsdl:input message="tns:GetPasswordExpirationDateSoapIn" /> 
+          <wsdl:output message="tns:GetPasswordExpirationDateSoapOut" /> 
+        </wsdl:operation>    
+   </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/" /> 
+    </wsdl:documentation> 
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document" /> 
+         <wsdl:operation name="GetPasswordExpirationDate"> 
+        <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetPasswordExpiratio
+nDate" /> 
+        <wsdl:input> 
+          <soap:header message="tns:GetPasswordExpirationDateSoapIn" part="MailboxCulture" 
+use="literal"/> 
+          <soap:header message="tns:GetPasswordExpirationDateSoapIn" part="RequestVersion" 
+use="literal"/> 
+          <soap:body parts="request" use="literal" /> 
+
+19 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        </wsdl:input> 
+        <wsdl:output> 
+          <soap:body parts="GetPasswordExpirationDateResult" use="literal" /> 
+          <soap:header message="tns:GetPasswordExpirationDateSoapOut" part="ServerVersion" 
+use="literal"/> 
+        </wsdl:output> 
+      </wsdl:operation> 
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+20 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, this section includes the full XML schema for this protocol. 
+
+This file has to be placed in a common folder in order for the WSDL to validate and operate. 
+
+This schema includes the file listed in the following table. To operate correctly, this file has to be 
+present in the folder that contains the WSDL and schema file for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+   <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+   <xs:complexType name="GetPasswordExpirationDateType"> 
+      <xs:complexContent> 
+         <xs:extension base="m:BaseRequestType"> 
+            <xs:sequence> 
+               <xs:element name="MailboxSmtpAddress" type="xs:string" minOccurs="0" 
+maxOccurs="1"/> 
+            </xs:sequence> 
+         </xs:extension> 
+      </xs:complexContent> 
+   </xs:complexType> 
+    
+   <xs:element name="GetPasswordExpirationDate" type="m:GetPasswordExpirationDateType" /> 
+    
+   <xs:complexType name="GetPasswordExpirationDateResponseMessageType"> 
+      <xs:complexContent> 
+         <xs:extension base="m:ResponseMessageType"> 
+            <xs:sequence> 
+               <xs:element name="PasswordExpirationDate" type="xs:dateTime"/> 
+            </xs:sequence> 
+         </xs:extension> 
+      </xs:complexContent> 
+   </xs:complexType> 
+ 
+   <xs:element name="GetPasswordExpirationDateResponse" 
+type="m:GetPasswordExpirationDateResponseMessageType"/> 
+ </xs:schema> 
+
+21 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 Service Pack 2 (SP2) 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+22 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+23 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A    complex types 10 
+    elements 9 
+Abstract data model    enumerated 9 
+   server 11    groups 10 
+Applicability 8    namespaces 9 
+Attribute groups 10    simple types 10 
+Attributes 10    syntax 9 
+    transport 9 
+
+C  
+
+ N 
+Capability negotiation 8  
+Change tracking 23 Namespaces 9 
+Complex types 10 Normative references 6 
+  
+
+D O 
+  
+Data model - abstract Operations 
+   server 11    GetPasswordExpirationDate Operation 11 
+ Overview (synopsis) 7 
+
+E  
+
+ P 
+Events  
+   local - server 16 Parameters - security index 18 
+   timer - server 15 Preconditions 8 
+Examples Prerequisites 8 
+   GetPasswordExpirationDate request 17 Product behavior 22 
+ Protocol Details 
+
+F    overview 11 
+
+  
+
+Fields - vendor-extensible 8 R 
+Full WSDL 19  
+Full XML schema 21 References 6 
+    informative 7 
+
+G    normative 6 
+
+ Relationship to other protocols 7 
+
+GetPasswordExpirationDate request example 17  
+
+Glossary 5 S 
+Groups 10  
+ Security 
+
+I    implementer considerations 18 
+
+    parameter index 18 
+
+Implementer - security considerations 18 Sequencing rules 
+
+Index of security parameters 18    server 11 
+
+Informative references 7 Server 
+
+Initialization    abstract data model 11 
+
+   server 11    GetPasswordExpirationDate Operation operation 11 
+
+Introduction 5    initialization 11 
+
+    local events 16 
+
+L    message processing 11 
+
+    sequencing rules 11 
+
+Local events    timer events 15 
+
+   server 16    timers 11 
+
+ Simple types 10 
+Standards assignments 8 
+
+M 
+Syntax 
+
+ 
+   messages - overview 9 
+
+Message processing 
+ 
+
+   server 11 
+Messages T 
+
+   attribute groups 10  
+
+   attributes 10 Timer events 
+   server 15 
+
+24 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Timers 
+   server 11 
+Tracking changes 23 
+Transport 9 
+Types 
+   complex 10 
+   simple 10 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+ 
+W 
+ 
+WSDL 19 
+ 
+X 
+ 
+XML schema 21 
+
+ 
+
+25 / 25 
+
+[MS-OXWSPED] - v20250520 
+Password Expiration Date Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

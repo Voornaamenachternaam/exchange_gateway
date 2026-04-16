@@ -1,0 +1,1404 @@
+﻿[MS-OXOJRNL]:  
+
+Journal Object Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Updated references to reflect date of initial release. 
+
+9/3/2008 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 4.1.0 Minor Updated the technical content. 
+
+5/5/2010 4.1.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 4.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 4.2 None 
+
+technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 4.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 4.2 None 
+
+technical content. 
+
+10/7/2011 4.3 Minor Clarified the meaning of the technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 5.0 None 
+
+technical content. 
+
+10/8/2012 5.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 5.1 None 
+
+technical content. 
+
+2 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 5.1 None 
+
+technical content. 
+
+10/30/2014 5.2 Minor Clarified the meaning of the technical content. 
+
+3/16/2015 6.0 Major Significantly changed the technical content. 
+
+5/26/2015 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.0 None 
+
+technical content. 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+4/22/2021 10.0 Major Significantly changed the technical content. 
+
+8/17/2021 11.0 Major Significantly changed the technical content. 
+
+8/20/2024 12.0 Major Significantly changed the technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Journal Object Properties ............................................................................... 9 
+2.2.1.1 PidLidLogType Property ............................................................................ 9 
+2.2.1.2 PidLidLogTypeDesc Property ..................................................................... 9 
+2.2.1.3 PidLidLogStart Property ........................................................................... 9 
+2.2.1.4 PidLidLogEnd Property ............................................................................. 9 
+2.2.1.5 PidLidLogDuration Property .................................................................... 10 
+2.2.1.6 PidLidLogFlags Property ......................................................................... 10 
+2.2.1.7 PidLidLogDocumentPrinted Property ........................................................ 10 
+2.2.1.8 PidLidLogDocumentSaved Property ......................................................... 10 
+2.2.1.9 PidLidLogDocumentRouted Property ........................................................ 10 
+2.2.1.10 PidLidLogDocumentPosted Property ......................................................... 10 
+
+2.2.2 Additional Property Constraints .................................................................... 11 
+2.2.2.1 PidTagMessageClass Property ................................................................. 11 
+2.2.2.2 Best Body Properties ............................................................................. 11 
+2.2.2.3 PidTagIconIndex Property ...................................................................... 11 
+2.2.2.4 PidLidCompanies Property ...................................................................... 12 
+2.2.2.5 Recipients ............................................................................................ 12 
+2.2.2.6 Journal-Associated Attachments.............................................................. 12 
+
+3 Protocol Details ..................................................................................................... 14 
+3.1 Client Details ................................................................................................... 14 
+
+3.1.1 Abstract Data Model .................................................................................... 14 
+3.1.2 Timers ...................................................................................................... 14 
+3.1.3 Initialization ............................................................................................... 14 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 14 
+
+3.1.4.1 Creating a Journal Object ....................................................................... 14 
+3.1.4.2 Modifying a Journal Object ..................................................................... 14 
+3.1.4.3 Deleting a Journal Object ....................................................................... 14 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 14 
+3.1.6 Timer Events .............................................................................................. 15 
+3.1.7 Other Local Events ...................................................................................... 15 
+
+3.2 Server Details .................................................................................................. 15 
+3.2.1 Abstract Data Model .................................................................................... 15 
+3.2.2 Timers ...................................................................................................... 15 
+3.2.3 Initialization ............................................................................................... 15 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 15 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 15 
+3.2.6 Timer Events .............................................................................................. 15 
+3.2.7 Other Local Events ...................................................................................... 15 
+
+4 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples ................................................................................................. 16 
+4.1 Journal Object for a Telephone Call Example ....................................................... 16 
+
+5 Security ................................................................................................................. 19 
+5.1 Security Considerations for Implementers ........................................................... 19 
+5.2 Index of Security Parameters ............................................................................ 19 
+
+6 Appendix A: Product Behavior ............................................................................... 20 
+
+7 Change Tracking .................................................................................................... 21 
+
+8 Index ..................................................................................................................... 22 
+
+ 
+
+5 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Journal Object Protocol is used to track activity related to a meeting, task, contact, or application 
+file. This protocol extends the Message and Attachment Object Protocol, which is described in [MS-
+OXCMSG]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Attachment object: A set of properties that represents a file, Message object, or structured 
+storage that is attached to a Message object and is visible through the attachments table for a 
+Message object. 
+
+contact: A person, company, or other entity that is stored in a directory and is associated with one 
+or more unique identifiers and attributes, such as an Internet message address or login name. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+EntryID: A sequence of bytes that is used to identify and access an object. 
+
+Folder object: A messaging construct that is typically used to organize data into a hierarchy of 
+objects containing Message objects and folder associated information (FAI) Message objects. 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+Journal object: A Message object that represents an entry in a journal or log and adheres to the 
+property descriptions that are described in in [MS-OXOJRNL]. 
+
+Mail User Agent (MUA): A client application that is used to compose and read email messages. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+metafile: A file that stores an image as graphical objects, such as lines, circles, and polygons, 
+instead of pixels. A metafile preserves an image more accurately than pixels when an image is 
+resized. 
+
+named property: A property that is identified by both a GUID and either a string name or a 32-bit 
+identifier. 
+
+property ID: A 16-bit numeric identifier of a specific attribute. A property ID does not include any 
+property type information. 
+
+recipient: An entity that can receive email messages.   
+
+6 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+Rich Text Format (RTF): Text with formatting as described in [MSFT-RTF]. 
+
+ROP request: See ROP request buffer. 
+
+ROP response: See ROP response buffer. 
+
+special folder: One of a default set of Folder objects that can be used by an implementation to 
+store and retrieve user data objects. 
+
+storage: An element of a compound file that is a unit of containment for one or more storages and 
+streams, analogous to directories in a file system, as described in [MS-CFB]. 
+
+stream: An element of a compound file, as described in [MS-CFB]. A stream contains a sequence 
+of bytes that can be read from or written to by an application, and they can exist only in 
+storages. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXOSFLD] Microsoft Corporation, "Special Folders Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[MS-OXRTFCP] Microsoft Corporation, "Rich Text Format (RTF) Compression Algorithm". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+1.2.2 Informative References 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+7 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+The Journal Object Protocol allows a user to track activity on a meeting, task, or contact. Activity on 
+a file such as a spreadsheet or word-processing document can also be tracked. This protocol defines a 
+Journal object to represent a journal entry that contains a log of the activity. The properties of a 
+Journal object specify the name of the activity, the duration, any contacts that are associated with the 
+activity, and other details. The Journal object is stored in a Folder object.  
+
+The Journal Object Protocol extends the Message and Attachment Object Protocol, described in [MS-
+OXCMSG], in that it defines new properties on the Message object and adds constraints to the 
+existing properties of the Message object. 
+
+1.4 Relationship to Other Protocols 
+
+The Journal Object Protocol has the same dependencies as the Message and Attachment Object 
+Protocol, which it extends. For information about the Message and Attachment Object Protocol, see 
+[MS-OXCMSG]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The Journal Object Protocol has the same prerequisites and preconditions as the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+1.6 Applicability Statement 
+
+A client can use this protocol to record the user's activities on various items. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+This protocol provides no vendor extensibility beyond what is already specified in [MS-OXCMSG]. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The Journal Object Protocol uses the same underlying transport as that used by the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+2.2 Message Syntax 
+
+A Journal object can be created and modified by clients and servers. Except where noted, this 
+section defines constraints under which both clients and servers operate. 
+
+Clients operate on a Journal object by using the Message and Attachment Object Protocol, as specified 
+in [MS-OXCMSG]. How a server operates on a Journal object is implementation-dependent, but the 
+results of any such operations MUST be exposed to clients in a manner that is consistent with the 
+Journal Object Protocol. 
+
+Unless otherwise specified, a Journal object adheres to all property constraints specified in [MS-
+OXPROPS] and [MS-OXCMSG].  
+
+2.2.1 Journal Object Properties 
+
+2.2.1.1 PidLidLogType Property 
+
+ Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogType property ([MS-OXPROPS] section 2.168) specifies the name of the activity that is 
+being recorded. 
+
+2.2.1.2 PidLidLogTypeDesc Property 
+
+ Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogTypeDesc property ([MS-OXPROPS] section 2.169) describes the activity that is being 
+recorded. 
+
+2.2.1.3 PidLidLogStart Property 
+
+ Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogStart property ([MS-OXPROPS] section 2.167) specifies the time, in Coordinated 
+Universal Time (UTC), at which the activity began. The value of this property MUST be equal to the 
+value of the PidLidCommonStart property ([MS-OXCMSG] section 2.2.1.18).  
+
+2.2.1.4 PidLidLogEnd Property 
+
+ Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogEnd property ([MS-OXPROPS] section 2.165) specifies the time, in UTC, at which the 
+activity ended. The value of this property MUST be equal to the value of the PidLidCommonEnd 
+property ([MS-OXCMSG] section 2.2.1.19) and therefore greater than or equal to the PidLidLogStart 
+property (section 2.2.1.3). 
+
+9 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.5 PidLidLogDuration Property 
+
+ Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogDuration property ([MS-OXPROPS] section 2.164) specifies the duration, in minutes, 
+of the activity. The value of this property is the difference between the values of the PidLidLogEnd 
+(section 2.2.1.4) and PidLidLogStart (section 2.2.1.3) properties. 
+
+2.2.1.6 PidLidLogFlags Property 
+
+ Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogFlags property ([MS-OXPROPS] section 2.166) contains bits that specify whether the 
+Journal object has a journal-associated attachment. This property MUST be set to one of the values 
+in the following table. 
+
+Bit value Meaning 
+
+0x00000000 This Journal object has no journal-associated attachment (section 2.2.2.6). 
+
+0x40000000 This Journal object has a journal-associated attachment (section 2.2.2.6). 
+
+ 
+
+2.2.1.7 PidLidLogDocumentPrinted Property 
+
+ Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogDocumentPrinted property ([MS-OXPROPS] section 2.161) indicates whether the file, 
+on which activity is being tracked, was printed during the tracking of the activity.<1> If printing 
+occurred, this property is set to 0x01.  
+
+2.2.1.8 PidLidLogDocumentSaved Property 
+
+ Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogDocumentSaved property ([MS-OXPROPS] section 2.163) indicates whether the file, 
+on which activity is being tracked, was saved during the tracking of the activity.<2> If the document 
+was saved, this property is set to 0x01.  
+
+2.2.1.9 PidLidLogDocumentRouted Property 
+
+ Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogDocumentRouted property ([MS-OXPROPS] section 2.162) indicates whether the file, 
+on which activity is being tracked, was sent to a recipient during the tracking of the activity.<3> If 
+the document was sent, this property is set to 0x01.  
+
+2.2.1.10 PidLidLogDocumentPosted Property 
+
+ Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidLogDocumentPosted property ([MS-OXPROPS] section 2.160) indicates whether the file, 
+on which activity is being tracked, was sent by e-mail or posted to a server's folder during the tracking 
+of the activity.<4> If the document was posted, this property is set to 0x01. If the document was sent 
+by e-mail, it is set to 0x00.  
+
+10 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2 Additional Property Constraints 
+
+This protocol places additional constraints on properties beyond what is specified in [MS-OXCMSG]. 
+These constraints are specified in section 2.2.2.1 through section 2.2.2.6. 
+
+2.2.2.1 PidTagMessageClass Property 
+
+ Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMessageClass property ([MS-OXCMSG] section 2.2.1.3) specifies the type of the 
+Message object. The value of this property MUST be "IPM.Activity" or MUST begin with 
+"IPM.Activity.", in addition to meeting the criteria specified in [MS-OXCMSG]. 
+
+2.2.2.2 Best Body Properties 
+
+ The main text of the Journal object MUST be stored in the PidTagRtfCompressed property ([MS-
+OXCMSG] section 2.2.1.58.4), as specified in [MS-OXRTFCP]. 
+
+2.2.2.3 PidTagIconIndex Property 
+
+ Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagIconIndex property ([MS-OXOMSG] section 2.2.1.10) specifies which icon is to be used 
+by a user interface when displaying the Journal object. The valid values for this property are 
+specified in the following table. 
+
+Value Meaning 
+
+0x00000601 Conversation  
+
+0x00000612 Document 
+
+0x00000602 E-mail message 
+
+0x00000609 Fax 
+
+0x0000060C Letter 
+
+0x00000613 Meeting  
+
+0x00000614 Meeting cancellation 
+
+0x00000603 Meeting request  
+
+0x00000604 Meeting response 
+
+0x00000610 A database application file 
+
+0x0000060E A spreadsheet application file 
+
+0x0000060F A slide-show presentation application file 
+
+0x0000060D A word processing application file 
+
+0x00000608 Note 
+
+0x0000060A Phone call 
+
+0x00000615 Remote session 
+
+0x0000060B Task 
+
+11 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+0x00000606 Task request  
+
+0x00000607 Task response 
+
+0x00000003 Other 
+
+ 
+
+2.2.2.4 PidLidCompanies Property 
+
+ Type: PtypMultipleString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidCompanies property ([MS-OXPROPS] section 2.64) contains a list of company names, 
+each of which is associated with a contact that is specified in the PidLidContacts property ([MS-
+OXCMSG] section 2.2.1.59.2).  
+
+2.2.2.5 Recipients 
+
+ A Journal object MUST NOT have recipients. 
+
+2.2.2.6 Journal-Associated Attachments 
+
+ A journal-associated attachment links a Journal object with another object, such as a document. A 
+Journal object MUST NOT have more than one journal-associated attachment. 
+
+The properties of a journal-associated attachment follow the requirements specified in [MS-OXCMSG] 
+section 2.2.2 for Attachment objects, except that certain properties on the Attachment object MUST 
+be set as specified in the following table. 
+
+Property Value 
+
+PidTagAttachmentLinkId ([MS-OXCMSG] section 2.2.2.22) 0x00000004 
+
+PidTagAttachMethod ([MS-OXCMSG] section 2.2.2.9) 0x00000006 
+
+PidTagRenderingPosition ([MS-OXCMSG] section 2.2.2.16) 0xFFFFFFFF 
+
+PidTagAttachmentFlags ([MS-OXCMSG] section 2.2.2.23) 0x00000000 
+
+PidTagAttachmentHidden ([MS-OXCMSG] section 2.2.2.24) 0x00 
+
+PidTagAccess ([MS-OXCPRPT] section 2.2.1.1) 0x00000002 
+
+The content of the PidTagAttachDataBinary property ([MS-OXCMSG] section 2.2.2.7) is formatted 
+as a structured storage that comprises eight streams, the names and contents of which are detailed 
+in the following table. 
+
+Stream name Contents 
+
+IOlePres000 A metafile that contains the icon to be used when rendering the attachment. 
+
+\3MailStream* Binary contents: 04 00 00 00 00 00 00 00 00 00 00 00 
+
+MailMsgAttFld The EntryID of the folder of the linked Message object. 
+
+MailMsgAttMdb The EntryID of the store of the linked Message object. 
+
+12 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Stream name Contents 
+
+MailMsgAttMsg The EntryID of the linked Message object; required only if the MailMsgAttSrchKey 
+stream is empty. 
+
+MailMsgAttSrchFld The object EntryID of the Sent Items special folder of the linked Message object. For 
+details about special folders, see [MS-OXOSFLD]. 
+
+MailMsgAttSrchKey The value of the PidTagSearchKey property ([MS-OXCPRPT] section 2.2.1.9), as 
+specified in [MS-OXCMSG], of the linked Message object; required only if the 
+MailMsgAttMsg stream is empty. 
+
+MailMsgAttSubject The value of the PidTagSubject property ([MS-OXCMSG] section 2.2.1.46) of the linked 
+Message object. 
+
+* The "\3" in "\3MailStream" represents the byte 0x03. 
+
+  
+
+13 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client creates and manipulates a Journal object and in all other ways operates within the client 
+role as specified in [MS-OXCMSG]. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as the external behavior of the implementation is consistent with the 
+behavior described in this document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.1.1 with the 
+following adaptations: 
+
+ The Journal object is an extension of the Message object. 
+
+ A Journal object is created in the Journal special folder unless the end user or Mail User Agent 
+(MUA) explicitly specifies another folder. For details about special folders, see [MS-OXOSFLD]. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Creating a Journal Object 
+
+When the user creates a journal entry, the client creates a Message object, as specified in [MS-
+OXCMSG] section 3.1.4.2, sets properties in accordance with the requirements in section 2, and saves 
+the resulting Journal object, as specified in [MS-OXCMSG] section 3.1.4.3. 
+
+3.1.4.2 Modifying a Journal Object 
+
+When the user modifies a journal entry, the client opens the Journal object as specified in [MS-
+OXCMSG] section 3.1.4.1, modifies any of the properties in accordance with the requirements in 
+section 2, and saves the Journal object as specified in [MS-OXCMSG] section 3.1.4.3. For details about 
+modifying the properties of a Message object, see [MS-OXCPRPT]. 
+
+3.1.4.3 Deleting a Journal Object 
+
+When a user deletes a journal entry, the client deletes the Journal object in the same way that it 
+deletes any Message object, as specified in [MS-OXCFOLD] section 3.1.4.8. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+14 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+The server processes a client's requests regarding a Journal object and in all other ways operates 
+within the server role as specified in [MS-OXCMSG]. 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as the external behavior of the implementation is consistent with the 
+behavior described in this document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.2.1 with the 
+following adaptations: 
+
+ The Journal object is an extension of the Message object. 
+
+ A Journal object is created in the Journal special folder unless the end-user or MUA explicitly 
+specifies another folder. For details about special folders, see [MS-OXOSFLD]. 
+
+3.2.2 Timers 
+
+None.  
+
+3.2.3 Initialization 
+
+None.  
+
+3.2.4 Higher-Layer Triggered Events 
+
+None.  
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG] section 3.2.5. 
+
+3.2.6 Timer Events 
+
+None.  
+
+3.2.7 Other Local Events 
+
+None.  
+
+15 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Journal Object for a Telephone Call Example 
+
+A user creates a journal entry to track a telephone call. The user records the start and end times, puts 
+notes in the body, and links a contact and company. The following is a description of what a client 
+might do to accomplish Joe's intentions and the responses a server might return. For information 
+about remote operations (ROPs), see [MS-OXCPRPT] and [MS-OXCMSG]. 
+
+Before manipulating a Journal object, the client asks the server to map named properties to 
+property IDs, by sending a RopGetPropertyIDsFromNames ROP request ([MS-OXCROPS] 
+section 2.2.8.1). 
+
+Property Property set GUID LID 
+
+PidLidCommonStart ([MS-OXCMSG] section 2.2.1.18) {00062008-0000-0000-C000- 0x00008516 
+000000000046} 
+
+PidLidCommonEnd ([MS-OXCMSG] section 2.2.1.19) {00062008-0000-0000-C000- 0x00008517 
+000000000046} 
+
+PidLidCompanies (section 2.2.2.4) {00062008-0000-0000-C000- 0x00008539 
+000000000046} 
+
+PidLidContacts ([MS-OXCMSG] section 2.2.1.59.2) {00062008-0000-0000-C000- 0x0000853A 
+000000000046} 
+
+PidLidContactLinkName ([MS-OXCMSG] section {00062008-0000-0000-C000- 0x00008586 
+2.2.1.59.3) 000000000046} 
+
+PidLidContactLinkEntry ([MS-OXCMSG] section {00062008-0000-0000-C000- 0x00008585 
+2.2.1.59.1) 000000000046} 
+
+PidLidContactLinkSearchKey ([MS-OXCMSG] section {00062008-0000-0000-C000- 0x00008584 
+2.2.1.59.4) 000000000046} 
+
+PidLidLogTypeDesc (section 2.2.1.2) {0006200A-0000-0000-C000- 0x00008712 
+000000000046} 
+
+PidLidLogType (section 2.2.1.1) {0006200A-0000-0000-C000- 0x00008700 
+000000000046} 
+
+PidLidLogStart (section 2.2.1.3) {0006200A-0000-0000-C000- 0x00008706 
+000000000046} 
+
+PidLidLogEnd (section 2.2.1.4) {0006200A-0000-0000-C000- 0x00008708 
+000000000046} 
+
+PidLidLogDuration (section 2.2.1.5) {0006200A-0000-0000-C000- 0x00008707 
+000000000046} 
+
+PidLidLogFlags (section 2.2.1.6) {0006200A-0000-0000-C000- 0x0000870C 
+000000000046} 
+
+PidLidLogDocumentPrinted (section 2.2.1.7) {0006200A-0000-0000-C000- 0x0000870E 
+000000000046} 
+
+PidLidLogDocumentSaved (section 2.2.1.8) {0006200A-0000-0000-C000- 0x0000870F 
+000000000046} 
+
+PidLidLogDocumentRouted (section 2.2.1.9) {0006200A-0000-0000-C000- 0x00008710 
+000000000046} 
+
+16 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property set GUID LID 
+
+PidLidLogDocumentPosted (section 2.2.1.10) {0006200A-0000-0000-C000- 0x00008711 
+000000000046} 
+
+The server sends a RopGetPropertyIDsFromNames ROP response with the following property 
+IDs, which will be used in the example that follows. (The actual property IDs are at the discretion of 
+the server.) 
+
+Property Property ID 
+
+PidLidCommonStart 0X81BD 
+
+PidLidCommonEnd 0X81BC 
+
+PidLidCompanies 0X800C 
+
+PidLidContacts 0X8019 
+
+PidLidContactLinkName 0X802B 
+
+PidLidContactLinkEntry 0X82F6 
+
+PidLidContactLinkSearchKey 0X82F7 
+
+PidLidLogTypeDesc 0X8230 
+
+PidLidLogType 0X801A 
+
+PidLidLogStart 0X8233 
+
+PidLidLogEnd 0X8234 
+
+PidLidLogDuration 0X8235 
+
+PidLidLogFlags 0X8236 
+
+PidLidLogDocumentPrinted 0X8238 
+
+PidLidLogDocumentSaved 0X8239 
+
+PidLidLogDocumentRouted 0X823A 
+
+PidLidLogDocumentPosted 0X823B 
+
+To create a Journal object, the client uses the RopCreateMessage ROP ([MS-OXCROPS] section 
+2.2.6.2). The server returns a handle to a Message object. 
+
+After the user has input his content for the Journal object, the client transmits the data to the server 
+by using the RopSetProperties ROP ([MS-OXCROPS] section 2.2.8.6). For information about the 
+property types in the following table, see [MS-OXCDATA] section 2.11.1.  
+
+Property 
+Property ID Property type Value 
+
+PidLidCommonStart  0x81bd 0x0040 (PtypTime) 2008/02/20 
+23:02:00.000 
+
+PidLidCommonEnd  0x81bc 0x0040 2008/02/20 
+23:12:00.000 
+
+17 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type Value 
+
+PidLidCompanies  0x800c 0X101F (PtypMultipleString [1 entry] "Contoso 
+([MS-OXCDATA] section 2.11.1)) Pharmaceuticals" 
+
+PidLidContacts  0x8019 0X101F [1 entry] "Adam Barr" 
+
+PidLidContactLinkName  0x802b 0X001F (PtypString) "Adam Barr" 
+
+PidLidContactLinkEntry  0x82f6 0x0102 (PtypBinary) *(See note following 
+table) 
+
+PidLidContactLinkSearchKey  0x82f7 0x0102 **(See note following 
+table) 
+
+PidLidLogTypeDesc  0x8230 0X001F  "Phone call" 
+
+PidLidLogType  0x801a 0X001F "Phone call" 
+
+PidLidLogStart  0x8233 0x0040 2008/02/20 
+23:02:00.000 
+
+PidLidLogEnd  0x8234 0x0040 2008/02/20 
+23:12:00.000 
+
+PidLidLogDuration  0x8235 0x0003 (PtypInteger32) 0x0000000A 
+
+PidLidLogFlags  0x8236 0x0003 0x00000000 
+
+PidLidLogDocumentPrinted  0x8238 0X000B (PtypBoolean) 0x00 
+
+PidLidLogDocumentSaved  0x8239 0X000B 0x00 
+
+PidLidLogDocumentRouted  0x823a 0X000B 0x00 
+
+PidLidLogDocumentPosted  0x823b 0X000B 0x00 
+
+PidTagRtfCompressed ([MS- 0x1009 0x0102 ***(See note 
+OXCMSG] section 2.2.1.58.4) following table) 
+
+PidTagIconIndex ([MS-OXOMSG] 0x1080 0x0003 0x0000060A 
+section 2.2.1.10) 
+
+* The PidLidContactLinkEntry property contains a representation of the contact link, as described in 
+[MS-OXCMSG] section 2.2.1.59.1. 
+
+** The PidLidContactLinkSearchKey property contains a representation of the contact link, as 
+described in [MS-OXCMSG] section 2.2.1.59.4. 
+
+*** The PidTagRtfCompressed property ([MS-OXCMSG] section 2.2.1.58.4) contains the 
+compressed Rich Text Format (RTF) representation of the body, as described in [MS-OXRTFCP]. 
+
+When the user saves the changes, the client commits the properties on the server by using the 
+RopSaveChangesMessage ROP ([MS-OXCROPS] section 2.2.6.3) and then releases the Journal 
+object by using the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3). 
+
+The values of some properties will change during the processing of the RopSaveChangesMessage 
+ROP, but the properties specified in this document will not change. 
+
+18 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no special security considerations specific to the Journal Object Protocol. General security 
+considerations pertaining to the underlying transport apply, as described in [MS-OXCMSG]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+19 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.1.7:  Outlook 2013, Outlook 2016, and Outlook 2019 do not support the 
+PidLidLogDocumentPrinted property (section 2.2.1.7). 
+
+<2> Section 2.2.1.8:  Outlook 2013, Outlook 2016, and Outlook 2019 do not support the 
+PidLidLogDocumentSaved property (section 2.2.1.8). 
+
+<3> Section 2.2.1.9:  Outlook 2013, Outlook 2016, and Outlook 2019 do not support the 
+PidLidLogDocumentRouted property (section 2.2.1.9). 
+
+<4> Section 2.2.1.10:  Outlook 2013, Outlook 2016, and Outlook 2019 do not support the 
+PidLidLogDocumentPosted property (section 2.2.1.10). 
+
+20 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+21 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A    deleting a Journal object 14 
+    modifying a Journal object 14 
+Abstract data model  
+   client 14 I 
+   server 15  
+Additional property constraints Implementer - security considerations 19 
+   best body properties 11 Index of security parameters 19 
+   journal-associated attachments 12 Informative references 7 
+   PidLidCompanies property 12 Initialization 
+   PidTagIconIndex property 11    client 14 
+   PidTagMessageClass property 11    server 15 
+   recipients 12 Introduction 6 
+Additional Property Constraints message 11  
+Applicability 8 J 
+  
+B Journal object for a telephone call example 16 
+ Journal object properties 
+Best body additional property constraints 11    PidLidLogDocumentPosted property 10 
+    PidLidLogDocumentPrinted property 10 
+C    PidLidLogDocumentRouted property 10 
+    PidLidLogDocumentSaved property 10 
+Capability negotiation 8    PidLidLogDuration property 10 
+Change tracking 21    PidLidLogEnd property 9 
+Client    PidLidLogFlags property 10 
+   abstract data model 14    PidLidLogStart property 9 
+   initialization 14    PidLidLogType property 9 
+   message processing 14    PidLidLogTypeDesc property 9 
+   other local events 15 Journal-associated attachments additional property 
+   overview 14 constraints 12 
+   sequencing rules 14  
+   timer events 15 M 
+   timers 14  
+Client - higher-layer triggered events Message processing 
+   creating a Journal object 14    client 14 
+   deleting a Journal object 14    server 15 
+   modifying a Journal object 14 Messages 
+    Additional Property Constraints 11 
+D    syntax 9 
+    transport 9 
+Data model - abstract  
+   client 14 N 
+   server 15  
+ Normative references 7 
+E  
+ O 
+Examples - Journal object for a telephone call 16  
+ Other local events 
+F    client 15 
+    server 15 
+Fields - vendor-extensible 8 Overview (synopsis) 8 
+  
+
+G P 
+  
+Glossary 6 Parameters - security index 19 
+ PidLidCompanies additional property constraints 12 
+
+H PidLidLogDocumentPosted Journal object property 10 
+
+ PidLidLogDocumentPrinted Journal object property 
+
+Higher-layer triggered events 10 
+
+   server 15 PidLidLogDocumentRouted Journal object property 
+
+Higher-layer triggered events - client 10 
+
+   creating a Journal object 14 PidLidLogDocumentSaved Journal object property 10 
+
+22 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+PidLidLogDuration Journal object property 10 
+PidLidLogEnd Journal object property 9 
+PidLidLogFlags Journal object property 10 
+PidLidLogStart Journal object property 9 
+PidLidLogType Journal object property 9 
+PidLidLogTypeDesc Journal object property 9 
+PidTagIconIndex additional property constraints 11 
+PidTagMessageClass additional property constraints 
+
+11 
+Preconditions 8 
+Prerequisites 8 
+Product behavior 20 
+ 
+R 
+ 
+Recipients additional property constraints 12 
+References 7 
+   informative 7 
+   normative 7 
+Relationship to other protocols 8 
+ 
+S 
+ 
+Security 
+   implementer considerations 19 
+   parameter index 19 
+Sequencing rules 
+   client 14 
+   server 15 
+Server 
+   abstract data model 15 
+   higher-layer triggered events 15 
+   initialization 15 
+   message processing 15 
+   other local events 15 
+   overview 15 
+   sequencing rules 15 
+   timer events 15 
+   timers 15 
+Standards assignments 8 
+Syntax 9 
+ 
+T 
+ 
+Timer events 
+   client 15 
+   server 15 
+Timers 
+   client 14 
+   server 15 
+Tracking changes 21 
+Transport 9 
+Triggered events - client 
+   creating a Journal object 14 
+   deleting a Journal object 14 
+   modifying a Journal object 14 
+Triggered events - higher-layer 
+   server 15 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+
+ 
+
+23 / 23 
+
+[MS-OXOJRNL] - v20250520 
+Journal Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

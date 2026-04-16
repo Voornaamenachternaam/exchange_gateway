@@ -1,0 +1,1450 @@
+﻿[MS-ASNOTE]:  
+
+Exchange ActiveSync: Notes Class Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/10/2009 0.1.0 Major Initial Availability. 
+
+7/15/2009 1.0.0 Major Revised and edited for technical content. 
+
+11/4/2009 2.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 3.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 4.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 5.0 Major Significantly changed the technical content. 
+
+11/3/2010 5.1 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 5.2 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 6.0 Major Significantly changed the technical content. 
+
+10/7/2011 6.1 Minor Clarified the meaning of the technical content. 
+
+1/20/2012 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 7.0 None 
+
+technical content. 
+
+10/8/2012 7.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 7.1 None 
+
+technical content. 
+
+7/26/2013 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 8.0 None 
+
+technical content. 
+
+4/30/2014 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 9.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 9.0 None 
+
+technical content. 
+
+5/26/2015 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/30/2015 10.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 10.0 None 
+
+technical content. 
+
+6/9/2016 11.0 Major Significantly changed the technical content. 
+
+2/28/2017 12.0 Major Significantly changed the technical content. 
+
+2 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+4/18/2017 12.0 None 
+
+technical content. 
+
+7/24/2018 13.0 Major Significantly changed the technical content. 
+
+10/1/2018 14.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 14.0 None 
+
+technical content. 
+
+5/20/2025 15.0 Major Significantly changed the technical content. 
+
+3 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 6 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 7 
+1.6 Applicability Statement ....................................................................................... 7 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Namespaces ................................................................................................ 9 
+2.2.2 Elements ..................................................................................................... 9 
+
+2.2.2.1 Body ................................................................................................... 10 
+2.2.2.2 Categories ........................................................................................... 11 
+2.2.2.3 Category .............................................................................................. 11 
+2.2.2.4 LastModifiedDate .................................................................................. 12 
+2.2.2.5 MessageClass ....................................................................................... 13 
+2.2.2.6 Subject ................................................................................................ 13 
+
+3 Protocol Details ..................................................................................................... 15 
+3.1 Client Details ................................................................................................... 15 
+
+3.1.1 Abstract Data Model .................................................................................... 15 
+3.1.2 Timers ...................................................................................................... 15 
+3.1.3 Initialization ............................................................................................... 15 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 15 
+
+3.1.4.1 Synchronizing Notes Data Between Client and Server ................................ 15 
+3.1.4.2 Searching a Server for Notes .................................................................. 15 
+3.1.4.3 Requesting Details for One or More Notes ................................................ 15 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 15 
+3.1.5.1 ItemOperations Command Request ......................................................... 15 
+
+3.1.5.1.1 airsyncbase:Body Element ................................................................ 16 
+3.1.5.2 Search Command Request ..................................................................... 16 
+3.1.5.3 Sync Command Request ........................................................................ 16 
+
+3.1.5.3.1 LastModifiedDate Element ................................................................ 16 
+3.1.5.3.2 MessageClass Element ..................................................................... 16 
+
+3.1.6 Timer Events .............................................................................................. 16 
+3.1.7 Other Local Events ...................................................................................... 16 
+
+3.2 Server Details .................................................................................................. 17 
+3.2.1 Abstract Data Model .................................................................................... 17 
+3.2.2 Timers ...................................................................................................... 17 
+3.2.3 Initialization ............................................................................................... 17 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 17 
+
+3.2.4.1 Synchronizing Notes Data Between Client and Server ................................ 17 
+3.2.4.2 Searching for Notes Data ....................................................................... 17 
+3.2.4.3 Retrieving Details for One or More Notes .................................................. 17 
+
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 17 
+3.2.5.1 ItemOperations Command Response ....................................................... 17 
+3.2.5.2 Search Command Response ................................................................... 18 
+3.2.5.3 Sync Command Response ...................................................................... 18 
+
+4 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.5.3.1 LastModifiedDate Element ................................................................ 18 
+3.2.5.3.2 MessageClass Element ..................................................................... 18 
+
+3.2.6 Timer Events .............................................................................................. 19 
+3.2.7 Other Local Events ...................................................................................... 19 
+
+4 Protocol Examples ................................................................................................. 20 
+
+5 Security ................................................................................................................. 22 
+5.1 Security Considerations for Implementers ........................................................... 22 
+5.2 Index of Security Parameters ............................................................................ 22 
+
+6 Appendix A: Full XML Schema ................................................................................ 23 
+
+7 Appendix B: Product Behavior ............................................................................... 24 
+
+8 Change Tracking .................................................................................................... 25 
+
+9 Index ..................................................................................................................... 26 
+
+ 
+
+5 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Exchange ActiveSync: Notes Class Protocol enables the communication of notes data between a 
+mobile device and the server in the ActiveSync Protocol. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Hypertext Markup Language (HTML): An application of the Standard Generalized Markup 
+Language (SGML) that uses tags to mark elements in a document, as described in [HTML]. 
+
+Inter-Personal Mail (IPM): Typical user messaging items, such as email and calendar items. 
+
+plain text: Text that does not have markup. See also plain text message body. 
+
+Rich Text Format (RTF): Text with formatting as described in [MSFT-RTF]. 
+
+Wireless Application Protocol (WAP) Binary XML (WBXML): A compact binary representation 
+of XML that is designed to reduce the transmission size of XML documents over narrowband 
+communication channels. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML element: An XML structure that typically consists of a start tag, an end tag, and the 
+information between those tags. Elements can have attributes and can contain other elements. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol". 
+
+6 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol". 
+
+[MS-ASDTYPE] Microsoft Corporation, "Exchange ActiveSync: Data Types". 
+
+[MS-ASHTTP] Microsoft Corporation, "Exchange ActiveSync: HTTP Protocol". 
+
+[MS-ASWBXML] Microsoft Corporation, "Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XML] World Wide Web Consortium, "Extensible Markup Language (XML) 1.0 (Fourth Edition)", W3C 
+Recommendation 16 August 2006, edited in place 29 September 2006, 
+http://www.w3.org/TR/2006/REC-xml-20060816/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+This protocol describes the XML representation of notes that are used for client and server 
+communication as described in [MS-ASCMD]. The notes data is included in protocol command requests 
+when notes data is sent from the client to the server, and is included in protocol command responses 
+when notes data is returned from the server to the client. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol describes the XML representation of notes that is used by the command requests and 
+command responses that are described in [MS-ASCMD]. The protocol governing the transmission of 
+these commands between the client and the server is described in [MS-ASCMD]. The Wireless 
+Application Protocol (WAP) Binary XML (WBXML), as described in [MS-ASWBXML], is used to 
+transmit the XML markup that constitutes the request body and the response body. 
+
+All simple data types in this document conform to the data type definitions that are described in [MS-
+ASDTYPE]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+This protocol describes a set of XML elements that are used to communicate notes data when using 
+the commands that are described in [MS-ASCMD]. This set of elements is applicable when 
+communicating notes information between a mobile device and a server. Except where indicated, 
+
+7 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+these elements are not applicable when communicating other types of information that are supported 
+by the ActiveSync protocol. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol consists of a series of XML elements that are embedded inside of a command request 
+or command response, as specified in [MS-ASCMD].  
+
+The XML markup that constitutes the request body or the response body that is transmitted between 
+the client and the server uses Wireless Application Protocol (WAP) Binary XML (WBXML), as 
+specified in [MS-ASWBXML].  
+
+2.2 Message Syntax 
+
+The XML schema for the Notes namespace is described in section 6. 
+
+The markup that is used by this protocol MUST be well-formed XML, as specified in [XML]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and is not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+airsyncbase AirSyncBase [MS-ASAIRS] 
+
+(none) Notes  
+
+airsync AirSync [MS-ASCMD] section 2.2.1.21 
+
+itemoperations ItemOperations [MS-ASCMD] section 2.2.1.10 
+
+search Search [MS-ASCMD] section 2.2.1.16 
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] 
+
+ 
+
+2.2.2 Elements 
+
+Elements of the Notes class are defined in two namespaces: Notes and AirSyncBase. All Notes 
+class elements are specified in this document; elements defined in the AirSyncBase namespace are 
+further specified in [MS-ASAIRS]. 
+
+Except where otherwise specified in the following sections, each element of the Notes class is used in 
+ActiveSync command requests and responses as follows: 
+
+ As an optional child element of the itemoperations:Schema element ([MS-ASCMD] section 
+2.2.3.158) in ItemOperations command requests ([MS-ASCMD] section 2.2.1.10) 
+
+ As an optional child element of the itemoperations:Properties element ([MS-ASCMD] section 
+2.2.3.139.2) in ItemOperations command responses 
+
+ As an optional child element of the search:Properties element ([MS-ASCMD] section 
+2.2.3.139.3) in Search command responses ([MS-ASCMD] section 2.2.1.16) 
+
+9 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ As an optional child element of the airsync:ApplicationData element ([MS-ASCMD] section 
+2.2.3.11) in Sync command requests ([MS-ASCMD] section 2.2.1.21) 
+
+ As an optional child element of the airsync:ApplicationData element ([MS-ASCMD] section 
+2.2.3.11) in Sync command responses 
+
+The following table summarizes the set of common XML schema element definitions defined by this 
+specification. XML schema element definitions that are specific to one or more particular operations 
+are specified further in sections 3.1.5.1, 3.1.5.2, 3.1.5.3, 3.2.5.1, 3.2.5.2, and 3.2.5.3. 
+
+Element name Description 
+
+airsyncbase:Body (section 2.2.2.1) The text of the note. 
+
+Subject (section 2.2.2.6) The subject of the note. 
+
+MessageClass (section 2.2.2.5) The form of the message. 
+
+LastModifiedDate (section 2.2.2.4) The day and time that the note was last changed by the user.  
+
+Categories (section 2.2.2.2) A collection of labels assigned to the note. 
+
+Category (section 2.2.2.3) One of the user-assigned labels applied to the note. 
+
+ 
+
+2.2.2.1 Body 
+
+The airsyncbase:Body element is a container ([MS-ASDTYPE] section 2.2) element that specifies 
+the text of the note. It is defined as an element in the AirSyncBase namespace and is used in 
+ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The airsyncbase:Type element ([MS-ASAIRS] section 2.2.2.41.1) (a required child element of the 
+airsyncbase:Body element) MUST be set to one of the following values. 
+
+Value Meaning 
+
+1 Plain text  
+
+2 HTML  
+
+3 Rich Text Format (RTF)  
+
+When the airsyncbase:Body element is used in a Sync command request or response ([MS-ASCMD] 
+section 2.2.1.21), the airsyncbase:Data element ([MS-ASAIRS] section 2.2.2.20.1) is a required 
+child element of the airsyncbase:Body element. 
+
+For more details about the airsyncbase:Body element, see [MS-ASAIRS] section 2.2.2.9. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+10 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.2 Categories 
+
+The Categories element is a container ([MS-ASDTYPE] section 2.2) element that specifies a 
+collection of labels assigned to the note. It is defined as an element in the Notes namespace and is 
+used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The Categories element has the following child element: 
+
+ Category (section 2.2.2.3): Zero or more instances of this element are allowed. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.3 Category 
+
+The Category element is an optional child element of the Categories element (section 2.2.2.2) that 
+specifies a user-selected label that has been applied to the note. It is defined as an element in the 
+Notes namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+Protocol Versions 
+
+11 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.4 LastModifiedDate 
+
+The LastModifiedDate element specifies when the note was last changed. It is defined as an element 
+in the Notes namespace and is used in ActiveSync command requests and responses as specified in 
+section 2.2.2. 
+
+The value of the LastModifiedDate element is a string data type represented as a Compact 
+DateTime ([MS-ASDTYPE] section 2.7.2). 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+12 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.5 MessageClass 
+
+The MessageClass element is a required element that specifies the Inter-Personal Mail (IPM) type 
+of the note. It is defined as an element in the Notes namespace. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+The value of the MessageClass element MUST be either "IPM.StickyNote" or "IPM.StickyNote.*", 
+where "*" represents an arbitrary string chosen by the client or server. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.6 Subject 
+
+The Subject element specifies the subject of the note. It is defined as an element in the Notes 
+namespace and is used in ActiveSync command requests and responses as specified in section 2.2.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0 Yes 
+
+14.1 Yes 
+
+13 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+14 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+Notes class: A structured XML text block that adheres to the XML schema definition specified in 
+section 2.2. It is returned by the server to the client as part of a full XML response to the client 
+command requests that are specified in section 3.1.5. It is included in command requests that are 
+sent from the client to the server to retrieve or synchronize notes.  
+
+Command request: A WBXML-formatted message that adheres to the command schemas specified 
+in [MS-ASCMD]. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Synchronizing Notes Data Between Client and Server 
+
+A client initiates synchronization of Notes class data with the server by sending a Sync command 
+request ([MS-ASCMD] section 2.2.1.21) to the server. 
+
+3.1.4.2 Searching a Server for Notes 
+
+A client searches for Notes class data by sending a Search command request ([MS-ASCMD] section 
+2.2.1.16) to the server. 
+
+3.1.4.3 Requesting Details for One or More Notes 
+
+A client requests Notes class data for one or more individual notes by sending an ItemOperations 
+command request ([MS-ASCMD] section 2.2.1.10) to the server that contains one or more 
+itemoperations:Fetch elements ([MS-ASCMD] section 2.2.3.67.1).  
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+3.1.5.1 ItemOperations Command Request 
+
+A client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) to retrieve data 
+from the server for one or more specific Notes class items. 
+
+15 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Notes class elements cannot be included in an ItemOperations command request. 
+
+3.1.5.1.1 airsyncbase:Body Element 
+
+If a client cannot display the data type specified by the airsyncbase:Type element (a required child 
+element of the airsyncbase:Body element (section 2.2.2.1) in the ItemOperations command 
+response ([MS-ASCMD] section 2.2.1.10)), as specified in [MS-ASAIRS] section 2.2.2.41.1), the client 
+can ignore the airsyncbase:Body element. 
+
+3.1.5.2 Search Command Request 
+
+A client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve Notes class 
+items that match the criteria specified by the client. 
+
+Elements that belong to the Notes class, as specified in section 2.2.2, MUST NOT be included in a 
+Search command request. 
+
+3.1.5.3 Sync Command Request 
+
+A client uses the Sync command request ([MS-ASCMD] section 2.2.1.21) to synchronize its Notes 
+class items for a specified user with the notes currently stored by the server. 
+
+Any of the elements that belong to the Notes class, as specified in section 2.2.2, can be included in a 
+Sync command request as child elements of the airsync:ApplicationData element ([MS-ASCMD] 
+section 2.2.3.11) within either an airsync:Add element ([MS-ASCMD] section 2.2.3.7.2) or an 
+airsync:Change element ([MS-ASCMD] section 2.2.3.24). 
+
+The airsync:Supported element ([MS-ASCMD] section 2.2.3.179) MUST NOT be included in a Sync 
+command request for the Notes class.  
+
+When an existing note is updated with an airsync:Change element in a Sync command, the 
+command will contain all required elements of the note. 
+
+3.1.5.3.1 LastModifiedDate Element 
+
+The client can omit the LastModifiedDate element (section 2.2.2.4) from the Sync command 
+request ([MS-ASCMD] section 2.2.1.21). If it is included in a Sync command request, the server will 
+ignore it. 
+
+3.1.5.3.2 MessageClass Element 
+
+If a client changes the MessageClass element (section 2.2.2.5) value on an existing note, the 
+MessageClass element value MUST conform to the requirements specified in section 2.2.2.5.  
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+16 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2 Server Details 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+Notes class: A structured XML text block that adheres to the XML schema specified in section 2.2. 
+It is returned by the server as part of a full XML response to the client requests specified in section 
+3.1.5. 
+
+The server can return zero or more Notes class XML blocks in its response, depending on how many 
+notes match the criteria specified by the client command request. The server returns a Notes class 
+XML block for every note that matches the criteria specified by the client command request. 
+
+Command response: A WBXML-formatted message that adheres to the command schemas 
+specified in [MS-ASCMD]. 
+
+3.2.2 Timers 
+
+None 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+3.2.4.1 Synchronizing Notes Data Between Client and Server 
+
+Synchronization of Notes class data between client and server is initiated by the client, as specified in 
+section 3.1.4.1. The server responds with a Sync command response ([MS-ASCMD] section 2.2.1.21). 
+
+3.2.4.2 Searching for Notes Data 
+
+Searching for Notes class data is initiated by the client, as specified in section 3.1.4.2. The server 
+responds with a Search command response ([MS-ASCMD] section 2.2.1.16). 
+
+3.2.4.3 Retrieving Details for One or More Notes 
+
+Retrieval of Notes class data for one or more individual notes is initiated by the client, as specified in 
+section 3.1.4.3. The server responds with an ItemOperations command response ([MS-ASCMD] 
+section 2.2.1.10). 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+3.2.5.1 ItemOperations Command Response 
+
+When a client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) to retrieve 
+data from the server for one or more notes items, as specified in section 3.1.5.1, the server responds 
+with an ItemOperations command response. 
+
+17 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Any of the elements that belong to the Notes class, as specified in section 2.2.2, can be included in 
+an ItemOperations command response. If an itemoperations:Schema element ([MS-ASCMD] 
+section 2.2.3.158) is included in the ItemOperations command request, then the elements returned 
+in the ItemOperations command response MUST be restricted to the elements that were included as 
+child elements of the ItemOperations:Schema element in the command request. 
+
+Notes class elements are returned as child elements of the itemoperations:Properties element 
+([MS-ASCMD] section 2.2.3.139) in the ItemOperations command response. 
+
+3.2.5.2 Search Command Response 
+
+When a client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve Notes 
+class items that match the criteria specified by the client, as specified in section 3.1.5.2, the server 
+responds with a Search command response. 
+
+Any of the elements that belong to the Notes class, as specified in section 2.2.2, can be included in a 
+Search command response. 
+
+Notes class elements are returned as child elements of the search:Properties element ([MS-
+ASCMD] section 2.2.3.139) in the Search command response. 
+
+3.2.5.3 Sync Command Response 
+
+When a client uses the Sync command request ([MS-ASCMD] section 2.2.1.21) to synchronize its 
+Notes class items for a specified user with the notes currently stored by the server, as specified in 
+section 3.1.5.3, the server responds with a Sync command response. 
+
+Any of the elements for the Notes class, as specified in section 2.2.2, can be included in a Sync 
+command response as child elements of the airsync:ApplicationData element ([MS-ASCMD] section 
+2.2.3.11) within either an airsync:Add element ([MS-ASCMD] section 2.2.3.7.2) or an 
+airsync:Change element ([MS-ASCMD] section 2.2.3.24). 
+
+When an existing note is updated by using an airsync:Change element in a Sync command request, 
+the command request will contain required all elements of the note. If the Categories element 
+(section 2.2.2.2) or a child of the Categories element (section 2.2.2.3) that was previously set is 
+missing, the server will delete that property from the note. The absence of an airsyncbase:Body 
+element (section 2.2.2.1) or a Subject element (section 2.2.2.6) within an airsync:Change element 
+is not to be interpreted as an implicit delete. 
+
+If the airsync:Supported element ([MS-ASCMD] section 2.2.3.179) is included in a Sync command 
+request for Notes class data, the server returns a Status element with a value of 4, as specified in 
+[MS-ASCMD] section 2.2.3.177.17. 
+
+3.2.5.3.1 LastModifiedDate Element 
+
+The LastModifiedDate element (section 2.2.2.4) is not required in the Sync command request, but it 
+is required in the Sync command response ([MS-ASCMD] section 2.2.1.21). 
+
+If a Sync command request includes the LastModifiedDate element, the server ignores the element 
+and returns the actual time that the note was last modified. 
+
+3.2.5.3.2 MessageClass Element 
+
+If a client submits a Sync command request ([MS-ASCMD] section 2.2.1.21) that contains a 
+MessageClass element value that does not conform to the requirements specified in section 2.2.2.5, 
+the server MUST respond with a Status element with a value of 6, as specified in [MS-ASCMD] section 
+2.2.3.177.17. 
+
+18 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+19 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+The following example demonstrates a client request to synchronize notes data with the server, and 
+the server response. In this example, the client uses the Sync command request ([MS-ASCMD] 
+section 2.2.1.21) to create one note, update one note that does not exist on the server, and delete 
+one note. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync  
+ xmlns:airsyncbase="AirSyncBase"  
+ xmlns:notes="Notes" xmlns="AirSync"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>398434774</SyncKey> 
+      <CollectionId>8</CollectionId> 
+      <DeletesAsMoves>1</DeletesAsMoves> 
+      <GetChanges>1</GetChanges> 
+      <WindowSize>512</WindowSize> 
+      <Options> 
+        <airsyncbase:BodyPreference> 
+          <airsyncbase:Type>2</airsyncbase:Type> 
+          <airsyncbase:TruncationSize>5120</airsyncbase:TruncationSize> 
+          <airsyncbase:AllOrNone>1</airsyncbase:AllOrNone> 
+        </airsyncbase:BodyPreference> 
+      </Options> 
+      <Commands> 
+        <Add> 
+          <ClientId>c212ac10-0465-4983-a898-076e152552ef</ClientId> 
+          <ApplicationData> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>2</airsyncbase:Type> 
+              <airsyncbase:Data>A new note I just created.</airsyncbase:Data> 
+            </airsyncbase:Body> 
+            <notes:Categories> 
+              <notes:Category>Business</notes:Category> 
+            </notes:Categories> 
+            <notes:Subject>New note</notes:Subject> 
+            <notes:MessageClass>IPM.StickyNote</notes:MessageClass> 
+          </ApplicationData> 
+        </Add> 
+        <Delete> 
+          <ServerId>8:1</ServerId> 
+        </Delete> 
+        <Change> 
+          <ServerId>bb18e2a7-3e65-41a1-b0b2-9815539f98ad</ServerId> 
+          <ApplicationData> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>2</airsyncbase:Type> 
+              <airsyncbase:Data>&lt;strong&gt;This is my second 
+note.&lt;/strong&gt;</airsyncbase:Data> 
+            </airsyncbase:Body> 
+            <notes:Categories> 
+              <notes:Category>Business</notes:Category> 
+            </notes:Categories> 
+            <notes:Subject>Second Note</notes:Subject> 
+            <notes:MessageClass>IPM.StickyNote</notes:MessageClass> 
+          </ApplicationData> 
+        </Change> 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+20 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns="AirSync"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>1960353427</SyncKey> 
+      <CollectionId>8</CollectionId> 
+      <Status>1</Status> 
+      <Responses> 
+        <Add> 
+          <ClientId>c212ac10-0465-4983-a898-076e152552ef</ClientId> 
+          <ServerId>8:3</ServerId> 
+          <Status>1</Status> 
+        </Add> 
+        <Change> 
+          <ServerId>bb18e2a7-3e65-41a1-b0b2-9815539f98ad</ServerId> 
+          <Status>8</Status> 
+        </Change> 
+      </Responses> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+21 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+22 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full XML Schema 
+
+For ease of implementation, this section contains the contents of the Notes.xsd file, which represents 
+the full XML schema for this protocol. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns="Notes"  
+    targetNamespace="Notes" elementFormDefault="qualified"  
+    attributeFormDefault="unqualified"> 
+  <xs:element name="Subject" type="xs:string"/> 
+  <xs:element name="MessageClass" type="xs:string"/> 
+  <xs:element name="LastModifiedDate" type="xs:string"/> 
+  <xs:element name="Categories"> 
+    <xs:complexType> 
+      <xs:sequence minOccurs="0"> 
+        <xs:element name="Category" type="xs:string" maxOccurs="300"/> 
+      </xs:sequence> 
+    </xs:complexType> 
+  </xs:element> 
+ </xs:schema> 
+
+23 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+24 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+7 Appendix B: Product Behavior Updated list of supported products. Major 
+
+25 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Index
+A    searching a server for notes 15 
+    synchronizing notes with the server 15 
+Abstract data model Higher-layer triggered events - server 
+   client 15    retrieving details for one or more notes 17 
+   server 17    searching for notes data 17 
+Applicability 7    synchronizing notes with the server 17 
+  
+
+C I 
+  
+Capability negotiation 8 Implementer - security considerations 22 
+Change tracking 25 Index of security parameters 22 
+Client Informative references 7 
+   abstract data model 15 Initialization 
+   initialization 15    client 15 
+   other local events 16    server 17 
+   timer events 16 Introduction 6 
+   timers 15  
+Client - higher-layer triggered events M 
+   requesting details for one or more notes 15  
+   searching a server for notes 15 Message processing - client 
+   synchronizing notes with the server 15    ItemOperations command request 15 
+Client - message processing    Search command request 16 
+   ItemOperations command request 15    Sync command request 16 
+   Search command request 16 Message processing - server 
+   Sync command request 16    ItemOperations command response 17 
+Client - sequencing rules    Search command response 18 
+   ItemOperations command request 15    Sync command response 18 
+   Search command request 16 Messages 
+   Sync command request 16    Elements 9 
+    Namespaces 9 
+D    syntax 9 
+    transport 9 
+Data model - abstract  
+   client 15 N 
+   server 17  
+ Namespaces message 9 
+E Normative references 6 
+  
+Elements O 
+   Body 10  
+   Categories 11 Other local events 
+   Category 11    client 16 
+   LastModifiedDate 12    server 19 
+   MessageClass 13 Overview (synopsis) 7 
+   Subject 13  
+Elements message 9 P 
+Examples 20  
+ Parameters - security index 22 
+F Preconditions 7 
+ Prerequisites 7 
+Fields - vendor-extensible 8 Product behavior 24 
+Full XML schema 23  
+ R 
+G  
+ References 6 
+Glossary 6    informative 7 
+    normative 6 
+H Relationship to other protocols 7 
+  
+Higher-layer triggered events - client S 
+   requesting details for one or more notes 15  
+
+26 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Security 
+   implementer considerations 22 
+   parameter index 22 
+Sequencing rules - client 
+   ItemOperations command request 15 
+   Search command request 16 
+   Sync command request 16 
+Sequencing rules - server 
+   ItemOperations command response 17 
+   Search command response 18 
+   Sync command response 18 
+Server 
+   abstract data model 17 
+   initialization 17 
+   other local events 19 
+   timer events 19 
+   timers 17 
+Server - higher-layer triggered events 
+   retrieving details for one or more notes 17 
+   searching for notes data 17 
+   synchronizing notes with the server 17 
+Server - message processing 
+   ItemOperations command response 17 
+   Search command response 18 
+   Sync command response 18 
+Server - sequencing rules 
+   ItemOperations command response 17 
+   Search command response 18 
+   Sync command response 18 
+Standards assignments 8 
+ 
+T 
+ 
+Timer events 
+   client 16 
+   server 19 
+Timers 
+   client 15 
+   server 17 
+Tracking changes 25 
+Transport 9 
+Triggered events - client 
+   requesting details for one or more notes 15 
+   searching a server for notes 15 
+   synchronizing notes with the server 15 
+Triggered events - server 
+   retrieving details for one or more notes 17 
+   searching for notes data 17 
+   synchronizing notes with the server 17 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+ 
+X 
+ 
+XML schema 23 
+
+ 
+
+27 / 27 
+
+[MS-ASNOTE] - v20250520 
+Exchange ActiveSync: Notes Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

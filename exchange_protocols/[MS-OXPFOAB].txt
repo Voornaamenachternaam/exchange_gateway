@@ -1,0 +1,1248 @@
+﻿[MS-OXPFOAB]:  
+
+Offline Address Book (OAB) Public Folder Retrieval 
+Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Updated references to reflect date of initial release. 
+
+9/3/2008 1.02 Minor Revised and edited technical content. 
+
+12/3/2008 1.03 Minor Minor editorial fixes. 
+
+3/4/2009 1.04 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.1.0 Minor Updated the technical content. 
+
+2/10/2010 4.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 4.1.0 Minor Updated the technical content. 
+
+8/4/2010 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 5.0 None 
+
+technical content. 
+
+3/18/2011 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+1/20/2012 6.0 None 
+
+technical content. 
+
+4/27/2012 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 7.0 None 
+
+technical content. 
+
+10/8/2012 7.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 7.1 None 
+
+technical content. 
+
+7/26/2013 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 8.0 None 
+
+technical content. 
+
+4/30/2014 8.0 None No changes to the meaning, language, or formatting of the 
+
+2 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/3/2016 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 8.0 None 
+
+technical content. 
+
+3 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 OAB Messages .............................................................................................. 9 
+2.2.1.1 PidTagSortLocaleId ................................................................................. 9 
+2.2.1.2 PidTagMessageCodepage ......................................................................... 9 
+2.2.1.3 PidTagMessageSize ................................................................................. 9 
+2.2.1.4 PidTagParentEntryId .............................................................................. 10 
+2.2.1.5 PidTagEntryId ....................................................................................... 10 
+
+2.2.2 Full OAB Messages ...................................................................................... 10 
+2.2.2.1 Properties and Attachments ................................................................... 10 
+
+2.2.2.1.1 PidTagOfflineAddressBookMessageClass ............................................. 10 
+2.2.2.1.2 Full OAB Message Attachments – Version 2 and Version 3a ................... 10 
+
+2.2.2.1.2.1 PidTagAttachFilename ................................................................ 10 
+2.2.2.1.2.2 PidTagAttachMethod ................................................................... 10 
+
+2.2.2.1.3 Full OAB Message Attachments – Version 4......................................... 11 
+2.2.2.1.3.1 PidTagAttachFilename ................................................................ 11 
+2.2.2.1.3.2 PidTagAttachMethod ................................................................... 11 
+
+2.2.3 Differential OAB Messages ........................................................................... 11 
+2.2.3.1 Properties and Attachments ................................................................... 11 
+
+2.2.3.1.1 PidTagOfflineAddressBookMessageClass ............................................. 11 
+2.2.3.1.2 Differential OAB Message Attachments – Version 2 and Version 3a ........ 11 
+
+2.2.3.1.2.1 PidTagAttachFilename ................................................................ 12 
+2.2.3.1.2.2 PidTagAttachMethod ................................................................... 12 
+
+2.2.3.1.3 Differential OAB Message Attachments – Version 4 .............................. 12 
+2.2.3.1.3.1 PidTagAttachFilename ................................................................ 12 
+2.2.3.1.3.2 PidTagAttachMethod ................................................................... 12 
+
+3 Protocol Details ..................................................................................................... 13 
+3.1 Server Details .................................................................................................. 13 
+
+3.1.1 Abstract Data Model .................................................................................... 13 
+3.1.2 Timers ...................................................................................................... 13 
+3.1.3 Initialization ............................................................................................... 13 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 13 
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 13 
+3.1.6 Timer Events .............................................................................................. 13 
+3.1.7 Other Local Events ...................................................................................... 13 
+
+3.2 Client Details ................................................................................................... 14 
+3.2.1 Abstract Data Model .................................................................................... 14 
+3.2.2 Timers ...................................................................................................... 14 
+3.2.3 Initialization ............................................................................................... 14 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 14 
+
+4 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 14 
+3.2.6 Timer Events .............................................................................................. 14 
+3.2.7 Other Local Events ...................................................................................... 14 
+
+4 Protocol Examples ................................................................................................. 15 
+
+5 Security ................................................................................................................. 18 
+5.1 Security Considerations for Implementers ........................................................... 18 
+5.2 Index of Security Parameters ............................................................................ 18 
+
+6 Appendix A: Product Behavior ............................................................................... 19 
+
+7 Change Tracking .................................................................................................... 20 
+
+8 Index ..................................................................................................................... 21 
+
+ 
+
+5 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+1 Introduction 
+
+The Offline Address Book (OAB) Public Folder Retrieval Protocol provides a mechanism for delivering 
+an offline address book (OAB) from a server to a client. An OAB uses the format and schema 
+structure that is described in [MS-OXOAB]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+address book: A collection of Address Book objects, each of which are contained in any number 
+of address lists. 
+
+Address Book object: An entity in an address book that contains a set of attributes, each 
+attribute with a set of associated values. 
+
+address list: A collection of distinct Address Book objects. 
+
+Augmented Backus-Naur Form (ABNF): A modified version of Backus-Naur Form (BNF), 
+commonly used by Internet specifications. ABNF notation balances compactness and simplicity 
+with reasonable representational power. ABNF differs from standard BNF in its definitions and 
+uses of naming rules, repetition, alternatives, order-independence, and value ranges. For more 
+information, see [RFC5234]. 
+
+code page: An ordered set of characters of a specific script in which a numerical index (code-point 
+value) is associated with each character. Code pages are a means of providing support for 
+character sets and keyboard layouts used in different countries. Devices such as the display and 
+keyboard can be configured to use a specific code page and to switch from one code page (such 
+as the United States) to another (such as Portugal) at the user's request. 
+
+display template: A template that describes how to display or allow a user to modify information 
+about an Address Book object. 
+
+entry ID: See EntryID. 
+
+local site: A directory services unit that defines the physical structure or topology of a local 
+network. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+OAL data sequence number: An integer that is associated with offline address list (OAL) data 
+that represents the generation number of this data. The value of the initial sequence number is 
+"1". Each subsequent data generation process that produces a data set that is not identical to 
+the previous data set is incremented by one. 
+
+offline address book (OAB): A collection of address lists that are stored in a format that a 
+client can save and use locally. 
+
+offline address book (OAB) data file: A file that contains offline address book (OAB) version 
+4–specific data, as described in [MS-OXOAB]. 
+
+offline address list (OAL): A portion of data that is in an offline address book (OAB) and is 
+related to a single address list. 
+
+public folder: A Folder object that is stored in a location that is publicly available. 
+
+6 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+root folder: The folder at the top of a hierarchy of folders in a list. 
+
+SHA-1 hash: A hashing algorithm as specified in [FIPS180-2] that was developed by the National 
+Institute of Standards and Technology (NIST) and the National Security Agency (NSA). 
+
+Web Distribution Point (WDP): A location on a server where offline address book (OAB) files 
+are published for web distribution. A client can discover the URI of a WDP by using the 
+Autodiscover Publishing and Lookup Protocol, as described in [MS-OXDSCLI]. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-LCID] Microsoft Corporation, "Windows Language Code Identifier (LCID) Reference". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXCRPC] Microsoft Corporation, "Wire Format Protocol". 
+
+[MS-OXCSTOR] Microsoft Corporation, "Store Object Protocol". 
+
+[MS-OXCTABL] Microsoft Corporation, "Table Object Protocol". 
+
+[MS-OXDISCO] Microsoft Corporation, "Autodiscover HTTP Service Protocol". 
+
+[MS-OXOABKT] Microsoft Corporation, "Address Book User Interface Templates Protocol". 
+
+[MS-OXOAB] Microsoft Corporation, "Offline Address Book (OAB) File Format and Schema". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[MS-OXWOAB] Microsoft Corporation, "Offline Address Book (OAB) Retrieval File Format". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC5234] Crocker, D., Ed., and Overell, P., "Augmented BNF for Syntax Specifications: ABNF", STD 
+68, RFC 5234, January 2008, https://www.rfc-editor.org/info/rfc5234 
+
+7 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+A collaboration server can represent properties of known Address Book objects and make them 
+available in an address book to its clients. When the client cannot reach the server because it is 
+offline or due to high network costs to access the server, the client might keep a local copy of an 
+offline address book (OAB). The Offline Address Book (OAB) Public Folder Retrieval Protocol 
+enables OAB data to be located in and obtained from a shared location so that it can be retrieved by 
+clients. 
+
+Clients can also obtain OAB version 4 files by using the Offline Address Book (OAB) Web Retrieval 
+Protocol [MS-OXWOAB]. Note that the OAL data sequence number [MS-OXWOAB] is also used in 
+public folder distribution, and any client use of that number applies to the public folder–distributed 
+OAB as well. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol extends the Message and Attachment Object Protocol, as described in [MS-OXCMSG]. 
+
+Clients use this protocol to retrieve and consume OAB data files that have the Offline Address Book 
+(OAB) Format and Schema structure, as described in [MS-OXOAB]. 
+
+Clients that use this protocol rely on the Store Object Protocol, as described in [MS-OXCSTOR], to 
+obtain the ID of the OAB data folder of the local site. The ID is retrieved from the server when it logs 
+on to the public folder by using RopLogon property ([MS-OXCROPS] section 2.2.3.1). 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+This protocol assumes that the server is configured to support public folders. 
+
+1.6 Applicability Statement 
+
+Clients use this protocol for OAB files. Clients that do not support the Offline Address Book (OAB) 
+Retrieval File Format, as described in [MS-OXWOAB], or clients that connect to servers that do not 
+support the OAB Retrieval File Format, will use this protocol to retrieve OAB data. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol uses the Message and Attachment Object Protocol, as specified in [MS-OXCMSG], as its 
+transport mechanism. 
+
+2.2 Message Syntax 
+
+2.2.1 OAB Messages 
+
+OAB data is stored as a set of properties and attachments on a message in the public folders 
+message store.<1> The message is referred to as the full OAB message or differential OAB 
+message. The location of this message is specified in section 3. Unless otherwise specified, the OAB 
+messages adhere to the format specified in [MS-OXCMSG].  
+
+There are two types of OAB messages — full messages and differential messages — with some 
+additional differences related to the version of the OAB. Full messages contain all of the information 
+that is needed to create a current OAB. Differential messages contain enough information to update a 
+previous OAB to a more current OAB. The following properties are common to all OAB messages that 
+use public folder retrieval. 
+
+ PidTagOfflineAddressBookName, as specified in [MS-OXOAB] section 2.12.3. 
+
+ PidTagOfflineAddressBookSequence, as specified in [MS-OXOAB] section 2.12.4. 
+
+ PidTagOfflineAddressBookContainerGuid, as specified in [MS-OXOAB] section 2.12.1. 
+
+ PidTagOfflineAddressBookDistinguishedName, as specified in [MS-OXOAB] section 2.12.2. 
+
+ PidTagSortLocaleId, as specified in section 2.2.1.1. 
+
+ PidTagMessageCodepage, as specified in section 2.2.1.2  
+
+ PidTagParentEntryId, as specified in section 2.2.1.4.  
+
+ PidTagEntryId, as specified in section 2.2.1.5.  
+
+2.2.1.1 PidTagSortLocaleId 
+
+The value of this property is the locale identifier, as described in [MS-LCID], that is used in 
+combination with the PidTagMessageCodepage property to sort RDN2_REC and ANR_REC in OAB 
+version 2 files. For details, see [MS-OXPROPS] section 2.1023 and [MS-OXOAB]. 
+
+2.2.1.2 PidTagMessageCodepage 
+
+The value of this property is the code page that is used to encode the strings in the message 
+properties in OAB version 2 files. Note that strings in OAB version 4 files are stored in UTF-8 format. 
+For details, see [MS-OXCMSG] section 2.2.1.4 and [MS-OXPROPS] section 2.790. 
+
+2.2.1.3 PidTagMessageSize 
+
+This property contains the size of the message on the server. For details about this property, see [MS-
+OXCMSG] section 2.2.1.7 and [MS-OXPROPS] section 2.798. 
+
+9 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+2.2.1.4 PidTagParentEntryId 
+
+This property contains the entry ID for a folder that contains the offline address book (OAB) 
+public folder message. For details, see [MS-OXPROPS] section 2.860.<2> 
+
+2.2.1.5 PidTagEntryId 
+
+This property contains the entry ID for the OAB public folder message. For details, see [MS-
+OXPROPS] section 2.684.<3> 
+
+2.2.2 Full OAB Messages 
+
+2.2.2.1 Properties and Attachments 
+
+2.2.2.1.1 PidTagOfflineAddressBookMessageClass 
+
+This property is set to 1 for all full OAB messages. For details, see [MS-OXPROPS] section 2.819. 
+
+2.2.2.1.2 Full OAB Message Attachments – Version 2 and Version 3a 
+
+Multiple compressed files are attached to the OAB version 2 and OAB version 3a full OAB by using the 
+Offline Address Book (OAB) Format and Schema, as specified in [MS-OXOAB]. These are the Browse 
+file, RDN Index file, ANR Index file, Details file, and one or more display template files. 
+
+OAB version 2 and OAB version 3a attachments have their own properties and are described in the 
+following subsections. 
+
+2.2.2.1.2.1 PidTagAttachFilename 
+
+This property is set to the values that correspond to each of the files listed in the following table. For 
+details about this property, see [MS-OXPROPS] section 2.593.  
+
+OAB file PidTagAttachFilename value MUST start with PidTagAttachFilename value SHOULD be 
+
+Browse b browse2.oab 
+
+RDN Index r rdndex2.oab 
+
+ANR Index a anrdex.oab 
+
+Details d details2.oab 
+
+Template l * 
+
+Template  m * 
+
+The following Augmented Backus-Naur Form (ABNF), as specified in [RFC5234], defines the 
+constraints of the display template file name. 
+
+ TmpltFilename = ("lng" LocaleIdentifier ".oab") / ("mac" LocaleIdentifier ".oab") 
+ LocaleIdentifier = (%x31-39 / ALPHA) *HEXDIG;for example, 409 and cc08 but not 0409 
+
+"LocaleIdentifier" is a value from [MS-LCID] but can also have the value 8411 to indicate the special 
+Japanese template with phonetic "Yomi" properties, as specified in [MS-OXOABKT]. 
+
+2.2.2.1.2.2 PidTagAttachMethod 
+
+10 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+This property MUST be set to 1 (ATTACH_BY_VALUE). For details, see [MS-OXPROPS] section 
+2.601.<4> 
+
+2.2.2.1.3 Full OAB Message Attachments – Version 4 
+
+Multiple compressed files are attached to the OAB version 4 full OAB, as specified in [MS-OXOAB]. 
+These are the Data file and one or more display template files. 
+
+OAB version 4 attachments have their own properties, which are described in the following 
+subsections. 
+
+2.2.2.1.3.1 PidTagAttachFilename 
+
+This property is set to the values that correspond to each of the files listed in the following table. For 
+details, see [MS-OXPROPS] section 2.593. 
+
+OAB file PidTagAttachFilename value MUST start with PidTagAttachFilename value MUST be 
+
+Data d data.oab 
+
+Template  l * 
+
+Template  m * 
+
+ 
+
+*The following ABNF, as specified in [RFC5234], defines the constraints of the display template file 
+name. 
+
+ TmpltFilename = ("lng" LocaleIdentifier ".oab") / ("mac" LocaleIdentifier ".oab") 
+ LocaleIdentifier = (%x31-39 / ALPHA) *HEXDIG;for example, 409 and cc08 but not 0409 
+
+"LocaleIdentifier" is a value from [MS-LCID], but it can also have the value 8411 to indicate the 
+special Japanese template with phonetic "Yomi" properties, as specified in [MS-OXOABKT]. 
+
+2.2.2.1.3.2 PidTagAttachMethod 
+
+This property MUST be set to 1 (ATTACH_BY_VALUE). For details, see [MS-OXPROPS] section 
+2.601.<5> 
+
+2.2.3 Differential OAB Messages 
+
+2.2.3.1 Properties and Attachments 
+
+2.2.3.1.1 PidTagOfflineAddressBookMessageClass 
+
+This property MUST be set to 2 for all differential OAB messages. For details, see [MS-OXPROPS] 
+section 2.819. 
+
+2.2.3.1.2 Differential OAB Message Attachments – Version 2 and Version 3a 
+
+One compressed file is attached to the OAB version 2 or OAB version 3a differential OAB, as specified 
+in [MS-OXOAB]. This is a Changes file. 
+
+This attachment has its own properties, which are defined in the following subsections. 
+
+11 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+2.2.3.1.2.1 PidTagAttachFilename 
+
+The value for this property SHOULD be "changes.oab". For details, see [MS-OXPROPS] section 2.593. 
+
+2.2.3.1.2.2 PidTagAttachMethod 
+
+This property MUST be set to 1 (ATTACH_BY_VALUE). For details, see [MS-OXPROPS] section 2.601 
+for details.<6> 
+
+2.2.3.1.3 Differential OAB Message Attachments – Version 4 
+
+One compressed file, a Changes file, can be attached to the OAB version 4 differential OAB message, 
+as specified in [MS-OXOAB].  
+
+The Differential Patch file MUST be the first attachment on this message. 
+
+These attachments have their own properties, which are defined in the following subsections. 
+
+2.2.3.1.3.1 PidTagAttachFilename 
+
+This property is set to the value that corresponds to each of the files listed in the following table. For 
+details, see [MS-OXPROPS] section 2.593. 
+
+PidTagAttachFilename value MUST start PidTagAttachFilename value SHOULD 
+OAB file with be 
+
+Differential b binpatch.oab 
+Patch 
+
+Changes file c changes.oab 
+
+ 
+
+2.2.3.1.3.2 PidTagAttachMethod 
+
+This property MUST be set to 1 (ATTACH_BY_VALUE). For details, see [MS-OXPROPS] section 
+2.601.<7> 
+
+12 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+3 Protocol Details 
+
+3.1 Server Details 
+
+Offline address book (OAB) messages are kept in folders in the public folder message store. There 
+is one folder for each OAB, named for the OAB that it contains. 
+
+The server MUST publish the entry ID of the local site's Offline Address Book Data Folder ([MS-
+OXCSTOR] section 2.2.1.1.4) when clients connect to the public folder message store, as specified in 
+the public folder IDs of the RopLogon request and response syntax (as specified in [MS-OXCSTOR] 
+section 2.2.1.1). 
+
+In the folder for each OAB are subfolders that have a fixed name relative to the OAB version that is 
+contained therein — either "OAB version 2", "OAB version 3a", or "OAB version 4". The messages that 
+contain OAB files are posted to the "OAB version 2", "OAB version 3a", or "OAB version 4" folder, 
+depending on their OAB version. 
+
+The OAB folders SHOULD be secure enough such that users cannot add, change, or delete the content 
+in the folders, but administrative users can add, change, or delete the content. The server MUST allow 
+administrative users to customize the security settings to grant read access to administrators or a 
+selected set of users. 
+
+The server SHOULD discard old messages when they reach a specified age limit, to prevent the size of 
+the folder from growing without bounds. The server SHOULD allow an administrative user to 
+customize the age limit for messages.<8> 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+13 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+3.2 Client Details 
+
+Before using this protocol, the client SHOULD use the OAB Retrieval Protocol, as specified in [MS-
+OXWOAB], if it is available.<9> 
+
+Clients get the entry ID of their OAB folder (the one that contains OAB version 2 and OAB version 4 
+subfolders) during the RopLogon call ([MS-OXCSTOR] section 2.2.1.1) when they connect to the 
+public folder message store. This folder is the OAB data folder of the local site, as described in the 
+public folder IDs of the RopLogon request and response syntax. The client SHOULD use the OAB data 
+folder of the local site as the Root folder to start finding its OAB messages. Note that the client 
+SHOULD first check for the existence of the subfolder "OAB version 4" and use OAB version 4 if that 
+subfolder exists. If it does not exist, the client SHOULD then check for the existence of the subfolder 
+"OAB version 2" and use OAB version 2 if that subfolder exists. The client SHOULD ignore any other 
+subfolders. The client relies on an understanding of the ROPs in [MS-OXCFOLD] to open the folder 
+and retrieve the hierarchy or contents table, the ROPs in [MS-OXCTABL] to perform table operations 
+on the hierarchy or contents table to find the subfolders with the hard-coded names, and the ROPs in 
+[MS-OXCMSG] to retrieve the messages in each of these folders. 
+
+3.2.1 Abstract Data Model 
+
+None. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+14 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+4 Protocol Examples 
+
+The following is an example of offline address book (OAB) public folder content. The OAB 
+contains two address lists: "Global Address List," which is represented by one set of messages, and 
+"All Rooms," which is represented by another set of messages. Both address lists include two 
+templates: one with the language id value set to "0409" (English), and one with the language id value 
+set to "0411" (Japanese). Both have full details data files and differential details files. The first OAL, 
+however, has OAL data sequence number 2 and only one differential file, whereas the second OAL 
+has OAL data sequence number 4 and three differential files. 
+
+Folders: 
+
+NON_IPM_SUBTREE 
+
+OFFLINE ADDRESS BOOK 
+
+/o=First Organization/ou=addrlists/cn=oabs/cn=Offline Address Book 
+
+OAB version 2 
+
+OAB version 4 
+
+The following are the messages in the "OAB version 2" folder: 
+
+1. Address list "Global Address List," full OAB version 2 message, sequence number = 2 
+
+2. Address list "Global Address List," differential OAB version 2 message, sequence number = 2 
+
+3. Address list "All Rooms," full OAB version 2 message, sequence number = 4 
+
+4. Address list "All Rooms," differential OAB version 2 message, sequence number = 4 
+
+5. Address list "All Rooms," differential OAB version 2 message, sequence number = 3 
+
+6. Address list "All Rooms," differential OAB version 2 message, sequence number = 2 
+
+The properties of these messages are listed in the following table. 
+
+Messag Messa Messa Messa Messa
+Property e 1 ge 2 Message 3 ge 4 ge 5 ge 6 
+
+PidTagOfflineAddressBook \Global Same \All Rooms Same Same Same 
+Name  Address as 1 as 3 as 3 as 3 
+
+List 
+
+PidTagOfflineAddressBook 2 2 4 4 3 2 
+Sequence  
+
+PidTagOfflineAddressBook {000102 Same {10111213-1415-1617- Same Same Same 
+ContainerGuid  03-0405- as 1 1819-1A1B1C1D1E1F} as 3 as 3 as 3 
+
+0607-
+0809-
+0A0B0C0
+D0E0F } 
+
+PidTagOfflineAddressBook / Same /guid=aa65bfa24602544d Same Same Same 
+DistinguishedName  as 1 9d71a5f36ce1b7f3 as 3 as 3 as 3 
+
+PidTagSortLocaleId  0x409 0x409 0x409 0x409 0x409 0x409 
+
+PidTagMessageCodepage 1252 1252 1252 1252 1252 1252 
+
+15 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+Messag Messa Messa Messa Messa
+Property e 1 ge 2 Message 3 ge 4 ge 5 ge 6 
+
+PidTagOfflineAddressBook 1 2 1 2 2 2 
+MessageClass  
+
+AttachmentTable browse2. change browse2.oab, change change change
+oab, s.oab rdndex2.oab, anrdex.oab, s.oab s.oab s.oab 
+rdndex2. details2.oab, lng409.oab, 
+oab, lng411.oab 
+anrdex.o
+ab, 
+details2.
+oab, 
+lng409.o
+ab, 
+lng411.o
+ab 
+
+The following are the messages in the "OAB version 4" folder: 
+
+ "Global Address List" full OAB version 4 message, sequence number = 2 
+
+ "Global Address List" differential OAB version 4 message, sequence number = 2 
+
+ "All Rooms" full OAB version 4 message, sequence number = 4 
+
+ "All Rooms" differential OAB version 4 message, sequence number = 4 
+
+ "All Rooms" differential OAB version 4 message, sequence number = 3 
+
+ "All Rooms" differential OAB version 4 message, sequence number = 2 
+
+ Properties of these messages are listed in the following table. 
+
+Property 1 2 3 4 5 6 
+
+PidTagOfflineAddressBook \Global Same \All Rooms Same Same 3 
+Name  Address as 1 as 3 as 3 
+
+List 
+
+PidTagOfflineAddressBook 2 2 4 4 3 2 
+Sequence  
+
+PidTagOfflineAddressBook {202122 Same {30313233-3435-3637- Same Same Same 
+ContainerGuid  23- as 1 3839-3A3B3C3D3E3F} as 3 as 3 as 3 
+
+2425-
+2627-
+2829-
+2A2B2C2
+D2E2F } 
+
+PidTagOfflineAddressBook / Same /guid=aa65bfa24602544d Same Same Same 
+DistinguishedName  as 1 9d71a5f36ce1b7f3 as 3 as 3 as 3 
+
+PidTagSortLocaleId  0x409 0x409 0x409 0x409 0x409 0x409 
+
+PidTagMessageCodepage 1252 1252 1252 1252 1252 1252 
+
+PidTagOfflineAddressBook 1 2 1 2 2 2 
+MessageClass  
+
+AttachmentTable data.oab binpatc data.oab, lng409.oab, binpatc binpatc binpatc
+
+16 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+Property 1 2 3 4 5 6 
+
+, h.oab lng411.oab h.oab h.oab h.oab 
+lng409.o
+ab, 
+lng411.o
+ab 
+
+ 
+
+17 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+5 Security 
+
+OAB version 4 messages contain the results of the SHA-1 hash calculation. Note, however, that the 
+SHA-1 hash value is used as an optional means of checksum verification of the downloaded file, and it 
+is not intended to be used as a security feature. 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+18 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.1:  Exchange 2003 supports public folders by default, but public folders have to be 
+configured explicitly on Exchange 2007 or Exchange 2010. 
+
+<2> Section 2.2.1.4: Office Outlook 2007 and Outlook 2010 download the OAB by using a Web 
+Distribution Point (WDP), thus bypassing the use of public folders so that this property will not be 
+sent over the wire. 
+
+<3> Section 2.2.1.5: Office Outlook 2007 and Microsoft Outlook 2010 download the OAB by using a 
+WDP, thus bypassing the use of public folders so that this property will not be sent over the wire. 
+
+<4> Section 2.2.2.1.2.2: Office Outlook 2007 and Outlook 2010 download the OAB by using a WDP, 
+thus bypassing the use of public folders so that this property will not be sent over the wire. 
+
+<5> Section 2.2.2.1.3.2: Office Outlook 2007 and Outlook 2010 download the OAB by using a WDP, 
+thus bypassing the use of public folders so that this property will not be sent over the wire. 
+
+<6> Section 2.2.3.1.2.2: Office Outlook 2007 and Outlook 2010 download the OAB by using a WDP, 
+thus bypassing the use of public folders so that this property will not be sent over the wire. 
+
+<7> Section 2.2.3.1.3.2: Office Outlook 2007 and Outlook 2010 download the OAB by using a WDP, 
+thus bypassing the use of public folders so that this property will not be sent over the wire. 
+
+<8> Section 3.1: Exchange 2003, Exchange 2007, and Exchange 2010 automatically remove 
+messages that have been stored for 30 days and not modified during that time. 
+
+<9> Section 3.2: Office Outlook 2003 does not use the OAB Retrieval Protocol as specified in [MS-
+OXWOAB]. Office Outlook 2007 and Outlook 2010 examine the rgwServerVersion value (as specified 
+in [MS-OXCRPC] section 3.1.4.1) that is returned by the EcDoConnectEx method (as specified in 
+[MS-OXCRPC] section 3.1.4.1) to determine which protocol to use. If the second byte contains a value 
+that is greater than or equal to 8, Office Outlook 2007 and Outlook 2010 use the Autodiscover HTTP 
+Service Protocol (as specified in [MS-OXDISCO]), which will direct the client to use the OAB Retrieval 
+Protocol or the OAB Public Folder Retrieval Protocol. If the second byte is less than 8, the client uses 
+the OAB Public Folder Retrieval Protocol. 
+
+19 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+7 Change Tracking 
+
+No table of changes is available. The document is either new or has had no changes since its last 
+release. 
+
+20 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+8 Index
+A Messages 
+    OAB Messages 9 
+Abstract data model    transport 9 
+   client 14  
+   server 13 N 
+Applicability 8  
+ Normative references 7 
+C  
+ O 
+Capability negotiation 8  
+Change tracking 20 OAB Messages message 9 
+Client Other local events 
+   abstract data model 14    client 14 
+   higher-layer triggered events 14    server 13 
+   initialization 14 Overview (synopsis) 8 
+   message processing 14  
+   other local events 14 P 
+   overview 14  
+   sequencing rules 14 Parameters - security index 18 
+   timer events 14 Preconditions 8 
+   timers 14 Prerequisites 8 
+ Product behavior 19 
+D  
+ R 
+Data model - abstract  
+   client 14 References 7 
+   server 13    informative 8 
+    normative 7 
+E Relationship to other protocols 8 
+  
+Examples 15 S 
+  
+F Security 
+    implementer considerations 18 
+Fields - vendor-extensible 8    parameter index 18 
+ Sequencing rules 
+G    client 14 
+    server 13 
+Glossary 6 Server 
+    abstract data model 13 
+
+H    higher-layer triggered events 13 
+
+    initialization 13 
+
+Higher-layer triggered events    message processing 13 
+
+   client 14    other local events 13 
+
+   server 13    overview 13 
+
+    sequencing rules 13 
+
+I    timer events 13 
+
+    timers 13 
+
+Implementer - security considerations 18 Standards assignments 8 
+
+Index of security parameters 18  
+
+Informative references 8 T 
+Initialization  
+
+   client 14 Timer events 
+
+   server 13    client 14 
+
+Introduction 6    server 13 
+
+ Timers 
+
+M    client 14 
+
+    server 13 
+
+Message processing Tracking changes 20 
+
+   client 14 Transport 9 
+
+   server 13 Triggered events - higher-layer 
+   client 14 
+
+21 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016 
+
+
+
+   server 13 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+
+ 
+
+22 / 22 
+
+[MS-OXPFOAB] - v20160914 
+Offline Address Book (OAB) Public Folder Retrieval Protocol 
+Copyright © 2016 Microsoft Corporation 
+Release: September 14, 2016

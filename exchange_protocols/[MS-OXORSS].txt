@@ -1,0 +1,1447 @@
+﻿[MS-OXORSS]:  
+
+RSS Object Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Revised and edited technical content. 
+
+12/3/2008 1.03 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0 Major Updated and revised the technical content. 
+
+2/10/2010 4.1 Minor Updated the technical content. 
+
+5/5/2010 5.0 Major Updated and revised the technical content. 
+
+8/4/2010 5.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 5.1 None 
+
+technical content. 
+
+10/7/2011 5.2 Minor Clarified the meaning of the technical content. 
+
+1/20/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 6.0 None 
+
+technical content. 
+
+10/8/2012 6.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 6.1 None 
+
+technical content. 
+
+4/30/2014 6.2 Minor Clarified the meaning of the technical content. 
+
+2 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 6.2 None 
+
+technical content. 
+
+10/30/2014 6.3 Minor Clarified the meaning of the technical content. 
+
+3/16/2015 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.0 None 
+
+technical content. 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+4/22/2021 10.0 Major Significantly changed the technical content. 
+
+8/17/2021 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 11.0 None 
+
+technical content. 
+
+8/20/2024 12.0 Major Significantly changed the technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 RSS Object-Specific Properties ....................................................................... 9 
+2.2.1.1 PidLidPostRssChannelLink Property............................................................ 9 
+2.2.1.2 PidLidPostRssItemLink Property ................................................................ 9 
+2.2.1.3 PidLidPostRssItemHash Property ............................................................. 10 
+2.2.1.4 PidLidPostRssItemGuid Property.............................................................. 10 
+2.2.1.5 PidLidPostRssChannel Property ............................................................... 10 
+2.2.1.6 PidLidPostRssItemXml Property ............................................................... 10 
+2.2.1.7 PidLidPostRssSubscription Property ......................................................... 10 
+2.2.1.8 PidTagMessageDeliveryTime Property ...................................................... 11 
+
+2.2.2 Additional Property Constraints .................................................................... 11 
+2.2.2.1 PidNameExchangeJunkEmailMoveStamp Property ..................................... 11 
+2.2.2.2 PidTagMessageClass Property ................................................................. 11 
+2.2.2.3 PidTagSenderName Property .................................................................. 11 
+2.2.2.4 PidTagSenderEmailAddress Property ........................................................ 12 
+2.2.2.5 PidTagSentRepresentingName Property ................................................... 12 
+2.2.2.6 PidTagSentRepresentingEmailAddress Property ......................................... 12 
+
+2.2.3 Additional Object Constraints ....................................................................... 12 
+2.2.3.1 Attachment Objects ............................................................................... 12 
+
+2.2.3.1.1 Full Article Attachment Objects ......................................................... 12 
+2.2.3.1.2 Enclosure Attachment Objects ........................................................... 12 
+2.2.3.1.3 Other Attachment Objects ................................................................ 13 
+
+2.2.3.2 Recipients ............................................................................................ 13 
+
+3 Protocol Details ..................................................................................................... 14 
+3.1 Client Details ................................................................................................... 14 
+
+3.1.1 Abstract Data Model .................................................................................... 14 
+3.1.2 Timers ...................................................................................................... 14 
+3.1.3 Initialization ............................................................................................... 14 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 14 
+
+3.1.4.1 Creation of an RSS Object ...................................................................... 14 
+3.1.4.2 Modification of an RSS Object ................................................................. 14 
+3.1.4.3 Deletion of an RSS Object ...................................................................... 14 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 15 
+3.1.6 Timer Events .............................................................................................. 15 
+3.1.7 Other Local Events ...................................................................................... 15 
+
+3.2 Server Details .................................................................................................. 15 
+3.2.1 Abstract Data Model .................................................................................... 15 
+3.2.2 Timers ...................................................................................................... 15 
+3.2.3 Initialization ............................................................................................... 15 
+
+4 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.4 Higher-Layer Triggered Events ..................................................................... 15 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 15 
+3.2.6 Timer Events .............................................................................................. 15 
+3.2.7 Other Local Events ...................................................................................... 16 
+
+4 Protocol Examples ................................................................................................. 17 
+
+5 Security ................................................................................................................. 21 
+5.1 Security Considerations for Implementers ........................................................... 21 
+5.2 Index of Security Parameters ............................................................................ 21 
+
+6 Appendix A: Product Behavior ............................................................................... 22 
+
+7 Change Tracking .................................................................................................... 23 
+
+8 Index ..................................................................................................................... 24 
+
+ 
+
+5 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The RSS Object Protocol enables representation of an item that is from a news feed. This protocol 
+extends the Message and Attachment Object Protocol, which is described in [MS-OXCMSG]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+atom feed: An XML structure that contains metadata about content, such as the language version 
+and the date when the content was last modified, and is sent to subscribers by using the Atom 
+Publishing Protocol (AtomPub), as described in [RFC4287]. 
+
+Attachment object: A set of properties that represents a file, Message object, or structured 
+storage that is attached to a Message object and is visible through the attachments table for a 
+Message object. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+enclosure: An XML element that is in a feed and contains information such as a URL for a file, 
+typically a media file, that is associated with an RSS item or Atom entry, for example, a 
+podcast. 
+
+Folder object: A messaging construct that is typically used to organize data into a hierarchy of 
+objects containing Message objects and folder associated information (FAI) Message objects. 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+Mail User Agent (MUA): A client application that is used to compose and read email messages. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+named property: A property that is identified by both a GUID and either a string name or a 32-bit 
+identifier. 
+
+property ID: A 16-bit numeric identifier of a specific attribute. A property ID does not include any 
+property type information. 
+
+Really Simple Syndication (RSS): An XML-based syndication format for content, as described in 
+[RSS2.0]. 
+
+recipient: An entity that can receive email messages.   
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+6 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ROP request: See ROP request buffer. 
+
+ROP response: See ROP response buffer. 
+
+RSS item: An item element in an RSS feed, as described in [RSS2.0]. 
+
+RSS object: A Message object that represents an entry from an RSS item or atom feed. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML element: An XML structure that typically consists of a start tag, an end tag, and the 
+information between those tags. Elements can have attributes and can contain other elements. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCSPAM] Microsoft Corporation, "Spam Confidence Level Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC4287] Nottingham, M., and Sayre, R., Eds., "The Atom Syndication Format", RFC 4287, 
+December 2005, http://www.rfc-editor.org/rfc/rfc4287.txt 
+
+[RSS2.0] Winer, D., "RSS 2.0 Specification", Fall 2002, version 2.0.1: July 2003, 
+http://cyber.law.harvard.edu/rss/rss.html 
+
+1.2.2 Informative References 
+
+[MS-OXBBODY] Microsoft Corporation, "Best Body Retrieval Algorithm". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+7 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+The RSS Object Protocol allows representation of an item from either an RSS feed or an atom feed 
+for viewing by the user. Items from the feed are in XML format. This protocol enables a client to 
+convert the XML of an RSS item, described in [RSS2.0], or an atom entry, described in [RFC4287], to 
+properties on an RSS object. In addition to the XML conversion, the entire XML content of the RSS 
+item or atom entry is saved in its own property on the RSS object. 
+
+The RSS Object Protocol extends the Message and Attachment Object Protocol in that it defines new 
+properties on a Message object and adds constraints to the existing properties of a Message object. 
+For information about the Message and Attachment Object Protocol, see [MS-OXCMSG].  
+
+1.4 Relationship to Other Protocols 
+
+The RSS Object Protocol has the same dependencies as the Message and Attachment Object Protocol, 
+as described in [MS-OXCMSG]. 
+
+The RSS Object Protocol is a peer of the Email Object Protocol and uses a subset of the properties that 
+are described in [MS-OXOMSG]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The RSS Object Protocol has the same prerequisites and preconditions as the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+1.6 Applicability Statement 
+
+A client can use this protocol to represent an item that is transmitted in a news feed format when the 
+user subscribes to a news feed. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+This protocol provides no extensibility beyond what is already specified in [MS-OXCMSG]. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The RSS Object Protocol uses the same underlying transport as that used by the Message and 
+Attachment Object Protocol, as specified in [MS-OXCMSG]. 
+
+2.2 Message Syntax 
+
+An RSS object can be created and modified by clients and servers. Except where noted, this section 
+defines constraints under which both clients and servers operate. 
+
+Clients operate on an RSS object by using the Message and Attachment Object Protocol, as specified 
+in [MS-OXCMSG]. The manner in which a server operates on an RSS object is implementation-
+dependent, but the results of any such operations MUST be exposed to clients in a manner that is 
+consistent with the RSS Object Protocol. 
+
+Unless otherwise specified in this section, an RSS object adheres to all property constraints, as 
+specified in both [MS-OXPROPS] and [MS-OXCMSG]. An RSS object can also contain other properties, 
+but these properties have no impact on the RSS Object Protocol. 
+
+The values of the properties specified in this section are taken from the XML elements of the RSS 
+feed or atom feed, unless otherwise specified. For details about the XML formats of the RSS feed and 
+the atom feed, see [RSS2.0] and [RFC4287], respectively. 
+
+2.2.1 RSS Object-Specific Properties 
+
+The properties that are specific to RSS objects are defined in section 2.2.1.1 through section 2.2.1.8. 
+
+2.2.1.1 PidLidPostRssChannelLink Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostRssChannelLink property ([MS-OXPROPS] section 2.205) contains the URL of the 
+RSS feed or atom feed from which the XML file came. 
+
+This property is set as follows: 
+
+ For an RSS feed, this property is set to the value of the link child element of the channel 
+element. 
+
+ For an atom feed, this property is set to the value of the href attribute of the link child element of 
+the feed element. This property is set only if the rel attribute of the link element either is set to 
+"alternate" or is not present. Otherwise, this property is not set for an atom entry. 
+
+2.2.1.2 PidLidPostRssItemLink Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostRssItemLink property ([MS-OXPROPS] section 2.208) contains the URL of the item 
+or entry.  
+
+This property is set as follows: 
+
+ For an RSS item, this property is set to the value of the link child element of the item element. 
+
+9 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ For an atom entry, this property is set to the value of the href attribute of the link child element 
+of the entry element. This property is set only if the rel attribute of the link element either is set 
+to "alternate" or is not present. Otherwise, this property is not set for an atom entry. 
+
+2.2.1.3 PidLidPostRssItemHash Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostRssItemHash property ([MS-OXPROPS] section 2.207) contains a hash of the XML 
+from the RSS feed or the atom feed. The hash is computed by using an implementation-dependent 
+algorithm and is used to quickly determine whether two items are different.  
+
+2.2.1.4 PidLidPostRssItemGuid Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostRssItemGuid property ([MS-OXPROPS] section 2.206) contains a unique identifier for 
+the object. 
+
+This property is set as follows: 
+
+ For an RSS item, this property is set to the value of the GUID element or the link element. 
+
+ For an atom entry, this property is set to the value of the id element. If the id element is not 
+present, this property is set to the value of the href attribute of the link element. 
+
+2.2.1.5 PidLidPostRssChannel Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostRssChannel property ([MS-OXPROPS] section 2.204) contains the title of the atom 
+feed or the RSS feed. For an atom feed, this property is set to the value of the title child element of 
+the feed element. For an RSS feed, this property is set to the value of the title child element of the 
+channel element.  
+
+2.2.1.6 PidLidPostRssItemXml Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostRssItemXml property ([MS-OXPROPS] section 2.209) contains either the contents of 
+the item element and all of its child elements from an RSS feed or the contents of the entry element 
+and all of its child elements from an atom feed. 
+
+2.2.1.7 PidLidPostRssSubscription Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPostRssSubscription property ([MS-OXPROPS] section 2.210) contains the user's 
+preferred name for the subscription. This property either is set to a user-specified value or is set as 
+follows: 
+
+ For an RSS feed, this property is set to the value of the title child element of the channel 
+element. 
+
+ For an atom feed, this property is set to the value of the title child element of the feed element. 
+
+10 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.1.8 PidTagMessageDeliveryTime Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagMessageDeliveryTime property ([MS-OXPROPS] section 2.791) specifies the posting 
+date, in Coordinated Universal Time (UTC), of the item or entry. This property is optional. 
+
+This property is set as follows: 
+
+ For an RSS item, this property is set to the value of the pubDate element. If the pubDate 
+element is not present in the RSS item, this property is set to the value of the lastBuildDate 
+element. 
+
+ For an atom entry, this property is set to the value of the  updated or published element. If 
+none of these elements is present under the entry element, then the updated element that is 
+under the feed element is used. 
+
+ This property can be set to the current time if none of the specified elements exist in the RSS item 
+or the atom entry. 
+
+2.2.2 Additional Property Constraints 
+
+Additional constraints beyond those specified in [MS-OXCMSG], [MS-OXOMSG], and [MS-OXCSPAM] 
+are specified in section 2.2.2.1 through section 2.2.2.6. 
+
+2.2.2.1 PidNameExchangeJunkEmailMoveStamp Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNameExchangeJunkEmailMoveStamp property ([MS-OXCSPAM] section 2.2.1.2) MUST be 
+set on all RSS objects. 
+
+2.2.2.2 PidTagMessageClass Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1)  
+
+The PidTagMessageClass ([MS-OXCMSG] section 2.2.1.3) property specifies the type of the 
+Message object. The value MUST be "IPM.Post.RSS" or begin with "IPM.Post.RSS.". 
+
+2.2.2.3 PidTagSenderName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSenderName property ([MS-OXOMSG] section 2.2.1.51) contains origination information 
+about the RSS object. 
+
+This property is set as follows: 
+
+ For an RSS item, this property is set to the value of the author or title element. 
+
+ For an atom entry, this property is set to the value of the title element or to the value of the 
+name child element of the author element. 
+
+ If none of the specified elements exist in the RSS item or the atom entry, this property is set to an 
+empty string. 
+
+11 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.4 PidTagSenderEmailAddress Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSenderEmailAddress property ([MS-OXOMSG] section 2.2.1.49) contains the value of 
+the email child element of the author element of an atom entry. If the email element is not present, 
+this property is set to an empty string. This property does not apply to an RSS item. 
+
+2.2.2.5 PidTagSentRepresentingName Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSentRepresentingName property ([MS-OXOMSG] section 2.2.1.57) contains origination 
+information about the RSS object. 
+
+This property is set as follows: 
+
+ For an RSS item, this property is set to the value of the author or title element. 
+
+ For an atom entry, this property is set either to the value of the title element or to the value of 
+the name child element of the author element. 
+
+ If none of the specified elements exist in the RSS item or the atom entry, this property is set to an 
+empty string. 
+
+2.2.2.6 PidTagSentRepresentingEmailAddress Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSentRepresentingEmailAddress property ([MS-OXOMSG] section 2.2.1.55) contains 
+the contents of the email child element of the author element of an atom entry. If the email element 
+is not present, this property is set to an empty string. This property does not apply to an RSS item. 
+
+2.2.3 Additional Object Constraints 
+
+Additional constraints beyond those specified in [MS-OXCMSG], [MS-OXOMSG], and [MS-OXCSPAM] 
+are specified in section 2.2.3.1 through section 2.2.3.2. 
+
+2.2.3.1 Attachment Objects 
+
+2.2.3.1.1 Full Article Attachment Objects 
+
+A full article Attachment object contains the contents of the linked document. Its 
+PidTagAttachMethod property ([MS-OXCMSG] section 2.2.2.9) MUST be set to 0x00000001 
+(afByValue). The PidLidPostRssItemLink property (section 2.2.1.2) MUST be set to the URL from 
+which the document was downloaded. 
+
+An RSS object MUST NOT have more than one full article Attachment object. 
+
+2.2.3.1.2 Enclosure Attachment Objects 
+
+An enclosure Attachment object contains the contents of an enclosure. For an atom entry, the 
+enclosure is a file referenced in the href attribute of a link element that has its rel attribute set to 
+"enclosure". For an RSS item, the enclosure is a file referenced in the enclosure element. 
+
+An enclosure Attachment object MUST have the PidTagAttachMethod property ([MS-OXCMSG] 
+section 2.2.2.9) set to 0x00000001 (afByValue). The PidLidPostRssItemLink property (section 
+2.2.1.2) MUST be set to the URL from which the enclosure was downloaded. 
+
+12 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.3.1.3 Other Attachment Objects 
+
+An RSS object MUST NOT have Attachment objects other than full article Attachment objects and 
+enclosure Attachment objects. 
+
+2.2.3.2 Recipients 
+
+An RSS object MUST NOT have recipients. 
+
+13 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client creates and manipulates an RSS object and in all other ways operates within the client role 
+as specified in [MS-OXCMSG]. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.1.1 with the 
+following adaptations: 
+
+ The RSS object is an extension of the Message object. 
+
+ An RSS object is created in a Folder object that has a container class of 
+"IPF.Note.OutlookHomepage" unless the Mail User Agent (MUA) explicitly specifies otherwise. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Creation of an RSS Object 
+
+When the user subscribes to a news feed, the client creates an RSS object by creating a Message 
+object, as specified in [MS-OXCMSG], sets properties on the RSS object in accordance with the 
+requirements in section 2.2, and saves the resulting RSS object as specified in [MS-OXCMSG]. In 
+particular, the PidNameExchangeJunkEmailMoveStamp property (section 2.2.2.1) MUST be set 
+before the RSS object is saved the first time. 
+
+3.1.4.2 Modification of an RSS Object 
+
+When the user updates a subscription to a news feed, the client first opens the RSS object in the 
+same way that it opens any Message object, as specified in [MS-OXCMSG]. The client then modifies 
+any properties in accordance with the requirements in section 2.2 and saves the RSS object as 
+specified in [MS-OXCMSG]. 
+
+3.1.4.3 Deletion of an RSS Object 
+
+When the user deletes a subscription to a news feed, the client deletes the RSS object in the same 
+way that it deletes any Message object, as specified in [MS-OXCFOLD]. 
+
+14 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+The server processes a client's requests regarding an RSS object and in all other ways operates 
+within the server role as specified in [MS-OXCMSG]. 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+This protocol uses the abstract data model that is specified in [MS-OXCMSG] section 3.2.1 with the 
+following adaptations: 
+
+ The RSS object is an extension of the Message object. 
+
+ An RSS object is created in a Folder object that has a container class of 
+"IPF.Note.OutlookHomepage" unless the MUA explicitly specifies otherwise. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG]. 
+
+3.2.6 Timer Events 
+
+None. 
+
+15 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.7 Other Local Events 
+
+None. 
+
+16 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+A user subscribes to an RSS feed. The client polls the feed and finds a new item. The following is a 
+description of what a client might do to accomplish the user's intentions and describes the responses a 
+server might return. For information about the remote operations (ROPs) described in the example, 
+see [MS-OXCPRPT] and [MS-OXCMSG]. 
+
+Before manipulating RSS objects, the client asks the server to map named properties to property 
+IDs by sending a RopGetPropertyIDsFromNames ROP request ([MS-OXCROPS] section 2.2.8.1). 
+
+Property set 
+Property  GUID LID or property name 
+
+PidLidPostRssChannel (section {00062041- 0x00008904 
+2.2.1.5) 0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidLidPostRssChannelLink (section {00062041- 0x00008900 
+2.2.1.1) 0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidLidPostRssItemGuid (section {00062041- 0x00008903 
+2.2.1.4) 0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidLidPostRssItemHash (section {00062041- 0x00008902 
+2.2.1.3) 0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidLidPostRssItemLink (section {00062041- 0x00008901 
+2.2.1.2)  0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidLidPostRssItemXml (section {00062041- 0x00008905 
+2.2.1.6) 0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidLidPostRssSubscription (section {00062041- 0x00008906 
+2.2.1.7) 0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidLidSideEffects ([MS-OXCMSG] {00062008- 0x00008510 
+section 2.2.1.16) 0000-0000-
+
+C000-
+00000000004
+6} 
+
+PidNameExchangeJunkEmailMove {00020329- HTTP://schemas.microsoft.com/exchange/junkemailmo
+Stamp ([MS-OXCSPAM] section 0000-0000- vestamp 
+
+17 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property set 
+Property  GUID LID or property name 
+
+2.2.1.2)  C000-
+00000000004
+6} 
+
+The server sends a RopGetPropertyIDsFromNames ROP response with the following property 
+IDs, which will be used in the example that follows. (The actual property IDs are at the discretion of 
+the server.) 
+
+Property  Property ID  
+
+PidLidPostRssChannel  0x8318 
+
+PidLidPostRssChannelLink  0x8314 
+
+PidLidPostRssItemGuid  0x8317 
+
+PidLidPostRssItemHash  0x8316 
+
+PidLidPostRssItemLink  0x8315 
+
+PidLidPostRssItemXml  0x8319 
+
+PidLidPostRssSubscription  0x831A 
+
+PidLidSideEffects  0x81F8 
+
+PidNameExchangeJunkEmailMoveStamp  0x8415 
+
+To create an RSS object, the client uses the RopCreateMessage ROP ([MS-OXCROPS] section 
+2.2.6.2). The server returns a success code and a handle to the object. 
+
+After processing the contents of the RSS item, the client transmits the properties to the server by 
+using the RopSetProperties ROP ([MS-OXCROPS] section 2.2.8.6). The properties that are set are 
+shown in the following table. 
+
+Property 
+Property  ID  Data type  Value  
+
+PidLidPostRssChannel  0x8318 0x001F Help and How-To for 
+(PtypString ([MS- Contoso 
+OXCDATA] section 
+2.11.1)) 
+
+PidLidPostRssChannelLink  0x8314 0x001F HTTP://www.contoso.com 
+
+PidLidPostRssItemGuid  0x8317 0x001F HTTP://www.contoso.com 
+
+PidLidPostRssItemHash  0x8316 0x0003 0xCD0E93CF 
+(PtypInteger32 
+([MS-OXCDATA] 
+section 2.11.1)) 
+
+PidLidPostRssItemLink  0x8315 0x001F HTTP://www.contoso.com 
+
+PidLidPostRssItemXml  0x8319 0x001F (See note 1 following the 
+table.) 
+
+PidLidPostRssSubscription  0x831a 0x001F Help and How-To for 
+Contoso 
+
+18 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property  ID  Data type  Value  
+
+PidLidSideEffects  0x81f8 0x0003 0x00000100 
+
+PidTagHtml ([MS-OXCMSG] section 0x1013 0x0102 (See note 2 following the 
+2.2.1.58.9) (PtypBinary ([MS- table.) 
+
+OXCDATA] section 
+2.11.1)) 
+
+PidTagClientSubmitTime ([MS-OXOMSG] 0x0039 0x0040 (PtypTime High: 0x01C87A36 Low: 
+section 2.2.3.11) ([MS-OXCDATA] 0xD74C8CC0 (2008/02/28 
+
+section 2.11.1)) 18:22:13.900) 
+
+PidTagConversationTopic ([MS-OXOMSG] 0x0070 0x001F Learn to narrow your search 
+section 2.2.1.5) criteria for better searches in 
+
+Contoso 
+
+PidTagInternetCodepage ([MS-OXCMSG] 0x3FDE 0x0003 0x0000FDE9 
+section 2.2.1.58.6) 
+
+PidTagMessageClass ([MS-OXCMSG] 0x001A 0x001F "IPM.Post.RSS" 
+section 2.2.1.3) 
+
+PidTagMessageFlags ([MS-OXCMSG] 0x0E07 0x0003 Flags: 0x00000000 <none> 
+section 2.2.1.6) 
+
+PidTagNormalizedSubject ([MS-OXCMSG] 0x0E1D 0x001F Learn to narrow your search 
+section 2.2.1.10) criteria for better searches in 
+
+Contoso 
+
+PidTagSenderName (section 2.2.2.3) 0x0C1A 0x001F Help and How-To for 
+Contoso 
+
+PidTagSentRepresentingName (section 0x0042 0x001F Help and How-To for 
+2.2.2.5) Contoso 
+
+PidTagSubjectPrefix ([MS-OXCMSG] 0x003D 0x001F (null) 
+section 2.2.1.9) 
+
+PidNameExchangeJunkEmailMoveStamp  0x8415 0x0003 0x802454D1 
+
+When the client has made all its changes to the item, it commits the properties to the server by using 
+the RopSaveChangesMessage ROP ([MS-OXCROPS] section 2.2.6.3) and then releases the RSS 
+object by using the RopRelease ROP ([MS-OXCROPS] section 2.2.15.3). The values of some 
+properties will change during the processing of the RopSaveChangesMessage ROP, but the 
+properties specified in this document will not change. 
+
+Note 1:   The PidLidPostRssItemXml property contains the following text. 
+
+ <?xml version="1.0"?> 
+ <item> 
+ <title>Learn to narrow your search criteria for better searches in Contoso</title> 
+ <description>Instant Search can help you find information in a flash.</description> 
+ <link>http://www.contoso.com</link> 
+ </item> 
+
+Note 2:   The PidTagHtml property contains the following text, encoded into binary as described in 
+[MS-OXBBODY]. 
+
+ 
+ <html> 
+
+19 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <body> 
+        <table> 
+            <tr> 
+            <td>Instant Search can help you find information in a flash.</td> 
+            </tr> 
+        </table> 
+        <p><BR/><A HREF="http://www.contoso.com">View article...</A></p> 
+    </body> 
+ </html> 
+
+20 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no special security considerations specific to this protocol. General security considerations 
+that pertain to the underlying transport apply as described in [MS-OXCMSG]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+21 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+22 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+23 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A    modification of an RSS object 14 
+  
+Abstract data model I 
+   client 14  
+   server 15 Implementer - security considerations 21 
+Additional Object Constraints message 12 Index of security parameters 21 
+Additional property constraints Informative references 7 
+   PidNameExchangeJunkEmailMoveStamp property Initialization 
+
+11    client 14 
+   PidTagMessageClass property 11    server 15 
+   PidTagSenderEmailAddress property 12 Introduction 6 
+   PidTagSenderName property 11  
+   PidTagSentRepresentingEmailAddress property 12 M 
+   PidTagSentRepresentingName property 12  
+   Recipients 13 Message processing 
+Additional Property Constraints message 11    client 15 
+Applicability 8    server 15 
+ Messages 
+C    Additional Object Constraints 12 
+    Additional Property Constraints 11 
+Capability negotiation 8    RSS Object-Specific Properties 9 
+Change tracking 23    syntax 9 
+Client    transport 9 
+   abstract data model 14  
+   initialization 14 N 
+   message processing 15  
+   other local events 15 Normative references 7 
+   overview 14  
+   sequencing rules 15 O 
+   timer events 15  
+   timers 14 Other local events 
+Client - higher-layer triggered events    client 15 
+   creation of an RSS object 14    server 16 
+   deletion of an RSS object 14 Overview (synopsis) 8 
+   modification of an RSS object 14  
+ P 
+D  
+ Parameters - security index 21 
+Data model - abstract PidLidPostRssChannel RSS object-specific property 
+   client 14 10 
+   server 15 PidLidPostRssChannelLink RSS object-specific 
+ property 9 
+E PidLidPostRssItemGuid RSS object-specific property 
+ 10 
+Examples 17 PidLidPostRssItemHash RSS object-specific property 
+ 10 
+F PidLidPostRssItemLink RSS object-specific property 9 
+ PidLidPostRssItemXml RSS object-specific property 
+Fields - vendor-extensible 8 10 
+ PidLidPostRssSubscription RSS object-specific 
+G property 10 
+ PidNameExchangeJunkEmailMoveStamp property 
+Glossary 6 additional property constraints 11 
+ PidTagMessageClass property additional property 
+
+H constraints 11 
+
+ PidTagMessageDeliveryTime RSS object-specific 
+
+Higher-layer triggered events property 11 
+
+   server 15 PidTagSenderEmailAddress property additional 
+
+Higher-layer triggered events - client property constraints 12 
+
+   creation of an RSS object 14 PidTagSenderName property additional property 
+
+   deletion of an RSS object 14 constraints 11 
+
+24 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+PidTagSentRepresentingEmailAddress property V 
+additional property constraints 12  
+
+PidTagSentRepresentingName property additional Vendor-extensible fields 8 
+property constraints 12 Versioning 8 
+
+Preconditions 8 
+Prerequisites 8  
+Product behavior 22 
+Protocol examples 17 
+ 
+R 
+ 
+Recipient additional property constraints 13 
+References 7 
+   informative 7 
+   normative 7 
+Relationship to other protocols 8 
+RSS object-specific properties 
+   PidLidPostRssChannel property 10 
+   PidLidPostRssChannelLink property 9 
+   PidLidPostRssItemGuid property 10 
+   PidLidPostRssItemHash property 10 
+   PidLidPostRssItemLink property 9 
+   PidLidPostRssItemXml property 10 
+   PidLidPostRssSubscription property 10 
+   PidTagMessageDeliveryTime property 11 
+RSS Object-Specific Properties message 9 
+ 
+S 
+ 
+Security 
+   implementer considerations 21 
+   parameter index 21 
+Sequencing rules 
+   client 15 
+   server 15 
+Server 
+   abstract data model 15 
+   higher-layer triggered events 15 
+   initialization 15 
+   message processing 15 
+   other local events 16 
+   overview 15 
+   sequencing rules 15 
+   timer events 15 
+   timers 15 
+Standards assignments 8 
+Syntax 9 
+ 
+T 
+ 
+Timer events 
+   client 15 
+   server 15 
+Timers 
+   client 14 
+   server 15 
+Tracking changes 23 
+Transport 9 
+Triggered events - client 
+   creation of an RSS object 14 
+   deletion of an RSS object 14 
+   modification of an RSS object 14 
+Triggered events - higher-layer 
+   server 15 
+ 
+
+25 / 25 
+
+[MS-OXORSS] - v20250520 
+RSS Object Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025
