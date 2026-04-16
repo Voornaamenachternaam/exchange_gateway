@@ -1,6 +1,11 @@
 // src/error.rs
 use thiserror::Error;
 
+/// Gateway error types for protocol and application errors.
+/// 
+/// This enum is marked as `#[non_exhaustive]` to allow adding new error
+/// variants without breaking changes to downstream code.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum GatewayError {
     #[error("CalDAV request failed: {0}")]

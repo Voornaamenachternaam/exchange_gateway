@@ -15,6 +15,7 @@
 //! - `ews`: Exchange Web Services protocol handlers
 //! - `ews_folders`: EWS folder hierarchy handling
 //! - `ews_update`: EWS item update operations
+//! - `ical_parser`: Nom-based iCalendar parsing (RFC 5545)
 //! - `models`: Shared data models and application state
 //! - `protocol_fixtures`: Protocol response fixtures for testing
 //! - `storage`: D1-backed persistence layer
@@ -32,6 +33,7 @@ pub mod error;
 pub mod ews;
 pub mod ews_folders;
 pub mod ews_update;
+pub mod ical_parser;
 pub mod models;
 pub mod protocol_fixtures;
 pub mod storage;
