@@ -524,7 +524,8 @@ fn format_ical_datetime_with_timezone(
 }
 
 /// Parse duration in ISO 8601 format using nom parser.
-/// Returns the number of minutes (negative for reminders before the event).
+/// Returns the number of minutes, where negative values represent time before an event
+/// (e.g., reminders). A negative sign in the input (-PT15M) returns a negative number (-15).
 #[must_use]
 fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     match ical::parse_ical_duration_minutes(trigger) {

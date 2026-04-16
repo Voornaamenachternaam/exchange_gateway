@@ -60,7 +60,7 @@ tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter", "re
 tracing-opentelemetry = "^0.29.0"
 opentelemetry = { version = "^0.29.0", features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "^0.29.0", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "^0.29.0", features = ["trace", "http-proto"] }
+opentelemetry-otlp = { version = "^0.29.0", features = ["trace", "grpc-tonic"] }
 
 # URL handling
 urlencoding = "^2.1.3"

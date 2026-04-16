@@ -25,7 +25,6 @@ pub struct Config {
     #[serde(skip_serializing)]
     pub hmac_secret: SecretString,
 
-    #[validate(length(max = 0, message = "gateway_host must not contain protocol"))]
     #[serde(default)]
     pub gateway_host: String,
 }

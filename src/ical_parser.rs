@@ -17,15 +17,12 @@ use nom::{
 };
 use std::collections::HashMap;
 
-/// Unfolds iCalendar content lines (RFC 5545 Section 3.1)
-/// Lines ending with CRLF followed by whitespace are continuations
+/// Unfolds iCalendar content lines (RFC 5545 Section 3.1).
+/// Lines ending with CRLF followed by whitespace are continuations.
+/// Per RFC, only CRLF (not bare LF) followed by whitespace is a valid fold.
 pub fn unfold_ical_content(input: &str) -> String {
-    // Remove CRLF + single whitespace (line continuation)
-    input
-        .replace("\r\n ", "")
-        .replace("\r\n\t", "")
-        .replace("\n ", "")
-        .replace("\n\t", "")
+    // Remove CRLF + single whitespace (line continuation per RFC 5545)
+    input.replace("\r\n ", "").replace("\r\n\t", "")
 }
 
 /// Parse an iCalendar property name (before the colon or semicolon)
@@ -148,7 +145,8 @@ pub fn parse_vtimezone_block(input: &str) -> IResult<&str, Option<String>> {
     Ok(("", None))
 }
 
-/// Parse iCalendar datetime with optional timezone
+/// Parse iCalendar datetime with optional timezone.
+/// Returns an error if the datetime cannot be parsed.
 pub fn parse_ical_datetime(input: &str) -> IResult<&str, DateTime<Utc>> {
     // Try UTC format first: YYYYMMDDTHHMMSSZ
     if input.ends_with('Z') {
@@ -160,30 +158,28 @@ pub fn parse_ical_datetime(input: &str) -> IResult<&str, DateTime<Utc>> {
     
     // Try local format: YYYYMMDDTHHMMSS
     if input.contains('T') {
-        let parts: Vec<&str> = input.split('T').collect();
-        if parts.len() == 2 {
-            // This is a local datetime, will need timezone context
-            // For now, parse as UTC
-            if let Ok(dt) = NaiveDateTime::parse_from_str(input, "%Y%m%dT%H%M%S") {
+        // Try parsing as local datetime (will be interpreted as UTC)
+        if let Ok(dt) = NaiveDateTime::parse_from_str(input, "%Y%m%dT%H%M%S") {
+            return Ok((&input[input.len()..], dt.and_utc()));
+        }
+        
+        // Try ISO 8601 format
+        if let Ok(dt) = DateTime::parse_from_rfc3339(input) {
+            return Ok((&input[input.len()..], dt.with_timezone(&Utc)));
+        }
+    }
+    
+    // Try date only: YYYYMMDD
+    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
+            if let Ok(dt) = date.and_hms_opt(0, 0, 0) {
                 return Ok((&input[input.len()..], dt.and_utc()));
             }
         }
     }
     
-    // Try date only: YYYYMMDD
-    if input.len() == 8 {
-        if let Ok(dt) = NaiveDateTime::parse_from_str(&format!("{}T000000", input), "%Y%m%dT%H%M%S") {
-            return Ok((&input[input.len()..], dt.and_utc()));
-        }
-    }
-    
-    // Try ISO 8601 format
-    if let Ok(dt) = DateTime::parse_from_rfc3339(input) {
-        return Ok((&input[input.len()..], dt.with_timezone(&Utc)));
-    }
-    
-    // Fallback: return epoch
-    Ok((&input[input.len()..], DateTime::UNIX_EPOCH))
+    // Return error instead of silently returning epoch
+    Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify)))
 }
 
 /// Parse a parameter value from a property key (e.g., "DTSTART;TZID=America/New_York" -> Some("America/New_York"))
@@ -270,7 +266,7 @@ pub fn parse_ical_duration_minutes(input: &str) -> IResult<&str, i32> {
     ))(input)?;
     
     let total_minutes = hours.unwrap_or(0) * 60 + minutes.unwrap_or(0);
-    let result = if negative { total_minutes } else { -total_minutes };
+    let result = if negative { -total_minutes } else { total_minutes };
     
     Ok((input, result))
 }
@@ -311,13 +307,13 @@ mod tests {
     #[test]
     fn test_parse_duration_minutes() {
         let (_, result) = parse_ical_duration_minutes("-PT15M").unwrap();
-        assert_eq!(result, 15);
+        assert_eq!(result, -15);
         
         let (_, result) = parse_ical_duration_minutes("PT1H").unwrap();
-        assert_eq!(result, -60);
+        assert_eq!(result, 60);
         
         let (_, result) = parse_ical_duration_minutes("-PT1H30M").unwrap();
-        assert_eq!(result, 90);
+        assert_eq!(result, -90);
     }
 
     #[test]
@@ -330,8 +326,13 @@ mod tests {
 
     #[test]
     fn test_unfold_ical_content() {
-        let input = "DESCRIPTION:This is a long\\r\\n description that spans\\r\\n multiple lines";
+        let input = "DESCRIPTION:This is a long\r\n description that spans\r\n multiple lines";
         let unfolded = unfold_ical_content(input);
         assert_eq!(unfolded, "DESCRIPTION:This is a long description that spans multiple lines");
+        
+        // Bare LF should not be treated as fold (per RFC 5545)
+        let input_bare_lf = "DESCRIPTION:This has\n a bare LF";
+        let unfolded_bare = unfold_ical_content(input_bare_lf);
+        assert_eq!(unfolded_bare, "DESCRIPTION:This has\n a bare LF");
     }
 }

@@ -206,7 +206,6 @@ fn operation_error_response(
         msg_ns = EWS_MSG_NS,
         type_ns = EWS_TYPE_NS
     );
-    )
     let prefix = &resp_msg[..resp_msg.len().saturating_sub("ResponseMessage".len())];
     let body = format!(
         r#"<m:{}Response xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:{}Response>"#,

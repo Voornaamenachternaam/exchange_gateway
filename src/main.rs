@@ -84,11 +84,15 @@ fn build_response(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is set
+    // This also initializes the tracing subscriber with the OpenTelemetry layer
     let _otel_guard = init_telemetry()?;
     
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    // If OpenTelemetry was not initialized, set up basic tracing
+    if _otel_guard.is_none() {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
+    }
 
     let config_path = std::env::var("GATEWAY_CONFIG")
         .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
@@ -212,11 +216,17 @@ fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::TracerGua
 
     let tracer = tracer_provider.tracer("exchange-gateway");
     
-    // Create OpenTelemetry layer
-    let otel_layer = OpenTelemetryLayer::new(tracer);
-    
     // Set global tracer provider
     let guard = global::set_tracer_provider(tracer_provider);
+    
+    // Create and register OpenTelemetry layer with tracing subscriber
+    let otel_layer = OpenTelemetryLayer::new(tracer);
+    
+    tracing_subscriber::Registry::default()
+        .with(otel_layer)
+        .with(tracing_subscriber::fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
     
     tracing::info!("OpenTelemetry tracing initialized (endpoint: {})", endpoint);
     
