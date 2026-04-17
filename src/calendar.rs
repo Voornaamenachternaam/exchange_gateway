@@ -1,5 +1,5 @@
 // src/calendar.rs
-use crate::ical_parser::{self as ical, unescape_ical_text, parse_ical_param};
+use crate::ical_parser;
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -407,9 +407,9 @@ fn unescape_ical_text(input: &str) -> String {
 #[must_use]
 pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
     // Use nom parser for better performance
-    match ical::parse_property_lines(&ical::unfold_ical_content(ics)) {
-        Ok(("", properties)) => properties,
-        _ => {
+    match ical_parser::parse_property_lines(&ical_parser::unfold_ical_content(ics)) {
+        Ok(properties) => properties,
+        Err(_) => {
             // Fallback to legacy parsing if nom parser fails
             let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
             let mut properties = Vec::new();
@@ -454,12 +454,9 @@ fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
 
 /// Extract VTIMEZONE block from iCalendar content using nom parser.
 #[must_use]
-fn extract_vtimezone_block(ics: &str) -> Option<String> {
-    match ical::parse_vtimezone_block(ics) {
-        Ok((_, Some(block))) => Some(block),
-        _ => None,
+    fn extract_vtimezone_block(ics: &str) -> Option<String> {
+        ical_parser::parse_vtimezone_block(ics).ok().flatten()
     }
-}
 
 fn parse_categories_value(value: &str) -> Vec<String> {
     value
@@ -526,13 +523,9 @@ fn format_ical_datetime_with_timezone(
 /// Parse duration in ISO 8601 format using nom parser.
 /// Returns the number of minutes, where negative values represent time before an event
 /// (e.g., reminders). A negative sign in the input (-PT15M) returns a negative number (-15).
-#[must_use]
-fn parse_duration_minutes(trigger: &str) -> Option<i32> {
-    match ical::parse_ical_duration_minutes(trigger) {
-        Ok((_, mins)) => Some(mins),
-        Err(_) => None,
+    fn parse_duration_minutes(trigger: &str) -> Option<i32> {
+        ical_parser::parse_ical_duration_minutes(trigger).ok()
     }
-}
 
 fn fold_ics_line(line: &str) -> String {
     const MAX_LINE_LEN: usize = 75;

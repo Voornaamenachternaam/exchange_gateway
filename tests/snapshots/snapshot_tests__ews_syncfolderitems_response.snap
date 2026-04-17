@@ -1,0 +1,32 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 71
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+    <s:Header>
+        <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+    </s:Header>
+    <s:Body>
+        <m:SyncFolderItemsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+            <m:ResponseMessages>
+                <m:SyncFolderItemsResponseMessage ResponseClass="Success">
+                    <m:ResponseCode>NoError</m:ResponseCode>
+                    <m:SyncState>AQAAAAA=</m:SyncState>
+                    <m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>
+                    <m:Changes>
+                        <t:Create>
+                            <t:CalendarItem>
+                                <t:ItemId Id="item123" ChangeKey="01" />
+                                <t:Subject>Test Meeting</t:Subject>
+                                <t:Start>2024-01-15T10:00:00Z</t:Start>
+                                <t:End>2024-01-15T11:00:00Z</t:End>
+                            </t:CalendarItem>
+                        </t:Create>
+                    </m:Changes>
+                </m:SyncFolderItemsResponseMessage>
+            </m:ResponseMessages>
+        </m:SyncFolderItemsResponse>
+    </s:Body>
+</s:Envelope>

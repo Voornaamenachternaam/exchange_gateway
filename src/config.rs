@@ -3,28 +3,17 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::fs;
 use url::Url;
-use validator::{Validate, ValidationError};
 use zeroize::Zeroizing;
 
-#[derive(Clone, Debug, Deserialize, Validate)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Config {
-    #[validate(length(min = 1, message = "bind address is required"))]
     pub bind: String,
-
-    #[validate(url(message = "caldav_base must be a valid URL"))]
     pub caldav_base: String,
-
-    #[validate(url(message = "worker_url must be a valid URL"))]
     pub worker_url: String,
-
-    #[validate(length(min = 16, message = "worker_secret must be at least 16 characters"))]
     #[serde(skip_serializing)]
     pub worker_secret: SecretString,
-
-    #[validate(length(min = 32, message = "hmac_secret must be at least 32 characters"))]
     #[serde(skip_serializing)]
     pub hmac_secret: SecretString,
-
     #[serde(default)]
     pub gateway_host: String,
 }
@@ -35,19 +24,10 @@ impl Config {
             .map(Zeroizing::new)
             .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
 
-        let mut cfg: Config = toml::from_str(&content)
+        let cfg: Config = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
 
-        // Use validator for automatic validation
-        cfg.validate()
-            .map_err(|e| anyhow::anyhow!("Config validation failed: {}", e))?;
-
-        cfg.validate_custom()?;
-
-        if cfg.gateway_host.is_empty() {
-            cfg.gateway_host =
-                extract_host_from_url(&cfg.worker_url).unwrap_or_else(|| "localhost".to_string());
-        }
+        cfg.validate()?;
 
         Ok(cfg)
     }
@@ -60,8 +40,11 @@ impl Config {
         self.hmac_secret.expose_secret()
     }
 
-    /// Custom validation that can't be expressed with validator derive
-    fn validate_custom(&self) -> anyhow::Result<()> {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.bind.is_empty() {
+            return Err(anyhow::anyhow!("Config: 'bind' address is required"));
+        }
+        
         if !self.bind.contains(':') {
             return Err(anyhow::anyhow!(
                 "Config: 'bind' must be in format 'host:port'"
@@ -70,6 +53,14 @@ impl Config {
 
         validate_url(&self.caldav_base, "caldav_base")?;
         validate_url(&self.worker_url, "worker_url")?;
+
+        if self.worker_secret.expose_secret().len() < 16 {
+            return Err(anyhow::anyhow!("Config: 'worker_secret' must be at least 16 characters"));
+        }
+
+        if self.hmac_secret.expose_secret().len() < 32 {
+            return Err(anyhow::anyhow!("Config: 'hmac_secret' must be at least 32 characters"));
+        }
 
         if !self.gateway_host.is_empty() && self.gateway_host.contains("://") {
             return Err(anyhow::anyhow!(

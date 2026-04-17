@@ -1,0 +1,22 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 247
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+    <s:Header>
+        <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+    </s:Header>
+    <s:Body>
+        <m:GetItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+            <m:ResponseMessages>
+                <m:GetItemResponseMessage ResponseClass="Error">
+                    <m:MessageText>The specified item was not found.</m:MessageText>
+                    <m:ResponseCode>ErrorItemNotFound</m:ResponseCode>
+                    <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
+                </m:GetItemResponseMessage>
+            </m:ResponseMessages>
+        </m:GetItemResponse>
+    </s:Body>
+</s:Envelope>

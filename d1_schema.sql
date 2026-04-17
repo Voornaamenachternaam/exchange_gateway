@@ -14,6 +14,9 @@ DROP TABLE IF EXISTS api_idempotency;
 DROP TABLE IF EXISTS schema_version;
 DROP TABLE IF EXISTS meeting_response;
 DROP TABLE IF EXISTS calendar_exceptions;
+DROP TABLE IF EXISTS meeting_state;
+DROP TABLE IF EXISTS meeting_attendee;
+DROP TABLE IF EXISTS meeting_scheduling_queue;
 
 CREATE TABLE sync_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,3 +169,74 @@ VALUES (3, 'v3: device_info expanded with model, os, phone_number, imei, user_ag
 
 INSERT INTO schema_version (version, description)
 VALUES (4, 'v4: Added protocol_version, instance_id, meeting_response, calendar_exceptions for protocol 16.1 compatibility');
+
+-- Meeting Workflow Tables (v5)
+-- Meeting state machine for lifecycle management
+
+CREATE TABLE meeting_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    sequence INTEGER DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'Draft',
+    state_flags INTEGER DEFAULT 0,
+    is_organizer INTEGER DEFAULT 0,
+    organizer_email TEXT,
+    organizer_name TEXT,
+    subject TEXT,
+    location TEXT,
+    start_time DATETIME NOT NULL,
+    end_time DATETIME NOT NULL,
+    timezone TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_sequence_time DATETIME,
+    UNIQUE(owner, uid)
+);
+
+-- Attendee tracking for meetings
+CREATE TABLE meeting_attendee (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_uid TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    email TEXT NOT NULL,
+    name TEXT,
+    status INTEGER DEFAULT 0,
+    role INTEGER DEFAULT 1,
+    response_time DATETIME,
+    proposed_start DATETIME,
+    proposed_end DATETIME,
+    sequence INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, meeting_uid, email)
+);
+
+-- Scheduling queue for RFC 6638 CalDAV scheduling
+CREATE TABLE meeting_scheduling_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_uid TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    sequence INTEGER DEFAULT 0,
+    ical_data TEXT,
+    status TEXT DEFAULT 'pending',
+    attempts INTEGER DEFAULT 0,
+    last_attempt DATETIME,
+    error_message TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    processed_at DATETIME
+);
+
+INSERT INTO schema_version (version, description)
+VALUES (5, 'v5: Meeting workflow - state machine, attendee tracking, RFC 6638 scheduling queue');
+
+-- Meeting workflow indexes
+CREATE INDEX idx_meeting_state_owner ON meeting_state(owner);
+CREATE INDEX idx_meeting_state_uid ON meeting_state(uid);
+CREATE INDEX idx_meeting_state_organizer ON meeting_state(owner, organizer_email);
+CREATE INDEX idx_meeting_state_time ON meeting_state(owner, start_time, end_time);
+CREATE INDEX idx_meeting_attendee_meeting ON meeting_attendee(owner, meeting_uid);
+CREATE INDEX idx_meeting_attendee_email ON meeting_attendee(owner, email);
+CREATE INDEX idx_meeting_scheduling_pending ON meeting_scheduling_queue(owner, status);
+CREATE INDEX idx_meeting_scheduling_uid ON meeting_scheduling_queue(meeting_uid);

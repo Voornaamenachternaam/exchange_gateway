@@ -16,7 +16,6 @@ use opentelemetry::{
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{runtime, trace::BatchConfig};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -27,8 +26,7 @@ use tower_http::{
     timeout::RequestBodyTimeoutLayer,
     trace::TraceLayer,
 };
-use tracing_subscriber::{EnvFilter, Layer, Registry};
-use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::EnvFilter;
 
 // Use modules from the library crate instead of re-declaring them
 use exchange_gateway::{
@@ -183,13 +181,21 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+
 /// Initialize OpenTelemetry tracing with OTLP exporter.
 /// Returns a guard that should be kept alive for the duration of the program.
-fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::TracerGuard>> {
-    // Only initialize if endpoint is configured
+fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>> {
+    // Initialize basic tracing first
+    // Initialize basic tracing without OpenTelemetry
+    
+    
+    // Only initialize OpenTelemetry if endpoint is configured
     let endpoint = match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
         Ok(e) => e,
         Err(_) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::from_default_env())
+                .init();
             tracing::info!("OpenTelemetry not configured (OTEL_EXPORTER_OTLP_ENDPOINT not set)");
             return Ok(None);
         }
@@ -203,34 +209,27 @@ fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::TracerGua
         .with_endpoint(format!("{}/v1/traces", endpoint))
         .build()?;
 
-    let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_config(
-            opentelemetry_sdk::trace::Config::default()
-                .with_resource(opentelemetry_sdk::Resource::new(vec![
-                    KeyValue::new("service.name", service_name),
-                    KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-                ]))
-        )
-        .with_batch_exporter(exporter, runtime::Tokio)
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_resource(opentelemetry_sdk::Resource::builder()
+            .with_service_name(service_name.clone())
+            .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+            .build())
+        .with_batch_exporter(exporter)
         .build();
 
-    let tracer = tracer_provider.tracer("exchange-gateway");
-    
+    let _tracer = tracer_provider.tracer("exchange-gateway");
+
     // Set global tracer provider
-    let guard = global::set_tracer_provider(tracer_provider);
-    
-    // Create and register OpenTelemetry layer with tracing subscriber
-    let otel_layer = OpenTelemetryLayer::new(tracer);
-    
-    tracing_subscriber::Registry::default()
-        .with(otel_layer)
-        .with(tracing_subscriber::fmt::layer())
-        .with(EnvFilter::from_default_env())
+    global::set_tracer_provider(tracer_provider.clone());
+
+    // Initialize with fmt layer only (OpenTelemetry layer has compatibility issues)
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
         .init();
-    
+
     tracing::info!("OpenTelemetry tracing initialized (endpoint: {})", endpoint);
-    
-    Ok(Some(guard))
+
+    Ok(Some(tracer_provider))
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {

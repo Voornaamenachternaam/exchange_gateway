@@ -1,0 +1,16 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 265
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:">
+    <Collections>
+        <Collection>
+            <Class>Calendar</Class>
+            <SyncKey>0</SyncKey>
+            <CollectionId>1</CollectionId>
+            <Status>9</Status>
+        </Collection>
+    </Collections>
+</Sync>
