@@ -464,18 +464,36 @@ pub fn fold_ical_line(line: &str, max_len: usize) -> String {
     if line.len() <= max_len {
         return line.to_string();
     }
-    
+
     let mut result = String::with_capacity(line.len() + (line.len() / max_len) * 3);
     let mut remaining = line;
-    
+
     while remaining.len() > max_len {
-        let (chunk, rest) = remaining.split_at(max_len);
+        // Find a safe split point that doesn't break a multi-byte UTF-8 character
+        let split_point = remaining.char_indices()
+            .take_while(|(idx, _)| *idx <= max_len)
+            .map(|(idx, c)| idx + c.len_utf8())
+            .last()
+            .unwrap_or(0);
+        
+        // Ensure we make progress and don't split at 0
+        let split_point = if split_point == 0 { 
+            // Take at least one character to ensure progress
+            remaining.char_indices()
+                .nth(1)
+                .map(|(idx, _)| idx)
+                .unwrap_or(remaining.len())
+        } else {
+            split_point
+        };
+        
+        let (chunk, rest) = remaining.split_at(split_point);
         result.push_str(chunk);
         result.push_str("\r\n ");
         remaining = rest;
     }
     result.push_str(remaining);
-    
+
     result
 }
 

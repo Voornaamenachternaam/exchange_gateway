@@ -134,7 +134,6 @@ pub struct CaldavScheduling {
 }
 
 impl CaldavScheduling {
-impl CaldavScheduling {
     /// Creates a new CaldavScheduling instance.
     /// 
     /// # Arguments
@@ -245,7 +244,7 @@ impl CaldavScheduling {
         &self,
         item: &CalendarItem,
         username: &str,
-        password: &str,
+        password: &SecretString,
     ) -> Result<SchedulingResult> {
         let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
         let outbox = outbox_url.unwrap_or_else(|| {
@@ -294,7 +293,7 @@ impl CaldavScheduling {
         item: &CalendarItem,
         sequence: u32,
         username: &str,
-        password: &str,
+        password: &SecretString,
     ) -> Result<SchedulingResult> {
         let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
         let outbox = outbox_url.unwrap_or_else(|| {
@@ -343,7 +342,7 @@ impl CaldavScheduling {
         item: &CalendarItem,
         sequence: u32,
         username: &str,
-        password: &str,
+        password: &SecretString,
     ) -> Result<SchedulingResult> {
         let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
         let outbox = outbox_url.unwrap_or_else(|| {
@@ -397,7 +396,7 @@ impl CaldavScheduling {
         status: AttendeeStatus,
         sequence: u32,
         username: &str,
-        password: &str,
+        password: &SecretString,
     ) -> Result<SchedulingResult> {
         let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
         let outbox = outbox_url.unwrap_or_else(|| {
@@ -449,7 +448,7 @@ impl CaldavScheduling {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         username: &str,
-        password: &str,
+        password: &SecretString,
     ) -> Result<Vec<FreeBusyEntry>> {
         let start_str = start.format("%Y%m%dT%H%M%SZ").to_string();
         let end_str = end.format("%Y%m%dT%H%M%SZ").to_string();
@@ -499,7 +498,7 @@ impl CaldavScheduling {
         &self,
         inbox_href: &str,
         username: &str,
-        password: &str,
+        password: &SecretString,
     ) -> Result<Vec<SchedulingMessage>> {
         let report_body = r#"<?xml version="1.0" encoding="utf-8"?>
 <propfind xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">

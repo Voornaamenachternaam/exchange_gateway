@@ -1,8 +1,13 @@
 // src/ical_parser.rs
 use chrono::{DateTime, NaiveDateTime, NaiveDate, Utc};
 
+/// Unfolds iCalendar content by removing line continuations.
+/// Per RFC 5545, lines that start with whitespace are continuations of the previous line.
 pub fn unfold_ical_content(input: &str) -> String {
-    input.replace("\r\n ", "").replace("\r\npub fn parse_property_line(input: &str) -> Result<(String, Vec<(String, String)>, String), nom::Err<nom::error::Error<&str>>> {
+    input.replace("\r\n ", "").replace("\n ", "")
+}
+
+pub fn parse_property_line(input: &str) -> Result<(String, Vec<(String, String)>, String), nom::Err<nom::error::Error<&str>>> {
     // Find the colon that separates name/params from value, respecting quoted strings
     // iCalendar property format: NAME;PARAM1=VALUE1;PARAM2="VALUE WITH ;":PROPERTY_VALUE
     let colon_pos = find_value_colon(input)
@@ -30,7 +35,7 @@ pub fn unfold_ical_content(input: &str) -> String {
 fn find_value_colon(input: &str) -> Option<usize> {
     let mut in_quotes = false;
     let mut escape_next = false;
-    
+
     for (i, c) in input.char_indices() {
         if escape_next {
             escape_next = false;
@@ -56,7 +61,7 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     let mut escape_next = false;
     let mut parsing_value = false;
     let mut chars = params_str.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if escape_next {
             if parsing_value {
@@ -67,7 +72,7 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
             escape_next = false;
             continue;
         }
-        
+
         match c {
             '\\' => {
                 if parsing_value {
@@ -107,7 +112,7 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
             }
         }
     }
-    
+
     // Don't forget the last parameter
     if !current_param.is_empty() {
         params.push((
@@ -115,20 +120,29 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
             current_value.trim_matches('"').to_string()
         ));
     }
-    
+
     params
-}\n").or_else(|| remaining.find('\n')).unwrap_or(remaining.len());
+}
+
+fn parse_property_lines(input: &str) -> Result<Vec<(String, String)>, nom::Err<nom::error::Error<&str>>> {
+    let mut properties = Vec::new();
+    let mut remaining = input;
+
+    while !remaining.is_empty() {
+        let line_end = remaining.find("\r\n")
+            .or_else(|| remaining.find('\n'))
+            .unwrap_or(remaining.len());
         let line = remaining[..line_end].trim();
-        
+
         if line.is_empty() {
             remaining = if line_end < remaining.len() { &remaining[line_end + 1..] } else { "" };
             continue;
         }
-        
+
         if line.starts_with("END:") || line.starts_with("BEGIN:") {
             break;
         }
-        
+
         if line.contains(':') {
             match parse_property_line(line) {
                 Ok((name, params, value)) => {
@@ -143,10 +157,10 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
                 Err(_) => break,
             }
         }
-        
+
         remaining = if line_end < remaining.len() { &remaining[line_end + 1..] } else { "" };
     }
-    
+
     Ok(properties)
 }
 
@@ -155,7 +169,7 @@ pub fn parse_vevent_block(input: &str) -> Result<Vec<(String, String)>, nom::Err
     let rest = &input[start + 12..];
     let end = rest.find("END:VEVENT").ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))?;
     let content = &rest[..end];
-    
+
     let content = content.trim_start_matches('\r').trim_start_matches('\n');
     parse_property_lines(content)
 }
@@ -164,10 +178,10 @@ pub fn parse_all_vevents(input: &str) -> Result<Vec<Vec<(String, String)>>, nom:
     let unfolded = unfold_ical_content(input);
     let mut events = Vec::new();
     let mut remaining = unfolded.as_str();
-    
+
     while let Some(start) = remaining.find("BEGIN:VEVENT") {
         remaining = &remaining[start..];
-        
+
         match parse_vevent_block(remaining) {
             Ok(props) => {
                 events.push(props);
@@ -180,26 +194,26 @@ pub fn parse_all_vevents(input: &str) -> Result<Vec<Vec<(String, String)>>, nom:
             Err(_) => break,
         }
     }
-    
+
     Ok(events)
 }
 
 pub fn parse_vtimezone_block(input: &str) -> Result<Option<String>, nom::Err<nom::error::Error<&str>>> {
     let unfolded = unfold_ical_content(input);
-    
+
     if let Some(start) = unfolded.find("BEGIN:VTIMEZONE") {
         if let Some(end) = unfolded.find("END:VTIMEZONE") {
             let block = &unfolded[start..end + "END:VTIMEZONE".len()];
             return Ok(Some(block.to_string()));
         }
     }
-    
+
     Ok(None)
 }
 
 pub fn parse_ical_datetime(input: &str) -> Result<DateTime<Utc>, nom::Err<nom::error::Error<&str>>> {
     let input = input.trim();
-    
+
     if input.ends_with('Z') {
         let inner = &input[..input.len() - 1];
         if let Ok(dt) = NaiveDateTime::parse_from_str(inner, "%Y%m%dT%H%M%S") {
@@ -209,7 +223,7 @@ pub fn parse_ical_datetime(input: &str) -> Result<DateTime<Utc>, nom::Err<nom::e
             return Ok(dt.and_utc());
         }
     }
-    
+
     if input.contains('T') {
         if let Ok(dt) = NaiveDateTime::parse_from_str(input, "%Y%m%dT%H%M%S") {
             return Ok(dt.and_utc());
@@ -218,14 +232,14 @@ pub fn parse_ical_datetime(input: &str) -> Result<DateTime<Utc>, nom::Err<nom::e
             return Ok(dt.with_timezone(&Utc));
         }
     }
-    
+
     if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit()) {
         if let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
             let dt = date.and_hms_opt(0, 0, 0).ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify)))?;
             return Ok(dt.and_utc());
         }
     }
-    
+
     Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify)))
 }
 
@@ -246,7 +260,7 @@ pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
 pub fn unescape_ical_text(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.peek() {
@@ -284,7 +298,7 @@ pub fn unescape_ical_text(input: &str) -> String {
             result.push(c);
         }
     }
-    
+
     result
 }
 
@@ -294,49 +308,49 @@ pub fn parse_ical_duration_minutes(input: &str) -> Result<i32, nom::Err<nom::err
     } else {
         (false, input)
     };
-    
+
     let input = input.strip_prefix('P').unwrap_or(input);
     let input = input.strip_prefix('T').unwrap_or(input);
-    
+
     let mut total_minutes: i32 = 0;
     let mut remaining = input;
-    
+
     while !remaining.is_empty() {
         let digit_end = remaining
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(remaining.len());
-        
+
         if digit_end == 0 {
             break;
         }
-        
+
         let value: i32 = remaining[..digit_end].parse().unwrap_or(0);
         let unit = remaining.chars().nth(digit_end).unwrap_or('M');
-        
+
         match unit {
             'H' => total_minutes += value * 60,
             'M' => total_minutes += value,
             'S' => {}
             _ => break,
         }
-        
+
         remaining = &remaining[digit_end + 1..];
     }
-    
+
     Ok(if negative { -total_minutes } else { total_minutes })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_unescape_ical_text() {
         assert_eq!(unescape_ical_text("Hello\\nWorld"), "Hello\nWorld");
         assert_eq!(unescape_ical_text("Test\\, comma"), "Test, comma");
         assert_eq!(unescape_ical_text("Back\\\\slash"), "Back\\slash");
     }
-    
+
     #[test]
     fn test_parse_ical_param() {
         let key = "DTSTART;TZID=America/New_York;VALUE=DATE";
@@ -344,14 +358,14 @@ mod tests {
         assert_eq!(parse_ical_param(key, "VALUE"), Some("DATE".to_string()));
         assert_eq!(parse_ical_param(key, "NONEXISTENT"), None);
     }
-    
+
     #[test]
     fn test_parse_ical_duration_minutes() {
         assert_eq!(parse_ical_duration_minutes("-PT15M").unwrap(), -15);
         assert_eq!(parse_ical_duration_minutes("PT1H").unwrap(), 60);
         assert_eq!(parse_ical_duration_minutes("-PT1H30M").unwrap(), -90);
     }
-    
+
     #[test]
     fn test_unfold_ical_content() {
         let input = "DESCRIPTION:This is a long\r\n description that spans\r\n multiple lines";

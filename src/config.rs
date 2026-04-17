@@ -24,8 +24,20 @@ impl Config {
             .map(Zeroizing::new)
             .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
 
-        let cfg: Config = toml::from_str(&content)
+        let mut cfg: Config = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
+
+        // Provide fallback for gateway_host from worker_url if not specified
+        if cfg.gateway_host.is_empty() {
+            if let Some(host) = extract_host_from_url(&cfg.worker_url) {
+                cfg.gateway_host = host;
+            } else {
+                tracing::warn!(
+                    "Config: 'gateway_host' not specified and could not be extracted from 'worker_url'. \
+                    Autodiscover responses may be incorrect."
+                );
+            }
+        }
 
         cfg.validate()?;
 
