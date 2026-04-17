@@ -181,12 +181,12 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
     if !xml.contains(EWS_MSG_NS) && !xml.contains("xmlns:m=") {
         return Err("Missing EWS messages namespace");
     }
-    
+
     // Use const fn for compile-time optimization
     if action.requires_mime_validation() && xml.contains("IncludeMimeContent") {
         return Err("This operation does not support IncludeMimeContent");
     }
-    
+
     Ok(())
 }
 

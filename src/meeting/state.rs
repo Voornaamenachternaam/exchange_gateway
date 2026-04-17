@@ -7,8 +7,9 @@ const ASF_MEETING: u8 = 0x01;
 const ASF_RECEIVED: u8 = 0x02;
 const ASF_CANCELED: u8 = 0x04;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MeetingStatus {
+    #[default]
     Appointment = 0,
     Organizer = 1,
     Tentative = 2,
@@ -16,12 +17,6 @@ pub enum MeetingStatus {
     Rejected = 4,
     OrganizerCanceled = 5,
     ReceivedCanceled = 7,
-}
-
-impl Default for MeetingStatus {
-    fn default() -> Self {
-        Self::Appointment
-    }
 }
 
 impl From<u8> for MeetingStatus {
@@ -87,7 +82,11 @@ impl MeetingStateFlags {
         value
     }
 
-    pub fn to_meeting_status(&self, is_organizer: bool, response_type: Option<u8>) -> MeetingStatus {
+    pub fn to_meeting_status(
+        &self,
+        is_organizer: bool,
+        response_type: Option<u8>,
+    ) -> MeetingStatus {
         if self.is_canceled {
             if is_organizer {
                 return MeetingStatus::OrganizerCanceled;
@@ -95,15 +94,15 @@ impl MeetingStateFlags {
                 return MeetingStatus::ReceivedCanceled;
             }
         }
-        
+
         if !self.is_meeting {
             return MeetingStatus::Appointment;
         }
-        
+
         if is_organizer {
             return MeetingStatus::Organizer;
         }
-        
+
         match response_type {
             Some(2) => MeetingStatus::Tentative,
             Some(3) => MeetingStatus::Accepted,
@@ -113,20 +112,15 @@ impl MeetingStateFlags {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MeetingState {
+    #[default]
     Draft,
     RequestSent,
     PendingResponses,
     Confirmed,
     Cancelled,
     Completed,
-}
-
-impl Default for MeetingState {
-    fn default() -> Self {
-        Self::Draft
-    }
 }
 
 impl fmt::Display for MeetingState {
@@ -158,7 +152,12 @@ pub struct MeetingContext {
 }
 
 impl MeetingContext {
-    pub fn new(uid: String, organizer_email: String, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
+    pub fn new(
+        uid: String,
+        organizer_email: String,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             uid,
@@ -399,10 +398,10 @@ mod tests {
         let mut machine = MeetingStateMachine::new(ctx);
 
         assert_eq!(machine.context().sequence, 0);
-        
+
         machine.send_request().unwrap();
         assert_eq!(machine.context().sequence, 1);
-        
+
         machine.update_meeting(true).unwrap();
         assert_eq!(machine.context().sequence, 2);
     }

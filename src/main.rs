@@ -6,25 +6,18 @@ use std::time::Duration;
 use axum::{
     Router,
     extract::{Query, State},
-    http::{StatusCode, header, HeaderValue},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
-use opentelemetry::{
-    global,
-    trace::TracerProvider,
-    KeyValue,
-};
+use opentelemetry::{KeyValue, global, trace::TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{
-    compression::CompressionLayer,
-    limit::RequestBodyLimitLayer,
-    sensitive_headers::SetSensitiveRequestHeadersLayer,
-    set_header::SetResponseHeaderLayer,
-    timeout::RequestBodyTimeoutLayer,
-    trace::TraceLayer,
+    compression::CompressionLayer, limit::RequestBodyLimitLayer,
+    sensitive_headers::SetSensitiveRequestHeadersLayer, set_header::SetResponseHeaderLayer,
+    timeout::RequestBodyTimeoutLayer, trace::TraceLayer,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -84,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is set
     // This also initializes the tracing subscriber with the OpenTelemetry layer
     let _otel_guard = init_telemetry()?;
-    
+
     // If OpenTelemetry was not initialized, set up basic tracing
     if _otel_guard.is_none() {
         tracing_subscriber::fmt()
@@ -181,14 +174,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 /// Initialize OpenTelemetry tracing with OTLP exporter.
 /// Returns a guard that should be kept alive for the duration of the program.
 fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>> {
     // Initialize basic tracing first
     // Initialize basic tracing without OpenTelemetry
-    
-    
+
     // Only initialize OpenTelemetry if endpoint is configured
     let endpoint = match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
         Ok(e) => e,
@@ -201,8 +192,8 @@ fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::SdkTracer
         }
     };
 
-    let service_name = std::env::var("OTEL_SERVICE_NAME")
-        .unwrap_or_else(|_| "exchange-gateway".to_string());
+    let service_name =
+        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "exchange-gateway".to_string());
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -210,10 +201,12 @@ fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::SdkTracer
         .build()?;
 
     let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_resource(opentelemetry_sdk::Resource::builder()
-            .with_service_name(service_name.clone())
-            .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
-            .build())
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_service_name(service_name.clone())
+                .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+                .build(),
+        )
         .with_batch_exporter(exporter)
         .build();
 

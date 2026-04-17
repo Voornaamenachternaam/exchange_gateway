@@ -87,11 +87,7 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
     let val_no_z = val.trim_end_matches('Z');
 
     // Try without timezone (assume UTC)
-    let datetime_formats = [
-        "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y%m%dT%H%M%S",
-    ];
+    let datetime_formats = ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y%m%dT%H%M%S"];
 
     for fmt in datetime_formats {
         if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(val_no_z, fmt) {

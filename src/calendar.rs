@@ -401,7 +401,7 @@ fn unescape_ical_text(input: &str) -> String {
 }
 
 /// Parse iCalendar content into a vector of (key, value) property pairs.
-/// 
+///
 /// This function uses nom-based parser combinators for better performance
 /// and error handling compared to manual string manipulation.
 #[must_use]
@@ -454,9 +454,9 @@ fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
 
 /// Extract VTIMEZONE block from iCalendar content using nom parser.
 #[must_use]
-    fn extract_vtimezone_block(ics: &str) -> Option<String> {
-        ical_parser::parse_vtimezone_block(ics).ok().flatten()
-    }
+fn extract_vtimezone_block(ics: &str) -> Option<String> {
+    ical_parser::parse_vtimezone_block(ics).ok().flatten()
+}
 
 fn parse_categories_value(value: &str) -> Vec<String> {
     value
@@ -523,9 +523,9 @@ fn format_ical_datetime_with_timezone(
 /// Parse duration in ISO 8601 format using nom parser.
 /// Returns the number of minutes, where negative values represent time before an event
 /// (e.g., reminders). A negative sign in the input (-PT15M) returns a negative number (-15).
-    fn parse_duration_minutes(trigger: &str) -> Option<i32> {
-        ical_parser::parse_ical_duration_minutes(trigger).ok()
-    }
+fn parse_duration_minutes(trigger: &str) -> Option<i32> {
+    ical_parser::parse_ical_duration_minutes(trigger).ok()
+}
 
 fn fold_ics_line(line: &str) -> String {
     const MAX_LINE_LEN: usize = 75;
@@ -1281,10 +1281,10 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     };
                     match stack.last().map(|v| v.as_slice()) {
                         Some(b"ClientId") => current.client_id = Some(value),
-                        Some(b"ServerId") => {
-                            if !stack.iter().any(|v| v.as_slice() == b"Exception") {
-                                current.server_id = Some(value);
-                            }
+                        Some(b"ServerId")
+                            if !stack.iter().any(|v| v.as_slice() == b"Exception") =>
+                        {
+                            current.server_id = Some(value);
                         }
                         Some(b"InstanceId") => {
                             current.instance_id = parse_datetime(&value);

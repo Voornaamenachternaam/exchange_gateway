@@ -5,7 +5,7 @@ use crate::calendar::{
     parse_ics_event, render_ics,
 };
 use crate::models::AppState;
-use crate::util::{xml_escape, parse_datetime as util_parse_datetime};
+use crate::util::{parse_datetime as util_parse_datetime, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -487,7 +487,6 @@ pub async fn apply_meeting_response(
         .await?;
     Ok(())
 }
-
 
 fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
     match content_class.to_ascii_lowercase().as_str() {

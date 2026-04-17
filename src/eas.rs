@@ -100,7 +100,8 @@ struct EasRequest {
 struct CommandGrammar {
     namespace: &'static str,
     required_tags: &'static [&'static str],
-    #[allow(dead_code)] // Documents allowed optional tags for protocol completeness; validation not currently required
+    #[allow(dead_code)]
+    // Documents allowed optional tags for protocol completeness; validation not currently required
     optional_tags: &'static [&'static str],
 }
 
@@ -299,10 +300,8 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 return Err("Add requires ClientId");
             }
         }
-        "meetingresponse" => {
-            if extract_first_tag_text(xml, b"UserResponse").is_none() {
-                return Err("MeetingResponse requires UserResponse");
-            }
+        "meetingresponse" if extract_first_tag_text(xml, b"UserResponse").is_none() => {
+            return Err("MeetingResponse requires UserResponse");
         }
         _ => {}
     }
@@ -1465,7 +1464,7 @@ async fn handle_resolve_recipients(
     let freebusy_results = join_all(freebusy_futures).await;
 
     let mut recipient_xml = String::new();
-    for (recipient, freebusy) in recipients.iter().zip(freebusy_results.into_iter()) {
+    for (recipient, freebusy) in recipients.iter().zip(freebusy_results) {
         let avail_xml = if availability_window.is_some() {
             format!(
                 "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",

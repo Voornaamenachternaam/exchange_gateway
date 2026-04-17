@@ -671,7 +671,8 @@ impl Storage {
             owner: &'a str,
             uid: &'a str,
         }
-        self.post_json("delete_meeting_state", &Req { owner, uid }).await
+        self.post_json("delete_meeting_state", &Req { owner, uid })
+            .await
     }
 
     pub async fn upsert_meeting_attendee(
@@ -754,21 +755,14 @@ impl Storage {
         .await
     }
 
-    pub async fn delete_meeting_attendees(
-        &self,
-        owner: &str,
-        meeting_uid: &str,
-    ) -> Result<()> {
+    pub async fn delete_meeting_attendees(&self, owner: &str, meeting_uid: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
             owner: &'a str,
             meeting_uid: &'a str,
         }
-        self.post_json(
-            "delete_meeting_attendees",
-            &Req { owner, meeting_uid },
-        )
-        .await
+        self.post_json("delete_meeting_attendees", &Req { owner, meeting_uid })
+            .await
     }
 
     pub async fn enqueue_scheduling(
