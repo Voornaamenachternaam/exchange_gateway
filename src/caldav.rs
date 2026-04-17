@@ -29,6 +29,14 @@ impl CaldavClient {
         })
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
+    pub fn client(&self) -> &ClientWithMiddleware {
+        &self.client
+    }
+
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
 

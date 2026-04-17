@@ -1,0 +1,21 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 172
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Provision xmlns="Provision:">
+    <Status>1</Status>
+    <Policies>
+        <Policy>
+            <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
+            <PolicyKey>policy-key-456</PolicyKey>
+            <Data>
+                <EASProvisionDoc>
+                    <DevicePasswordEnabled>0</DevicePasswordEnabled>
+                    <PasswordRecoveryEnabled>0</PasswordRecoveryEnabled>
+                </EASProvisionDoc>
+            </Data>
+        </Policy>
+    </Policies>
+</Provision>

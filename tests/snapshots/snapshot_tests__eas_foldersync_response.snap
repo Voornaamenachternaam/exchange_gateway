@@ -1,0 +1,18 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 149
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<FolderSync xmlns="FolderHierarchy:">
+    <Status>1</Status>
+    <SyncKey>folder-sync-123</SyncKey>
+    <Changes>
+        <Add>
+            <ServerId>1</ServerId>
+            <ParentId>0</ParentId>
+            <DisplayName>Calendar</DisplayName>
+            <Type>8</Type>
+        </Add>
+    </Changes>
+</FolderSync>

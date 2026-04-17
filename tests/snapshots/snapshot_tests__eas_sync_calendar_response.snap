@@ -1,0 +1,29 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 129
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
+    <Collections>
+        <Collection>
+            <Class>Calendar</Class>
+            <SyncKey>sync-key-123</SyncKey>
+            <CollectionId>1</CollectionId>
+            <Status>1</Status>
+            <Commands>
+                <Add>
+                    <ServerId>server-abc123</ServerId>
+                    <ApplicationData>
+                        <Calendar:Subject>Team Standup</Calendar:Subject>
+                        <Calendar:Location>Conference Room A</Calendar:Location>
+                        <Calendar:StartTime>2024-01-15T09:00:00Z</Calendar:StartTime>
+                        <Calendar:EndTime>2024-01-15T09:30:00Z</Calendar:EndTime>
+                        <Calendar:AllDayEvent>0</Calendar:AllDayEvent>
+                        <Calendar:BusyStatus>2</Calendar:BusyStatus>
+                    </ApplicationData>
+                </Add>
+            </Commands>
+        </Collection>
+    </Collections>
+</Sync>

@@ -1,0 +1,23 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 215
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+    <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
+        <User>
+            <DisplayName>Stalwart Mail</DisplayName>
+            <EMailAddress>user@example.com</EMailAddress>
+        </User>
+        <Account>
+            <AccountType>email</AccountType>
+            <Action>settings</Action>
+            <Protocol>
+                <Type>EXCH</Type>
+                <Server>mail.example.com</Server>
+                <EwsUrl>https://mail.example.com/EWS/Exchange.asmx</EwsUrl>
+            </Protocol>
+        </Account>
+    </Response>
+</Autodiscover>

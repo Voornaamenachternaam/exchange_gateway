@@ -1,0 +1,15 @@
+---
+source: tests/snapshot_tests.rs
+assertion_line: 190
+expression: response
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Ping xmlns="Ping:">
+    <Status>2</Status>
+    <Folders>
+        <Folder>
+            <Id>1</Id>
+            <Class>Calendar</Class>
+        </Folder>
+    </Folders>
+</Ping>

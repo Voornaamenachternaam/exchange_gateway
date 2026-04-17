@@ -599,6 +599,258 @@ impl Storage {
         .await
     }
 
+    pub async fn upsert_meeting_state(
+        &self,
+        owner: &str,
+        uid: &str,
+        sequence: u32,
+        state: &str,
+        state_flags: u8,
+        is_organizer: bool,
+        organizer_email: Option<&str>,
+        organizer_name: Option<&str>,
+        subject: Option<&str>,
+        location: Option<&str>,
+        start_time: &str,
+        end_time: &str,
+        timezone: Option<&str>,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            uid: &'a str,
+            sequence: u32,
+            state: &'a str,
+            state_flags: u8,
+            is_organizer: i32,
+            organizer_email: Option<&'a str>,
+            organizer_name: Option<&'a str>,
+            subject: Option<&'a str>,
+            location: Option<&'a str>,
+            start_time: &'a str,
+            end_time: &'a str,
+            timezone: Option<&'a str>,
+        }
+        self.post_json(
+            "upsert_meeting_state",
+            &Req {
+                owner,
+                uid,
+                sequence,
+                state,
+                state_flags,
+                is_organizer: if is_organizer { 1 } else { 0 },
+                organizer_email,
+                organizer_name,
+                subject,
+                location,
+                start_time,
+                end_time,
+                timezone,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_meeting_state(
+        &self,
+        owner: &str,
+        uid: &str,
+    ) -> Result<Option<MeetingStateRow>> {
+        let path = format!(
+            "get_meeting_state?owner={}&uid={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(uid)
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn delete_meeting_state(&self, owner: &str, uid: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            uid: &'a str,
+        }
+        self.post_json("delete_meeting_state", &Req { owner, uid }).await
+    }
+
+    pub async fn upsert_meeting_attendee(
+        &self,
+        owner: &str,
+        meeting_uid: &str,
+        email: &str,
+        name: Option<&str>,
+        status: u8,
+        role: u8,
+        response_time: Option<&str>,
+        proposed_start: Option<&str>,
+        proposed_end: Option<&str>,
+        sequence: u32,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            meeting_uid: &'a str,
+            email: &'a str,
+            name: Option<&'a str>,
+            status: u8,
+            role: u8,
+            response_time: Option<&'a str>,
+            proposed_start: Option<&'a str>,
+            proposed_end: Option<&'a str>,
+            sequence: u32,
+        }
+        self.post_json(
+            "upsert_meeting_attendee",
+            &Req {
+                owner,
+                meeting_uid,
+                email,
+                name,
+                status,
+                role,
+                response_time,
+                proposed_start,
+                proposed_end,
+                sequence,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_meeting_attendees(
+        &self,
+        owner: &str,
+        meeting_uid: &str,
+    ) -> Result<Vec<MeetingAttendeeRow>> {
+        let path = format!(
+            "get_meeting_attendees?owner={}&meeting_uid={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(meeting_uid)
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn delete_meeting_attendee(
+        &self,
+        owner: &str,
+        meeting_uid: &str,
+        email: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            meeting_uid: &'a str,
+            email: &'a str,
+        }
+        self.post_json(
+            "delete_meeting_attendee",
+            &Req {
+                owner,
+                meeting_uid,
+                email,
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_meeting_attendees(
+        &self,
+        owner: &str,
+        meeting_uid: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            meeting_uid: &'a str,
+        }
+        self.post_json(
+            "delete_meeting_attendees",
+            &Req { owner, meeting_uid },
+        )
+        .await
+    }
+
+    pub async fn enqueue_scheduling(
+        &self,
+        owner: &str,
+        meeting_uid: &str,
+        operation: &str,
+        sequence: u32,
+        ical_data: &str,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            meeting_uid: &'a str,
+            operation: &'a str,
+            sequence: u32,
+            ical_data: &'a str,
+        }
+        self.post_json(
+            "enqueue_scheduling",
+            &Req {
+                owner,
+                meeting_uid,
+                operation,
+                sequence,
+                ical_data,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_pending_scheduling(
+        &self,
+        owner: &str,
+        limit: usize,
+    ) -> Result<Vec<SchedulingQueueRow>> {
+        let path = format!(
+            "get_pending_scheduling?owner={}&limit={}",
+            urlencoding::encode(owner),
+            limit
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn mark_scheduling_processed(
+        &self,
+        id: i64,
+        status: &str,
+        error_message: Option<&str>,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            id: i64,
+            status: &'a str,
+            error_message: Option<&'a str>,
+        }
+        self.post_json(
+            "mark_scheduling_processed",
+            &Req {
+                id,
+                status,
+                error_message,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_meetings_by_time_range(
+        &self,
+        owner: &str,
+        start: &str,
+        end: &str,
+    ) -> Result<Vec<MeetingStateRow>> {
+        let path = format!(
+            "get_meetings_by_time_range?owner={}&start={}&end={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(start),
+            urlencoding::encode(end)
+        );
+        self.get_json(&path).await
+    }
+
     pub async fn get_meeting_response(
         &self,
         owner: &str,
@@ -628,4 +880,56 @@ pub struct MeetingResponseRow {
     pub calendar_id: String,
     pub user_response: i32,
     pub created_at: String,
+}
+
+#[derive(Deserialize)]
+pub struct MeetingStateRow {
+    pub uid: String,
+    pub owner: String,
+    pub sequence: i32,
+    pub state: String,
+    pub state_flags: i32,
+    pub is_organizer: i32,
+    pub organizer_email: Option<String>,
+    pub organizer_name: Option<String>,
+    pub subject: Option<String>,
+    pub location: Option<String>,
+    pub start_time: String,
+    pub end_time: String,
+    pub timezone: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_sequence_time: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MeetingAttendeeRow {
+    pub meeting_uid: String,
+    pub owner: String,
+    pub email: String,
+    pub name: Option<String>,
+    pub status: i32,
+    pub role: i32,
+    pub response_time: Option<String>,
+    pub proposed_start: Option<String>,
+    pub proposed_end: Option<String>,
+    pub sequence: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Deserialize)]
+pub struct SchedulingQueueRow {
+    pub id: i64,
+    pub meeting_uid: String,
+    pub owner: String,
+    pub operation: String,
+    pub sequence: i32,
+    pub ical_data: Option<String>,
+    pub status: String,
+    pub attempts: i32,
+    pub last_attempt: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub processed_at: Option<String>,
 }
