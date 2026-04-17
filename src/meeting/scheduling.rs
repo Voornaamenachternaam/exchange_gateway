@@ -3,20 +3,15 @@ use crate::calendar::CalendarItem;
 use crate::ical_parser;
 use crate::meeting::attendee::AttendeeStatus;
 use crate::meeting::message::{MeetingMessage, MeetingMessageGenerator};
-use crate::meeting::resilience::{ResilienceHandler, CircuitBreakerConfig, RetryConfig};
 use crate::util::xml_escape;
 use anyhow::{Result, anyhow, Context};
 use chrono::{DateTime, Utc};
 use compact_str::CompactString;
 use quick_xml::de::from_str;
 use reqwest::header::CONTENT_TYPE;
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tracing::{instrument, warn, debug, info, error, Span};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing::{instrument, warn, debug, info, Span};
 use url::Url;
 
 
@@ -126,30 +121,24 @@ mod validation {
     }
 }
 
-/// CalDAV scheduling client with resilience patterns
-/// 
+/// CalDAV scheduling client
+///
 /// Features:
-/// - Circuit breaker for failing fast during outages
-/// - Rate limiting to prevent overwhelming the server
-/// - Automatic retries with exponential backoff
+/// - Proper URL construction using `url::Url`
+/// - Configurable timeouts and connection pooling
 /// - OpenTelemetry tracing for observability
 pub struct CaldavScheduling {
     caldav_base: Url,
-    http_client: ClientWithMiddleware,
+    http_client: reqwest::Client,
     message_generator: MeetingMessageGenerator,
-    resilience: Arc<ResilienceHandler>,
 }
 
 impl CaldavScheduling {
-    /// Creates a new CaldavScheduling instance with resilience patterns.
+impl CaldavScheduling {
+    /// Creates a new CaldavScheduling instance.
     /// 
     /// # Arguments
     /// * `caldav_base` - Base URL for the CalDAV server (must be a valid URL)
-    /// 
-    /// # Features
-    /// - Circuit breaker: 5 failures open, 30s timeout, 2 successes close
-    /// - Rate limiting: 10 requests/second
-    /// - Retry: 3 attempts with exponential backoff
     /// 
     /// # Errors
     /// Returns an error if the URL is invalid
@@ -157,8 +146,8 @@ impl CaldavScheduling {
         let base_url = Url::parse(caldav_base)
             .with_context(|| format!("Invalid CalDAV base URL: {}", caldav_base))?;
         
-        // Configure base HTTP client with sensible defaults
-        let base_client = reqwest::Client::builder()
+        // Configure HTTP client with sensible defaults
+        let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
             .pool_max_idle_per_host(5)
@@ -167,82 +156,11 @@ impl CaldavScheduling {
             .build()
             .context("Failed to create HTTP client")?;
         
-        // Configure retry middleware with exponential backoff
-        let retry_policy = ExponentialBackoff::builder()
-            .retry_bounds(
-                std::time::Duration::from_millis(100),
-                std::time::Duration::from_secs(10)
-            )
-            .build_with_max_retries(3);
-        
-        // Build middleware client with retry
-        let http_client = ClientBuilder::new(base_client)
-            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-            .build();
-        
-        // Configure resilience handler
-        let resilience = Arc::new(ResilienceHandler::new(
-            "caldav-scheduling",
-            CircuitBreakerConfig {
-                failure_threshold: 5,
-                reset_timeout: std::time::Duration::from_secs(30),
-                success_threshold: 2,
-            },
-            10, // 10 requests per second
-        ));
-        
         Ok(Self {
             caldav_base: base_url,
             http_client,
             message_generator: MeetingMessageGenerator::new(),
-            resilience,
         })
-    }
-    
-    /// Creates a new CaldavScheduling instance with custom resilience configuration.
-    pub fn with_resilience(
-        caldav_base: &str,
-        circuit_config: CircuitBreakerConfig,
-        requests_per_second: u32,
-        max_retries: u32,
-    ) -> Result<Self> {
-        let base_url = Url::parse(caldav_base)
-            .with_context(|| format!("Invalid CalDAV base URL: {}", caldav_base))?;
-        
-        let base_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .context("Failed to create HTTP client")?;
-        
-        let retry_policy = ExponentialBackoff::builder()
-            .retry_bounds(
-                std::time::Duration::from_millis(100),
-                std::time::Duration::from_secs(10)
-            )
-            .build_with_max_retries(max_retries);
-        
-        let http_client = ClientBuilder::new(base_client)
-            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-            .build();
-        
-        let resilience = Arc::new(ResilienceHandler::new(
-            "caldav-scheduling",
-            circuit_config,
-            requests_per_second,
-        ));
-        
-        Ok(Self {
-            caldav_base: base_url,
-            http_client,
-            message_generator: MeetingMessageGenerator::new(),
-            resilience,
-        })
-    }
-    
-    /// Get a reference to the resilience handler for monitoring
-    pub fn resilience(&self) -> &Arc<ResilienceHandler> {
-        &self.resilience
     }
 
     /// Discovers the scheduling outbox and inbox URLs for a user.
@@ -250,8 +168,6 @@ impl CaldavScheduling {
     /// # Security
     /// - Password is passed as `SecretString` to prevent accidental logging
     /// - Tracing is configured to skip the password field
-    /// - Uses circuit breaker to fail fast during outages
-    /// - Uses rate limiting to prevent overwhelming the server
     /// 
     /// # Observability
     /// - OpenTelemetry spans for distributed tracing
@@ -270,12 +186,7 @@ impl CaldavScheduling {
         username: &str,
         password: &SecretString,
     ) -> Result<(Option<CompactString>, Option<CompactString>)> {
-        // Check resilience before proceeding
-        self.resilience.should_allow()
-            .map_err(|e| {
-                warn!(error = %e, "Circuit breaker or rate limiter blocked request");
-                e
-            })?;
+        
         
         // Use Url for proper URL construction to prevent injection
         let mut home_url = self.caldav_base.clone();
@@ -315,8 +226,7 @@ impl CaldavScheduling {
         let outbox = extract_href(&body, "schedule-outbox-URL");
         let inbox = extract_href(&body, "schedule-inbox-URL");
         
-        // Record success
-        self.resilience.record_success();
+        
         
         // Add span events
         Span::current().record("caldav.outbox_url", outbox.as_deref().unwrap_or("none"));
