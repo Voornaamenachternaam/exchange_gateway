@@ -2,41 +2,122 @@
 use chrono::{DateTime, NaiveDateTime, NaiveDate, Utc};
 
 pub fn unfold_ical_content(input: &str) -> String {
-    input.replace("\r\n ", "").replace("\r\n\t", "")
-}
-
-pub fn parse_property_line(input: &str) -> Result<(String, Vec<(String, String)>, String), nom::Err<nom::error::Error<&str>>> {
-    let colon_pos = input.find(':').ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))?;
+    input.replace("\r\n ", "").replace("\r\npub fn parse_property_line(input: &str) -> Result<(String, Vec<(String, String)>, String), nom::Err<nom::error::Error<&str>>> {
+    // Find the colon that separates name/params from value, respecting quoted strings
+    // iCalendar property format: NAME;PARAM1=VALUE1;PARAM2="VALUE WITH ;":PROPERTY_VALUE
+    let colon_pos = find_value_colon(input)
+        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))?;
     let before_colon = &input[..colon_pos];
     let value = &input[colon_pos + 1..];
-    
+
     let semicolon_pos = before_colon.find(';');
     let (name, params_str) = match semicolon_pos {
         Some(pos) => (&before_colon[..pos], &before_colon[pos + 1..]),
         None => (before_colon, ""),
     };
-    
+
     let params: Vec<(String, String)> = if params_str.is_empty() {
         Vec::new()
     } else {
-        params_str
-            .split(';')
-            .filter_map(|p| {
-                let eq_pos = p.find('=')?;
-                Some((p[..eq_pos].to_string(), p[eq_pos + 1..].trim_matches('"').to_string()))
-            })
-            .collect()
+        parse_parameters(params_str)
     };
-    
+
     Ok((name.to_string(), params, value.to_string()))
 }
 
-pub fn parse_property_lines(input: &str) -> Result<Vec<(String, String)>, nom::Err<nom::error::Error<&str>>> {
-    let mut properties = Vec::new();
-    let mut remaining = input;
+/// Find the colon that separates the property name/params from the value,
+/// taking into account quoted parameter values that may contain colons.
+fn find_value_colon(input: &str) -> Option<usize> {
+    let mut in_quotes = false;
+    let mut escape_next = false;
     
-    while !remaining.is_empty() {
-        let line_end = remaining.find("\r\n").or_else(|| remaining.find('\n')).unwrap_or(remaining.len());
+    for (i, c) in input.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match c {
+            '\\' => escape_next = true,
+            '"' => in_quotes = !in_quotes,
+            ':' if !in_quotes => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse iCalendar parameters, respecting quoted values that may contain delimiters.
+/// Example: "PARAM1=value1;PARAM2="value with ; and :";PARAM3=value3"
+fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
+    let mut params = Vec::new();
+    let mut current_param = String::new();
+    let mut current_value = String::new();
+    let mut in_quotes = false;
+    let mut escape_next = false;
+    let mut parsing_value = false;
+    let mut chars = params_str.chars().peekable();
+    
+    while let Some(c) = chars.next() {
+        if escape_next {
+            if parsing_value {
+                current_value.push(c);
+            } else {
+                current_param.push(c);
+            }
+            escape_next = false;
+            continue;
+        }
+        
+        match c {
+            '\\' => {
+                if parsing_value {
+                    current_value.push(c);
+                } else {
+                    current_param.push(c);
+                }
+                escape_next = true;
+            }
+            '"' => {
+                in_quotes = !in_quotes;
+                if parsing_value {
+                    current_value.push(c);
+                }
+            }
+            '=' if !in_quotes && !parsing_value => {
+                parsing_value = true;
+            }
+            ';' if !in_quotes => {
+                // End of parameter
+                if !current_param.is_empty() {
+                    params.push((
+                        current_param.clone(),
+                        current_value.trim_matches('"').to_string()
+                    ));
+                }
+                current_param.clear();
+                current_value.clear();
+                parsing_value = false;
+            }
+            _ => {
+                if parsing_value {
+                    current_value.push(c);
+                } else {
+                    current_param.push(c);
+                }
+            }
+        }
+    }
+    
+    // Don't forget the last parameter
+    if !current_param.is_empty() {
+        params.push((
+            current_param,
+            current_value.trim_matches('"').to_string()
+        ));
+    }
+    
+    params
+}\n").or_else(|| remaining.find('\n')).unwrap_or(remaining.len());
         let line = remaining[..line_end].trim();
         
         if line.is_empty() {

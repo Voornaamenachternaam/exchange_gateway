@@ -1,22 +1,60 @@
 // src/meeting/scheduling.rs
 use crate::calendar::CalendarItem;
+use crate::ical_parser;
 use crate::meeting::attendee::AttendeeStatus;
 use crate::meeting::message::{MeetingMessage, MeetingMessageGenerator};
+use crate::meeting::resilience::{ResilienceHandler, CircuitBreakerConfig, RetryConfig};
 use crate::util::xml_escape;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, Context};
 use chrono::{DateTime, Utc};
+use compact_str::CompactString;
+use quick_xml::de::from_str;
 use reqwest::header::CONTENT_TYPE;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tracing::{instrument, warn, debug, info, error, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+use url::Url;
+
+
+
+/// Custom error type for scheduling operations
+#[derive(Debug, thiserror::Error)]
+pub enum SchedulingErrorKind {
+    #[error("Invalid CalDAV URL: {0}")]
+    InvalidUrl(String),
+    
+    #[error("HTTP request failed: {0}")]
+    HttpError(#[from] reqwest::Error),
+    
+    #[error("XML parsing failed: {0}")]
+    XmlParseError(String),
+    
+    #[error("iCalendar parsing failed: {0}")]
+    IcalParseError(String),
+    
+    #[error("Authentication failed")]
+    AuthFailed,
+    
+    #[error("Scheduling operation failed: {0}")]
+    OperationFailed(String),
+}
 
 pub const CALDAV_SCHEDULING_NAMESPACE: &str = "urn:ietf:params:xml:ns:caldav";
 pub const CALDAV_CALENDAR_ACCESS_NAMESPACE: &str = "urn:ietf:params:xml:ns:caldav";
 
+/// Result of a scheduling operation
+/// Uses CompactString for memory efficiency with short strings
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchedulingResult {
     pub success: bool,
-    pub message: String,
-    pub scheduling_href: Option<String>,
-    pub delivery_status: Option<String>,
+    #[serde(with = "compact_str::serde::CompactString")]
+    pub message: CompactString,
+    pub scheduling_href: Option<CompactString>,
+    pub delivery_status: Option<CompactString>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,50 +71,223 @@ impl std::fmt::Display for SchedulingError {
 
 impl std::error::Error for SchedulingError {}
 
+/// A free/busy time entry
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FreeBusyEntry {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
-    pub busy_type: String,
+    #[serde(with = "compact_str::serde::CompactString")]
+    pub busy_type: CompactString,
 }
 
+/// Schedule outbox collection entry
 #[derive(Clone, Debug)]
 pub struct ScheduleOutboxEntry {
-    pub href: String,
-    pub display_name: Option<String>,
+    pub href: CompactString,
+    pub display_name: Option<CompactString>,
 }
 
+/// Schedule inbox collection entry
 #[derive(Clone, Debug)]
 pub struct ScheduleInboxEntry {
-    pub href: String,
-    pub display_name: Option<String>,
+    pub href: CompactString,
+    pub display_name: Option<CompactString>,
 }
 
+
+/// Input validation helpers
+mod validation {
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    
+    /// Validates an email address format (simplified RFC 5322)
+    /// Returns true if the email appears valid
+    pub fn is_valid_email(email: &str) -> bool {
+        if email.is_empty() || email.len() > 254 {
+            return false;
+        }
+        // Must contain exactly one @
+        let parts: Vec<&str> = email.split('@').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+        // Local part and domain must be non-empty
+        !parts[0].is_empty() && !parts[1].is_empty() && parts[1].contains('.')
+    }
+    
+    /// Validates a username format
+    /// Allows alphanumeric, underscore, hyphen, and period
+    /// Length: 1-64 characters
+    pub fn is_valid_username(username: &str) -> bool {
+        if username.is_empty() || username.len() > 64 {
+            return false;
+        }
+        username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+    }
+}
+
+/// CalDAV scheduling client with resilience patterns
+/// 
+/// Features:
+/// - Circuit breaker for failing fast during outages
+/// - Rate limiting to prevent overwhelming the server
+/// - Automatic retries with exponential backoff
+/// - OpenTelemetry tracing for observability
 pub struct CaldavScheduling {
-    caldav_base: String,
-    http_client: reqwest::Client,
+    caldav_base: Url,
+    http_client: ClientWithMiddleware,
     message_generator: MeetingMessageGenerator,
+    resilience: Arc<ResilienceHandler>,
 }
 
 impl CaldavScheduling {
-    pub fn new(caldav_base: &str) -> Self {
-        Self {
-            caldav_base: caldav_base.to_string(),
-            http_client: reqwest::Client::new(),
+    /// Creates a new CaldavScheduling instance with resilience patterns.
+    /// 
+    /// # Arguments
+    /// * `caldav_base` - Base URL for the CalDAV server (must be a valid URL)
+    /// 
+    /// # Features
+    /// - Circuit breaker: 5 failures open, 30s timeout, 2 successes close
+    /// - Rate limiting: 10 requests/second
+    /// - Retry: 3 attempts with exponential backoff
+    /// 
+    /// # Errors
+    /// Returns an error if the URL is invalid
+    pub fn new(caldav_base: &str) -> Result<Self> {
+        let base_url = Url::parse(caldav_base)
+            .with_context(|| format!("Invalid CalDAV base URL: {}", caldav_base))?;
+        
+        // Configure base HTTP client with sensible defaults
+        let base_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .pool_max_idle_per_host(5)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .user_agent("ExchangeGateway/1.2.0")
+            .build()
+            .context("Failed to create HTTP client")?;
+        
+        // Configure retry middleware with exponential backoff
+        let retry_policy = ExponentialBackoff::builder()
+            .retry_bounds(
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(10)
+            )
+            .build_with_max_retries(3);
+        
+        // Build middleware client with retry
+        let http_client = ClientBuilder::new(base_client)
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
+        
+        // Configure resilience handler
+        let resilience = Arc::new(ResilienceHandler::new(
+            "caldav-scheduling",
+            CircuitBreakerConfig {
+                failure_threshold: 5,
+                reset_timeout: std::time::Duration::from_secs(30),
+                success_threshold: 2,
+            },
+            10, // 10 requests per second
+        ));
+        
+        Ok(Self {
+            caldav_base: base_url,
+            http_client,
             message_generator: MeetingMessageGenerator::new(),
-        }
+            resilience,
+        })
+    }
+    
+    /// Creates a new CaldavScheduling instance with custom resilience configuration.
+    pub fn with_resilience(
+        caldav_base: &str,
+        circuit_config: CircuitBreakerConfig,
+        requests_per_second: u32,
+        max_retries: u32,
+    ) -> Result<Self> {
+        let base_url = Url::parse(caldav_base)
+            .with_context(|| format!("Invalid CalDAV base URL: {}", caldav_base))?;
+        
+        let base_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .context("Failed to create HTTP client")?;
+        
+        let retry_policy = ExponentialBackoff::builder()
+            .retry_bounds(
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(10)
+            )
+            .build_with_max_retries(max_retries);
+        
+        let http_client = ClientBuilder::new(base_client)
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
+        
+        let resilience = Arc::new(ResilienceHandler::new(
+            "caldav-scheduling",
+            circuit_config,
+            requests_per_second,
+        ));
+        
+        Ok(Self {
+            caldav_base: base_url,
+            http_client,
+            message_generator: MeetingMessageGenerator::new(),
+            resilience,
+        })
+    }
+    
+    /// Get a reference to the resilience handler for monitoring
+    pub fn resilience(&self) -> &Arc<ResilienceHandler> {
+        &self.resilience
     }
 
+    /// Discovers the scheduling outbox and inbox URLs for a user.
+    /// 
+    /// # Security
+    /// - Password is passed as `SecretString` to prevent accidental logging
+    /// - Tracing is configured to skip the password field
+    /// - Uses circuit breaker to fail fast during outages
+    /// - Uses rate limiting to prevent overwhelming the server
+    /// 
+    /// # Observability
+    /// - OpenTelemetry spans for distributed tracing
+    /// - Structured logging with tracing
+    #[instrument(
+        skip(self, password),
+        fields(
+            username = %username,
+            otel.kind = "client",
+            rpc.system = "caldav",
+            rpc.method = "PROPFIND"
+        )
+    )]
     pub async fn discover_scheduling_collections(
         &self,
         username: &str,
-        password: &str,
-    ) -> Result<(Option<String>, Option<String>)> {
-        let home_url = format!(
-            "{}/cal/{}/",
-            self.caldav_base.trim_end_matches('/'),
-            username
-        );
+        password: &SecretString,
+    ) -> Result<(Option<CompactString>, Option<CompactString>)> {
+        // Check resilience before proceeding
+        self.resilience.should_allow()
+            .map_err(|e| {
+                warn!(error = %e, "Circuit breaker or rate limiter blocked request");
+                e
+            })?;
+        
+        // Use Url for proper URL construction to prevent injection
+        let mut home_url = self.caldav_base.clone();
+        home_url.path_segments_mut()
+            .map_err(|_| anyhow!("Invalid CalDAV base URL"))?
+            .push("cal")
+            .push(username);
+        
+        // Add span attributes for the URL
+        Span::current().record("http.url", home_url.as_str());
+        
+        debug!("Discovering scheduling collections for user");
 
         let propfind_body = format!(r#"<?xml version="1.0" encoding="utf-8"?>
 <propfind xmlns="DAV:" xmlns:C="{}">
@@ -89,7 +300,7 @@ impl CaldavScheduling {
 
         let resp = self.http_client
             .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
-            .basic_auth(username, Some(password))
+            .basic_auth(username, Some(password.expose_secret()))
             .header("Depth", "0")
             .header(CONTENT_TYPE, "application/xml; charset=utf-8")
             .body(propfind_body)
@@ -103,6 +314,19 @@ impl CaldavScheduling {
         let body = resp.text().await?;
         let outbox = extract_href(&body, "schedule-outbox-URL");
         let inbox = extract_href(&body, "schedule-inbox-URL");
+        
+        // Record success
+        self.resilience.record_success();
+        
+        // Add span events
+        Span::current().record("caldav.outbox_url", outbox.as_deref().unwrap_or("none"));
+        Span::current().record("caldav.inbox_url", inbox.as_deref().unwrap_or("none"));
+        
+        info!(
+            outbox = ?outbox,
+            inbox = ?inbox,
+            "Successfully discovered scheduling collections"
+        );
 
         Ok((outbox, inbox))
     }
@@ -132,7 +356,7 @@ impl CaldavScheduling {
 
         let resp = self.http_client
             .post(&outbox)
-            .basic_auth(username, Some(password))
+            .basic_auth(username, Some(password.expose_secret()))
             .header(CONTENT_TYPE, "application/xml; charset=utf-8")
             .body(schedule_body)
             .send()
@@ -181,7 +405,7 @@ impl CaldavScheduling {
 
         let resp = self.http_client
             .post(&outbox)
-            .basic_auth(username, Some(password))
+            .basic_auth(username, Some(password.expose_secret()))
             .header(CONTENT_TYPE, "application/xml; charset=utf-8")
             .body(schedule_body)
             .send()
@@ -230,7 +454,7 @@ impl CaldavScheduling {
 
         let resp = self.http_client
             .post(&outbox)
-            .basic_auth(username, Some(password))
+            .basic_auth(username, Some(password.expose_secret()))
             .header(CONTENT_TYPE, "application/xml; charset=utf-8")
             .body(schedule_body)
             .send()
@@ -286,7 +510,7 @@ impl CaldavScheduling {
 
         let resp = self.http_client
             .post(&outbox)
-            .basic_auth(username, Some(password))
+            .basic_auth(username, Some(password.expose_secret()))
             .header(CONTENT_TYPE, "application/xml; charset=utf-8")
             .body(schedule_body)
             .send()
@@ -346,7 +570,7 @@ impl CaldavScheduling {
 
         let resp = self.http_client
             .request(reqwest::Method::from_bytes(b"REPORT")?, calendar_href)
-            .basic_auth(username, Some(password))
+            .basic_auth(username, Some(password.expose_secret()))
             .header(CONTENT_TYPE, "application/xml; charset=utf-8")
             .header("Depth", "1")
             .body(report_body)
@@ -378,7 +602,7 @@ impl CaldavScheduling {
 
         let resp = self.http_client
             .request(reqwest::Method::from_bytes(b"PROPFIND")?, inbox_href)
-            .basic_auth(username, Some(password))
+            .basic_auth(username, Some(password.expose_secret()))
             .header("Depth", "1")
             .header(CONTENT_TYPE, "application/xml; charset=utf-8")
             .body(report_body)
@@ -536,12 +760,7 @@ fn extract_attendee_or_organizer(ical: &str, name: &str) -> Option<String> {
     None
 }
 
-fn parse_ical_datetime(s: &str) -> Result<DateTime<Utc>> {
-    let s = s.trim_end_matches('Z');
-    let ndt = chrono::NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S%.f"))?;
-    Ok(ndt.and_utc())
-}
+
 
 #[cfg(test)]
 mod tests {

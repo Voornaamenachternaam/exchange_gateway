@@ -159,7 +159,17 @@ pub struct MeetingContext {
 
 impl MeetingContext {
     pub fn new(uid: String, organizer_email: String, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
-        let now = Utc::now();
+        Self::with_timestamp(uid, organizer_email, start, end, Utc::now())
+    }
+
+    /// Create a new MeetingContext with a specific timestamp (for testing)
+    pub fn with_timestamp(
+        uid: String,
+        organizer_email: String,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Self {
         Self {
             uid,
             sequence: 0,
@@ -176,13 +186,23 @@ impl MeetingContext {
     }
 
     pub fn increment_sequence(&mut self) {
+        self.increment_sequence_with_timestamp(Utc::now())
+    }
+
+    /// Increment sequence with a specific timestamp (for testing)
+    pub fn increment_sequence_with_timestamp(&mut self, now: DateTime<Utc>) {
         self.sequence = self.sequence.saturating_add(1);
-        self.last_sequence_time = Some(Utc::now());
-        self.updated_at = Utc::now();
+        self.last_sequence_time = Some(now);
+        self.updated_at = now;
     }
 
     pub fn is_past_meeting(&self) -> bool {
-        self.end < Utc::now()
+        self.is_past_meeting_at(Utc::now())
+    }
+
+    /// Check if meeting is past at a specific timestamp (for testing)
+    pub fn is_past_meeting_at(&self, now: DateTime<Utc>) -> bool {
+        self.end < now
     }
 }
 
@@ -243,24 +263,34 @@ impl MeetingStateMachine {
     }
 
     pub fn receive_request(&mut self) -> Result<(), &'static str> {
+        self.receive_request_with_timestamp(Utc::now())
+    }
+
+    /// Receive request with a specific timestamp (for testing)
+    pub fn receive_request_with_timestamp(&mut self, now: DateTime<Utc>) -> Result<(), &'static str> {
         if self.context.state != MeetingState::Draft {
             return Err("Cannot receive request in current state");
         }
         self.context.state_flags.is_meeting = true;
         self.context.state_flags.is_received = true;
         self.context.state = MeetingState::PendingResponses;
-        self.context.updated_at = Utc::now();
+        self.context.updated_at = now;
         Ok(())
     }
 
     pub fn update_meeting(&mut self, significant_change: bool) -> Result<(), &'static str> {
+        self.update_meeting_with_timestamp(significant_change, Utc::now())
+    }
+
+    /// Update meeting with a specific timestamp (for testing)
+    pub fn update_meeting_with_timestamp(&mut self, significant_change: bool, now: DateTime<Utc>) -> Result<(), &'static str> {
         if !self.can_update() {
             return Err("Cannot update meeting from current state");
         }
         if significant_change {
-            self.context.increment_sequence();
+            self.context.increment_sequence_with_timestamp(now);
         }
-        self.context.updated_at = Utc::now();
+        self.context.updated_at = now;
         Ok(())
     }
 
@@ -275,24 +305,39 @@ impl MeetingStateMachine {
     }
 
     pub fn mark_completed(&mut self) -> Result<(), &'static str> {
-        if !self.context.is_past_meeting() {
+        self.mark_completed_with_timestamp(Utc::now())
+    }
+
+    /// Mark as completed with a specific timestamp (for testing)
+    pub fn mark_completed_with_timestamp(&mut self, now: DateTime<Utc>) -> Result<(), &'static str> {
+        if !self.context.is_past_meeting_at(now) {
             return Err("Meeting has not ended yet");
         }
         self.context.state = MeetingState::Completed;
-        self.context.updated_at = Utc::now();
+        self.context.updated_at = now;
         Ok(())
     }
 
     pub fn transition_to_pending(&mut self) {
+        self.transition_to_pending_with_timestamp(Utc::now())
+    }
+
+    /// Transition to pending with a specific timestamp (for testing)
+    pub fn transition_to_pending_with_timestamp(&mut self, now: DateTime<Utc>) {
         if self.context.state == MeetingState::RequestSent {
             self.context.state = MeetingState::PendingResponses;
-            self.context.updated_at = Utc::now();
+            self.context.updated_at = now;
         }
     }
 
     pub fn transition_to_confirmed(&mut self) {
+        self.transition_to_confirmed_with_timestamp(Utc::now())
+    }
+
+    /// Transition to confirmed with a specific timestamp (for testing)
+    pub fn transition_to_confirmed_with_timestamp(&mut self, now: DateTime<Utc>) {
         self.context.state = MeetingState::Confirmed;
-        self.context.updated_at = Utc::now();
+        self.context.updated_at = now;
     }
 }
 
