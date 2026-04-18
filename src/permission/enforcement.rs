@@ -1,5 +1,5 @@
 // src/permission/enforcement.rs
-use crate::permission::types::{CalendarPermission, PermissionLevel, PermissionRights};
+use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionLevel, PermissionRights};
 use crate::permission::storage::PermissionStorage;
 use crate::storage::Storage;
 use anyhow::Result;
@@ -75,24 +75,39 @@ impl<'a> PermissionEnforcement<'a> {
     }
 
     pub async fn get_effective_rights(&self, ctx: &PermissionContext) -> Result<PermissionRights> {
+        // Owner has full rights
         if ctx.is_owner() {
             return Ok(PermissionRights::owner());
         }
 
+        // Determine the folder owner (support delegate context)
         let owner = if ctx.is_delegate {
             ctx.delegator.as_deref().unwrap_or(&ctx.folder_owner)
         } else {
             &ctx.folder_owner
         };
 
+        // Check calendar_permission table for explicit folder permissions
         if let Some(perm) = self.storage.get_permission(owner, &ctx.folder_id, &ctx.actor_email).await? {
             return Ok(perm.rights());
         }
 
+        // Check calendar_delegate table for delegate permissions
+        // This is essential because DelegateManager::add_delegate creates records
+        // in the delegate table, not the permission table
+        if let Some(delegate) = self.storage.get_delegate(owner, &ctx.actor_email).await? {
+            let delegate_rights = delegate.to_calendar_rights();
+            if !delegate_rights.is_none() {
+                return Ok(delegate_rights);
+            }
+        }
+
+        // Check default permission for the folder
         if let Some(default_perm) = self.storage.get_default_permission(owner, &ctx.folder_id).await? {
             return Ok(default_perm.rights());
         }
 
+        // Check anonymous permission
         if let Some(anon_perm) = self.storage.get_anonymous_permission(owner, &ctx.folder_id).await? {
             return Ok(anon_perm.rights());
         }
