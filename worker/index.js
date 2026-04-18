@@ -66,9 +66,6 @@ export default {
       return new Response('Method Not Allowed', { status: 405, headers: { Allow: methodValidation.allow } });
     }
 
-    if (isForwardedPath(path)) {
-      return handleGatewayForward(request, env, ctx);
-    }
 
     if (path === '/api/set_sync_key') return handleSetSyncKey(request, env);
     if (path === '/api/get_sync_key') return handleGetSyncKey(url, request, env);

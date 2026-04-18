@@ -1931,29 +1931,33 @@ async fn handle_unsubscribe(_auth: &AuthContext, _body: &str) -> Response {
 
 async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
+
+    // Permission check must run BEFORE folder validation
+    let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
+    let enforcement = PermissionEnforcement::new(&state.storage);
+    let perm_ctx = PermissionContext::new(auth.username.clone(), owner.to_string(), calendar_folder_id.clone());
+    match enforcement.can_create_item(&perm_ctx).await {
+        Ok(true) => {},
+        Ok(false) => {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorAccessDenied",
+                "You do not have permission to create calendar items",
+                StatusCode::FORBIDDEN,
+            );
+        }
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                &format!("Permission check failed: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    }
+
+
     if let Err(resp) = validate_requested_folder(&EwsAction::CreateItem, owner, body) {
- let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
- let enforcement = PermissionEnforcement::new(&state.storage);
- let perm_ctx = PermissionContext::new(auth.username.clone(), owner.to_string(), calendar_folder_id.clone());
- match enforcement.can_create_item(&perm_ctx).await {
-  Ok(true) => {},
-  Ok(false) => {
-   return operation_error_response(
-    &EwsAction::CreateItem,
-    "ErrorAccessDenied",
-    "You do not have permission to create calendar items",
-    StatusCode::FORBIDDEN,
-   );
-  }
-  Err(e) => {
-   return operation_error_response(
-    &EwsAction::CreateItem,
-    "ErrorInternalServerError",
-    &format!("Permission check failed: {}", e),
-    StatusCode::INTERNAL_SERVER_ERROR,
-   );
-  }
- }
         return resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {

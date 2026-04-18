@@ -66,7 +66,14 @@ pub fn truncate_string(s: &str, max_len: usize) -> String {
  if s.len() <= max_len {
   s.to_string()
  } else {
-  format!("{}...", &s[..max_len.saturating_sub(3)])
+  // Use char_indices to safely handle multi-byte UTF-8 characters
+        let target_len = max_len.saturating_sub(3);
+        let end = s.char_indices()
+            .take_while(|(idx, _)| *idx < target_len)
+            .last()
+            .map(|(idx, c)| idx + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}...", &s[..end])
  }
 }
 

@@ -1754,7 +1754,12 @@ pub async fn handle(
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
     return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
    }
-   Err(_) => {}
+   Err(e) => {
+                tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Create operation");
+                let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+            }
   }
  }
  if xml.contains("<Change") || xml.contains(":Change") {
@@ -1765,7 +1770,12 @@ pub async fn handle(
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
     return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
    }
-   Err(_) => {}
+   Err(e) => {
+                tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Edit operation");
+                let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+            }
   }
  }
  if xml.contains("<Delete") || xml.contains(":Delete") {
@@ -1776,7 +1786,12 @@ pub async fn handle(
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
     return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
    }
-   Err(_) => {}
+   Err(e) => {
+                tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Delete operation");
+                let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+            }
   }
  }
             if xml.contains("<Add")

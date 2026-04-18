@@ -204,7 +204,7 @@ impl<'a> DelegateManager<'a> {
             PermissionLevel::PublishingAuthor => "Author",
             PermissionLevel::Editor => "Editor",
             PermissionLevel::PublishingEditor => "Editor",
-            PermissionLevel::Owner => "Editor",
+            PermissionLevel::Owner => "Owner",
         }
     }
 }

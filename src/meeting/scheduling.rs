@@ -69,7 +69,7 @@ fn build_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
   lines.push(format!("DTEND:{}", format_ical_datetime(*end)));
  }
  lines.push(format!("ORGANIZER;CN={}:mailto:{}", 
-  ctx.organizer_name.as_deref().unwrap_or(""),
+  escape_ical_param(ctx.organizer_name.as_deref().unwrap_or("")),
   ctx.organizer_email
  ));
  for attendee in &ctx.attendees {
@@ -109,6 +109,21 @@ pub fn escape_ical_text(s: &str) -> String {
   .replace(';', "\\;")
   .replace(',', "\\,")
   .replace('\n', "\\n")
+}
+/// Escape and quote a parameter value for iCalendar property parameters.
+/// Per RFC 5545, parameter values containing special characters must be quoted.
+pub fn escape_ical_param(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\")
+        .replace(';', "\\;")
+        .replace(':', "\\:")
+        .replace(',', "\\,")
+        .replace('"', "\\'");
+    // Quote if contains special chars or spaces
+    if escaped.chars().any(|c| c == ';' || c == ':' || c == ',' || c == ' ' || c == '"' || c == '\\' || c == '\n') {
+        format!("\"{}\"", escaped)
+    } else {
+        escaped
+    }
 }
 
 pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {

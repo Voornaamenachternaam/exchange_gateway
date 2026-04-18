@@ -4,6 +4,24 @@ use crate::storage::Storage;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
+/// Parse a timestamp from SQLite's CURRENT_TIMESTAMP format.
+/// SQLite returns dates as "YYYY-MM-DD HH:MM:SS" which is not RFC3339.
+/// Falls back to current time on parse failure, logging the error.
+fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
+    // Try RFC3339 first (in case format changes)
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return dt.with_timezone(&chrono::Utc);
+    }
+    // Try SQLite's default format: "YYYY-MM-DD HH:MM:SS"
+    match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
+        Err(e) => {
+            tracing::warn!(timestamp = %s, error = %e, "Failed to parse timestamp, using current time");
+            chrono::Utc::now()
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRow {
     pub id: String,
@@ -20,21 +38,31 @@ pub struct PermissionRow {
 
 impl From<PermissionRow> for CalendarPermission {
     fn from(row: PermissionRow) -> Self {
+        // Cast i32 to u32 safely - negative values are invalid but won't panic
+        // They represent corrupted data from direct DB manipulation
+        let rights = if row.rights >= 0 {
+            row.rights as u32
+        } else {
+            tracing::warn!(
+                folder_id = %row.folder_id,
+                owner = %row.owner,
+                user_email = %row.user_email,
+                rights = row.rights,
+                "Negative rights value in database, treating as 0"
+            );
+            0
+        };
         Self {
             id: row.id,
             folder_id: row.folder_id,
             owner: row.owner,
             user_email: row.user_email,
             user_name: row.user_name,
-            rights: row.rights as u32,
+            rights,
             is_default: row.is_default != 0,
             is_anonymous: row.is_anonymous != 0,
-            created_at: chrono::DateTime::parse_from_rfc3339(&row.created_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
-            updated_at: chrono::DateTime::parse_from_rfc3339(&row.updated_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
+            created_at: parse_sqlite_timestamp(&row.created_at),
+            updated_at: parse_sqlite_timestamp(&row.updated_at),
         }
     }
 }
@@ -74,12 +102,8 @@ impl From<DelegateRow> for DelegateInfo {
             receive_copies: row.receive_copies != 0,
             receive_infos: row.receive_infos != 0,
             view_private: row.view_private != 0,
-            created_at: chrono::DateTime::parse_from_rfc3339(&row.created_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
-            updated_at: chrono::DateTime::parse_from_rfc3339(&row.updated_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
+            created_at: parse_sqlite_timestamp(&row.created_at),
+            updated_at: parse_sqlite_timestamp(&row.updated_at),
         }
     }
 }
@@ -99,6 +123,10 @@ pub struct AuditRow {
 
 impl From<AuditRow> for PermissionAuditEntry {
     fn from(row: AuditRow) -> Self {
+        // Safely cast i32 to u32, treating negative values as 0
+        fn safe_i32_to_u32(v: i32) -> u32 {
+            if v >= 0 { v as u32 } else { 0 }
+        }
         Self {
             id: row.id,
             folder_id: row.folder_id,
@@ -106,11 +134,9 @@ impl From<AuditRow> for PermissionAuditEntry {
             actor_email: row.actor_email,
             target_email: row.target_email,
             operation: row.operation,
-            old_rights: row.old_rights.map(|v| v as u32),
-            new_rights: row.new_rights.map(|v| v as u32),
-            created_at: chrono::DateTime::parse_from_rfc3339(&row.created_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
+            old_rights: row.old_rights.map(safe_i32_to_u32),
+            new_rights: row.new_rights.map(safe_i32_to_u32),
+            created_at: parse_sqlite_timestamp(&row.created_at),
         }
     }
 }

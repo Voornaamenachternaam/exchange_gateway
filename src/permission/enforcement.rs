@@ -58,7 +58,7 @@ impl PermissionContext {
     pub fn owns_item(&self) -> bool {
         match &self.item_owner {
             Some(owner) => owner == &self.actor_email,
-            None => true,
+            None => false, // SECURITY: Deny by default when ownership is unknown
         }
     }
 }
@@ -185,7 +185,7 @@ impl<'a> PermissionEnforcement<'a> {
             actor_email.to_string(),
             user_email.to_string(),
             "set".to_string(),
-            old_rights.map(|r| r.bits()),
+            old_rights,
             Some(perm.rights),
         );
         self.storage.add_audit_entry(&audit).await?;
@@ -255,7 +255,7 @@ impl<'a> PermissionEnforcement<'a> {
             actor_email.to_string(),
             "default".to_string(),
             "set_default".to_string(),
-            old_rights.map(|r| r.bits()),
+            old_rights,
             Some(perm.rights),
         );
         self.storage.add_audit_entry(&audit).await?;
@@ -292,7 +292,7 @@ impl<'a> PermissionEnforcement<'a> {
             actor_email.to_string(),
             "anonymous".to_string(),
             "set_anonymous".to_string(),
-            old_rights.map(|r| r.bits()),
+            old_rights,
             Some(perm.rights),
         );
         self.storage.add_audit_entry(&audit).await?;
