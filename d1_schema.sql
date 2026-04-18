@@ -240,3 +240,69 @@ CREATE INDEX idx_meeting_attendee_meeting ON meeting_attendee(owner, meeting_uid
 CREATE INDEX idx_meeting_attendee_email ON meeting_attendee(owner, email);
 CREATE INDEX idx_meeting_scheduling_pending ON meeting_scheduling_queue(owner, status);
 CREATE INDEX idx_meeting_scheduling_uid ON meeting_scheduling_queue(meeting_uid);
+
+-- Calendar Permissions Tables (v6)
+-- Based on MS-OXCPERM: Exchange Access and Operation Permissions Protocol
+
+CREATE TABLE calendar_permission (
+    id TEXT PRIMARY KEY,
+    folder_id TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT,
+    rights INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    is_anonymous INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, folder_id, user_email)
+);
+
+CREATE TABLE calendar_delegate (
+    id TEXT PRIMARY KEY,
+    delegator TEXT NOT NULL,
+    delegate_email TEXT NOT NULL,
+    delegate_name TEXT,
+    calendar_permission INTEGER NOT NULL DEFAULT 0,
+    inbox_permission INTEGER NOT NULL DEFAULT 0,
+    tasks_permission INTEGER NOT NULL DEFAULT 0,
+    contacts_permission INTEGER NOT NULL DEFAULT 0,
+    notes_permission INTEGER NOT NULL DEFAULT 0,
+    journal_permission INTEGER NOT NULL DEFAULT 0,
+    receive_copies INTEGER NOT NULL DEFAULT 0,
+    receive_infos INTEGER NOT NULL DEFAULT 0,
+    view_private INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(delegator, delegate_email)
+);
+
+CREATE TABLE permission_audit (
+    id TEXT PRIMARY KEY,
+    folder_id TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    actor_email TEXT NOT NULL,
+    target_email TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    old_rights INTEGER,
+    new_rights INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO schema_version (version, description)
+VALUES (6, 'v6: Calendar permissions, delegate management, and audit trail based on MS-OXCPERM');
+
+-- Permission indexes
+CREATE INDEX idx_permission_folder ON calendar_permission(owner, folder_id);
+CREATE INDEX idx_permission_user ON calendar_permission(owner, user_email);
+CREATE INDEX idx_permission_default ON calendar_permission(owner, folder_id, is_default);
+CREATE INDEX idx_permission_anonymous ON calendar_permission(owner, folder_id, is_anonymous);
+
+CREATE INDEX idx_delegate_delegator ON calendar_delegate(delegator);
+CREATE INDEX idx_delegate_email ON calendar_delegate(delegate_email);
+CREATE INDEX idx_delegate_delegator_email ON calendar_delegate(delegator, delegate_email);
+
+CREATE INDEX idx_permission_audit_folder ON permission_audit(owner, folder_id);
+CREATE INDEX idx_permission_audit_actor ON permission_audit(actor_email);
+CREATE INDEX idx_permission_audit_target ON permission_audit(target_email);
+CREATE INDEX idx_permission_audit_time ON permission_audit(owner, created_at);

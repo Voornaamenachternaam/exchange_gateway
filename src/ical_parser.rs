@@ -1,8 +1,6 @@
 // src/ical_parser.rs
 use chrono::{DateTime, NaiveDateTime, NaiveDate, Utc};
 
-/// Unfolds iCalendar content by removing line continuations.
-/// Per RFC 5545, lines that start with whitespace are continuations of the previous line.
 pub fn unfold_ical_content(input: &str) -> String {
     input.replace("\r\n ", "").replace("\n ", "")
 }
@@ -30,8 +28,6 @@ pub fn parse_property_line(input: &str) -> Result<(String, Vec<(String, String)>
     Ok((name.to_string(), params, value.to_string()))
 }
 
-/// Find the colon that separates the property name/params from the value,
-/// taking into account quoted parameter values that may contain colons.
 fn find_value_colon(input: &str) -> Option<usize> {
     let mut in_quotes = false;
     let mut escape_next = false;
@@ -51,8 +47,6 @@ fn find_value_colon(input: &str) -> Option<usize> {
     None
 }
 
-/// Parse iCalendar parameters, respecting quoted values that may contain delimiters.
-/// Example: "PARAM1=value1;PARAM2="value with ; and :";PARAM3=value3"
 fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     let mut params = Vec::new();
     let mut current_param = String::new();

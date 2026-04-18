@@ -400,10 +400,6 @@ fn unescape_ical_text(input: &str) -> String {
     out
 }
 
-/// Parse iCalendar content into a vector of (key, value) property pairs.
-/// 
-/// This function uses nom-based parser combinators for better performance
-/// and error handling compared to manual string manipulation.
 #[must_use]
 pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
     // Use nom parser for better performance
@@ -452,7 +448,6 @@ fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
     blocks
 }
 
-/// Extract VTIMEZONE block from iCalendar content using nom parser.
 #[must_use]
     fn extract_vtimezone_block(ics: &str) -> Option<String> {
         ical_parser::parse_vtimezone_block(ics).ok().flatten()
@@ -466,7 +461,6 @@ fn parse_categories_value(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse TZID parameter from a property key using nom parser.
 #[must_use]
 fn parse_tzid_from_key(key: &str) -> Option<String> {
     parse_ical_param(key, "TZID")
@@ -520,9 +514,6 @@ fn format_ical_datetime_with_timezone(
     (None, dt.format("%Y%m%dT%H%M%SZ").to_string())
 }
 
-/// Parse duration in ISO 8601 format using nom parser.
-/// Returns the number of minutes, where negative values represent time before an event
-/// (e.g., reminders). A negative sign in the input (-PT15M) returns a negative number (-15).
     fn parse_duration_minutes(trigger: &str) -> Option<i32> {
         ical_parser::parse_ical_duration_minutes(trigger).ok()
     }
@@ -744,8 +735,6 @@ struct CalendarEventFields {
     deleted: bool,
 }
 
-/// Parse an iCalendar VEVENT from raw ICS content.
-/// Returns a CalendarItem if parsing succeeds, or None if the content is invalid.
 #[must_use]
 pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     let timezone_blob = extract_vtimezone_block(ics);
@@ -843,8 +832,6 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     Some(item)
 }
 
-/// Render a CalendarItem to iCalendar (RFC 5545) format.
-/// Returns a complete VEVENT component as a String.
 #[must_use]
 pub fn render_ics(item: &CalendarItem) -> String {
     let dtstamp = item

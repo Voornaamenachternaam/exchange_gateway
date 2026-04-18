@@ -5,6 +5,7 @@ use crate::models::AppState;
 use crate::sync::{self, SyncOptions, filter_type_to_start};
 use crate::util::xml_escape;
 use crate::wbxml::Wbxml;
+use crate::permission::{PermissionEnforcement, PermissionContext};
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::{
@@ -1235,6 +1236,35 @@ async fn handle_item_operations(
     request_id: &str,
 ) -> Response {
     let fetches = parse_item_operations_fetches(xml);
+ let owner = crate::ews::owner_from_username(username);
+ let calendar_folder_id = crate::ews_folders::folder_id_for(owner, crate::ews_folders::DistinguishedFolder::Calendar);
+ let enforcement = PermissionEnforcement::new(&state.storage);
+ let perm_ctx = PermissionContext::new(username.to_string(), owner.to_string(), calendar_folder_id.clone());
+ match enforcement.can_read_item(&perm_ctx).await {
+  Ok(true) => {},
+  Ok(false) => {
+   let error_resp = format!(
+    "<ItemOperations><Status>4</Status><Response><Fetch><Status>4</Status></Fetch></Response></ItemOperations>"
+   );
+   return if as_wbxml {
+    let wbxml_resp = crate::wbxml::encode_xml_to_wbxml(&error_resp);
+    axum::response::Response::builder()
+     .status(StatusCode::OK)
+     .header("Content-Type", "application/vnd.ms-sync.wbxml")
+     .body(axum::body::Body::from(wbxml_resp))
+     .unwrap()
+   } else {
+    axum::response::Response::builder()
+     .status(StatusCode::OK)
+     .header("Content-Type", "text/xml")
+     .body(axum::body::Body::from(error_resp))
+     .unwrap()
+  };
+  }
+  Err(e) => {
+   return bad_request_response(request_id, &format!("Permission check failed: {}", e));
+  }
+ }
     if fetches.is_empty() {
         return bad_request_response(request_id, "ItemOperations requires at least one Fetch");
     }
@@ -1712,6 +1742,43 @@ pub async fn handle(
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
             let mut mutation_responses = String::new();
+ let owner = crate::ews::owner_from_username(&username);
+ let calendar_folder_id = crate::ews_folders::folder_id_for(owner, crate::ews_folders::DistinguishedFolder::Calendar);
+ let enforcement = PermissionEnforcement::new(&state.storage);
+ let perm_ctx = PermissionContext::new(username.clone(), owner.to_string(), calendar_folder_id.clone());
+ if xml.contains("<Add") || xml.contains(":Add") {
+  match enforcement.can_create_item(&perm_ctx).await {
+   Ok(true) => {},
+   Ok(false) => {
+    let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+   }
+   Err(_) => {}
+  }
+ }
+ if xml.contains("<Change") || xml.contains(":Change") {
+  match enforcement.can_edit_item(&perm_ctx).await {
+   Ok(true) => {},
+   Ok(false) => {
+    let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+   }
+   Err(_) => {}
+  }
+ }
+ if xml.contains("<Delete") || xml.contains(":Delete") {
+  match enforcement.can_delete_item(&perm_ctx).await {
+   Ok(true) => {},
+   Ok(false) => {
+    let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+   }
+   Err(_) => {}
+  }
+ }
             if xml.contains("<Add")
                 || xml.contains("<Change")
                 || xml.contains("<Delete")
