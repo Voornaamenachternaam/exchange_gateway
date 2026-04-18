@@ -470,6 +470,17 @@ impl Storage {
         self.get_json(&path).await
     }
 
+    // Look up the owner of an item by server_id (for delegate access)
+    pub async fn get_ews_item_owner(&self, server_id: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct OwnerRow {
+            owner: String,
+        }
+        let path = format!("get_ews_item_owner?server_id={}", urlencoding::encode(server_id));
+        let row: Option<OwnerRow> = self.get_json(&path).await?;
+        Ok(row.map(|r| r.owner))
+    }
+
     pub async fn set_ews_sync_state(
         &self,
         owner: &str,

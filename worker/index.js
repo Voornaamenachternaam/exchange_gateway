@@ -26,6 +26,7 @@ const API_METHODS = {
   '/api/get_ews_sync_state': 'GET',
   '/api/set_ews_sync_state': 'POST',
   '/api/get_ews_item_by_id': 'GET',
+  '/api/get_ews_item_owner': 'GET',
   '/api/upsert_device_info': 'POST',
   '/api/upsert_calendar_exception': 'POST',
   '/api/get_calendar_exceptions': 'GET',
@@ -86,6 +87,7 @@ export default {
     if (path === '/api/get_ews_sync_state') return handleGetEwsSyncState(url, request, env);
     if (path === '/api/set_ews_sync_state') return handleSetEwsSyncState(request, env);
     if (path === '/api/get_ews_item_by_id') return handleGetEwsItemById(url, request, env);
+  if (path === '/api/get_ews_item_owner') return handleGetEwsItemOwner(url, request, env);
     if (path === '/api/upsert_device_info') return handleUpsertDeviceInfo(request, env);
     if (path === '/api/upsert_calendar_exception') return handleUpsertCalendarException(request, env);
     if (path === '/api/get_calendar_exceptions') return handleGetCalendarExceptions(url, request, env);
@@ -707,6 +709,18 @@ async function handleGetEwsItemById(url, request, env) {
   return Response.json((result.results || [])[0] || null);
 }
 
+
+// Look up the owner of an item by server_id (for delegate access)
+async function handleGetEwsItemOwner(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const serverId = url.searchParams.get('server_id') || '';
+  if (!serverId) return new Response('Missing server_id', { status: 400 });
+  const result = await env.EXCHANGE_DB
+    .prepare(`SELECT owner FROM item_map WHERE server_id = ? LIMIT 1`)
+    .bind(serverId)
+    .first();
+  return Response.json(result || null);
+}
 async function handleGetLatestChangeSeq(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   const result = await env.EXCHANGE_DB.prepare('SELECT COALESCE(MAX(id), 0) AS seq FROM change_journal').all();

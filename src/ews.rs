@@ -1601,29 +1601,7 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 }
 
 async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
-    let owner = owner_from_username(&auth.username);
- let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
- let enforcement = PermissionEnforcement::new(&state.storage);
- let perm_ctx = PermissionContext::new(auth.username.clone(), owner.to_string(), calendar_folder_id.clone());
- match enforcement.can_read_item(&perm_ctx).await {
-  Ok(true) => {},
-  Ok(false) => {
-   return operation_error_response(
-    &EwsAction::GetItem,
-    "ErrorAccessDenied",
-    "You do not have permission to read this calendar",
-    StatusCode::FORBIDDEN,
-   );
-  }
-  Err(e) => {
-   return operation_error_response(
-    &EwsAction::GetItem,
-    "ErrorInternalServerError",
-    &format!("Permission check failed: {}", e),
-    StatusCode::INTERNAL_SERVER_ERROR,
-   );
-  }
- }
+    // First extract the item ID
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
     if item_id.is_empty() {
         return operation_error_response(
@@ -1633,9 +1611,55 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
             StatusCode::OK,
         );
     }
+
+    // Look up the actual owner of the item (for delegate access support)
+    let owner = match state.storage.get_ews_item_owner(&item_id).await {
+        Ok(Some(o)) => o,
+        Ok(None) => {
+            return operation_error_response(
+                &EwsAction::GetItem,
+                "ErrorItemNotFound",
+                "Requested item does not exist",
+                StatusCode::OK,
+            );
+        }
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::GetItem,
+                "ErrorInternalServerError",
+                &format!("Failed to lookup item owner: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Now perform permission check against the actual owner's folder
+    let calendar_folder_id = folder_id_for(&owner, DistinguishedFolder::Calendar);
+    let enforcement = PermissionEnforcement::new(&state.storage);
+    let perm_ctx = PermissionContext::new(auth.username.clone(), owner.clone(), calendar_folder_id.clone());
+    match enforcement.can_read_item(&perm_ctx).await {
+        Ok(true) => {},
+        Ok(false) => {
+            return operation_error_response(
+                &EwsAction::GetItem,
+                "ErrorAccessDenied",
+                "You do not have permission to read this calendar",
+                StatusCode::FORBIDDEN,
+            );
+        }
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::GetItem,
+                "ErrorInternalServerError",
+                &format!("Permission check failed: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    }
+
     let item = match state
         .storage
-        .get_ews_item_by_server_id(owner, &item_id)
+        .get_ews_item_by_server_id(&owner, &item_id)
         .await
     {
         Ok(v) => v,
@@ -1670,7 +1694,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         }
     };
     let calendar_item_xml = match caldav
-        .get_event(&item.resource_href, owner, &auth.password)
+        .get_event(&item.resource_href, &owner, &auth.password)
         .await
     {
         Ok((ics, _)) => match parse_ics_event(&ics) {
@@ -2088,7 +2112,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
     let stored_item = match state
         .storage
-        .get_ews_item_by_server_id(owner, &item_id)
+        .get_ews_item_by_server_id(&owner, &item_id)
         .await
     {
         Ok(v) => v,
@@ -2332,7 +2356,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
     let existing = match state
         .storage
-        .get_ews_item_by_server_id(owner, &item_id)
+        .get_ews_item_by_server_id(&owner, &item_id)
         .await
     {
         Ok(v) => v,
