@@ -1236,35 +1236,6 @@ async fn handle_item_operations(
     request_id: &str,
 ) -> Response {
     let fetches = parse_item_operations_fetches(xml);
- let owner = crate::ews::owner_from_username(username);
- let calendar_folder_id = crate::ews_folders::folder_id_for(owner, crate::ews_folders::DistinguishedFolder::Calendar);
- let enforcement = PermissionEnforcement::new(&state.storage);
- let perm_ctx = PermissionContext::new(username.to_string(), owner.to_string(), calendar_folder_id.clone());
- match enforcement.can_read_item(&perm_ctx).await {
-  Ok(true) => {},
-  Ok(false) => {
-   let error_resp = format!(
-    "<ItemOperations><Status>4</Status><Response><Fetch><Status>4</Status></Fetch></Response></ItemOperations>"
-   );
-   return if as_wbxml {
-    let wbxml_resp = crate::wbxml::encode_xml_to_wbxml(&error_resp);
-    axum::response::Response::builder()
-     .status(StatusCode::OK)
-     .header("Content-Type", "application/vnd.ms-sync.wbxml")
-     .body(axum::body::Body::from(wbxml_resp))
-     .unwrap()
-   } else {
-    axum::response::Response::builder()
-     .status(StatusCode::OK)
-     .header("Content-Type", "text/xml")
-     .body(axum::body::Body::from(error_resp))
-     .unwrap()
-  };
-  }
-  Err(e) => {
-   return bad_request_response(request_id, &format!("Permission check failed: {}", e));
-  }
- }
     if fetches.is_empty() {
         return bad_request_response(request_id, "ItemOperations requires at least one Fetch");
     }
@@ -1289,9 +1260,61 @@ async fn handle_item_operations(
             ));
             continue;
         };
+        
+        // Look up the actual owner of the item (for delegate access support)
+        let owner = match state.storage.get_ews_item_owner(&server_id).await {
+            Ok(Some(o)) => o,
+            Ok(None) => {
+                responses.push_str(&format!(
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                    xml_escape(&store),
+                    xml_escape(&collection_id),
+                    xml_escape(&server_id)
+                ));
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("Failed to lookup item owner for {}: {}", server_id, e);
+                responses.push_str(&format!(
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                    xml_escape(&store),
+                    xml_escape(&collection_id),
+                    xml_escape(&server_id)
+                ));
+                continue;
+            }
+        };
+        
+        // Perform permission check against the actual owner's folder
+        let calendar_folder_id = crate::ews_folders::folder_id_for(&owner, crate::ews_folders::DistinguishedFolder::Calendar);
+        let enforcement = PermissionEnforcement::new(&state.storage);
+        let perm_ctx = PermissionContext::new(username.to_string(), owner.clone(), calendar_folder_id.clone());
+        match enforcement.can_read_item(&perm_ctx).await {
+            Ok(true) => {},
+            Ok(false) => {
+                responses.push_str(&format!(
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>4</Status></Fetch>",
+                    xml_escape(&store),
+                    xml_escape(&collection_id),
+                    xml_escape(&server_id)
+                ));
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("Permission check failed for item {}: {}", server_id, e);
+                responses.push_str(&format!(
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                    xml_escape(&store),
+                    xml_escape(&collection_id),
+                    xml_escape(&server_id)
+                ));
+                continue;
+            }
+        }
+        
         let lookup = match state
             .storage
-            .get_ews_item_by_server_id(username, &server_id)
+            .get_ews_item_by_server_id(&owner, &server_id)
             .await
         {
             Ok(Some(row)) => row,
@@ -1305,8 +1328,7 @@ async fn handle_item_operations(
                 continue;
             }
         };
-        let get_future =
-            caldav.get_event(&lookup.resource_href, username, password.expose_secret());
+        let get_future = caldav.get_event(&lookup.resource_href, &owner, password.expose_secret());       
         let Ok(Ok((ics, _etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
