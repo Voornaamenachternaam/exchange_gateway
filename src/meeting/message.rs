@@ -454,8 +454,6 @@ fn escape_ical_text(s: &str) -> String {
 }
 
 
-/// Generate an iCalendar line with proper line folding per RFC 5545 Section 3.1
-/// Content lines SHOULD NOT be longer than 75 octets.
 fn folded_line(line: &str) -> String {
     fold_ical_line(line, 75)
 }

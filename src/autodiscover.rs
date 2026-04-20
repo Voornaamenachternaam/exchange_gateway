@@ -13,20 +13,14 @@ pub struct AutodiscoverJsonParams {
 
 pub type AdResponse = (StatusCode, Vec<(&'static str, &'static str)>, String);
 
-/// Returns Content-Type header for XML responses.
-/// Other security headers are applied globally via middleware in main.rs.
 fn content_type_xml() -> Vec<(&'static str, &'static str)> {
     vec![("Content-Type", "application/xml; charset=utf-8")]
 }
 
-/// Returns Content-Type header for JSON responses.
-/// Other security headers are applied globally via middleware in main.rs.
 fn content_type_json() -> Vec<(&'static str, &'static str)> {
     vec![("Content-Type", "application/json; charset=utf-8")]
 }
 
-/// Returns Content-Type header for SOAP responses.
-/// Other security headers are applied globally via middleware in main.rs.
 fn content_type_soap() -> Vec<(&'static str, &'static str)> {
     vec![("Content-Type", "application/soap+xml; charset=utf-8")]
 }

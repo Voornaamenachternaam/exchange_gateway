@@ -1,0 +1,617 @@
+// src/permission/types.rs
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+const RIGHT_READ_ANY: u32 = 0x00000001;
+const RIGHT_CREATE: u32 = 0x00000002;
+const RIGHT_EDIT_OWNED: u32 = 0x00000008;
+const RIGHT_DELETE_OWNED: u32 = 0x00000010;
+const RIGHT_EDIT_ANY: u32 = 0x00000020;
+const RIGHT_DELETE_ANY: u32 = 0x00000040;
+const RIGHT_CREATE_SUBFOLDER: u32 = 0x00000080;
+const RIGHT_FOLDER_OWNER: u32 = 0x00000100;
+const RIGHT_FOLDER_CONTACT: u32 = 0x00000200;
+const RIGHT_FOLDER_VISIBLE: u32 = 0x00000400;
+const RIGHT_FREEBUSY_SIMPLE: u32 = 0x00000800;
+const RIGHT_FREEBUSY_DETAILED: u32 = 0x00001000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PermissionRights(pub u32);
+
+impl Default for PermissionRights {
+    fn default() -> Self {
+        Self(0)
+    }
+}
+
+impl PermissionRights {
+    pub fn empty() -> Self {
+        Self(0)
+    }
+
+    pub fn read_any() -> Self {
+        Self(RIGHT_READ_ANY)
+    }
+
+    pub fn create() -> Self {
+        Self(RIGHT_CREATE)
+    }
+
+    pub fn edit_owned() -> Self {
+        Self(RIGHT_EDIT_OWNED)
+    }
+
+    pub fn delete_owned() -> Self {
+        Self(RIGHT_DELETE_OWNED)
+    }
+
+    pub fn edit_any() -> Self {
+        Self(RIGHT_EDIT_ANY | RIGHT_EDIT_OWNED)
+    }
+
+    pub fn delete_any() -> Self {
+        Self(RIGHT_DELETE_ANY | RIGHT_DELETE_OWNED)
+    }
+
+    pub fn folder_owner() -> Self {
+        Self(RIGHT_FOLDER_OWNER | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn folder_contact() -> Self {
+        Self(RIGHT_FOLDER_CONTACT)
+    }
+
+    pub fn folder_visible() -> Self {
+        Self(RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn freebusy_simple() -> Self {
+        Self(RIGHT_FREEBUSY_SIMPLE)
+    }
+
+    pub fn freebusy_detailed() -> Self {
+        Self(RIGHT_FREEBUSY_DETAILED | RIGHT_FREEBUSY_SIMPLE)
+    }
+
+    pub fn none() -> Self {
+        Self(0)
+    }
+
+    pub fn reviewer() -> Self {
+        Self(RIGHT_READ_ANY | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn contributor() -> Self {
+        Self(RIGHT_CREATE | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn author() -> Self {
+        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_OWNED | RIGHT_DELETE_OWNED | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn non_editing_author() -> Self {
+        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_DELETE_OWNED | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn editor() -> Self {
+        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_ANY | RIGHT_DELETE_ANY | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn publishing_author() -> Self {
+        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_OWNED | RIGHT_DELETE_OWNED | RIGHT_CREATE_SUBFOLDER | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn publishing_editor() -> Self {
+        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_ANY | RIGHT_DELETE_ANY | RIGHT_CREATE_SUBFOLDER | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn owner() -> Self {
+        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_ANY | RIGHT_DELETE_ANY | RIGHT_CREATE_SUBFOLDER | RIGHT_FOLDER_OWNER | RIGHT_FOLDER_CONTACT | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn freebusy() -> Self {
+        Self(RIGHT_FREEBUSY_SIMPLE | RIGHT_FREEBUSY_DETAILED | RIGHT_FOLDER_VISIBLE)
+    }
+
+    pub fn can_read_any(&self) -> bool {
+        self.0 & RIGHT_READ_ANY != 0
+    }
+
+    pub fn can_create(&self) -> bool {
+        self.0 & RIGHT_CREATE != 0
+    }
+
+    pub fn can_edit_owned(&self) -> bool {
+        self.0 & RIGHT_EDIT_OWNED != 0
+    }
+
+    pub fn can_delete_owned(&self) -> bool {
+        self.0 & RIGHT_DELETE_OWNED != 0
+    }
+
+    pub fn can_edit_any(&self) -> bool {
+        self.0 & RIGHT_EDIT_ANY != 0
+    }
+
+    pub fn can_delete_any(&self) -> bool {
+        self.0 & RIGHT_DELETE_ANY != 0
+    }
+
+    pub fn can_create_subfolder(&self) -> bool {
+        self.0 & RIGHT_CREATE_SUBFOLDER != 0
+    }
+
+    pub fn is_folder_owner(&self) -> bool {
+        self.0 & RIGHT_FOLDER_OWNER != 0
+    }
+
+    pub fn is_folder_contact(&self) -> bool {
+        self.0 & RIGHT_FOLDER_CONTACT != 0
+    }
+
+    pub fn is_folder_visible(&self) -> bool {
+        self.0 & RIGHT_FOLDER_VISIBLE != 0
+    }
+
+    pub fn can_freebusy_simple(&self) -> bool {
+        self.0 & RIGHT_FREEBUSY_SIMPLE != 0
+    }
+
+    pub fn can_freebusy_detailed(&self) -> bool {
+        self.0 & RIGHT_FREEBUSY_DETAILED != 0
+    }
+
+    pub fn bits(&self) -> u32 {
+        self.0
+    }
+
+    pub fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    pub fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    pub fn contains(&self, other: &Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+}
+
+impl fmt::Display for PermissionRights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut parts = Vec::new();
+        if self.can_read_any() { parts.push("ReadAny"); }
+        if self.can_create() { parts.push("Create"); }
+        if self.can_edit_owned() { parts.push("EditOwned"); }
+        if self.can_delete_owned() { parts.push("DeleteOwned"); }
+        if self.can_edit_any() { parts.push("EditAny"); }
+        if self.can_delete_any() { parts.push("DeleteAny"); }
+        if self.can_create_subfolder() { parts.push("CreateSubfolder"); }
+        if self.is_folder_owner() { parts.push("FolderOwner"); }
+        if self.is_folder_contact() { parts.push("FolderContact"); }
+        if self.is_folder_visible() { parts.push("FolderVisible"); }
+        if self.can_freebusy_simple() { parts.push("FreeBusySimple"); }
+        if self.can_freebusy_detailed() { parts.push("FreeBusyDetailed"); }
+        if parts.is_empty() {
+            write!(f, "None")
+        } else {
+            write!(f, "{}", parts.join("|"))
+        }
+    }
+}
+
+impl From<u32> for PermissionRights {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PermissionRights> for u32 {
+    fn from(value: PermissionRights) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PermissionLevel {
+    None = 0,
+    FreeBusy = 1,
+    Reviewer = 2,
+    Contributor = 3,
+    NonEditingAuthor = 4,
+    Author = 5,
+    PublishingAuthor = 6,
+    Editor = 7,
+    PublishingEditor = 8,
+    Owner = 9,
+}
+
+impl Default for PermissionLevel {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl PermissionLevel {
+    pub fn to_rights(&self) -> PermissionRights {
+        match self {
+            Self::None => PermissionRights::none(),
+            Self::FreeBusy => PermissionRights::freebusy(),
+            Self::Reviewer => PermissionRights::reviewer(),
+            Self::Contributor => PermissionRights::contributor(),
+            Self::NonEditingAuthor => PermissionRights::non_editing_author(),
+            Self::Author => PermissionRights::author(),
+            Self::PublishingAuthor => PermissionRights::publishing_author(),
+            Self::Editor => PermissionRights::editor(),
+            Self::PublishingEditor => PermissionRights::publishing_editor(),
+            Self::Owner => PermissionRights::owner(),
+        }
+    }
+
+    pub fn from_rights(rights: &PermissionRights) -> Self {
+        if rights.is_folder_owner() {
+            return Self::Owner;
+        }
+        if rights.contains(&PermissionRights::publishing_editor()) {
+            return Self::PublishingEditor;
+        }
+        if rights.contains(&PermissionRights::editor()) {
+            return Self::Editor;
+        }
+        if rights.contains(&PermissionRights::publishing_author()) {
+            return Self::PublishingAuthor;
+        }
+        if rights.contains(&PermissionRights::author()) {
+            return Self::Author;
+        }
+        if rights.contains(&PermissionRights::non_editing_author()) {
+            return Self::NonEditingAuthor;
+        }
+        if rights.contains(&PermissionRights::contributor()) {
+            return Self::Contributor;
+        }
+        if rights.contains(&PermissionRights::reviewer()) {
+            return Self::Reviewer;
+        }
+        if rights.can_freebusy_simple() {
+            return Self::FreeBusy;
+        }
+        Self::None
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "freebusy" | "freebusyonly" => Some(Self::FreeBusy),
+            "reviewer" => Some(Self::Reviewer),
+            "contributor" => Some(Self::Contributor),
+            "noneditingauthor" => Some(Self::NonEditingAuthor),
+            "author" => Some(Self::Author),
+            "publishingauthor" => Some(Self::PublishingAuthor),
+            "editor" => Some(Self::Editor),
+            "publishingeditor" => Some(Self::PublishingEditor),
+            "owner" => Some(Self::Owner),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "None",
+            // EWS uses FreeBusyTimeOnly for this permission level
+            Self::FreeBusy => "FreeBusyTimeOnly",
+            Self::Reviewer => "Reviewer",
+            Self::Contributor => "Contributor",
+            Self::NonEditingAuthor => "NonEditingAuthor",
+            Self::Author => "Author",
+            Self::PublishingAuthor => "PublishingAuthor",
+            Self::Editor => "Editor",
+            Self::PublishingEditor => "PublishingEditor",
+            Self::Owner => "Owner",
+        }
+    }
+}
+
+impl fmt::Display for PermissionLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<u8> for PermissionLevel {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::FreeBusy,
+            2 => Self::Reviewer,
+            3 => Self::Contributor,
+            4 => Self::NonEditingAuthor,
+            5 => Self::Author,
+            6 => Self::PublishingAuthor,
+            7 => Self::Editor,
+            8 => Self::PublishingEditor,
+            9 => Self::Owner,
+            _ => Self::None,
+        }
+    }
+}
+
+impl From<PermissionLevel> for u8 {
+    fn from(value: PermissionLevel) -> Self {
+        value as u8
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CalendarPermission {
+    pub id: String,
+    pub folder_id: String,
+    pub owner: String,
+    pub user_email: String,
+    pub user_name: Option<String>,
+    pub rights: u32,
+    pub is_default: bool,
+    pub is_anonymous: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl CalendarPermission {
+    pub fn new(folder_id: String, owner: String, user_email: String, rights: PermissionRights) -> Self {
+        let now = chrono::Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
+        Self {
+            id,
+            folder_id,
+            owner,
+            user_email,
+            user_name: None,
+            rights: rights.bits(),
+            is_default: false,
+            is_anonymous: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn default_permission(folder_id: String, owner: String, rights: PermissionRights) -> Self {
+        let now = chrono::Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
+        Self {
+            id,
+            folder_id,
+            owner,
+            user_email: "default".to_string(),
+            user_name: Some("Default".to_string()),
+            rights: rights.bits(),
+            is_default: true,
+            is_anonymous: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn anonymous_permission(folder_id: String, owner: String, rights: PermissionRights) -> Self {
+        let now = chrono::Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
+        Self {
+            id,
+            folder_id,
+            owner,
+            user_email: "anonymous".to_string(),
+            user_name: Some("Anonymous".to_string()),
+            rights: rights.bits(),
+            is_default: false,
+            is_anonymous: true,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn rights(&self) -> PermissionRights {
+        PermissionRights::from_bits(self.rights)
+    }
+
+    pub fn set_rights(&mut self, rights: PermissionRights) {
+        self.rights = rights.bits();
+        self.updated_at = chrono::Utc::now();
+    }
+
+    pub fn permission_level(&self) -> PermissionLevel {
+        PermissionLevel::from_rights(&self.rights())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DelegateInfo {
+    pub id: String,
+    pub delegator: String,
+    pub delegate_email: String,
+    pub delegate_name: Option<String>,
+    pub calendar_permission: u8,
+    pub inbox_permission: u8,
+    pub tasks_permission: u8,
+    pub contacts_permission: u8,
+    pub notes_permission: u8,
+    pub journal_permission: u8,
+    pub receive_copies: bool,
+    pub receive_infos: bool,
+    pub view_private: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl DelegateInfo {
+    pub fn new(delegator: String, delegate_email: String, delegate_name: Option<String>) -> Self {
+        let now = chrono::Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
+        Self {
+            id,
+            delegator,
+            delegate_email,
+            delegate_name,
+            calendar_permission: PermissionLevel::Reviewer as u8,
+            inbox_permission: PermissionLevel::None as u8,
+            tasks_permission: PermissionLevel::None as u8,
+            contacts_permission: PermissionLevel::None as u8,
+            notes_permission: PermissionLevel::None as u8,
+            journal_permission: PermissionLevel::None as u8,
+            receive_copies: false,
+            receive_infos: false,
+            view_private: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn set_calendar_permission(&mut self, level: PermissionLevel) {
+        self.calendar_permission = level as u8;
+        self.updated_at = chrono::Utc::now();
+    }
+
+    pub fn calendar_permission_level(&self) -> PermissionLevel {
+        PermissionLevel::from(self.calendar_permission)
+    }
+
+    pub fn to_calendar_rights(&self) -> PermissionRights {
+        self.calendar_permission_level().to_rights()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DelegatePermission {
+    None = 0,
+    Author = 1,
+    Editor = 2,
+}
+
+impl Default for DelegatePermission {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl DelegatePermission {
+    pub fn to_rights(&self) -> PermissionRights {
+        match self {
+            Self::None => PermissionRights::none(),
+            Self::Author => PermissionRights::author(),
+            Self::Editor => PermissionRights::editor(),
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "author" => Some(Self::Author),
+            "editor" => Some(Self::Editor),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Author => "Author",
+            Self::Editor => "Editor",
+        }
+    }
+}
+
+impl fmt::Display for DelegatePermission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PermissionAuditEntry {
+    pub id: String,
+    pub folder_id: String,
+    pub owner: String,
+    pub actor_email: String,
+    pub target_email: String,
+    pub operation: String,
+    pub old_rights: Option<u32>,
+    pub new_rights: Option<u32>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl PermissionAuditEntry {
+    pub fn new(
+        folder_id: String,
+        owner: String,
+        actor_email: String,
+        target_email: String,
+        operation: String,
+        old_rights: Option<u32>,
+        new_rights: Option<u32>,
+    ) -> Self {
+        let now = chrono::Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
+        Self {
+            id,
+            folder_id,
+            owner,
+            actor_email,
+            target_email,
+            operation,
+            old_rights,
+            new_rights,
+            created_at: now,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_permission_rights_flags() {
+        let rights = PermissionRights::owner();
+        assert!(rights.can_read_any());
+        assert!(rights.can_create());
+        assert!(rights.can_edit_any());
+        assert!(rights.can_delete_any());
+        assert!(rights.is_folder_owner());
+    }
+
+    #[test]
+    fn test_permission_level_conversion() {
+        let level = PermissionLevel::Editor;
+        let rights = level.to_rights();
+        assert!(rights.can_edit_any());
+        assert!(rights.can_delete_any());
+        
+        let converted = PermissionLevel::from_rights(&rights);
+        assert_eq!(level, converted);
+    }
+
+    #[test]
+    fn test_permission_rights_contains() {
+        let editor = PermissionRights::editor();
+        let author = PermissionRights::author();
+        assert!(editor.contains(&author));
+        assert!(!author.contains(&editor));
+    }
+
+    #[test]
+    fn test_delegate_info() {
+        let delegate = DelegateInfo::new(
+            "owner@example.com".to_string(),
+            "delegate@example.com".to_string(),
+            Some("Delegate Name".to_string()),
+        );
+        assert_eq!(delegate.calendar_permission_level(), PermissionLevel::Reviewer);
+    }
+}

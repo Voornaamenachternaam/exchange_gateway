@@ -26,13 +26,27 @@ const API_METHODS = {
   '/api/get_ews_sync_state': 'GET',
   '/api/set_ews_sync_state': 'POST',
   '/api/get_ews_item_by_id': 'GET',
+  '/api/get_ews_item_owner': 'GET',
   '/api/upsert_device_info': 'POST',
   '/api/upsert_calendar_exception': 'POST',
   '/api/get_calendar_exceptions': 'GET',
   '/api/get_calendar_exception': 'GET',
   '/api/delete_calendar_exception': 'POST',
   '/api/record_meeting_response': 'POST',
-  '/api/get_meeting_response': 'GET'
+  '/api/get_meeting_response': 'GET',
+  '/api/get_calendar_permission': 'GET',
+  '/api/get_calendar_permissions': 'GET',
+  '/api/get_user_calendar_permissions': 'GET',
+  '/api/get_default_calendar_permission': 'GET',
+  '/api/get_anonymous_calendar_permission': 'GET',
+  '/api/upsert_calendar_permission': 'POST',
+  '/api/delete_calendar_permission': 'POST',
+  '/api/get_delegate': 'GET',
+  '/api/get_delegates': 'GET',
+  '/api/upsert_delegate': 'POST',
+  '/api/delete_delegate': 'POST',
+  '/api/add_permission_audit': 'POST',
+  '/api/get_permission_audit_log': 'GET'
 };
 
 export default {
@@ -53,9 +67,6 @@ export default {
       return new Response('Method Not Allowed', { status: 405, headers: { Allow: methodValidation.allow } });
     }
 
-    if (isForwardedPath(path)) {
-      return handleGatewayForward(request, env, ctx);
-    }
 
     if (path === '/api/set_sync_key') return handleSetSyncKey(request, env);
     if (path === '/api/get_sync_key') return handleGetSyncKey(url, request, env);
@@ -76,6 +87,7 @@ export default {
     if (path === '/api/get_ews_sync_state') return handleGetEwsSyncState(url, request, env);
     if (path === '/api/set_ews_sync_state') return handleSetEwsSyncState(request, env);
     if (path === '/api/get_ews_item_by_id') return handleGetEwsItemById(url, request, env);
+  if (path === '/api/get_ews_item_owner') return handleGetEwsItemOwner(url, request, env);
     if (path === '/api/upsert_device_info') return handleUpsertDeviceInfo(request, env);
     if (path === '/api/upsert_calendar_exception') return handleUpsertCalendarException(request, env);
     if (path === '/api/get_calendar_exceptions') return handleGetCalendarExceptions(url, request, env);
@@ -83,6 +95,19 @@ export default {
     if (path === '/api/delete_calendar_exception') return handleDeleteCalendarException(request, env);
     if (path === '/api/record_meeting_response') return handleRecordMeetingResponse(request, env);
     if (path === '/api/get_meeting_response') return handleGetMeetingResponse(url, request, env);
+if (path === '/api/get_calendar_permission') return handleGetCalendarPermission(url, request, env);
+if (path === '/api/get_calendar_permissions') return handleGetCalendarPermissions(url, request, env);
+if (path === '/api/get_user_calendar_permissions') return handleGetUserCalendarPermissions(url, request, env);
+if (path === '/api/get_default_calendar_permission') return handleGetDefaultCalendarPermission(url, request, env);
+if (path === '/api/get_anonymous_calendar_permission') return handleGetAnonymousCalendarPermission(url, request, env);
+if (path === '/api/upsert_calendar_permission') return handleUpsertCalendarPermission(request, env);
+if (path === '/api/delete_calendar_permission') return handleDeleteCalendarPermission(request, env);
+if (path === '/api/get_delegate') return handleGetDelegate(url, request, env);
+if (path === '/api/get_delegates') return handleGetDelegates(url, request, env);
+if (path === '/api/upsert_delegate') return handleUpsertDelegate(request, env);
+if (path === '/api/delete_delegate') return handleDeleteDelegate(request, env);
+if (path === '/api/add_permission_audit') return handleAddPermissionAudit(request, env);
+if (path === '/api/get_permission_audit_log') return handleGetPermissionAuditLog(url, request, env);
 
     if (path.startsWith('/api/')) {
       return withCors(await handleApiRequest(request, env));
@@ -684,6 +709,18 @@ async function handleGetEwsItemById(url, request, env) {
   return Response.json((result.results || [])[0] || null);
 }
 
+
+// Look up the owner of an item by server_id (for delegate access)
+async function handleGetEwsItemOwner(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const serverId = url.searchParams.get('server_id') || '';
+  if (!serverId) return new Response('Missing server_id', { status: 400 });
+  const result = await env.EXCHANGE_DB
+    .prepare(`SELECT owner FROM item_map WHERE server_id = ? LIMIT 1`)
+    .bind(serverId)
+    .first();
+  return Response.json(result || null);
+}
 async function handleGetLatestChangeSeq(request, env) {
   if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
   const result = await env.EXCHANGE_DB.prepare('SELECT COALESCE(MAX(id), 0) AS seq FROM change_journal').all();
@@ -889,5 +926,237 @@ async function handleGetMeetingResponse(url, request, env) {
     .bind(owner, requestId)
     .all();
   return Response.json((result.results || [])[0] || null);
+}
+
+async function handleGetCalendarPermission(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const folderId = url.searchParams.get('folder_id') || '';
+  const userEmail = url.searchParams.get('user_email') || '';
+  if (!owner || !folderId || !userEmail) {
+    return new Response('Missing owner/folder_id/user_email', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ? AND folder_id = ? AND user_email = ? LIMIT 1')
+    .bind(owner, folderId, userEmail)
+    .first();
+  return Response.json(result || null);
+}
+
+async function handleGetCalendarPermissions(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const folderId = url.searchParams.get('folder_id') || '';
+  if (!owner || !folderId) {
+    return new Response('Missing owner/folder_id', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ? AND folder_id = ? ORDER BY user_email ASC')
+    .bind(owner, folderId)
+    .all();
+  return Response.json(result.results || []);
+}
+
+async function handleGetUserCalendarPermissions(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const userEmail = url.searchParams.get('user_email') || '';
+  if (!owner || !userEmail) {
+    return new Response('Missing owner/user_email', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ? AND user_email = ? ORDER BY folder_id ASC')
+    .bind(owner, userEmail)
+    .all();
+  return Response.json(result.results || []);
+}
+
+async function handleGetDefaultCalendarPermission(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const folderId = url.searchParams.get('folder_id') || '';
+  if (!owner || !folderId) {
+    return new Response('Missing owner/folder_id', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ? AND folder_id = ? AND is_default = 1 LIMIT 1')
+    .bind(owner, folderId)
+    .first();
+  return Response.json(result || null);
+}
+
+async function handleGetAnonymousCalendarPermission(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const folderId = url.searchParams.get('folder_id') || '';
+  if (!owner || !folderId) {
+    return new Response('Missing owner/folder_id', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ? AND folder_id = ? AND is_anonymous = 1 LIMIT 1')
+    .bind(owner, folderId)
+    .first();
+  return Response.json(result || null);
+}
+
+async function handleUpsertCalendarPermission(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleUpsertCalendarPermission');
+  try {
+    const body = await readJson(request);
+    const { id = '', folder_id = '', owner = '', user_email = '', user_name = null, rights = 0, is_default = 0, is_anonymous = 0 } = body;
+    if (!id || !folder_id || !owner || !user_email) {
+      return new Response('Missing id/folder_id/owner/user_email', { status: 400 });
+    }
+    const rightsInt = Number(rights) || 0;
+    const isDefaultInt = Number(is_default) || 0;
+    const isAnonymousInt = Number(is_anonymous) || 0;
+    await env.EXCHANGE_DB
+      .prepare('INSERT INTO calendar_permission (id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(owner, folder_id, user_email) DO UPDATE SET rights = excluded.rights, user_name = excluded.user_name, is_default = excluded.is_default, is_anonymous = excluded.is_anonymous, updated_at = CURRENT_TIMESTAMP')
+      .bind(id, folder_id, owner, user_email, user_name, rightsInt, isDefaultInt, isAnonymousInt)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error upserting calendar permission:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleDeleteCalendarPermission(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleDeleteCalendarPermission');
+  try {
+    const body = await readJson(request);
+    const { owner = '', folder_id = '', user_email = '' } = body;
+    if (!owner || !folder_id || !user_email) {
+      return new Response('Missing owner/folder_id/user_email', { status: 400 });
+    }
+    await env.EXCHANGE_DB
+      .prepare('DELETE FROM calendar_permission WHERE owner = ? AND folder_id = ? AND user_email = ?')
+      .bind(owner, folder_id, user_email)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error deleting calendar permission:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetDelegate(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const delegator = url.searchParams.get('delegator') || '';
+  const delegateEmail = url.searchParams.get('delegate_email') || '';
+  if (!delegator || !delegateEmail) {
+    return new Response('Missing delegator/delegate_email', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at FROM calendar_delegate WHERE delegator = ? AND delegate_email = ? LIMIT 1')
+    .bind(delegator, delegateEmail)
+    .first();
+  return Response.json(result || null);
+}
+
+async function handleGetDelegates(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const delegator = url.searchParams.get('delegator') || '';
+  if (!delegator) {
+    return new Response('Missing delegator', { status: 400 });
+  }
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at FROM calendar_delegate WHERE delegator = ? ORDER BY delegate_email ASC')
+    .bind(delegator)
+    .all();
+  return Response.json(result.results || []);
+}
+
+async function handleUpsertDelegate(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleUpsertDelegate');
+  try {
+    const body = await readJson(request);
+    const { id = '', delegator = '', delegate_email = '', delegate_name = null, calendar_permission = 0, inbox_permission = 0, tasks_permission = 0, contacts_permission = 0, notes_permission = 0, journal_permission = 0, receive_copies = 0, receive_infos = 0, view_private = 0 } = body;
+    if (!id || !delegator || !delegate_email) {
+      return new Response('Missing id/delegator/delegate_email', { status: 400 });
+    }
+    await env.EXCHANGE_DB
+      .prepare('INSERT INTO calendar_delegate (id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(delegator, delegate_email) DO UPDATE SET delegate_name = excluded.delegate_name, calendar_permission = excluded.calendar_permission, inbox_permission = excluded.inbox_permission, tasks_permission = excluded.tasks_permission, contacts_permission = excluded.contacts_permission, notes_permission = excluded.notes_permission, journal_permission = excluded.journal_permission, receive_copies = excluded.receive_copies, receive_infos = excluded.receive_infos, view_private = excluded.view_private, updated_at = CURRENT_TIMESTAMP')
+      .bind(id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error upserting delegate:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleDeleteDelegate(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleDeleteDelegate');
+  try {
+    const body = await readJson(request);
+    const { delegator = '', delegate_email = '' } = body;
+    if (!delegator || !delegate_email) {
+      return new Response('Missing delegator/delegate_email', { status: 400 });
+    }
+    await env.EXCHANGE_DB
+      .prepare('DELETE FROM calendar_delegate WHERE delegator = ? AND delegate_email = ?')
+      .bind(delegator, delegate_email)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error deleting delegate:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleAddPermissionAudit(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleAddPermissionAudit');
+  try {
+    const body = await readJson(request);
+    const { id = '', folder_id = '', owner = '', actor_email = '', target_email = '', operation = '', old_rights = null, new_rights = null } = body;
+    if (!id || !folder_id || !owner || !actor_email || !target_email || !operation) {
+      return new Response('Missing required fields', { status: 400 });
+    }
+    await env.EXCHANGE_DB
+      .prepare('INSERT INTO permission_audit (id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)')
+      .bind(id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') {
+      return new Response('Invalid JSON body', { status: 400 });
+    }
+    console.error('Error adding permission audit:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetPermissionAuditLog(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const folderId = url.searchParams.get('folder_id') || '';
+  const limit = Number(url.searchParams.get('limit') || '100');
+  if (!owner || !folderId) {
+    return new Response('Missing owner/folder_id', { status: 400 });
+  }
+  const safeLimit = Math.max(1, Math.min(1000, Number.isFinite(limit) ? limit : 100));
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights, created_at FROM permission_audit WHERE owner = ? AND folder_id = ? ORDER BY created_at DESC LIMIT ?')
+    .bind(owner, folderId, safeLimit)
+    .all();
+  return Response.json(result.results || []);
 }
 

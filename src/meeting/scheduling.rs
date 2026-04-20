@@ -1,698 +1,201 @@
 // src/meeting/scheduling.rs
+
 use crate::calendar::CalendarItem;
 use crate::ical_parser;
-use crate::meeting::attendee::AttendeeStatus;
-use crate::meeting::message::{MeetingMessage, MeetingMessageGenerator};
-use crate::util::xml_escape;
-use anyhow::{Result, anyhow, Context};
 use chrono::{DateTime, Utc};
-use compact_str::CompactString;
-use quick_xml::de::from_str;
-use reqwest::header::CONTENT_TYPE;
-use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
-use tracing::{instrument, warn, debug, info, Span};
-use url::Url;
+use std::collections::HashMap;
 
-
-
-/// Custom error type for scheduling operations
-#[derive(Debug, thiserror::Error)]
-pub enum SchedulingErrorKind {
-    #[error("Invalid CalDAV URL: {0}")]
-    InvalidUrl(String),
-    
-    #[error("HTTP request failed: {0}")]
-    HttpError(#[from] reqwest::Error),
-    
-    #[error("XML parsing failed: {0}")]
-    XmlParseError(String),
-    
-    #[error("iCalendar parsing failed: {0}")]
-    IcalParseError(String),
-    
-    #[error("Authentication failed")]
-    AuthFailed,
-    
-    #[error("Scheduling operation failed: {0}")]
-    OperationFailed(String),
+pub struct SchedulingContext {
+ pub organizer_email: String,
+ pub organizer_name: Option<String>,
+ pub attendees: Vec<AttendeeInfo>,
+ pub sequence: u32,
+ pub uid: String,
 }
 
-pub const CALDAV_SCHEDULING_NAMESPACE: &str = "urn:ietf:params:xml:ns:caldav";
-pub const CALDAV_CALENDAR_ACCESS_NAMESPACE: &str = "urn:ietf:params:xml:ns:caldav";
-
-/// Result of a scheduling operation
-/// Uses CompactString for memory efficiency with short strings
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SchedulingResult {
-    pub success: bool,
-    #[serde(with = "compact_str::serde::CompactString")]
-    pub message: CompactString,
-    pub scheduling_href: Option<CompactString>,
-    pub delivery_status: Option<CompactString>,
+pub struct AttendeeInfo {
+ pub email: String,
+ pub name: Option<String>,
+ pub role: AttendeeRole,
+ pub status: AttendeeStatus,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SchedulingError {
-    pub code: String,
-    pub message: String,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttendeeRole {
+ Chair = 0,
+ Required = 1,
+ Optional = 2,
+ NonParticipant = 3,
 }
 
-impl std::fmt::Display for SchedulingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SchedulingError({}): {}", self.code, self.message)
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttendeeStatus {
+ NeedsAction = 0,
+ Accepted = 1,
+ Declined = 2,
+ Tentative = 3,
+ Delegated = 4,
+ Completed = 5,
+ InProcess = 6,
 }
 
-impl std::error::Error for SchedulingError {}
-
-/// A free/busy time entry
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FreeBusyEntry {
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
-    #[serde(with = "compact_str::serde::CompactString")]
-    pub busy_type: CompactString,
+pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> String {
+ let mut lines: Vec<String> = Vec::new();
+ lines.push("BEGIN:VCALENDAR".to_string());
+ lines.push("VERSION:2.0".to_string());
+ lines.push("PRODID:-//Exchange Gateway//EN".to_string());
+ lines.push("METHOD:REQUEST".to_string());
+ lines.push(format!("SEQUENCE:{}", ctx.sequence));
+ lines.push(build_vevent(ctx, item));
+ lines.push("END:VCALENDAR".to_string());
+ lines.join("\r\n")
 }
 
-/// Schedule outbox collection entry
-#[derive(Clone, Debug)]
-pub struct ScheduleOutboxEntry {
-    pub href: CompactString,
-    pub display_name: Option<CompactString>,
+fn build_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
+ let mut lines: Vec<String> = Vec::new();
+ lines.push("BEGIN:VEVENT".to_string());
+ lines.push(format!("UID:{}", ctx.uid));
+ lines.push(format!("DTSTAMP:{}", format_ical_datetime(Utc::now())));
+ if let Some(ref subject) = item.subject {
+  lines.push(format!("SUMMARY:{}", escape_ical_text(subject)));
+ }
+ if let Some(ref location) = item.location {
+  lines.push(format!("LOCATION:{}", escape_ical_text(location)));
+ }
+ if let Some(ref start) = item.start {
+  lines.push(format!("DTSTART:{}", format_ical_datetime(*start)));
+ }
+ if let Some(ref end) = item.end {
+  lines.push(format!("DTEND:{}", format_ical_datetime(*end)));
+ }
+ lines.push(format!("ORGANIZER;CN={}:mailto:{}", 
+  escape_ical_param(ctx.organizer_name.as_deref().unwrap_or("")),
+  ctx.organizer_email
+ ));
+ for attendee in &ctx.attendees {
+  let role = match attendee.role {
+   AttendeeRole::Chair => "CHAIR",
+   AttendeeRole::Required => "REQ-PARTICIPANT",
+   AttendeeRole::Optional => "OPT-PARTICIPANT",
+   AttendeeRole::NonParticipant => "NON-PARTICIPANT",
+  };
+  let status = match attendee.status {
+   AttendeeStatus::NeedsAction => "NEEDS-ACTION",
+   AttendeeStatus::Accepted => "ACCEPTED",
+   AttendeeStatus::Declined => "DECLINED",
+   AttendeeStatus::Tentative => "TENTATIVE",
+   AttendeeStatus::Delegated => "DELEGATED",
+   AttendeeStatus::Completed => "COMPLETED",
+   AttendeeStatus::InProcess => "IN-PROCESS",
+  };
+  lines.push(format!(
+   "ATTENDEE;CN={};ROLE={};PARTSTAT={}:mailto:{}",
+   attendee.name.as_deref().unwrap_or(""),
+   role,
+   status,
+   attendee.email
+  ));
+ }
+ lines.push("END:VEVENT".to_string());
+ lines.join("\r\n")
 }
 
-/// Schedule inbox collection entry
-#[derive(Clone, Debug)]
-pub struct ScheduleInboxEntry {
-    pub href: CompactString,
-    pub display_name: Option<CompactString>,
+pub fn format_ical_datetime(dt: DateTime<Utc>) -> String {
+ dt.format("%Y%m%dT%H%M%SZ").to_string()
 }
 
-
-/// Input validation helpers
-mod validation {
-    use std::sync::LazyLock;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    
-    /// Validates an email address format (simplified RFC 5322)
-    /// Returns true if the email appears valid
-    pub fn is_valid_email(email: &str) -> bool {
-        if email.is_empty() || email.len() > 254 {
-            return false;
-        }
-        // Must contain exactly one @
-        let parts: Vec<&str> = email.split('@').collect();
-        if parts.len() != 2 {
-            return false;
-        }
-        // Local part and domain must be non-empty
-        !parts[0].is_empty() && !parts[1].is_empty() && parts[1].contains('.')
-    }
-    
-    /// Validates a username format
-    /// Allows alphanumeric, underscore, hyphen, and period
-    /// Length: 1-64 characters
-    pub fn is_valid_username(username: &str) -> bool {
-        if username.is_empty() || username.len() > 64 {
-            return false;
-        }
-        username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
-    }
+pub fn escape_ical_text(s: &str) -> String {
+ s.replace('\\', "\\\\")
+  .replace(';', "\\;")
+  .replace(',', "\\,")
+  .replace('\n', "\\n")
 }
-
-/// CalDAV scheduling client
-///
-/// Features:
-/// - Proper URL construction using `url::Url`
-/// - Configurable timeouts and connection pooling
-/// - OpenTelemetry tracing for observability
-pub struct CaldavScheduling {
-    caldav_base: Url,
-    http_client: reqwest::Client,
-    message_generator: MeetingMessageGenerator,
-}
-
-impl CaldavScheduling {
-    /// Creates a new CaldavScheduling instance.
-    /// 
-    /// # Arguments
-    /// * `caldav_base` - Base URL for the CalDAV server (must be a valid URL)
-    /// 
-    /// # Errors
-    /// Returns an error if the URL is invalid
-    pub fn new(caldav_base: &str) -> Result<Self> {
-        let base_url = Url::parse(caldav_base)
-            .with_context(|| format!("Invalid CalDAV base URL: {}", caldav_base))?;
-        
-        // Configure HTTP client with sensible defaults
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .pool_max_idle_per_host(5)
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .user_agent("ExchangeGateway/1.2.0")
-            .build()
-            .context("Failed to create HTTP client")?;
-        
-        Ok(Self {
-            caldav_base: base_url,
-            http_client,
-            message_generator: MeetingMessageGenerator::new(),
-        })
-    }
-
-    /// Discovers the scheduling outbox and inbox URLs for a user.
-    /// 
-    /// # Security
-    /// - Password is passed as `SecretString` to prevent accidental logging
-    /// - Tracing is configured to skip the password field
-    /// 
-    /// # Observability
-    /// - OpenTelemetry spans for distributed tracing
-    /// - Structured logging with tracing
-    #[instrument(
-        skip(self, password),
-        fields(
-            username = %username,
-            otel.kind = "client",
-            rpc.system = "caldav",
-            rpc.method = "PROPFIND"
-        )
-    )]
-    pub async fn discover_scheduling_collections(
-        &self,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<(Option<CompactString>, Option<CompactString>)> {
-        
-        
-        // Use Url for proper URL construction to prevent injection
-        let mut home_url = self.caldav_base.clone();
-        home_url.path_segments_mut()
-            .map_err(|_| anyhow!("Invalid CalDAV base URL"))?
-            .push("cal")
-            .push(username);
-        
-        // Add span attributes for the URL
-        Span::current().record("http.url", home_url.as_str());
-        
-        debug!("Discovering scheduling collections for user");
-
-        let propfind_body = format!(r#"<?xml version="1.0" encoding="utf-8"?>
-<propfind xmlns="DAV:" xmlns:C="{}">
-    <prop>
-        <C:schedule-outbox-URL/>
-        <C:schedule-inbox-URL/>
-        <C:calendar-user-address-set/>
-    </prop>
-</propfind>"#, CALDAV_SCHEDULING_NAMESPACE);
-
-        let resp = self.http_client
-            .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
-            .basic_auth(username, Some(password.expose_secret()))
-            .header("Depth", "0")
-            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(propfind_body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow!("Failed to discover scheduling collections: {}", resp.status()));
-        }
-
-        let body = resp.text().await?;
-        let outbox = extract_href(&body, "schedule-outbox-URL");
-        let inbox = extract_href(&body, "schedule-inbox-URL");
-        
-        
-        
-        // Add span events
-        Span::current().record("caldav.outbox_url", outbox.as_deref().unwrap_or("none"));
-        Span::current().record("caldav.inbox_url", inbox.as_deref().unwrap_or("none"));
-        
-        info!(
-            outbox = ?outbox,
-            inbox = ?inbox,
-            "Successfully discovered scheduling collections"
-        );
-
-        Ok((outbox, inbox))
-    }
-
-    pub async fn send_meeting_request(
-        &self,
-        item: &CalendarItem,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<SchedulingResult> {
-        let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
-        let outbox = outbox_url.unwrap_or_else(|| {
-            format!(
-                "{}/cal/{}/outbox/",
-                self.caldav_base.trim_end_matches('/'),
-                username
-            )
-        });
-
-        let msg = MeetingMessage::new_request(item);
-        let ics = self.message_generator.generate_ical(&msg);
-
-        let schedule_body = format!(r#"<?xml version="1.0" encoding="utf-8"?>
-<C:schedule xmlns:C="{}">
-    <C:calendar-data content-type="text/calendar" charset="utf-8">{}</C:calendar-data>
-</C:schedule>"#, CALDAV_SCHEDULING_NAMESPACE, xml_escape(&ics));
-
-        let resp = self.http_client
-            .post(&outbox)
-            .basic_auth(username, Some(password.expose_secret()))
-            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(schedule_body)
-            .send()
-            .await?;
-
-        if resp.status().is_success() || resp.status().as_u16() == 207 {
-            Ok(SchedulingResult {
-                success: true,
-                message: "Meeting request sent successfully".to_string(),
-                scheduling_href: Some(outbox),
-                delivery_status: Some("delivered".to_string()),
-            })
-        } else {
-            Ok(SchedulingResult {
-                success: false,
-                message: format!("Failed to send meeting request: {}", resp.status()),
-                scheduling_href: None,
-                delivery_status: Some("failed".to_string()),
-            })
-        }
-    }
-
-    pub async fn send_meeting_update(
-        &self,
-        item: &CalendarItem,
-        sequence: u32,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<SchedulingResult> {
-        let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
-        let outbox = outbox_url.unwrap_or_else(|| {
-            format!(
-                "{}/cal/{}/outbox/",
-                self.caldav_base.trim_end_matches('/'),
-                username
-            )
-        });
-
-        let msg = MeetingMessage::new_update(item, sequence);
-        let ics = self.message_generator.generate_ical(&msg);
-
-        let schedule_body = format!(r#"<?xml version="1.0" encoding="utf-8"?>
-<C:schedule xmlns:C="{}">
-    <C:calendar-data content-type="text/calendar" charset="utf-8">{}</C:calendar-data>
-</C:schedule>"#, CALDAV_SCHEDULING_NAMESPACE, xml_escape(&ics));
-
-        let resp = self.http_client
-            .post(&outbox)
-            .basic_auth(username, Some(password.expose_secret()))
-            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(schedule_body)
-            .send()
-            .await?;
-
-        if resp.status().is_success() || resp.status().as_u16() == 207 {
-            Ok(SchedulingResult {
-                success: true,
-                message: "Meeting update sent successfully".to_string(),
-                scheduling_href: Some(outbox),
-                delivery_status: Some("delivered".to_string()),
-            })
-        } else {
-            Ok(SchedulingResult {
-                success: false,
-                message: format!("Failed to send meeting update: {}", resp.status()),
-                scheduling_href: None,
-                delivery_status: Some("failed".to_string()),
-            })
-        }
-    }
-
-    pub async fn send_cancellation(
-        &self,
-        item: &CalendarItem,
-        sequence: u32,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<SchedulingResult> {
-        let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
-        let outbox = outbox_url.unwrap_or_else(|| {
-            format!(
-                "{}/cal/{}/outbox/",
-                self.caldav_base.trim_end_matches('/'),
-                username
-            )
-        });
-
-        let msg = MeetingMessage::new_cancellation(item, sequence);
-        let ics = self.message_generator.generate_ical(&msg);
-
-        let schedule_body = format!(r#"<?xml version="1.0" encoding="utf-8"?>
-<C:schedule xmlns:C="{}">
-    <C:calendar-data content-type="text/calendar" charset="utf-8">{}</C:calendar-data>
-</C:schedule>"#, CALDAV_SCHEDULING_NAMESPACE, xml_escape(&ics));
-
-        let resp = self.http_client
-            .post(&outbox)
-            .basic_auth(username, Some(password.expose_secret()))
-            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(schedule_body)
-            .send()
-            .await?;
-
-        if resp.status().is_success() || resp.status().as_u16() == 207 {
-            Ok(SchedulingResult {
-                success: true,
-                message: "Meeting cancellation sent successfully".to_string(),
-                scheduling_href: Some(outbox),
-                delivery_status: Some("delivered".to_string()),
-            })
-        } else {
-            Ok(SchedulingResult {
-                success: false,
-                message: format!("Failed to send cancellation: {}", resp.status()),
-                scheduling_href: None,
-                delivery_status: Some("failed".to_string()),
-            })
-        }
-    }
-
-    pub async fn send_response(
-        &self,
-        uid: &str,
-        organizer_email: &str,
-        subject: &str,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-        status: AttendeeStatus,
-        sequence: u32,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<SchedulingResult> {
-        let (outbox_url, _) = self.discover_scheduling_collections(username, password).await?;
-        let outbox = outbox_url.unwrap_or_else(|| {
-            format!(
-                "{}/cal/{}/outbox/",
-                self.caldav_base.trim_end_matches('/'),
-                username
-            )
-        });
-
-        let msg = MeetingMessage::new_response(uid, organizer_email, subject, start, end, status, sequence);
-        let ics = self.message_generator.generate_ical(&msg);
-
-        let _recipient = format!("mailto:{}", organizer_email);
-        
-        let schedule_body = format!(r#"<?xml version="1.0" encoding="utf-8"?>
-<C:schedule xmlns:C="{}">
-    <C:calendar-data content-type="text/calendar" charset="utf-8">{}</C:calendar-data>
-</C:schedule>"#, CALDAV_SCHEDULING_NAMESPACE, xml_escape(&ics));
-
-        let resp = self.http_client
-            .post(&outbox)
-            .basic_auth(username, Some(password.expose_secret()))
-            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(schedule_body)
-            .send()
-            .await?;
-
-        if resp.status().is_success() || resp.status().as_u16() == 207 {
-            Ok(SchedulingResult {
-                success: true,
-                message: "Response sent successfully".to_string(),
-                scheduling_href: Some(outbox),
-                delivery_status: Some("delivered".to_string()),
-            })
-        } else {
-            Ok(SchedulingResult {
-                success: false,
-                message: format!("Failed to send response: {}", resp.status()),
-                scheduling_href: None,
-                delivery_status: Some("failed".to_string()),
-            })
-        }
-    }
-
-    pub async fn query_freebusy(
-        &self,
-        calendar_href: &str,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<Vec<FreeBusyEntry>> {
-        let start_str = start.format("%Y%m%dT%H%M%SZ").to_string();
-        let end_str = end.format("%Y%m%dT%H%M%SZ").to_string();
-
-        let report_body = format!(r#"<?xml version="1.0" encoding="utf-8"?>
-<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
-    <D:prop>
-        <D:getetag/>
-        <C:calendar-data content-type="text/calendar">
-            <C:comp name="VCALENDAR">
-                <C:comp name="VEVENT">
-                    <C:prop name="DTSTART"/>
-                    <C:prop name="DTEND"/>
-                    <C:prop name="SUMMARY"/>
-                    <C:prop name="X-MICROSOFT-CDO-BUSYSTATUS"/>
-                </C:prop>
-            </C:comp>
-        </C:calendar-data>
-    </D:prop>
-    <C:filter>
-        <C:comp-filter name="VCALENDAR">
-            <C:comp-filter name="VEVENT">
-                <C:time-range start="{start}" end="{end}"/>
-            </C:comp-filter>
-        </C:comp-filter>
-    </C:filter>
-</C:calendar-query>"#, start = start_str, end = end_str);
-
-        let resp = self.http_client
-            .request(reqwest::Method::from_bytes(b"REPORT")?, calendar_href)
-            .basic_auth(username, Some(password.expose_secret()))
-            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-            .header("Depth", "1")
-            .body(report_body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow!("Freebusy query failed: {}", resp.status()));
-        }
-
-        let body = resp.text().await?;
-        parse_freebusy_response(&body)
-    }
-
-    pub async fn get_scheduling_inbox_messages(
-        &self,
-        inbox_href: &str,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<Vec<SchedulingMessage>> {
-        let report_body = r#"<?xml version="1.0" encoding="utf-8"?>
-<propfind xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
-    <prop>
-        <D:getetag/>
-        <C:schedule-tag/>
-        <C:calendar-data/>
-    </prop>
-</propfind>"#;
-
-        let resp = self.http_client
-            .request(reqwest::Method::from_bytes(b"PROPFIND")?, inbox_href)
-            .basic_auth(username, Some(password.expose_secret()))
-            .header("Depth", "1")
-            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-            .body(report_body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow!("Failed to get inbox messages: {}", resp.status()));
-        }
-
-        let body = resp.text().await?;
-        parse_scheduling_messages(&body)
-    }
-
-    pub fn message_generator(&self) -> &MeetingMessageGenerator {
-        &self.message_generator
+/// Escape and quote a parameter value for iCalendar property parameters.
+/// Per RFC 5545, parameter values containing special characters must be quoted.
+pub fn escape_ical_param(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\")
+        .replace(';', "\\;")
+        .replace(':', "\\:")
+        .replace(',', "\\,")
+        .replace('"', "\\'");
+    // Quote if contains special chars or spaces
+    if escaped.chars().any(|c| c == ';' || c == ':' || c == ',' || c == ' ' || c == '"' || c == '\\' || c == '\n') {
+        format!("\"{}\"", escaped)
+    } else {
+        escaped
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SchedulingMessage {
-    pub href: String,
-    pub etag: Option<String>,
-    pub schedule_tag: Option<String>,
-    pub ical_data: Option<String>,
-    pub method: Option<String>,
-    pub uid: Option<String>,
-    pub sender: Option<String>,
-    pub recipient: Option<String>,
+pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
+ let parsed = ical_parser::parse_ical(ical)?;
+ let event = parsed.events.first()?;
+ let mut response = ItipResponse {
+  uid: event.uid.clone(),
+  sequence: event.sequence.unwrap_or(0),
+  attendee_email: String::new(),
+  attendee_status: AttendeeStatus::NeedsAction,
+ };
+ for attendee in &event.attendees {
+  if attendee.email != event.organizer_email {
+   response.attendee_email = attendee.email.clone();
+   response.attendee_status = match attendee.partstat.as_deref() {
+    Some("ACCEPTED") => AttendeeStatus::Accepted,
+    Some("DECLINED") => AttendeeStatus::Declined,
+    Some("TENTATIVE") => AttendeeStatus::Tentative,
+    Some("DELEGATED") => AttendeeStatus::Delegated,
+    _ => AttendeeStatus::NeedsAction,
+   };
+   break;
+  }
+ }
+ Some(response)
 }
 
-fn extract_href(xml: &str, tag: &str) -> Option<String> {
-    let search_open = format!("<{}>", tag);
-    let _search_close = format!("</{}>", tag);
-    
-    if let Some(start) = xml.find(&search_open) {
-        let rest = &xml[start + search_open.len()..];
-        if let Some(href_start) = rest.find("<DAV:href>") {
-            let href_rest = &rest[href_start + 10..];
-            if let Some(href_end) = href_rest.find("</DAV:href>") {
-                return Some(href_rest[..href_end].to_string());
-            }
-        }
-    }
-    None
+pub struct ItipResponse {
+ pub uid: String,
+ pub sequence: u32,
+ pub attendee_email: String,
+ pub attendee_status: AttendeeStatus,
 }
 
-fn parse_freebusy_response(xml: &str) -> Result<Vec<FreeBusyEntry>> {
-    let mut entries = Vec::new();
-    
-    let vevents: Vec<&str> = xml.match_indices("BEGIN:VEVENT")
-        .filter_map(|(i, _)| {
-            let rest = &xml[i..];
-            rest.find("END:VEVENT").map(|j| &rest[..j + 11])
-        })
-        .collect();
-
-    for vevent in vevents {
-        if let (Some(start), Some(end)) = (extract_property(vevent, "DTSTART"), extract_property(vevent, "DTEND")) {
-            let busy_type = extract_property(vevent, "X-MICROSOFT-CDO-BUSYSTATUS")
-                .unwrap_or_else(|| "BUSY".to_string());
-            
-            if let (Ok(start_dt), Ok(end_dt)) = (
-                parse_ical_datetime(&start),
-                parse_ical_datetime(&end)
-            ) {
-                entries.push(FreeBusyEntry {
-                    start: start_dt,
-                    end: end_dt,
-                    busy_type,
-                });
-            }
-        }
-    }
-
-    Ok(entries)
+pub fn build_cancel_request(ctx: &SchedulingContext, item: &CalendarItem) -> String {
+ let mut lines: Vec<String> = Vec::new();
+ lines.push("BEGIN:VCALENDAR".to_string());
+ lines.push("VERSION:2.0".to_string());
+ lines.push("PRODID:-//Exchange Gateway//EN".to_string());
+ lines.push("METHOD:CANCEL".to_string());
+ lines.push(format!("SEQUENCE:{}", ctx.sequence));
+ lines.push(build_cancel_vevent(ctx, item));
+ lines.push("END:VCALENDAR".to_string());
+ lines.join("\r\n")
 }
 
-fn parse_scheduling_messages(xml: &str) -> Result<Vec<SchedulingMessage>> {
-    let mut messages = Vec::new();
-    
-    let responses: Vec<&str> = xml.match_indices("<response>")
-        .filter_map(|(i, _)| {
-            let rest = &xml[i..];
-            rest.find("</response>").map(|j| &rest[..j + 11])
-        })
-        .collect();
-
-    for resp in responses {
-        let href = extract_tag_content(resp, "href").unwrap_or_default();
-        let etag = extract_tag_content(resp, "getetag");
-        let schedule_tag = extract_tag_content(resp, "schedule-tag");
-        let ical_data = extract_tag_content(resp, "calendar-data");
-        
-        let (method, uid, sender, recipient) = if let Some(ref ical) = ical_data {
-            (
-                extract_property(ical, "METHOD"),
-                extract_property(ical, "UID"),
-                extract_attendee_or_organizer(ical, "ORGANIZER"),
-                extract_attendee_or_organizer(ical, "ATTENDEE"),
-            )
-        } else {
-            (None, None, None, None)
-        };
-
-        messages.push(SchedulingMessage {
-            href,
-            etag,
-            schedule_tag,
-            ical_data,
-            method,
-            uid,
-            sender,
-            recipient,
-        });
-    }
-
-    Ok(messages)
+fn build_cancel_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
+ let mut lines: Vec<String> = Vec::new();
+ lines.push("BEGIN:VEVENT".to_string());
+ lines.push(format!("UID:{}", ctx.uid));
+ lines.push(format!("DTSTAMP:{}", format_ical_datetime(Utc::now())));
+ lines.push(format!("STATUS:CANCELLED"));
+ if let Some(ref subject) = item.subject {
+  lines.push(format!("SUMMARY:{}", escape_ical_text(subject)));
+ }
+ lines.push("END:VEVENT".to_string());
+ lines.join("\r\n")
 }
-
-fn extract_tag_content(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    
-    if let Some(start) = xml.find(&open) {
-        let rest = &xml[start + open.len()..];
-        if let Some(end) = rest.find(&close) {
-            return Some(rest[..end].to_string());
-        }
-    }
-    None
-}
-
-fn extract_property(ical: &str, name: &str) -> Option<String> {
-    for line in ical.lines() {
-        if line.starts_with(name) {
-            if let Some(pos) = line.find(':') {
-                return Some(line[pos + 1..].to_string());
-            }
-        }
-    }
-    None
-}
-
-fn extract_attendee_or_organizer(ical: &str, name: &str) -> Option<String> {
-    for line in ical.lines() {
-        if line.starts_with(name) {
-            if let Some(pos) = line.find("mailto:") {
-                let rest = &line[pos + 7..];
-                let end = rest.find(|c: char| c == '\r' || c == '\n').unwrap_or(rest.len());
-                return Some(rest[..end].to_string());
-            }
-        }
-    }
-    None
-}
-
-
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+ use super::*;
 
-    #[test]
-    fn test_extract_property() {
-        let ical = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nUID:test-uid\r\nEND:VCALENDAR";
-        assert_eq!(extract_property(ical, "METHOD"), Some("REQUEST".to_string()));
-        assert_eq!(extract_property(ical, "UID"), Some("test-uid".to_string()));
-    }
+ #[test]
+ fn test_format_ical_datetime() {
+  let dt = DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z").unwrap().with_timezone(&Utc);
+  assert_eq!(format_ical_datetime(dt), "20240115T103000Z");
+ }
 
-    #[test]
-    fn test_parse_freebusy_response() {
-        let xml = r#"<response><calendar-data>BEGIN:VCALENDAR
-BEGIN:VEVENT
-DTSTART:20240115T100000Z
-DTEND:20240115T110000Z
-X-MICROSOFT-CDO-BUSYSTATUS:BUSY
-END:VEVENT
-END:VCALENDAR</calendar-data></response>"#;
-
-        let entries = parse_freebusy_response(xml).unwrap();
-        assert_eq!(entries.len(), 1);
-    }
+ #[test]
+ fn test_escape_ical_text() {
+  assert_eq!(escape_ical_text("hello;world"), "hello\\;world");
+  assert_eq!(escape_ical_text("a,b\\c"), "a\\,b\\\\c");
+ }
 }
