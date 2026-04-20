@@ -222,7 +222,7 @@ impl<'a> PermissionEnforcement<'a> {
         }
 
         let old_perm = self.storage.get_permission(owner, folder_id, user_email).await?;
-        let _old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_rights = old_perm.as_ref().map(|p| p.rights);
 
         self.storage.delete_permission(owner, folder_id, user_email).await?;
 
@@ -320,8 +320,8 @@ impl<'a> PermissionEnforcement<'a> {
         let level = perm.permission_level();
         let rights = perm.rights();
         let can_read = rights.can_read_any();
-        let _can_edit = rights.can_edit_any() || rights.can_edit_owned();
-        let _can_delete = rights.can_delete_any() || rights.can_delete_owned();
+        let can_edit = rights.can_edit_any() || rights.can_edit_owned();
+        let can_delete = rights.can_delete_any() || rights.can_delete_owned();
         let can_create = rights.can_create();
         let is_owner = rights.is_folder_owner();
         let is_visible = rights.is_folder_visible();
