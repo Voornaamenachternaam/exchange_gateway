@@ -1268,11 +1268,10 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     };
                     match stack.last().map(|v| v.as_slice()) {
                         Some(b"ClientId") => current.client_id = Some(value),
-                        Some(b"ServerId") => {
-                            if !stack.iter().any(|v| v.as_slice() == b"Exception") {
+                        Some(b"ServerId")
+                            if !stack.iter().any(|v| v.as_slice() == b"Exception") => {
                                 current.server_id = Some(value);
                             }
-                        }
                         Some(b"InstanceId") => {
                             current.instance_id = parse_datetime(&value);
                         }

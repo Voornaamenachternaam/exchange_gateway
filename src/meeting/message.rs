@@ -5,7 +5,9 @@ use crate::meeting::attendee::{AttendeeStatus, AttendeeRole};
 use crate::util::xml_escape;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum MeetingMessageType {
+    #[default]
     Request,
     Update,
     Response,
@@ -14,11 +16,6 @@ pub enum MeetingMessageType {
     Forward,
 }
 
-impl Default for MeetingMessageType {
-    fn default() -> Self {
-        Self::Request
-    }
-}
 
 impl MeetingMessageType {
     pub fn to_ical_method(&self) -> &'static str {
@@ -264,8 +261,8 @@ impl MeetingMessageGenerator {
                     msg.organizer_email
                 ));
             }
-        } else if msg.message_type == MeetingMessageType::Counter {
-            if let (Some(start), Some(end)) = (msg.proposed_start, msg.proposed_end) {
+        } else if msg.message_type == MeetingMessageType::Counter
+            && let (Some(start), Some(end)) = (msg.proposed_start, msg.proposed_end) {
                 ics.push_str(&format!("DTSTART;X-MS-OLK-ORIGINAL={}Z:{}Z\r\n", 
                     msg.start.format("%Y%m%dT%H%M%S"),
                     start.format("%Y%m%dT%H%M%S")
@@ -275,7 +272,6 @@ impl MeetingMessageGenerator {
                     end.format("%Y%m%dT%H%M%S")
                 ));
             }
-        }
 
         if msg.message_type == MeetingMessageType::Request ||
            msg.message_type == MeetingMessageType::Update {

@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum AttendeeStatus {
+    #[default]
     NeedsAction = 0,
     Accepted = 1,
     Declined = 2,
@@ -12,11 +14,6 @@ pub enum AttendeeStatus {
     NotResponded = 5,
 }
 
-impl Default for AttendeeStatus {
-    fn default() -> Self {
-        Self::NeedsAction
-    }
-}
 
 impl From<u8> for AttendeeStatus {
     fn from(value: u8) -> Self {
@@ -84,17 +81,14 @@ impl AttendeeStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum AttendeeRole {
+    #[default]
     Required = 1,
     Optional = 2,
     Resource = 3,
 }
 
-impl Default for AttendeeRole {
-    fn default() -> Self {
-        Self::Required
-    }
-}
 
 impl From<u8> for AttendeeRole {
     fn from(value: u8) -> Self {

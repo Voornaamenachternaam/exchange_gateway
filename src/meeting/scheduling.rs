@@ -127,28 +127,83 @@ pub fn escape_ical_param(s: &str) -> String {
 }
 
 pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
- let parsed = ical_parser::parse_ical(ical)?;
- let event = parsed.events.first()?;
- let mut response = ItipResponse {
-  uid: event.uid.clone(),
-  sequence: event.sequence.unwrap_or(0),
-  attendee_email: String::new(),
-  attendee_status: AttendeeStatus::NeedsAction,
- };
- for attendee in &event.attendees {
-  if attendee.email != event.organizer_email {
-   response.attendee_email = attendee.email.clone();
-   response.attendee_status = match attendee.partstat.as_deref() {
-    Some("ACCEPTED") => AttendeeStatus::Accepted,
-    Some("DECLINED") => AttendeeStatus::Declined,
-    Some("TENTATIVE") => AttendeeStatus::Tentative,
-    Some("DELEGATED") => AttendeeStatus::Delegated,
-    _ => AttendeeStatus::NeedsAction,
-   };
-   break;
-  }
- }
- Some(response)
+    let parsed = ical_parser::parse_all_vevents(ical).ok()?;
+    let event_props = parsed.first()?;
+
+    let mut uid: Option<String> = None;
+    let mut sequence: u32 = 0;
+    let mut organizer_email: Option<String> = None;
+    let mut responding_attendee_email: Option<String> = None;
+    let mut responding_partstat: Option<String> = None;
+
+    // First pass: extract UID, SEQUENCE, and ORGANIZER
+    for (key, value) in event_props {
+        if key == "UID" {
+            uid = Some(value.clone());
+        } else if key == "SEQUENCE" {
+            sequence = value.parse().unwrap_or(0);
+        } else if key.starts_with("ORGANIZER") {
+            // Extract email from mailto: format
+            let email = if let Some(pos) = value.find("mailto:") {
+                value[pos + 7..].to_string()
+            } else {
+                value.clone()
+            };
+            organizer_email = Some(email);
+        }
+    }
+
+    // UID is required
+    let uid = uid?;
+
+    // Second pass: find the first ATTENDEE that is not the organizer
+    for (key, value) in event_props {
+        if key.starts_with("ATTENDEE") {
+            // Extract email from mailto: format
+            let email = if let Some(pos) = value.find("mailto:") {
+                value[pos + 7..].to_string()
+            } else {
+                value.clone()
+            };
+
+            // Skip if this attendee is the organizer
+            if let Some(ref org_email) = organizer_email
+                && email == *org_email {
+                    continue;
+                }
+
+            // Extract partstat from the key
+            let partstat = if let Some(pos) = key.find("PARTSTAT=") {
+                let rest = &key[pos + 9..];
+                let stat = rest.split(';').next().unwrap_or("NEEDS-ACTION");
+                stat.trim_matches('"').to_string()
+            } else {
+                "NEEDS-ACTION".to_string()
+            };
+
+            responding_attendee_email = Some(email);
+            responding_partstat = Some(partstat);
+            break; // Take the first non-organizer attendee
+        }
+    }
+
+    // Attendee email is required
+    let attendee_email = responding_attendee_email?;
+
+    let attendee_status = match responding_partstat.as_deref() {
+        Some("ACCEPTED") => AttendeeStatus::Accepted,
+        Some("DECLINED") => AttendeeStatus::Declined,
+        Some("TENTATIVE") => AttendeeStatus::Tentative,
+        Some("DELEGATED") => AttendeeStatus::Delegated,
+        _ => AttendeeStatus::NeedsAction,
+    };
+
+    Some(ItipResponse {
+        uid,
+        sequence,
+        attendee_email,
+        attendee_status,
+    })
 }
 
 pub struct ItipResponse {
@@ -171,16 +226,16 @@ pub fn build_cancel_request(ctx: &SchedulingContext, item: &CalendarItem) -> Str
 }
 
 fn build_cancel_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
- let mut lines: Vec<String> = Vec::new();
- lines.push("BEGIN:VEVENT".to_string());
- lines.push(format!("UID:{}", ctx.uid));
- lines.push(format!("DTSTAMP:{}", format_ical_datetime(Utc::now())));
- lines.push(format!("STATUS:CANCELLED"));
- if let Some(ref subject) = item.subject {
-  lines.push(format!("SUMMARY:{}", escape_ical_text(subject)));
- }
- lines.push("END:VEVENT".to_string());
- lines.join("\r\n")
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("BEGIN:VEVENT".to_string());
+    lines.push(format!("UID:{}", ctx.uid));
+    lines.push(format!("DTSTAMP:{}", format_ical_datetime(Utc::now())));
+    lines.push("STATUS:CANCELLED".to_string());
+    if !item.subject.is_empty() {
+        lines.push(format!("SUMMARY:{}", escape_ical_text(&item.subject)));
+    }
+    lines.push("END:VEVENT".to_string());
+    lines.join("\r\n")
 }
 
 #[cfg(test)]
