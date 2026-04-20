@@ -140,7 +140,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
             sequence = value.parse().unwrap_or(0);
         } else if key.starts_with("ORGANIZER") {
             // Extract email from mailto: format
-            let email = if value.len() >= 7 && value[..7].eq_ignore_ascii_case("mailto:") {
+            let email = if value.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("mailto:")) {
                 value[7..].to_string()
             } else {
                 value.clone()
