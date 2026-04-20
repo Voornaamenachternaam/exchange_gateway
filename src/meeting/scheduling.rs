@@ -155,7 +155,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     // Second pass: find the first ATTENDEE that is not the organizer
     for (key, value) in event_props {
         if key.starts_with("ATTENDEE") {
-            // Extract email from mailto: format
+            // Extract email from mailto: URI (scheme is case-insensitive per RFC 3986).
             let email = if value.len() >= 7 && value[..7].eq_ignore_ascii_case("mailto:") {
                 value[7..].to_string()
             } else {
