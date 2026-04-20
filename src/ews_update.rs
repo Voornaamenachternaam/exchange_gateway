@@ -2,7 +2,7 @@
 use crate::calendar::{
     CalendarItem, extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_recurrence,
 };
-use crate::util::xml_escape_text;
+use crate::util::xml_escape;
 use quick_xml::Reader;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 
@@ -42,8 +42,8 @@ fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
         match attr.decode_and_unescape_value(decoder) {
-            Ok(value) => out.push_str(&xml_escape_text(&value)),
-            Err(_) => out.push_str(&xml_escape_text(&String::from_utf8_lossy(
+            Ok(value) => out.push_str(&xml_escape(&value)),
+            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(
                 attr.value.as_ref(),
             ))),
         }
@@ -60,8 +60,8 @@ fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
         match attr.decode_and_unescape_value(decoder) {
-            Ok(value) => out.push_str(&xml_escape_text(&value)),
-            Err(_) => out.push_str(&xml_escape_text(&String::from_utf8_lossy(
+            Ok(value) => out.push_str(&xml_escape(&value)),
+            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(
                 attr.value.as_ref(),
             ))),
         }
@@ -203,7 +203,7 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 } = &mut state
                     && let Ok(text) = t.decode()
                 {
-                    payload_xml.push_str(&xml_escape_text(&text));
+                    payload_xml.push_str(&xml_escape(&text));
                 }
             }
             Ok(Event::CData(t)) => {
@@ -214,7 +214,7 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 } = &mut state
                     && let Ok(text) = t.decode()
                 {
-                    payload_xml.push_str(&xml_escape_text(&text));
+                    payload_xml.push_str(&xml_escape(&text));
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

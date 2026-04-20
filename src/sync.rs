@@ -2,7 +2,7 @@
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_eas_sync_mutations,
-    parse_ics_event, render_ics,
+    parse_ics_event, parse_datetime, render_ics,
 };
 use crate::models::AppState;
 use crate::util::xml_escape;
@@ -559,7 +559,7 @@ fn map_rrule_to_recurrence_xml(
                 "BYMONTHDAY" => day_of_month = v.parse().unwrap_or(1),
                 "BYMONTH" => month_of_year = v.parse().unwrap_or(1),
                 "UNTIL" => {
-                    if let Some(dt) = util_parse_datetime(v) {
+                    if let Some(dt) = parse_datetime(v) {
                         until = Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
                     }
                 }
