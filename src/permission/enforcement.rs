@@ -320,8 +320,6 @@ impl<'a> PermissionEnforcement<'a> {
         let level = perm.permission_level();
         let rights = perm.rights();
         let can_read = rights.can_read_any();
-        let can_edit = rights.can_edit_any() || rights.can_edit_owned();
-        let can_delete = rights.can_delete_any() || rights.can_delete_owned();
         let can_create = rights.can_create();
         let is_owner = rights.is_folder_owner();
         let is_visible = rights.is_folder_visible();
