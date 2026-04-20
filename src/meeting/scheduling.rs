@@ -156,8 +156,8 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     for (key, value) in event_props {
         if key.starts_with("ATTENDEE") {
             // Extract email from mailto: format
-            let email = if let Some(pos) = value.find("mailto:") {
-                value[pos + 7..].to_string()
+            let email = if value.len() >= 7 && value[..7].eq_ignore_ascii_case("mailto:") {
+                value[7..].to_string()
             } else {
                 value.clone()
             };
