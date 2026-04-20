@@ -5,7 +5,7 @@ use crate::calendar::{
     parse_ics_event, parse_datetime, render_ics,
 };
 use crate::models::AppState;
-use crate::util::xml_escape;
+use crate::util::{xml_escape, parse_datetime as util_parse_datetime};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
