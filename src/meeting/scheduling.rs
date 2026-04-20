@@ -164,7 +164,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
             // Skip if this attendee is the organizer
             if let Some(ref org_email) = organizer_email {
-                if email == *org_email {
+                if email.eq_ignore_ascii_case(org_email) {
                     continue;
                 }
             }
