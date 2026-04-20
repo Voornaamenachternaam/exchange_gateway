@@ -307,7 +307,8 @@ impl PermissionLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::None => "None",
-            Self::FreeBusy => "FreeBusy",
+            // EWS uses FreeBusyTimeOnly for this permission level
+            Self::FreeBusy => "FreeBusyTimeOnly",
             Self::Reviewer => "Reviewer",
             Self::Contributor => "Contributor",
             Self::NonEditingAuthor => "NonEditingAuthor",

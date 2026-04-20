@@ -97,7 +97,8 @@ impl<'a> PermissionEnforcement<'a> {
         // in the delegate table, not the permission table
         if let Some(delegate) = self.storage.get_delegate(owner, &ctx.actor_email).await? {
             let delegate_rights = delegate.to_calendar_rights();
-            if !delegate_rights.is_none() {
+            // Check if delegate has any permissions (bits != 0)
+            if delegate_rights.bits() != 0 {
                 return Ok(delegate_rights);
             }
         }
