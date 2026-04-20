@@ -85,7 +85,7 @@ fn build_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
         };
         lines.push(format!(
             "ATTENDEE;CN={};ROLE={};PARTSTAT={}:mailto:{}",
-            attendee.name.as_deref().unwrap_or(""),
+            escape_ical_param(attendee.name.as_deref().unwrap_or("")),
             role,
             status,
             attendee.email
