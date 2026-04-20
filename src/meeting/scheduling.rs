@@ -174,7 +174,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
                 .find_map(|p| {
                     let (k, v) = p.split_once('=')?;
                     if k.eq_ignore_ascii_case("PARTSTAT") {
-                        Some(v.trim_matches('"').to_uppercase())
+                        Some(v.trim_matches(|c: char| c == '"' || c.is_whitespace()).to_uppercase())
                     } else {
                         None
                     }
