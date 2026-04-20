@@ -134,11 +134,11 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
     // First pass: extract UID, SEQUENCE, and ORGANIZER
     for (key, value) in event_props {
-        if key == "UID" {
+        let prop_name = key.split(';').next().ok_or("Missing property name")?;
+        if prop_name == "UID" {
             uid = Some(value.clone());
-        } else if key == "SEQUENCE" {
-            sequence = value.parse().unwrap_or(0);
-        } else if key.starts_with("ORGANIZER") {
+        } else if prop_name == "SEQUENCE" {
+            sequence = value.parse().map_err(|_| "Invalid sequence")?;
             // Extract email from mailto: format
             let email = if value.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("mailto:")) {
                 value[7..].to_string()
