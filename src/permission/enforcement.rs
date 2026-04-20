@@ -1,5 +1,5 @@
 // src/permission/enforcement.rs
-use crate::permission::types::{CalendarPermission, PermissionRights};
+use crate::permission::types::{CalendarPermission, PermissionLevel, PermissionRights};
 use crate::permission::storage::PermissionStorage;
 use crate::storage::Storage;
 use anyhow::Result;
