@@ -7,7 +7,7 @@ rust-version = "1.95.0"
 
 [dependencies]
 # Async runtime - use targeted features instead of "full" for smaller binary
-tokio = { version = "^1.51.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
+tokio = { version = "^1.52.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 hyper = "^1.9.0"
 hyper-util = "^0.1.20"
@@ -37,7 +37,7 @@ anyhow = "^1.0.102"
 thiserror = "^2.0.18"
 
 # UUIDs - v7 for time-ordered, v4 for random
-uuid = { version = "^1.23.0", features = ["v4", "v7", "serde"] }
+uuid = { version = "^1.23.1", features = ["v4", "v7", "serde"] }
 
 # Date/time handling
 chrono = { version = "^0.4.44", features = ["serde", "clock", "std"] }
@@ -57,7 +57,7 @@ bytes = "^1.11.1"
 tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter", "registry", "json"] }
 tracing-opentelemetry = "^0.29.0"
-opentelemetry = { version = "^0.29.0", features = ["trace", "logs"] }
+opentelemetry = { version = "^0.29.1", features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "^0.29.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "^0.29.0", features = ["trace", "grpc-tonic"] }
 
@@ -107,14 +107,14 @@ http-body-util = "^0.1.3"
 mime = "^0.3.17"
 
 # LRU caching
-lru = "^0.16.3"
+lru = "^0.16.4"
 
 # Fast string searching
-memchr = "^2.7.5"
+memchr = "^2.8.0"
 
 # Fast integer/float formatting
-itoa = "^1.0.15"
-ryu = "^1.0.20"
+itoa = "^1.0.18"
+ryu = "^1.0.23"
 
 # Windows timezone mapping
 # Note: strum version is pinned to 0.27.x (tilde versioning) to match windows-timezones' transitive dependency.
@@ -128,10 +128,10 @@ strum = "~0.27.2"
 dashmap = "^6.1.0"
 
 # Small vector optimizations (NEW)
-smallvec = { version = "^1.15.0", features = ["serde", "write"] }
+smallvec = { version = "^1.15.1", features = ["serde", "write"] }
 
 # HTTP type definitions (NEW)
-http = "^1.3.0"
+http = "^1.4.0"
 
 # Memory-efficient string handling (NEW)
 smartstring = "^1.0.1"
@@ -140,7 +140,7 @@ smartstring = "^1.0.1"
 proptest = "^1.11.0"
 criterion = { version = "^0.8.2", features = ["async_tokio"] }
 tokio-test = "^0.4.5"
-insta = "^1.43.0"
+insta = "^1.47.2"
 pretty_assertions = "^1.4.1"
 
 [profile.release]
