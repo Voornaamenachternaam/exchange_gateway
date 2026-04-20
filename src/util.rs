@@ -3,17 +3,33 @@
 use std::fmt::{self, Display};
 
 pub fn xml_escape(s: &str) -> String {
- s.replace('&', "&amp;")
-  .replace('<', "&lt;")
-  .replace('>', "&gt;")
-  .replace('"', "&quot;")
-  .replace('\'', "&apos;")
+    // Single-pass implementation for better performance
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '"' => result.push_str("&quot;"),
+            '\'' => result.push_str("&apos;"),
+            c => result.push(c),
+        }
+    }
+    result
 }
 
 pub fn xml_escape_text(s: &str) -> String {
- s.replace('&', "&amp;")
-  .replace('<', "&lt;")
-  .replace('>', "&gt;")
+    // Single-pass implementation for better performance
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            c => result.push(c),
+        }
+    }
+    result
 }
 
 pub struct EscapedXml<'a>(pub &'a str);
