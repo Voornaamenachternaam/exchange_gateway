@@ -7,4 +7,3 @@ pub mod scheduling;
 pub use state::{MeetingState, MeetingStateFlags, MeetingStateMachine, MeetingStatus};
 pub use message::{MeetingMessage, MeetingMessageType, MeetingMessageGenerator};
 pub use attendee::{AttendeeTracker, AttendeeResponse, AttendeeRole, AttendeeStatus};
-pub use scheduling::{CaldavScheduling, SchedulingResult, SchedulingError};

@@ -132,7 +132,7 @@ impl Storage {
         Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
     }
 
-    async fn post_json<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<()> {
+    pub async fn post_json<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<()> {
         let clean_path = path.trim_start_matches('/');
         let url = format!("{}/{}", self.base_url, clean_path);
         let idempotency_key = self.make_idempotency_key(clean_path, body)?;
@@ -152,7 +152,7 @@ impl Storage {
         Ok(())
     }
 
-    async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+    pub async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
         let resp = self
             .client

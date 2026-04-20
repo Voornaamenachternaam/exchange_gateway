@@ -11,7 +11,7 @@ use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::models::AppState;
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::EwsItemRow;
-use crate::permission::{PermissionEnforcement, PermissionContext, PermissionCheck};
+use crate::permission::{PermissionEnforcement, PermissionContext};
 use crate::sync::generate_server_id;
 use crate::util::xml_escape;
 use axum::{
@@ -415,7 +415,7 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn owner_from_username(username: &str) -> &str {
+pub fn owner_from_username(username: &str) -> &str {
     username
 }
 fn folder_id_for_owner(owner: &str) -> String {

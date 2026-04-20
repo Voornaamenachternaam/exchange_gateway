@@ -1,7 +1,7 @@
 // src/permission/storage.rs
-use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry, PermissionLevel, PermissionRights};
+use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry};
 use crate::storage::Storage;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 /// Parse a timestamp from SQLite's CURRENT_TIMESTAMP format.

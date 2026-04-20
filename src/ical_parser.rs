@@ -118,7 +118,7 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     params
 }
 
-fn parse_property_lines(input: &str) -> Result<Vec<(String, String)>, nom::Err<nom::error::Error<&str>>> {
+pub fn parse_property_lines(input: &str) -> Result<Vec<(String, String)>, nom::Err<nom::error::Error<&str>>> {
     let mut properties = Vec::new();
     let mut remaining = input;
 
