@@ -1,5 +1,5 @@
 // src/permission/delegate.rs
-use crate::permission::types::{DelegateInfo, DelegatePermission, PermissionLevel, PermissionRights, PermissionAuditEntry};
+use crate::permission::types::{DelegateInfo, PermissionLevel, PermissionAuditEntry};
 use crate::permission::storage::PermissionStorage;
 use crate::storage::Storage;
 use anyhow::Result;

@@ -222,7 +222,7 @@ impl<'a> PermissionEnforcement<'a> {
         }
 
         let old_perm = self.storage.get_permission(owner, folder_id, user_email).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let _old_rights = old_perm.as_ref().map(|p| p.rights);
 
         self.storage.delete_permission(owner, folder_id, user_email).await?;
 

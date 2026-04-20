@@ -2112,7 +2112,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
     let stored_item = match state
         .storage
-        .get_ews_item_by_server_id(&owner, &item_id)
+        .get_ews_item_by_server_id(owner, &item_id)
         .await
     {
         Ok(v) => v,
@@ -2356,7 +2356,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
     let existing = match state
         .storage
-        .get_ews_item_by_server_id(&owner, &item_id)
+        .get_ews_item_by_server_id(owner, &item_id)
         .await
     {
         Ok(v) => v,

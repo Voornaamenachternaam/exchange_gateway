@@ -8,7 +8,9 @@ const ASF_RECEIVED: u8 = 0x02;
 const ASF_CANCELED: u8 = 0x04;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum MeetingStatus {
+    #[default]
     Appointment = 0,
     Organizer = 1,
     Tentative = 2,
@@ -18,11 +20,6 @@ pub enum MeetingStatus {
     ReceivedCanceled = 7,
 }
 
-impl Default for MeetingStatus {
-    fn default() -> Self {
-        Self::Appointment
-    }
-}
 
 impl From<u8> for MeetingStatus {
     fn from(value: u8) -> Self {
@@ -114,7 +111,9 @@ impl MeetingStateFlags {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum MeetingState {
+    #[default]
     Draft,
     RequestSent,
     PendingResponses,
@@ -123,11 +122,6 @@ pub enum MeetingState {
     Completed,
 }
 
-impl Default for MeetingState {
-    fn default() -> Self {
-        Self::Draft
-    }
-}
 
 impl fmt::Display for MeetingState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -16,13 +16,9 @@ const RIGHT_FREEBUSY_SIMPLE: u32 = 0x00000800;
 const RIGHT_FREEBUSY_DETAILED: u32 = 0x00001000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct PermissionRights(pub u32);
 
-impl Default for PermissionRights {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 impl PermissionRights {
     pub fn empty() -> Self {
@@ -222,7 +218,9 @@ impl From<PermissionRights> for u32 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum PermissionLevel {
+    #[default]
     None = 0,
     FreeBusy = 1,
     Reviewer = 2,
@@ -235,11 +233,6 @@ pub enum PermissionLevel {
     Owner = 9,
 }
 
-impl Default for PermissionLevel {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 impl PermissionLevel {
     pub fn to_rights(&self) -> PermissionRights {
@@ -488,17 +481,14 @@ impl DelegateInfo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum DelegatePermission {
+    #[default]
     None = 0,
     Author = 1,
     Editor = 2,
 }
 
-impl Default for DelegatePermission {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 impl DelegatePermission {
     pub fn to_rights(&self) -> PermissionRights {
