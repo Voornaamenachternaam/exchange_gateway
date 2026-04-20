@@ -140,8 +140,8 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
             sequence = value.parse().unwrap_or(0);
         } else if key.starts_with("ORGANIZER") {
             // Extract email from mailto: format
-            let email = if let Some(pos) = value.find("mailto:") {
-                value[pos + 7..].to_string()
+            let email = if value.len() >= 7 && value[..7].eq_ignore_ascii_case("mailto:") {
+                value[7..].to_string()
             } else {
                 value.clone()
             };
@@ -170,13 +170,16 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
             }
 
             // Extract partstat from the key
-            let partstat = if let Some(pos) = key.find("PARTSTAT=") {
-                let rest = &key[pos + 9..];
-                let stat = rest.split(';').next().unwrap_or("NEEDS-ACTION");
-                stat.trim_matches('"').to_string()
-            } else {
-                "NEEDS-ACTION".to_string()
-            };
+            let partstat = key.split(';')
+                .find_map(|p| {
+                    let (k, v) = p.split_once('=')?;
+                    if k.eq_ignore_ascii_case("PARTSTAT") {
+                        Some(v.trim_matches(|c: char| c == '"' || c.is_whitespace()).to_uppercase())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "NEEDS-ACTION".to_string());
 
             responding_attendee_email = Some(email);
             responding_partstat = Some(partstat);
