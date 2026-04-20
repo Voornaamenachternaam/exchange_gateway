@@ -125,48 +125,76 @@ pub fn escape_ical_param(s: &str) -> String {
 pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     let parsed = ical_parser::parse_all_vevents(ical).ok()?;
     let event_props = parsed.first()?;
-    
-    let mut uid = String::new();
+
+    let mut uid: Option<String> = None;
     let mut sequence: u32 = 0;
-    let mut organizer_email = String::new();
-    let mut attendee_email = String::new();
-    let mut partstat: Option<String> = None;
-    
+    let mut organizer_email: Option<String> = None;
+    let mut responding_attendee_email: Option<String> = None;
+    let mut responding_partstat: Option<String> = None;
+
+    // First pass: extract UID, SEQUENCE, and ORGANIZER
     for (key, value) in event_props {
         if key == "UID" {
-            uid = value.clone();
+            uid = Some(value.clone());
         } else if key == "SEQUENCE" {
             sequence = value.parse().unwrap_or(0);
         } else if key.starts_with("ORGANIZER") {
             // Extract email from mailto: format
-            if let Some(pos) = value.find("mailto:") {
-                organizer_email = value[pos + 7..].to_string();
+            let email = if let Some(pos) = value.find("mailto:") {
+                value[pos + 7..].to_string()
             } else {
-                organizer_email = value.clone();
-            }
-        } else if key.starts_with("ATTENDEE") {
-            // Extract email and partstat
-            if let Some(pos) = key.find("PARTSTAT=") {
-                let rest = &key[pos + 9..];
-                let stat = rest.split(';').next().unwrap_or("NEEDS-ACTION");
-                partstat = Some(stat.trim_matches('"').to_string());
-            }
-            if let Some(pos) = value.find("mailto:") {
-                attendee_email = value[pos + 7..].to_string();
-            } else {
-                attendee_email = value.clone();
-            }
+                value.clone()
+            };
+            organizer_email = Some(email);
         }
     }
-    
-    let attendee_status = match partstat.as_deref() {
+
+    // UID is required
+    let uid = uid?;
+
+    // Second pass: find the first ATTENDEE that is not the organizer
+    for (key, value) in event_props {
+        if key.starts_with("ATTENDEE") {
+            // Extract email from mailto: format
+            let email = if let Some(pos) = value.find("mailto:") {
+                value[pos + 7..].to_string()
+            } else {
+                value.clone()
+            };
+
+            // Skip if this attendee is the organizer
+            if let Some(ref org_email) = organizer_email {
+                if email == *org_email {
+                    continue;
+                }
+            }
+
+            // Extract partstat from the key
+            let partstat = if let Some(pos) = key.find("PARTSTAT=") {
+                let rest = &key[pos + 9..];
+                let stat = rest.split(';').next().unwrap_or("NEEDS-ACTION");
+                stat.trim_matches('"').to_string()
+            } else {
+                "NEEDS-ACTION".to_string()
+            };
+
+            responding_attendee_email = Some(email);
+            responding_partstat = Some(partstat);
+            break; // Take the first non-organizer attendee
+        }
+    }
+
+    // Attendee email is required
+    let attendee_email = responding_attendee_email?;
+
+    let attendee_status = match responding_partstat.as_deref() {
         Some("ACCEPTED") => AttendeeStatus::Accepted,
         Some("DECLINED") => AttendeeStatus::Declined,
         Some("TENTATIVE") => AttendeeStatus::Tentative,
         Some("DELEGATED") => AttendeeStatus::Delegated,
         _ => AttendeeStatus::NeedsAction,
     };
-    
+
     Some(ItipResponse {
         uid,
         sequence,
@@ -174,7 +202,6 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         attendee_status,
     })
 }
-
 pub struct ItipResponse {
     pub uid: String,
     pub sequence: u32,
@@ -220,6 +247,6 @@ mod tests {
     #[test]
     fn test_escape_ical_text() {
         assert_eq!(escape_ical_text("hello;world"), "hello\\;world");
-        assert_eq!(escape_ical_text("a,b\\c"), "a,b\\c");
+        assert_eq!(escape_ical_text("a,b\\c"), "a\\,b\\\\c");
     }
 }
