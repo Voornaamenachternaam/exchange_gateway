@@ -30,7 +30,7 @@ serde_json = "^1.0.149"
 toml = "^1.1.2"
 
 # Input validation with derive macros
-validator = { version = "^0.19.0", features = ["derive"] }
+validator = { version = "^0.20.0", features = ["derive"] }
 
 # Error handling
 anyhow = "^1.0.102"
