@@ -202,7 +202,7 @@ impl fmt::Display for PermissionRights {
         if self.can_freebusy_detailed() {
             parts.push("FreeBusyDetailed");
         }
-        write!(f, "{}", parts.join("|"))
+        if parts.is_empty() { write!(f, "None") } else { write!(f, "{}", parts.join("|")) }
     }
 }
 
