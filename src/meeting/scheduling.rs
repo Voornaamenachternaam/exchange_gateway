@@ -140,7 +140,14 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
     // First pass: extract UID, SEQUENCE, and ORGANIZER
     for (key, value) in event_props {
-        if key.starts_with("UID") {
+    // First pass: extract UID, SEQUENCE, and ORGANIZER
+    for (key, value) in event_props {
+        let key_upper = key.to_uppercase();
+        if key_upper.starts_with("UID") {
+            uid = Some(value.trim().to_string());
+        } else if key_upper.starts_with("SEQUENCE") {
+            sequence = value.trim().parse::<u32>().unwrap_or(0);
+        } else if key_upper.starts_with("ORGANIZER") {
             uid = Some(value.trim().to_string());
         } else if key.starts_with("SEQUENCE") {
             sequence = value.trim().parse::<u32>().unwrap_or(0);
