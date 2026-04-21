@@ -153,10 +153,20 @@ pub fn parse_property_lines(
                     let full_key = if params.is_empty() {
                         name
                     } else {
-                        let params_str: String = params
-                            .iter()
-                            .map(|(k, v)| format!(";{}={}", k, v))
-                            .collect();
+pub fn parse_property_line(input: &str) -> Result<PropertyLine, NomError<'_>> {
+    let colon_pos = find_value_colon(input).ok_or_else(|| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))
+    })?;
+    let before_colon = &input[..colon_pos];
+    let value = &input[colon_pos + 1..];
+
+    let mut parts = before_colon.splitn(2, ';');
+    let name = parts.next().unwrap_or("").to_string();
+    let params_str = parts.next().unwrap_or("");
+    let params = parse_parameters(params_str);
+
+    Ok((name, params, value.to_string()))
+}
                         format!("{}{}", name, params_str)
                     };
                     properties.push((full_key, value));
