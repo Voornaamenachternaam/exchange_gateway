@@ -206,36 +206,45 @@ impl<'a> PermissionStorage<'a> {
             is_default: i32,
             is_anonymous: i32,
         }
-        self.storage.post_json(
-            "upsert_calendar_permission",
-            &Req {
-                id: &permission.id,
-                folder_id: &permission.folder_id,
-                owner: &permission.owner,
-                user_email: &permission.user_email,
-                user_name: permission.user_name.as_deref(),
-                rights: permission.rights as i32,
-                is_default: if permission.is_default { 1 } else { 0 },
-                is_anonymous: if permission.is_anonymous { 1 } else { 0 },
-            },
-        ).await
+        self.storage
+            .post_json(
+                "upsert_calendar_permission",
+                &Req {
+                    id: &permission.id,
+                    folder_id: &permission.folder_id,
+                    owner: &permission.owner,
+                    user_email: &permission.user_email,
+                    user_name: permission.user_name.as_deref(),
+                    rights: permission.rights as i32,
+                    is_default: if permission.is_default { 1 } else { 0 },
+                    is_anonymous: if permission.is_anonymous { 1 } else { 0 },
+                },
+            )
+            .await
     }
 
-    pub async fn delete_permission(&self, owner: &str, folder_id: &str, user_email: &str) -> Result<()> {
+    pub async fn delete_permission(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        user_email: &str,
+    ) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
             owner: &'a str,
             folder_id: &'a str,
             user_email: &'a str,
         }
-        self.storage.post_json(
-            "delete_calendar_permission",
-            &Req {
-                owner,
-                folder_id,
-                user_email,
-            },
-        ).await
+        self.storage
+            .post_json(
+                "delete_calendar_permission",
+                &Req {
+                    owner,
+                    folder_id,
+                    user_email,
+                },
+            )
+            .await
     }
 
     pub async fn get_default_permission(
@@ -281,10 +290,7 @@ impl<'a> PermissionStorage<'a> {
     }
 
     pub async fn get_delegates(&self, delegator: &str) -> Result<Vec<DelegateInfo>> {
-        let path = format!(
-            "get_delegates?delegator={}",
-            urlencoding::encode(delegator)
-        );
+        let path = format!("get_delegates?delegator={}", urlencoding::encode(delegator));
         let rows: Vec<DelegateRow> = self.storage.get_json(&path).await?;
         Ok(rows.into_iter().map(DelegateInfo::from).collect())
     }
@@ -306,24 +312,26 @@ impl<'a> PermissionStorage<'a> {
             receive_infos: i32,
             view_private: i32,
         }
-        self.storage.post_json(
-            "upsert_delegate",
-            &Req {
-                id: &delegate.id,
-                delegator: &delegate.delegator,
-                delegate_email: &delegate.delegate_email,
-                delegate_name: delegate.delegate_name.as_deref(),
-                calendar_permission: delegate.calendar_permission as i32,
-                inbox_permission: delegate.inbox_permission as i32,
-                tasks_permission: delegate.tasks_permission as i32,
-                contacts_permission: delegate.contacts_permission as i32,
-                notes_permission: delegate.notes_permission as i32,
-                journal_permission: delegate.journal_permission as i32,
-                receive_copies: if delegate.receive_copies { 1 } else { 0 },
-                receive_infos: if delegate.receive_infos { 1 } else { 0 },
-                view_private: if delegate.view_private { 1 } else { 0 },
-            },
-        ).await
+        self.storage
+            .post_json(
+                "upsert_delegate",
+                &Req {
+                    id: &delegate.id,
+                    delegator: &delegate.delegator,
+                    delegate_email: &delegate.delegate_email,
+                    delegate_name: delegate.delegate_name.as_deref(),
+                    calendar_permission: delegate.calendar_permission as i32,
+                    inbox_permission: delegate.inbox_permission as i32,
+                    tasks_permission: delegate.tasks_permission as i32,
+                    contacts_permission: delegate.contacts_permission as i32,
+                    notes_permission: delegate.notes_permission as i32,
+                    journal_permission: delegate.journal_permission as i32,
+                    receive_copies: if delegate.receive_copies { 1 } else { 0 },
+                    receive_infos: if delegate.receive_infos { 1 } else { 0 },
+                    view_private: if delegate.view_private { 1 } else { 0 },
+                },
+            )
+            .await
     }
 
     pub async fn delete_delegate(&self, delegator: &str, delegate_email: &str) -> Result<()> {
@@ -332,13 +340,15 @@ impl<'a> PermissionStorage<'a> {
             delegator: &'a str,
             delegate_email: &'a str,
         }
-        self.storage.post_json(
-            "delete_delegate",
-            &Req {
-                delegator,
-                delegate_email,
-            },
-        ).await
+        self.storage
+            .post_json(
+                "delete_delegate",
+                &Req {
+                    delegator,
+                    delegate_email,
+                },
+            )
+            .await
     }
 
     pub async fn add_audit_entry(&self, entry: &PermissionAuditEntry) -> Result<()> {
@@ -353,19 +363,21 @@ impl<'a> PermissionStorage<'a> {
             old_rights: Option<i32>,
             new_rights: Option<i32>,
         }
-        self.storage.post_json(
-            "add_permission_audit",
-            &Req {
-                id: &entry.id,
-                folder_id: &entry.folder_id,
-                owner: &entry.owner,
-                actor_email: &entry.actor_email,
-                target_email: &entry.target_email,
-                operation: &entry.operation,
-                old_rights: entry.old_rights.map(|v| v as i32),
-                new_rights: entry.new_rights.map(|v| v as i32),
-            },
-        ).await
+        self.storage
+            .post_json(
+                "add_permission_audit",
+                &Req {
+                    id: &entry.id,
+                    folder_id: &entry.folder_id,
+                    owner: &entry.owner,
+                    actor_email: &entry.actor_email,
+                    target_email: &entry.target_email,
+                    operation: &entry.operation,
+                    old_rights: entry.old_rights.map(|v| v as i32),
+                    new_rights: entry.new_rights.map(|v| v as i32),
+                },
+            )
+            .await
     }
 
     pub async fn get_audit_log(

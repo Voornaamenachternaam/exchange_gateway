@@ -33,7 +33,7 @@ fn test_ews_getfolder_calendar_response() {
         </m:GetFolderResponse>
     </s:Body>
 </s:Envelope>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -67,7 +67,7 @@ fn test_ews_syncfolderitems_response() {
         </m:SyncFolderItemsResponse>
     </s:Body>
 </s:Envelope>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -94,7 +94,7 @@ fn test_ews_createitem_calendar_response() {
         </m:CreateItemResponse>
     </s:Body>
 </s:Envelope>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -125,7 +125,7 @@ fn test_eas_sync_calendar_response() {
         </Collection>
     </Collections>
 </Sync>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -145,7 +145,7 @@ fn test_eas_foldersync_response() {
         </Add>
     </Changes>
 </FolderSync>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -168,7 +168,7 @@ fn test_eas_provision_response() {
         </Policy>
     </Policies>
 </Provision>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -186,7 +186,7 @@ fn test_eas_ping_response() {
         </Folder>
     </Folders>
 </Ping>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -211,7 +211,7 @@ fn test_autodiscover_xml_response() {
         </Account>
     </Response>
 </Autodiscover>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -219,7 +219,7 @@ fn test_autodiscover_xml_response() {
 #[test]
 fn test_autodiscover_json_response() {
     let response = r#"{"Protocol":"Exchange","Url":"https://mail.example.com/EWS/Exchange.asmx","EwsUrl":"https://mail.example.com/EWS/Exchange.asmx","ExternalEwsUrl":"https://mail.example.com/EWS/Exchange.asmx","InternalEwsUrl":"https://mail.example.com/EWS/Exchange.asmx","ActiveSyncUrl":"https://mail.example.com/Microsoft-Server-ActiveSync","MobileSyncUrl":"https://mail.example.com/Microsoft-Server-ActiveSync","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -243,7 +243,7 @@ fn test_ews_error_response() {
         </m:GetItemResponse>
     </s:Body>
 </s:Envelope>"#;
-    
+
     assert_snapshot!(response);
 }
 
@@ -261,6 +261,6 @@ fn test_eas_error_response() {
         </Collection>
     </Collections>
 </Sync>"#;
-    
+
     assert_snapshot!(response);
 }
