@@ -1,6 +1,6 @@
 // src/permission/delegate.rs
-use crate::permission::types::{DelegateInfo, PermissionLevel, PermissionAuditEntry};
 use crate::permission::storage::PermissionStorage;
+use crate::permission::types::{DelegateInfo, PermissionAuditEntry, PermissionLevel};
 use crate::storage::Storage;
 use crate::util::normalize_email;
 use anyhow::Result;
@@ -16,7 +16,11 @@ impl<'a> DelegateManager<'a> {
         }
     }
 
-    pub async fn get_delegate(&self, delegator: &str, delegate_email: &str) -> Result<Option<DelegateInfo>> {
+    pub async fn get_delegate(
+        &self,
+        delegator: &str,
+        delegate_email: &str,
+    ) -> Result<Option<DelegateInfo>> {
         self.storage.get_delegate(delegator, delegate_email).await
     }
 
@@ -74,7 +78,10 @@ impl<'a> DelegateManager<'a> {
         view_private: Option<bool>,
         actor_email: &str,
     ) -> Result<DelegateInfo> {
-        let mut delegate = self.storage.get_delegate(delegator, delegate_email).await?
+        let mut delegate = self
+            .storage
+            .get_delegate(delegator, delegate_email)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Delegate not found"))?;
 
         let old_rights = delegate.to_calendar_rights().bits();
@@ -109,13 +116,23 @@ impl<'a> DelegateManager<'a> {
         Ok(delegate)
     }
 
-    pub async fn remove_delegate(&self, delegator: &str, delegate_email: &str, actor_email: &str) -> Result<()> {
-        let delegate = self.storage.get_delegate(delegator, delegate_email).await?
+    pub async fn remove_delegate(
+        &self,
+        delegator: &str,
+        delegate_email: &str,
+        actor_email: &str,
+    ) -> Result<()> {
+        let delegate = self
+            .storage
+            .get_delegate(delegator, delegate_email)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Delegate not found"))?;
 
         let old_rights = delegate.to_calendar_rights().bits();
 
-        self.storage.delete_delegate(delegator, delegate_email).await?;
+        self.storage
+            .delete_delegate(delegator, delegate_email)
+            .await?;
 
         let audit = PermissionAuditEntry::new(
             "calendar".to_string(),
@@ -132,37 +149,55 @@ impl<'a> DelegateManager<'a> {
     }
 
     pub async fn is_delegate(&self, delegator: &str, delegate_email: &str) -> Result<bool> {
-        Ok(self.storage.get_delegate(delegator, delegate_email).await?.is_some())
+        Ok(self
+            .storage
+            .get_delegate(delegator, delegate_email)
+            .await?
+            .is_some())
     }
 
     pub async fn get_delegates_for_freebusy(&self, delegator: &str) -> Result<Vec<DelegateInfo>> {
         let delegates = self.storage.get_delegates(delegator).await?;
-        Ok(delegates.into_iter()
+        Ok(delegates
+            .into_iter()
             .filter(|d| d.calendar_permission_level() != PermissionLevel::None)
             .collect())
     }
 
-    pub async fn get_delegates_with_copy_permission(&self, delegator: &str) -> Result<Vec<DelegateInfo>> {
+    pub async fn get_delegates_with_copy_permission(
+        &self,
+        delegator: &str,
+    ) -> Result<Vec<DelegateInfo>> {
         let delegates = self.storage.get_delegates(delegator).await?;
-        Ok(delegates.into_iter()
-            .filter(|d| d.receive_copies)
-            .collect())
+        Ok(delegates.into_iter().filter(|d| d.receive_copies).collect())
     }
 
-    pub async fn get_delegates_with_info_permission(&self, delegator: &str) -> Result<Vec<DelegateInfo>> {
+    pub async fn get_delegates_with_info_permission(
+        &self,
+        delegator: &str,
+    ) -> Result<Vec<DelegateInfo>> {
         let delegates = self.storage.get_delegates(delegator).await?;
-        Ok(delegates.into_iter()
-            .filter(|d| d.receive_infos)
-            .collect())
+        Ok(delegates.into_iter().filter(|d| d.receive_infos).collect())
     }
 
     pub fn render_delegate_xml(&self, delegate: &DelegateInfo) -> String {
-        let calendar_perm = Self::permission_level_to_delegate_permission_xml(delegate.calendar_permission_level());
-        let inbox_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(delegate.inbox_permission));
-        let contacts_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(delegate.contacts_permission));
-        let tasks_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(delegate.tasks_permission));
-        let notes_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(delegate.notes_permission));
-        let journal_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(delegate.journal_permission));
+        let calendar_perm =
+            Self::permission_level_to_delegate_permission_xml(delegate.calendar_permission_level());
+        let inbox_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(
+            delegate.inbox_permission,
+        ));
+        let contacts_perm = Self::permission_level_to_delegate_permission_xml(
+            PermissionLevel::from(delegate.contacts_permission),
+        );
+        let tasks_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(
+            delegate.tasks_permission,
+        ));
+        let notes_perm = Self::permission_level_to_delegate_permission_xml(PermissionLevel::from(
+            delegate.notes_permission,
+        ));
+        let journal_perm = Self::permission_level_to_delegate_permission_xml(
+            PermissionLevel::from(delegate.journal_permission),
+        );
 
         format!(
             r#"<t:DelegateUser>
@@ -182,15 +217,30 @@ impl<'a> DelegateManager<'a> {
     <t:ViewPrivateItems>{}</t:ViewPrivateItems>
 </t:DelegateUser>"#,
             crate::util::xml_escape(&delegate.delegate_email),
-            delegate.delegate_name.as_ref().map(|n| format!("<t:DisplayName>{}</t:DisplayName>", crate::util::xml_escape(n))).unwrap_or_default(),
+            delegate
+                .delegate_name
+                .as_ref()
+                .map(|n| format!(
+                    "<t:DisplayName>{}</t:DisplayName>",
+                    crate::util::xml_escape(n)
+                ))
+                .unwrap_or_default(),
             calendar_perm,
             inbox_perm,
             contacts_perm,
             tasks_perm,
             notes_perm,
             journal_perm,
-            if delegate.receive_copies { "true" } else { "false" },
-            if delegate.view_private { "true" } else { "false" },
+            if delegate.receive_copies {
+                "true"
+            } else {
+                "false"
+            },
+            if delegate.view_private {
+                "true"
+            } else {
+                "false"
+            },
         )
     }
 

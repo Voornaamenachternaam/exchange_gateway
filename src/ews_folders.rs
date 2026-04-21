@@ -119,11 +119,7 @@ pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
         DistinguishedFolder::MsgFolderRoot => "ROOT",
         _ => "FLD",
     };
-    format!(
-        "{}-{}",
-        tag,
-        const_hex::encode(&digest[..12])
-    )
+    format!("{}-{}", tag, const_hex::encode(&digest[..12]))
 }
 
 pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: usize) -> String {

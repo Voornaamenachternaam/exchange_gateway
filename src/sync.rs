@@ -1,8 +1,8 @@
 // src/sync.rs
 use crate::caldav::CaldavClient;
 use crate::calendar::{
-    Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_eas_sync_mutations,
-    parse_ics_event, parse_datetime, render_ics,
+    Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_datetime,
+    parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
 use crate::models::AppState;
 use crate::util::{normalize_email, xml_escape};
@@ -487,7 +487,6 @@ pub async fn apply_meeting_response(
         .await?;
     Ok(())
 }
-
 
 fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
     match content_class.to_ascii_lowercase().as_str() {

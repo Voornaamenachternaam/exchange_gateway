@@ -2,10 +2,10 @@
 use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
+use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
 use crate::util::{nfc, xml_escape};
 use crate::wbxml::Wbxml;
-use crate::permission::{PermissionEnforcement, PermissionContext};
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::{
@@ -101,7 +101,8 @@ struct EasRequest {
 struct CommandGrammar {
     namespace: &'static str,
     required_tags: &'static [&'static str],
-    #[allow(dead_code)] // Documents allowed optional tags for protocol completeness; validation not currently required
+    #[allow(dead_code)]
+    // Documents allowed optional tags for protocol completeness; validation not currently required
     optional_tags: &'static [&'static str],
 }
 
@@ -300,10 +301,8 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 return Err("Add requires ClientId");
             }
         }
-        "meetingresponse" => {
-            if extract_first_tag_text(xml, b"UserResponse").is_none() {
-                return Err("MeetingResponse requires UserResponse");
-            }
+        "meetingresponse" if extract_first_tag_text(xml, b"UserResponse").is_none() => {
+            return Err("MeetingResponse requires UserResponse");
         }
         _ => {}
     }
@@ -1260,7 +1259,7 @@ async fn handle_item_operations(
             ));
             continue;
         };
-        
+
         // Look up the actual owner of the item (for delegate access support)
         let owner = match state.storage.get_ews_item_owner(&server_id).await {
             Ok(Some(o)) => o,
@@ -1284,13 +1283,20 @@ async fn handle_item_operations(
                 continue;
             }
         };
-        
+
         // Perform permission check against the actual owner's folder
-        let calendar_folder_id = crate::ews_folders::folder_id_for(&owner, crate::ews_folders::DistinguishedFolder::Calendar);
+        let calendar_folder_id = crate::ews_folders::folder_id_for(
+            &owner,
+            crate::ews_folders::DistinguishedFolder::Calendar,
+        );
         let enforcement = PermissionEnforcement::new(&state.storage);
-        let perm_ctx = PermissionContext::new(username.to_string(), owner.clone(), calendar_folder_id.clone());
+        let perm_ctx = PermissionContext::new(
+            username.to_string(),
+            owner.clone(),
+            calendar_folder_id.clone(),
+        );
         match enforcement.can_read_item(&perm_ctx).await {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => {
                 responses.push_str(&format!(
                     "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>4</Status></Fetch>",
@@ -1311,7 +1317,7 @@ async fn handle_item_operations(
                 continue;
             }
         }
-        
+
         let lookup = match state
             .storage
             .get_ews_item_by_server_id(&owner, &server_id)
@@ -1328,7 +1334,7 @@ async fn handle_item_operations(
                 continue;
             }
         };
-        let get_future = caldav.get_event(&lookup.resource_href, &owner, password.expose_secret());       
+        let get_future = caldav.get_event(&lookup.resource_href, &owner, password.expose_secret());
         let Ok(Ok((ics, _etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
@@ -1517,7 +1523,7 @@ async fn handle_resolve_recipients(
     let freebusy_results = join_all(freebusy_futures).await;
 
     let mut recipient_xml = String::new();
-    for (recipient, freebusy) in recipients.iter().zip(freebusy_results.into_iter()) {
+    for (recipient, freebusy) in recipients.iter().zip(freebusy_results) {
         let avail_xml = if availability_window.is_some() {
             format!(
                 "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
@@ -1764,58 +1770,65 @@ pub async fn handle(
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
             let mut mutation_responses = String::new();
- let owner = crate::ews::owner_from_username(&username);
- let calendar_folder_id = crate::ews_folders::folder_id_for(owner, crate::ews_folders::DistinguishedFolder::Calendar);
- let enforcement = PermissionEnforcement::new(&state.storage);
- let perm_ctx = PermissionContext::new(username.clone(), owner.to_string(), calendar_folder_id.clone());
- if xml.contains("<Add") || xml.contains(":Add") {
-  match enforcement.can_create_item(&perm_ctx).await {
-   Ok(true) => {},
-   Ok(false) => {
-    let err_xml = r#"
+            let owner = crate::ews::owner_from_username(&username);
+            let calendar_folder_id = crate::ews_folders::folder_id_for(
+                owner,
+                crate::ews_folders::DistinguishedFolder::Calendar,
+            );
+            let enforcement = PermissionEnforcement::new(&state.storage);
+            let perm_ctx = PermissionContext::new(
+                username.clone(),
+                owner.to_string(),
+                calendar_folder_id.clone(),
+            );
+            if xml.contains("<Add") || xml.contains(":Add") {
+                match enforcement.can_create_item(&perm_ctx).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let err_xml = r#"
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-   }
-   Err(e) => {
-                tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Create operation");
-                let err_xml = r#"
+                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    }
+                    Err(e) => {
+                        tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Create operation");
+                        let err_xml = r#"
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    }
+                }
             }
-  }
- }
- if xml.contains("<Change") || xml.contains(":Change") {
-  match enforcement.can_edit_item(&perm_ctx).await {
-   Ok(true) => {},
-   Ok(false) => {
-    let err_xml = r#"
+            if xml.contains("<Change") || xml.contains(":Change") {
+                match enforcement.can_edit_item(&perm_ctx).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let err_xml = r#"
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-   }
-   Err(e) => {
-                tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Edit operation");
-                let err_xml = r#"
+                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    }
+                    Err(e) => {
+                        tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Edit operation");
+                        let err_xml = r#"
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    }
+                }
             }
-  }
- }
- if xml.contains("<Delete") || xml.contains(":Delete") {
-  match enforcement.can_delete_item(&perm_ctx).await {
-   Ok(true) => {},
-   Ok(false) => {
-    let err_xml = r#"
+            if xml.contains("<Delete") || xml.contains(":Delete") {
+                match enforcement.can_delete_item(&perm_ctx).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let err_xml = r#"
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-   }
-   Err(e) => {
-                tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Delete operation");
-                let err_xml = r#"
+                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    }
+                    Err(e) => {
+                        tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Delete operation");
+                        let err_xml = r#"
 <?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
+                    }
+                }
             }
-  }
- }
             if xml.contains("<Add")
                 || xml.contains("<Change")
                 || xml.contains("<Delete")

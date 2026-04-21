@@ -4,19 +4,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AttendeeStatus {
+    #[default]
     NeedsAction = 0,
     Accepted = 1,
     Declined = 2,
     Tentative = 3,
     NotResponded = 5,
-}
-
-impl Default for AttendeeStatus {
-    fn default() -> Self {
-        Self::NeedsAction
-    }
 }
 
 impl From<u8> for AttendeeStatus {
@@ -84,17 +79,12 @@ impl AttendeeStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AttendeeRole {
+    #[default]
     Required = 1,
     Optional = 2,
     Resource = 3,
-}
-
-impl Default for AttendeeRole {
-    fn default() -> Self {
-        Self::Required
-    }
 }
 
 impl From<u8> for AttendeeRole {
@@ -248,7 +238,8 @@ impl AttendeeTracker {
     pub fn add_attendee(&mut self, email: String, name: Option<String>, role: AttendeeRole) {
         let email = normalize_email(&email);
         if !self.attendees.iter().any(|a| a.email == email) {
-            self.attendees.push(AttendeeResponse::new(email, name, role));
+            self.attendees
+                .push(AttendeeResponse::new(email, name, role));
         }
     }
 
@@ -320,17 +311,21 @@ impl AttendeeTracker {
     }
 
     pub fn all_required_responded(&self) -> bool {
-        self.required_attendees()
-            .iter()
-            .all(|a| a.status != AttendeeStatus::NeedsAction && a.status != AttendeeStatus::NotResponded)
+        self.required_attendees().iter().all(|a| {
+            a.status != AttendeeStatus::NeedsAction && a.status != AttendeeStatus::NotResponded
+        })
     }
 
     pub fn all_accepted(&self) -> bool {
-        self.attendees.iter().all(|a| a.status == AttendeeStatus::Accepted)
+        self.attendees
+            .iter()
+            .all(|a| a.status == AttendeeStatus::Accepted)
     }
 
     pub fn any_declined(&self) -> bool {
-        self.attendees.iter().any(|a| a.status == AttendeeStatus::Declined)
+        self.attendees
+            .iter()
+            .any(|a| a.status == AttendeeStatus::Declined)
     }
 
     pub fn response_summary(&self) -> AttendeeSummary {
@@ -355,7 +350,10 @@ impl AttendeeTracker {
     }
 
     pub fn load_from_records(records: Vec<AttendeeRecord>) -> Self {
-        let meeting_uid = records.first().map(|r| r.meeting_uid.clone()).unwrap_or_default();
+        let meeting_uid = records
+            .first()
+            .map(|r| r.meeting_uid.clone())
+            .unwrap_or_default();
         let attendees = records.into_iter().map(|r| r.to_response()).collect();
         Self {
             attendees,
@@ -392,42 +390,92 @@ mod tests {
 
     #[test]
     fn test_attendee_status_conversion() {
-        assert_eq!(AttendeeStatus::from_partstat("ACCEPTED"), AttendeeStatus::Accepted);
-        assert_eq!(AttendeeStatus::from_partstat("DECLINED"), AttendeeStatus::Declined);
-        assert_eq!(AttendeeStatus::from_partstat("TENTATIVE"), AttendeeStatus::Tentative);
-        assert_eq!(AttendeeStatus::from_partstat("NEEDS-ACTION"), AttendeeStatus::NeedsAction);
+        assert_eq!(
+            AttendeeStatus::from_partstat("ACCEPTED"),
+            AttendeeStatus::Accepted
+        );
+        assert_eq!(
+            AttendeeStatus::from_partstat("DECLINED"),
+            AttendeeStatus::Declined
+        );
+        assert_eq!(
+            AttendeeStatus::from_partstat("TENTATIVE"),
+            AttendeeStatus::Tentative
+        );
+        assert_eq!(
+            AttendeeStatus::from_partstat("NEEDS-ACTION"),
+            AttendeeStatus::NeedsAction
+        );
     }
 
     #[test]
     fn test_attendee_role_conversion() {
-        assert_eq!(AttendeeRole::from_ical_role("REQ-PARTICIPANT"), AttendeeRole::Required);
-        assert_eq!(AttendeeRole::from_ical_role("OPT-PARTICIPANT"), AttendeeRole::Optional);
-        assert_eq!(AttendeeRole::from_ical_role("NON-PARTICIPANT"), AttendeeRole::Resource);
+        assert_eq!(
+            AttendeeRole::from_ical_role("REQ-PARTICIPANT"),
+            AttendeeRole::Required
+        );
+        assert_eq!(
+            AttendeeRole::from_ical_role("OPT-PARTICIPANT"),
+            AttendeeRole::Optional
+        );
+        assert_eq!(
+            AttendeeRole::from_ical_role("NON-PARTICIPANT"),
+            AttendeeRole::Resource
+        );
     }
 
     #[test]
     fn test_attendee_tracker() {
         let mut tracker = AttendeeTracker::new("test-uid".to_string());
-        tracker.add_attendee("user1@example.com".to_string(), Some("User One".to_string()), AttendeeRole::Required);
-        tracker.add_attendee("user2@example.com".to_string(), Some("User Two".to_string()), AttendeeRole::Optional);
+        tracker.add_attendee(
+            "user1@example.com".to_string(),
+            Some("User One".to_string()),
+            AttendeeRole::Required,
+        );
+        tracker.add_attendee(
+            "user2@example.com".to_string(),
+            Some("User Two".to_string()),
+            AttendeeRole::Optional,
+        );
 
         assert_eq!(tracker.attendees().len(), 2);
         assert!(tracker.required_attendees().len() == 1);
         assert!(tracker.optional_attendees().len() == 1);
 
-        tracker.record_response("user1@example.com", AttendeeStatus::Accepted).unwrap();
-        assert_eq!(tracker.get_attendee("user1@example.com").unwrap().status, AttendeeStatus::Accepted);
+        tracker
+            .record_response("user1@example.com", AttendeeStatus::Accepted)
+            .unwrap();
+        assert_eq!(
+            tracker.get_attendee("user1@example.com").unwrap().status,
+            AttendeeStatus::Accepted
+        );
     }
 
     #[test]
     fn test_response_summary() {
         let mut tracker = AttendeeTracker::new("test-uid".to_string());
-        tracker.add_attendee("user1@example.com".to_string(), None, AttendeeRole::Required);
-        tracker.add_attendee("user2@example.com".to_string(), None, AttendeeRole::Required);
-        tracker.add_attendee("user3@example.com".to_string(), None, AttendeeRole::Optional);
+        tracker.add_attendee(
+            "user1@example.com".to_string(),
+            None,
+            AttendeeRole::Required,
+        );
+        tracker.add_attendee(
+            "user2@example.com".to_string(),
+            None,
+            AttendeeRole::Required,
+        );
+        tracker.add_attendee(
+            "user3@example.com".to_string(),
+            None,
+            AttendeeRole::Optional,
+        );
 
-        tracker.record_response("user1@example.com", AttendeeStatus::Accepted).unwrap();
-        tracker.record_response("user2@example.com", AttendeeStatus::Declined).unwrap();
+        tracker
+            .record_response("user1@example.com", AttendeeStatus::Accepted)
+            .unwrap();
+        tracker
+            .record_response("user2@example.com", AttendeeStatus::Declined)
+            .unwrap();
 
         let summary = tracker.response_summary();
         assert_eq!(summary.total, 3);

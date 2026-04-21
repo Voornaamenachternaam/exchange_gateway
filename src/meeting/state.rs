@@ -4,8 +4,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MeetingStatus {
+    #[default]
     Appointment = 0,
     Organizer = 1,
     Tentative = 2,
@@ -13,12 +14,6 @@ pub enum MeetingStatus {
     Rejected = 4,
     OrganizerCanceled = 5,
     ReceivedCanceled = 7,
-}
-
-impl Default for MeetingStatus {
-    fn default() -> Self {
-        Self::Appointment
-    }
 }
 
 impl From<u8> for MeetingStatus {
@@ -98,7 +93,11 @@ impl MeetingStateFlags {
         self.contains(Self::IS_CANCELED)
     }
 
-    pub fn to_meeting_status(&self, is_organizer: bool, response_type: Option<u8>) -> MeetingStatus {
+    pub fn to_meeting_status(
+        &self,
+        is_organizer: bool,
+        response_type: Option<u8>,
+    ) -> MeetingStatus {
         if self.is_canceled() {
             if is_organizer {
                 return MeetingStatus::OrganizerCanceled;
@@ -123,20 +122,15 @@ impl MeetingStateFlags {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MeetingState {
+    #[default]
     Draft,
     RequestSent,
     PendingResponses,
     Confirmed,
     Cancelled,
     Completed,
-}
-
-impl Default for MeetingState {
-    fn default() -> Self {
-        Self::Draft
-    }
 }
 
 impl fmt::Display for MeetingState {
@@ -168,7 +162,12 @@ pub struct MeetingContext {
 }
 
 impl MeetingContext {
-    pub fn new(uid: String, organizer_email: String, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
+    pub fn new(
+        uid: String,
+        organizer_email: String,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Self {
         Self::with_timestamp(uid, organizer_email, start, end, Utc::now())
     }
 
@@ -266,7 +265,9 @@ impl MeetingStateMachine {
         if !self.can_send_request() {
             return Err("Cannot send request from current state");
         }
-        self.context.state_flags.insert(MeetingStateFlags::IS_MEETING);
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_MEETING);
         self.context.state = MeetingState::RequestSent;
         self.context.increment_sequence();
         Ok(())
@@ -277,12 +278,19 @@ impl MeetingStateMachine {
     }
 
     /// Receive request with a specific timestamp (for testing)
-    pub fn receive_request_with_timestamp(&mut self, now: DateTime<Utc>) -> Result<(), &'static str> {
+    pub fn receive_request_with_timestamp(
+        &mut self,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
         if self.context.state != MeetingState::Draft {
             return Err("Cannot receive request in current state");
         }
-        self.context.state_flags.insert(MeetingStateFlags::IS_MEETING);
-        self.context.state_flags.insert(MeetingStateFlags::IS_RECEIVED);
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_MEETING);
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_RECEIVED);
         self.context.state = MeetingState::PendingResponses;
         self.context.updated_at = now;
         Ok(())
@@ -293,7 +301,11 @@ impl MeetingStateMachine {
     }
 
     /// Update meeting with a specific timestamp (for testing)
-    pub fn update_meeting_with_timestamp(&mut self, significant_change: bool, now: DateTime<Utc>) -> Result<(), &'static str> {
+    pub fn update_meeting_with_timestamp(
+        &mut self,
+        significant_change: bool,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
         if !self.can_update() {
             return Err("Cannot update meeting from current state");
         }
@@ -308,7 +320,9 @@ impl MeetingStateMachine {
         if !self.can_cancel() {
             return Err("Cannot cancel meeting from current state");
         }
-        self.context.state_flags.insert(MeetingStateFlags::IS_CANCELED);
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_CANCELED);
         self.context.state = MeetingState::Cancelled;
         self.context.increment_sequence();
         Ok(())
@@ -319,7 +333,10 @@ impl MeetingStateMachine {
     }
 
     /// Mark as completed with a specific timestamp (for testing)
-    pub fn mark_completed_with_timestamp(&mut self, now: DateTime<Utc>) -> Result<(), &'static str> {
+    pub fn mark_completed_with_timestamp(
+        &mut self,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
         if !self.context.is_past_meeting_at(now) {
             return Err("Meeting has not ended yet");
         }
@@ -408,7 +425,9 @@ mod tests {
         let flags = MeetingStateFlags::IS_MEETING | MeetingStateFlags::IS_RECEIVED;
         assert_eq!(flags.to_byte(), 0x03);
 
-        let flags = MeetingStateFlags::IS_MEETING | MeetingStateFlags::IS_RECEIVED | MeetingStateFlags::IS_CANCELED;
+        let flags = MeetingStateFlags::IS_MEETING
+            | MeetingStateFlags::IS_RECEIVED
+            | MeetingStateFlags::IS_CANCELED;
         assert_eq!(flags.to_byte(), 0x07);
     }
 
@@ -442,10 +461,10 @@ mod tests {
         let mut machine = MeetingStateMachine::new(ctx);
 
         assert_eq!(machine.context().sequence, 0);
-        
+
         machine.send_request().unwrap();
         assert_eq!(machine.context().sequence, 1);
-        
+
         machine.update_meeting(true).unwrap();
         assert_eq!(machine.context().sequence, 2);
     }
