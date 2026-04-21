@@ -306,3 +306,57 @@ CREATE INDEX idx_permission_audit_folder ON permission_audit(owner, folder_id);
 CREATE INDEX idx_permission_audit_actor ON permission_audit(actor_email);
 CREATE INDEX idx_permission_audit_target ON permission_audit(target_email);
 CREATE INDEX idx_permission_audit_time ON permission_audit(owner, created_at);
+
+-- Attachment Support Tables (v7)
+-- Based on MS-OXWSATT: Attachment Handling Web Service Protocol
+CREATE TABLE calendar_attachment (
+    id TEXT PRIMARY KEY,
+    parent_item_server_id TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+    content_size INTEGER NOT NULL DEFAULT 0,
+    content_base64 TEXT NOT NULL DEFAULT '',
+    is_inline INTEGER NOT NULL DEFAULT 0,
+    content_id TEXT,
+    content_location TEXT,
+    attachment_type TEXT NOT NULL DEFAULT 'file',
+    last_modified_time DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_attachment_parent ON calendar_attachment(owner, parent_item_server_id);
+CREATE INDEX idx_attachment_owner ON calendar_attachment(owner);
+CREATE INDEX idx_attachment_id ON calendar_attachment(id);
+
+INSERT INTO schema_version (version, description) VALUES (7, 'v7: Attachment support - CreateAttachment/GetAttachment/DeleteAttachment with base64 content storage');
+
+-- Room/Resource Booking Tables (v8)
+-- Based on MS-OXWSMTGS and MS-OXWSCORE: Room lists and room mailboxes
+CREATE TABLE room_list (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(email)
+);
+
+CREATE TABLE room (
+    id TEXT PRIMARY KEY,
+    room_list_email TEXT,
+    email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    capacity INTEGER DEFAULT 0,
+    is_available INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(email)
+);
+
+CREATE INDEX idx_room_list_email ON room_list(email);
+CREATE INDEX idx_room_email ON room(email);
+CREATE INDEX idx_room_room_list ON room(room_list_email);
+
+INSERT INTO schema_version (version, description) VALUES (8, 'v8: Room/resource booking - GetRoomLists/GetRooms with room mailbox support');

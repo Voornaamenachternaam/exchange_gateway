@@ -4,9 +4,6 @@ use crate::storage::Storage;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// Parse a timestamp from SQLite's CURRENT_TIMESTAMP format.
-/// SQLite returns dates as "YYYY-MM-DD HH:MM:SS" which is not RFC3339.
-/// Falls back to current time on parse failure, logging the error.
 fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
     // Try RFC3339 first (in case format changes)
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {

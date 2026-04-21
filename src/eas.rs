@@ -529,7 +529,6 @@ fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> 
             .any(|a| nfc(&a.email).to_ascii_lowercase().contains(&q))
 }
 
-/// Parsed device information: (friendly_name, model, os, phone_number, imei, user_agent)
 type DeviceInfo = (
     Option<String>,
     Option<String>,

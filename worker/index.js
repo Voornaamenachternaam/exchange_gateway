@@ -46,7 +46,18 @@ const API_METHODS = {
   '/api/upsert_delegate': 'POST',
   '/api/delete_delegate': 'POST',
   '/api/add_permission_audit': 'POST',
-  '/api/get_permission_audit_log': 'GET'
+  '/api/get_permission_audit_log': 'GET',
+  '/api/upsert_calendar_attachment': 'POST',
+  '/api/get_calendar_attachment': 'GET',
+  '/api/get_calendar_attachments_for_item': 'GET',
+  '/api/delete_calendar_attachment': 'POST',
+  '/api/upsert_room_list': 'POST',
+  '/api/get_room_lists': 'GET',
+  '/api/delete_room_list': 'POST',
+  '/api/upsert_room': 'POST',
+  '/api/get_rooms_for_list': 'GET',
+  '/api/get_all_rooms': 'GET',
+  '/api/delete_room': 'POST'
 };
 
 export default {
@@ -1160,3 +1171,208 @@ async function handleGetPermissionAuditLog(url, request, env) {
   return Response.json(result.results || []);
 }
 
+
+// Attachment API handlers (v7)
+
+async function handleUpsertCalendarAttachment(request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    await checkIdempotency(request, env, 'handleUpsertCalendarAttachment');
+    try {
+        const body = await readJson(request);
+        const {
+            id = '', parent_item_server_id = '', owner = '', name = '',
+            content_type = 'application/octet-stream', content_size = 0,
+            content_base64 = '', is_inline = 0, content_id = null,
+            content_location = null, attachment_type = 'file',
+            last_modified_time = null
+        } = body;
+        if (!id || !parent_item_server_id || !owner) {
+            return new Response('Missing id/parent_item_server_id/owner', { status: 400 });
+        }
+        const isInlineInt = Number(is_inline) || 0;
+        const contentSizeInt = Number(content_size) || 0;
+        await env.EXCHANGE_DB
+            .prepare(`INSERT INTO calendar_attachment (id, parent_item_server_id, owner, name, content_type, content_size, content_base64, is_inline, content_id, content_location, attachment_type, last_modified_time, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET name = excluded.name, content_type = excluded.content_type, content_size = excluded.content_size, content_base64 = excluded.content_base64, is_inline = excluded.is_inline, content_id = excluded.content_id, content_location = excluded.content_location, attachment_type = excluded.attachment_type, last_modified_time = excluded.last_modified_time, updated_at = CURRENT_TIMESTAMP`)
+            .bind(id, parent_item_server_id, owner, name, content_type, contentSizeInt, content_base64, isInlineInt, content_id, content_location, attachment_type, last_modified_time)
+            .run();
+        return Response.json({ success: true });
+    } catch (error) {
+        if (error.message === 'Invalid JSON') {
+            return new Response('Invalid JSON body', { status: 400 });
+        }
+        console.error('Error upserting calendar attachment:', error);
+        return new Response('Internal Server Error', { status: 500 });
+    }
+}
+
+async function handleGetCalendarAttachment(url, request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    const owner = url.searchParams.get('owner') || '';
+    const attachmentId = url.searchParams.get('attachment_id') || '';
+    if (!owner || !attachmentId) {
+        return new Response('Missing owner/attachment_id', { status: 400 });
+    }
+    const result = await env.EXCHANGE_DB
+        .prepare('SELECT id, parent_item_server_id, owner, name, content_type, content_size, content_base64, is_inline, content_id, content_location, attachment_type, last_modified_time, created_at, updated_at FROM calendar_attachment WHERE owner = ? AND id = ? LIMIT 1')
+        .bind(owner, attachmentId)
+        .first();
+    return Response.json(result || null);
+}
+
+async function handleGetCalendarAttachmentsForItem(url, request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    const owner = url.searchParams.get('owner') || '';
+    const parentItemServerId = url.searchParams.get('parent_item_server_id') || '';
+    if (!owner || !parentItemServerId) {
+        return new Response('Missing owner/parent_item_server_id', { status: 400 });
+    }
+    const result = await env.EXCHANGE_DB
+        .prepare('SELECT id, parent_item_server_id, owner, name, content_type, content_size, content_base64, is_inline, content_id, content_location, attachment_type, last_modified_time, created_at, updated_at FROM calendar_attachment WHERE owner = ? AND parent_item_server_id = ? ORDER BY name ASC')
+        .bind(owner, parentItemServerId)
+        .all();
+    return Response.json(result.results || []);
+}
+
+async function handleDeleteCalendarAttachment(request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    await checkIdempotency(request, env, 'handleDeleteCalendarAttachment');
+    try {
+        const body = await readJson(request);
+        const { owner = '', attachment_id = '' } = body;
+        if (!owner || !attachment_id) {
+            return new Response('Missing owner/attachment_id', { status: 400 });
+        }
+        await env.EXCHANGE_DB
+            .prepare('DELETE FROM calendar_attachment WHERE owner = ? AND id = ?')
+            .bind(owner, attachment_id)
+            .run();
+        return Response.json({ success: true });
+    } catch (error) {
+        if (error.message === 'Invalid JSON') {
+            return new Response('Invalid JSON body', { status: 400 });
+        }
+        console.error('Error deleting calendar attachment:', error);
+        return new Response('Internal Server Error', { status: 500 });
+    }
+}
+
+// Room/Resource API handlers (v8)
+
+async function handleUpsertRoomList(request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    await checkIdempotency(request, env, 'handleUpsertRoomList');
+    try {
+        const body = await readJson(request);
+        const { id = '', email = '', name = '' } = body;
+        if (!id || !email || !name) {
+            return new Response('Missing id/email/name', { status: 400 });
+        }
+        await env.EXCHANGE_DB
+            .prepare(`INSERT INTO room_list (id, email, name, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(email) DO UPDATE SET name = excluded.name, updated_at = CURRENT_TIMESTAMP`)
+            .bind(id, email, name)
+            .run();
+        return Response.json({ success: true });
+    } catch (error) {
+        if (error.message === 'Invalid JSON') {
+            return new Response('Invalid JSON body', { status: 400 });
+        }
+        console.error('Error upserting room list:', error);
+        return new Response('Internal Server Error', { status: 500 });
+    }
+}
+
+async function handleGetRoomLists(url, request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    const result = await env.EXCHANGE_DB
+        .prepare('SELECT id, email, name, created_at, updated_at FROM room_list ORDER BY name ASC')
+        .all();
+    return Response.json(result.results || []);
+}
+
+async function handleDeleteRoomList(request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    await checkIdempotency(request, env, 'handleDeleteRoomList');
+    try {
+        const body = await readJson(request);
+        const { email = '' } = body;
+        if (!email) return new Response('Missing email', { status: 400 });
+        await env.EXCHANGE_DB
+            .prepare('DELETE FROM room_list WHERE email = ?')
+            .bind(email)
+            .run();
+        return Response.json({ success: true });
+    } catch (error) {
+        if (error.message === 'Invalid JSON') {
+            return new Response('Invalid JSON body', { status: 400 });
+        }
+        console.error('Error deleting room list:', error);
+        return new Response('Internal Server Error', { status: 500 });
+    }
+}
+
+async function handleUpsertRoom(request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    await checkIdempotency(request, env, 'handleUpsertRoom');
+    try {
+        const body = await readJson(request);
+        const { id = '', room_list_email = null, email = '', name = '', capacity = 0, is_available = 1 } = body;
+        if (!id || !email || !name) {
+            return new Response('Missing id/email/name', { status: 400 });
+        }
+        const capacityInt = Number(capacity) || 0;
+        const isAvailableInt = Number(is_available) || 1;
+        await env.EXCHANGE_DB
+            .prepare(`INSERT INTO room (id, room_list_email, email, name, capacity, is_available, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(email) DO UPDATE SET room_list_email = excluded.room_list_email, name = excluded.name, capacity = excluded.capacity, is_available = excluded.is_available, updated_at = CURRENT_TIMESTAMP`)
+            .bind(id, room_list_email, email, name, capacityInt, isAvailableInt)
+            .run();
+        return Response.json({ success: true });
+    } catch (error) {
+        if (error.message === 'Invalid JSON') {
+            return new Response('Invalid JSON body', { status: 400 });
+        }
+        console.error('Error upserting room:', error);
+        return new Response('Internal Server Error', { status: 500 });
+    }
+}
+
+async function handleGetRoomsForList(url, request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    const roomListEmail = url.searchParams.get('room_list_email') || '';
+    if (!roomListEmail) {
+        return new Response('Missing room_list_email', { status: 400 });
+    }
+    const result = await env.EXCHANGE_DB
+        .prepare('SELECT id, room_list_email, email, name, capacity, is_available, created_at, updated_at FROM room WHERE room_list_email = ? ORDER BY name ASC')
+        .bind(roomListEmail)
+        .all();
+    return Response.json(result.results || []);
+}
+
+async function handleGetAllRooms(url, request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    const result = await env.EXCHANGE_DB
+        .prepare('SELECT id, room_list_email, email, name, capacity, is_available, created_at, updated_at FROM room ORDER BY name ASC')
+        .all();
+    return Response.json(result.results || []);
+}
+
+async function handleDeleteRoom(request, env) {
+    if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+    await checkIdempotency(request, env, 'handleDeleteRoom');
+    try {
+        const body = await readJson(request);
+        const { email = '' } = body;
+        if (!email) return new Response('Missing email', { status: 400 });
+        await env.EXCHANGE_DB
+            .prepare('DELETE FROM room WHERE email = ?')
+            .bind(email)
+            .run();
+        return Response.json({ success: true });
+    } catch (error) {
+        if (error.message === 'Invalid JSON') {
+            return new Response('Invalid JSON body', { status: 400 });
+        }
+        console.error('Error deleting room:', error);
+        return new Response('Internal Server Error', { status: 500 });
+    }
+}

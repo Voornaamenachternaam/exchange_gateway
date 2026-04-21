@@ -1,8 +1,10 @@
 // src/lib.rs
+pub mod attachment;
 pub mod autodiscover;
 pub mod caldav;
 pub mod calendar;
 pub mod config;
+pub mod delegate_ews;
 pub mod eas;
 pub mod error;
 pub mod ews;
@@ -13,6 +15,7 @@ pub mod meeting;
 pub mod models;
 pub mod permission;
 pub mod protocol_fixtures;
+pub mod room;
 pub mod storage;
 pub mod sync;
 pub mod timezone;

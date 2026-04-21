@@ -171,7 +171,6 @@ impl MeetingContext {
         Self::with_timestamp(uid, organizer_email, start, end, Utc::now())
     }
 
-    /// Create a new MeetingContext with a specific timestamp (for testing)
     pub fn with_timestamp(
         uid: String,
         organizer_email: String,
@@ -198,7 +197,6 @@ impl MeetingContext {
         self.increment_sequence_with_timestamp(Utc::now())
     }
 
-    /// Increment sequence with a specific timestamp (for testing)
     pub fn increment_sequence_with_timestamp(&mut self, now: DateTime<Utc>) {
         self.sequence = self.sequence.saturating_add(1);
         self.last_sequence_time = Some(now);
@@ -209,7 +207,6 @@ impl MeetingContext {
         self.is_past_meeting_at(Utc::now())
     }
 
-    /// Check if meeting is past at a specific timestamp (for testing)
     pub fn is_past_meeting_at(&self, now: DateTime<Utc>) -> bool {
         self.end < now
     }
@@ -277,7 +274,6 @@ impl MeetingStateMachine {
         self.receive_request_with_timestamp(Utc::now())
     }
 
-    /// Receive request with a specific timestamp (for testing)
     pub fn receive_request_with_timestamp(
         &mut self,
         now: DateTime<Utc>,
@@ -300,7 +296,6 @@ impl MeetingStateMachine {
         self.update_meeting_with_timestamp(significant_change, Utc::now())
     }
 
-    /// Update meeting with a specific timestamp (for testing)
     pub fn update_meeting_with_timestamp(
         &mut self,
         significant_change: bool,
@@ -332,7 +327,6 @@ impl MeetingStateMachine {
         self.mark_completed_with_timestamp(Utc::now())
     }
 
-    /// Mark as completed with a specific timestamp (for testing)
     pub fn mark_completed_with_timestamp(
         &mut self,
         now: DateTime<Utc>,
@@ -349,7 +343,6 @@ impl MeetingStateMachine {
         self.transition_to_pending_with_timestamp(Utc::now())
     }
 
-    /// Transition to pending with a specific timestamp (for testing)
     pub fn transition_to_pending_with_timestamp(&mut self, now: DateTime<Utc>) {
         if self.context.state == MeetingState::RequestSent {
             self.context.state = MeetingState::PendingResponses;
@@ -361,7 +354,6 @@ impl MeetingStateMachine {
         self.transition_to_confirmed_with_timestamp(Utc::now())
     }
 
-    /// Transition to confirmed with a specific timestamp (for testing)
     pub fn transition_to_confirmed_with_timestamp(&mut self, now: DateTime<Utc>) {
         self.context.state = MeetingState::Confirmed;
         self.context.updated_at = now;
