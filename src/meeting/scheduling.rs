@@ -124,7 +124,6 @@ pub fn escape_ical_param(s: &str) -> String {
 }
 
 pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
-pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     let parsed = ical_parser::parse_all_vevents(ical).ok()?;
     let event_props = parsed.first()?;
 
