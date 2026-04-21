@@ -161,8 +161,8 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
             let email = normalize_email(value);
 
             // Skip if this attendee is the organizer
-            if let Some(ref org_email) = organizer_email
-                && email == *org_email
+            if let Some(ref org_email) = organizer_email {
+                if email == *org_email {
             {
                 continue;
             }
