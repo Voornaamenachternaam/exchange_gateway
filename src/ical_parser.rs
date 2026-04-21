@@ -1,8 +1,10 @@
 // src/ical_parser.rs
 use chrono::{DateTime, NaiveDateTime, NaiveDate, Utc};
 
+/// Unfold iCal content lines per RFC 5545 §3.1.
+/// Delegates to `icalendar::parser::unfold` for standards compliance.
 pub fn unfold_ical_content(input: &str) -> String {
-    input.replace("\r\n ", "").replace("\n ", "")
+    icalendar::parser::unfold(input)
 }
 
 pub fn parse_property_line(input: &str) -> Result<(String, Vec<(String, String)>, String), nom::Err<nom::error::Error<&str>>> {

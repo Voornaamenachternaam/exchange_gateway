@@ -4,6 +4,7 @@ use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
 };
+use crate::util::nfc;
 use crate::ews_folders::{
     DistinguishedFolder, folder_id_for, render_folder_xml, validate_folder_request,
 };
@@ -22,6 +23,7 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Datelike;
+use const_hex;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
@@ -432,7 +434,7 @@ fn changekey_for_item(item: &EwsItemRow) -> String {
         h.update(u.as_bytes());
     }
     let digest = h.finalize();
-    digest[..12].iter().map(|b| format!("{:02x}", b)).collect()
+    const_hex::encode(&digest[..12])
 }
 
 fn busy_status_to_ews(value: u8) -> &'static str {
@@ -1437,9 +1439,11 @@ async fn load_current_calendar_items(
                 {
                     let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
                     let safe_etag = if etag.is_empty() {
-                        let mut h = Sha256::new();
-                        h.update(server_id.as_bytes());
-                        h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+                        const_hex::encode({
+                            let mut h = Sha256::new();
+                            h.update(server_id.as_bytes());
+                            h.finalize()
+                        })
                     } else {
                         etag.clone()
                     };
@@ -2235,7 +2239,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             current_item.organizer_name = Some(v);
         }
         if let Some(v) = extract_ews_field(body, b"OrganizerEmail") {
-            current_item.organizer_email = Some(v);
+            current_item.organizer_email = Some(nfc(&v));
         }
         if body.contains("RequiredAttendees") || body.contains("OptionalAttendees") {
             current_item.attendees = parse_ews_attendees(body);

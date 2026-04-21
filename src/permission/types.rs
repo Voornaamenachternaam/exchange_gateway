@@ -1,193 +1,86 @@
 // src/permission/types.rs
+use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-const RIGHT_READ_ANY: u32 = 0x00000001;
-const RIGHT_CREATE: u32 = 0x00000002;
-const RIGHT_EDIT_OWNED: u32 = 0x00000008;
-const RIGHT_DELETE_OWNED: u32 = 0x00000010;
-const RIGHT_EDIT_ANY: u32 = 0x00000020;
-const RIGHT_DELETE_ANY: u32 = 0x00000040;
-const RIGHT_CREATE_SUBFOLDER: u32 = 0x00000080;
-const RIGHT_FOLDER_OWNER: u32 = 0x00000100;
-const RIGHT_FOLDER_CONTACT: u32 = 0x00000200;
-const RIGHT_FOLDER_VISIBLE: u32 = 0x00000400;
-const RIGHT_FREEBUSY_SIMPLE: u32 = 0x00000800;
-const RIGHT_FREEBUSY_DETAILED: u32 = 0x00001000;
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct PermissionRights: u32 {
+        const READ_ANY          = 0x00000001;
+        const CREATE            = 0x00000002;
+        const EDIT_OWNED        = 0x00000008;
+        const DELETE_OWNED      = 0x00000010;
+        const EDIT_ANY          = 0x00000020;
+        const DELETE_ANY        = 0x00000040;
+        const CREATE_SUBFOLDER  = 0x00000080;
+        const FOLDER_OWNER      = 0x00000100;
+        const FOLDER_CONTACT    = 0x00000200;
+        const FOLDER_VISIBLE    = 0x00000400;
+        const FREEBUSY_SIMPLE   = 0x00000800;
+        const FREEBUSY_DETAILED = 0x00001000;
+    }
+}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PermissionRights(pub u32);
+// Serde: serialize as u32, deserialize from u32 — preserves wire format compatibility
+impl Serialize for PermissionRights {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u32(self.bits())
+    }
+}
 
-impl Default for PermissionRights {
-    fn default() -> Self {
-        Self(0)
+impl<'de> Deserialize<'de> for PermissionRights {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bits = u32::deserialize(deserializer)?;
+        Ok(Self::from_bits_retain(bits))
     }
 }
 
 impl PermissionRights {
-    pub fn empty() -> Self {
-        Self(0)
-    }
+    // Named single-flag constructors
+    pub fn read_any() -> Self { Self::READ_ANY }
+    pub fn create() -> Self { Self::CREATE }
+    pub fn edit_owned() -> Self { Self::EDIT_OWNED }
+    pub fn delete_owned() -> Self { Self::DELETE_OWNED }
+    pub fn edit_any() -> Self { Self::EDIT_ANY | Self::EDIT_OWNED }
+    pub fn delete_any() -> Self { Self::DELETE_ANY | Self::DELETE_OWNED }
+    pub fn folder_owner() -> Self { Self::FOLDER_OWNER | Self::FOLDER_VISIBLE }
+    pub fn folder_contact() -> Self { Self::FOLDER_CONTACT }
+    pub fn folder_visible() -> Self { Self::FOLDER_VISIBLE }
+    pub fn freebusy_simple() -> Self { Self::FREEBUSY_SIMPLE }
+    pub fn freebusy_detailed() -> Self { Self::FREEBUSY_DETAILED | Self::FREEBUSY_SIMPLE }
 
-    pub fn read_any() -> Self {
-        Self(RIGHT_READ_ANY)
-    }
+    // Named composite constructors (permission levels)
+    pub fn none() -> Self { Self::empty() }
+    pub fn reviewer() -> Self { Self::READ_ANY | Self::FOLDER_VISIBLE }
+    pub fn contributor() -> Self { Self::CREATE | Self::FOLDER_VISIBLE }
+    pub fn author() -> Self { Self::READ_ANY | Self::CREATE | Self::EDIT_OWNED | Self::DELETE_OWNED | Self::FOLDER_VISIBLE }
+    pub fn non_editing_author() -> Self { Self::READ_ANY | Self::CREATE | Self::DELETE_OWNED | Self::FOLDER_VISIBLE }
+    pub fn editor() -> Self { Self::READ_ANY | Self::CREATE | Self::edit_any() | Self::delete_any() | Self::FOLDER_VISIBLE }
+    pub fn publishing_author() -> Self { Self::READ_ANY | Self::CREATE | Self::EDIT_OWNED | Self::DELETE_OWNED | Self::CREATE_SUBFOLDER | Self::FOLDER_VISIBLE }
+    pub fn publishing_editor() -> Self { Self::READ_ANY | Self::CREATE | Self::edit_any() | Self::delete_any() | Self::CREATE_SUBFOLDER | Self::FOLDER_VISIBLE }
+    pub fn owner() -> Self { Self::READ_ANY | Self::CREATE | Self::edit_any() | Self::delete_any() | Self::CREATE_SUBFOLDER | Self::FOLDER_OWNER | Self::FOLDER_CONTACT | Self::FOLDER_VISIBLE }
+    pub fn freebusy() -> Self { Self::FREEBUSY_SIMPLE | Self::FREEBUSY_DETAILED | Self::FOLDER_VISIBLE }
 
-    pub fn create() -> Self {
-        Self(RIGHT_CREATE)
-    }
-
-    pub fn edit_owned() -> Self {
-        Self(RIGHT_EDIT_OWNED)
-    }
-
-    pub fn delete_owned() -> Self {
-        Self(RIGHT_DELETE_OWNED)
-    }
-
-    pub fn edit_any() -> Self {
-        Self(RIGHT_EDIT_ANY | RIGHT_EDIT_OWNED)
-    }
-
-    pub fn delete_any() -> Self {
-        Self(RIGHT_DELETE_ANY | RIGHT_DELETE_OWNED)
-    }
-
-    pub fn folder_owner() -> Self {
-        Self(RIGHT_FOLDER_OWNER | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn folder_contact() -> Self {
-        Self(RIGHT_FOLDER_CONTACT)
-    }
-
-    pub fn folder_visible() -> Self {
-        Self(RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn freebusy_simple() -> Self {
-        Self(RIGHT_FREEBUSY_SIMPLE)
-    }
-
-    pub fn freebusy_detailed() -> Self {
-        Self(RIGHT_FREEBUSY_DETAILED | RIGHT_FREEBUSY_SIMPLE)
-    }
-
-    pub fn none() -> Self {
-        Self(0)
-    }
-
-    pub fn reviewer() -> Self {
-        Self(RIGHT_READ_ANY | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn contributor() -> Self {
-        Self(RIGHT_CREATE | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn author() -> Self {
-        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_OWNED | RIGHT_DELETE_OWNED | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn non_editing_author() -> Self {
-        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_DELETE_OWNED | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn editor() -> Self {
-        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_ANY | RIGHT_DELETE_ANY | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn publishing_author() -> Self {
-        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_OWNED | RIGHT_DELETE_OWNED | RIGHT_CREATE_SUBFOLDER | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn publishing_editor() -> Self {
-        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_ANY | RIGHT_DELETE_ANY | RIGHT_CREATE_SUBFOLDER | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn owner() -> Self {
-        Self(RIGHT_READ_ANY | RIGHT_CREATE | RIGHT_EDIT_ANY | RIGHT_DELETE_ANY | RIGHT_CREATE_SUBFOLDER | RIGHT_FOLDER_OWNER | RIGHT_FOLDER_CONTACT | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn freebusy() -> Self {
-        Self(RIGHT_FREEBUSY_SIMPLE | RIGHT_FREEBUSY_DETAILED | RIGHT_FOLDER_VISIBLE)
-    }
-
-    pub fn can_read_any(&self) -> bool {
-        self.0 & RIGHT_READ_ANY != 0
-    }
-
-    pub fn can_create(&self) -> bool {
-        self.0 & RIGHT_CREATE != 0
-    }
-
-    pub fn can_edit_owned(&self) -> bool {
-        self.0 & RIGHT_EDIT_OWNED != 0
-    }
-
-    pub fn can_delete_owned(&self) -> bool {
-        self.0 & RIGHT_DELETE_OWNED != 0
-    }
-
-    pub fn can_edit_any(&self) -> bool {
-        self.0 & RIGHT_EDIT_ANY != 0
-    }
-
-    pub fn can_delete_any(&self) -> bool {
-        self.0 & RIGHT_DELETE_ANY != 0
-    }
-
-    pub fn can_create_subfolder(&self) -> bool {
-        self.0 & RIGHT_CREATE_SUBFOLDER != 0
-    }
-
-    pub fn is_folder_owner(&self) -> bool {
-        self.0 & RIGHT_FOLDER_OWNER != 0
-    }
-
-    pub fn is_folder_contact(&self) -> bool {
-        self.0 & RIGHT_FOLDER_CONTACT != 0
-    }
-
-    pub fn is_folder_visible(&self) -> bool {
-        self.0 & RIGHT_FOLDER_VISIBLE != 0
-    }
-
-    pub fn can_freebusy_simple(&self) -> bool {
-        self.0 & RIGHT_FREEBUSY_SIMPLE != 0
-    }
-
-    pub fn can_freebusy_detailed(&self) -> bool {
-        self.0 & RIGHT_FREEBUSY_DETAILED != 0
-    }
-
-    pub fn bits(&self) -> u32 {
-        self.0
-    }
-
-    pub fn from_bits(bits: u32) -> Self {
-        Self(bits)
-    }
-
-    pub fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-
-    pub fn intersection(self, other: Self) -> Self {
-        Self(self.0 & other.0)
-    }
-
-    pub fn difference(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
-
-    pub fn contains(&self, other: &Self) -> bool {
-        (self.0 & other.0) == other.0
-    }
+    // Convenience predicates (preserving the existing API names)
+    pub fn can_read_any(&self) -> bool { self.contains(Self::READ_ANY) }
+    pub fn can_create(&self) -> bool { self.contains(Self::CREATE) }
+    pub fn can_edit_owned(&self) -> bool { self.contains(Self::EDIT_OWNED) }
+    pub fn can_delete_owned(&self) -> bool { self.contains(Self::DELETE_OWNED) }
+    pub fn can_edit_any(&self) -> bool { self.contains(Self::EDIT_ANY) }
+    pub fn can_delete_any(&self) -> bool { self.contains(Self::DELETE_ANY) }
+    pub fn can_create_subfolder(&self) -> bool { self.contains(Self::CREATE_SUBFOLDER) }
+    pub fn is_folder_owner(&self) -> bool { self.contains(Self::FOLDER_OWNER) }
+    pub fn is_folder_contact(&self) -> bool { self.contains(Self::FOLDER_CONTACT) }
+    pub fn is_folder_visible(&self) -> bool { self.contains(Self::FOLDER_VISIBLE) }
+    pub fn can_freebusy_simple(&self) -> bool { self.contains(Self::FREEBUSY_SIMPLE) }
+    pub fn can_freebusy_detailed(&self) -> bool { self.contains(Self::FREEBUSY_DETAILED) }
 }
 
 impl fmt::Display for PermissionRights {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return write!(f, "None");
+        }
         let mut parts = Vec::new();
         if self.can_read_any() { parts.push("ReadAny"); }
         if self.can_create() { parts.push("Create"); }
@@ -201,23 +94,19 @@ impl fmt::Display for PermissionRights {
         if self.is_folder_visible() { parts.push("FolderVisible"); }
         if self.can_freebusy_simple() { parts.push("FreeBusySimple"); }
         if self.can_freebusy_detailed() { parts.push("FreeBusyDetailed"); }
-        if parts.is_empty() {
-            write!(f, "None")
-        } else {
-            write!(f, "{}", parts.join("|"))
-        }
+        write!(f, "{}", parts.join("|"))
     }
 }
 
 impl From<u32> for PermissionRights {
     fn from(value: u32) -> Self {
-        Self(value)
+        Self::from_bits_retain(value)
     }
 }
 
 impl From<PermissionRights> for u32 {
     fn from(value: PermissionRights) -> Self {
-        value.0
+        value.bits()
     }
 }
 
@@ -261,25 +150,25 @@ impl PermissionLevel {
         if rights.is_folder_owner() {
             return Self::Owner;
         }
-        if rights.contains(&PermissionRights::publishing_editor()) {
+        if rights.contains(PermissionRights::publishing_editor()) {
             return Self::PublishingEditor;
         }
-        if rights.contains(&PermissionRights::editor()) {
+        if rights.contains(PermissionRights::editor()) {
             return Self::Editor;
         }
-        if rights.contains(&PermissionRights::publishing_author()) {
+        if rights.contains(PermissionRights::publishing_author()) {
             return Self::PublishingAuthor;
         }
-        if rights.contains(&PermissionRights::author()) {
+        if rights.contains(PermissionRights::author()) {
             return Self::Author;
         }
-        if rights.contains(&PermissionRights::non_editing_author()) {
+        if rights.contains(PermissionRights::non_editing_author()) {
             return Self::NonEditingAuthor;
         }
-        if rights.contains(&PermissionRights::contributor()) {
+        if rights.contains(PermissionRights::contributor()) {
             return Self::Contributor;
         }
-        if rights.contains(&PermissionRights::reviewer()) {
+        if rights.contains(PermissionRights::reviewer()) {
             return Self::Reviewer;
         }
         if rights.can_freebusy_simple() {
@@ -418,7 +307,7 @@ impl CalendarPermission {
     }
 
     pub fn rights(&self) -> PermissionRights {
-        PermissionRights::from_bits(self.rights)
+        PermissionRights::from_bits_retain(self.rights)
     }
 
     pub fn set_rights(&mut self, rights: PermissionRights) {
@@ -601,8 +490,8 @@ mod tests {
     fn test_permission_rights_contains() {
         let editor = PermissionRights::editor();
         let author = PermissionRights::author();
-        assert!(editor.contains(&author));
-        assert!(!author.contains(&editor));
+        assert!(editor.contains(author));
+        assert!(!author.contains(editor));
     }
 
     #[test]

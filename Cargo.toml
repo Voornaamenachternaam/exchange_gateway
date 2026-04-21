@@ -81,9 +81,6 @@ futures-core = "^0.3.32"
 # Compact string storage for memory efficiency
 compact_str = { version = "^0.9.0", features = ["serde", "bytes"] }
 
-# Calendar card parsing
-calcard = "^0.3.2"
-
 # HTTP header utilities
 headers = "^0.4.1"
 
@@ -135,6 +132,21 @@ http = "^1.3.0"
 
 # Memory-efficient string handling (NEW)
 smartstring = "^1.0.1"
+
+# Fast hex encoding — replaces hand-rolled format!("{:02x}") loops (NEW)
+const-hex = "^1.18.1"
+
+# Bitflags derive macro — replaces manual bitflag implementations (NEW)
+bitflags = "^2.9.0"
+
+# Unicode normalization (NFC/NFD) — ensures canonical string comparison for email addresses (NEW)
+unicode-normalization = "^0.1.25"
+
+# Compile-time perfect hash — replaces runtime HashMap for WBXML lookup tables (NEW)
+phf = { version = "^0.12.1", features = ["macros"] }
+
+# RFC 5545 iCalendar builder and parser — replaces custom iCal escape/unescape/fold/parse/render (NEW)
+icalendar = { version = "^0.17.10", features = ["parser"] }
 
 [dev-dependencies]
 proptest = "^1.11.0"

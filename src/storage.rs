@@ -1,5 +1,6 @@
 // src/storage.rs
 use anyhow::{Result, anyhow};
+use const_hex;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use reqwest_tracing::TracingMiddleware;
@@ -129,7 +130,7 @@ impl Storage {
         let payload = serde_json::to_vec(body)?;
         hasher.update(&payload);
         let digest = hasher.finalize();
-        Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+        Ok(const_hex::encode(digest))
     }
 
     pub async fn post_json<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<()> {

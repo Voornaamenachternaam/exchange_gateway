@@ -1,5 +1,6 @@
 // src/ews_folders.rs
 use crate::util::xml_escape;
+use const_hex;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,10 +122,7 @@ pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
     format!(
         "{}-{}",
         tag,
-        digest[..12]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>()
+        const_hex::encode(&digest[..12])
     )
 }
 
