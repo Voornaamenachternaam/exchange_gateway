@@ -210,7 +210,7 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 } = &mut state
                     && let Ok(text) = t.decode()
                 {
-                    payload_xml.push_str(&xml_escape(&text));
+                    payload_xml.push_str(&xml_escape_text(&text));
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
