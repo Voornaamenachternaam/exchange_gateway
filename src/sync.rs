@@ -5,7 +5,7 @@ use crate::calendar::{
     parse_ics_event, parse_datetime, render_ics,
 };
 use crate::models::AppState;
-use crate::util::{xml_escape, parse_datetime as util_parse_datetime};
+use crate::util::{normalize_email, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -448,7 +448,7 @@ pub async fn apply_meeting_response(
     if let Some(attendee) = item
         .attendees
         .iter_mut()
-        .find(|a| a.email.eq_ignore_ascii_case(owner))
+        .find(|a| normalize_email(&a.email) == normalize_email(owner))
     {
         attendee.attendee_status = Some(status);
         attendee.partstat = Some(partstat.to_string());

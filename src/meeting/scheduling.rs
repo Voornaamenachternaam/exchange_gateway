@@ -2,6 +2,7 @@
 
 use crate::calendar::CalendarItem;
 use crate::ical_parser;
+use crate::util::normalize_email;
 use chrono::{DateTime, Utc};
 
 pub struct SchedulingContext {
@@ -139,12 +140,8 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         } else if key == "SEQUENCE" {
             sequence = value.parse().unwrap_or(0);
         } else if key.starts_with("ORGANIZER") {
-            // Extract email from mailto: format
-            let email = if value.len() >= 7 && value[..7].eq_ignore_ascii_case("mailto:") {
-                value[7..].to_string()
-            } else {
-                value.clone()
-            };
+            // Extract email from mailto: format, NFC-normalize for storage
+            let email = normalize_email(value);
             organizer_email = Some(email);
         }
     }
@@ -155,12 +152,8 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     // Second pass: find the first ATTENDEE that is not the organizer
     for (key, value) in event_props {
         if key.starts_with("ATTENDEE") {
-            // Extract email from mailto: format
-            let email = if let Some(pos) = value.find("mailto:") {
-                value[pos + 7..].to_string()
-            } else {
-                value.clone()
-            };
+            // Extract email from mailto: format, NFC-normalize for storage
+            let email = normalize_email(value);
 
             // Skip if this attendee is the organizer
             if let Some(ref org_email) = organizer_email {

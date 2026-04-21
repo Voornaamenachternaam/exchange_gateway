@@ -3,7 +3,7 @@ use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::xml_escape;
+use crate::util::{nfc, xml_escape};
 use crate::wbxml::Wbxml;
 use crate::permission::{PermissionEnforcement, PermissionContext};
 use axum::extract::{Query, State};
@@ -527,7 +527,7 @@ fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> 
         || item
             .attendees
             .iter()
-            .any(|a| a.email.to_ascii_lowercase().contains(&q))
+            .any(|a| nfc(&a.email).to_ascii_lowercase().contains(&q))
 }
 
 fn make_request_id() -> String {

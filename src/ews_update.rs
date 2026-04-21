@@ -2,7 +2,7 @@
 use crate::calendar::{
     CalendarItem, extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_recurrence,
 };
-use crate::util::xml_escape;
+use crate::util::{nfc, xml_escape};
 use quick_xml::Reader;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 
@@ -396,7 +396,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 }
                 _ => {
                     if let Some(v) = extract_ews_field(payload, b"EmailAddress") {
-                        item.organizer_email = Some(v);
+                        item.organizer_email = Some(nfc(&v));
                     }
                     if let Some(v) = extract_ews_field(payload, b"Name") {
                         item.organizer_name = Some(v);

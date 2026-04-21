@@ -2,6 +2,7 @@
 use crate::permission::types::{CalendarPermission, PermissionLevel, PermissionRights};
 use crate::permission::storage::PermissionStorage;
 use crate::storage::Storage;
+use crate::util::normalize_email;
 use anyhow::Result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,12 +53,12 @@ impl PermissionContext {
     }
 
     pub fn is_owner(&self) -> bool {
-        self.actor_email == self.folder_owner
+        normalize_email(&self.actor_email) == normalize_email(&self.folder_owner)
     }
 
     pub fn owns_item(&self) -> bool {
         match &self.item_owner {
-            Some(owner) => owner == &self.actor_email,
+            Some(owner) => normalize_email(&self.actor_email) == normalize_email(owner),
             None => false, // SECURITY: Deny by default when ownership is unknown
         }
     }
@@ -183,7 +184,7 @@ impl<'a> PermissionEnforcement<'a> {
         }
 
         let old_perm = self.storage.get_permission(owner, folder_id, user_email).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_rights = old_perm.as_ref().map(|p| p.rights().bits());
 
         let mut perm = CalendarPermission::new(
             folder_id.to_string(),
@@ -202,7 +203,7 @@ impl<'a> PermissionEnforcement<'a> {
             user_email.to_string(),
             "set".to_string(),
             old_rights,
-            Some(perm.rights),
+            Some(perm.rights().bits()),
         );
         self.storage.add_audit_entry(&audit).await?;
 
@@ -222,7 +223,7 @@ impl<'a> PermissionEnforcement<'a> {
         }
 
         let old_perm = self.storage.get_permission(owner, folder_id, user_email).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let _old_rights = old_perm.as_ref().map(|p| p.rights().bits());
 
         self.storage.delete_permission(owner, folder_id, user_email).await?;
 
@@ -233,7 +234,7 @@ impl<'a> PermissionEnforcement<'a> {
                 actor_email.to_string(),
                 user_email.to_string(),
                 "remove".to_string(),
-                Some(perm.rights),
+                Some(perm.rights().bits()),
                 None,
             );
             self.storage.add_audit_entry(&audit).await?;
@@ -255,7 +256,7 @@ impl<'a> PermissionEnforcement<'a> {
         }
 
         let old_perm = self.storage.get_default_permission(owner, folder_id).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_rights = old_perm.as_ref().map(|p| p.rights().bits());
 
         let perm = CalendarPermission::default_permission(
             folder_id.to_string(),
@@ -272,7 +273,7 @@ impl<'a> PermissionEnforcement<'a> {
             "default".to_string(),
             "set_default".to_string(),
             old_rights,
-            Some(perm.rights),
+            Some(perm.rights().bits()),
         );
         self.storage.add_audit_entry(&audit).await?;
 
@@ -292,7 +293,7 @@ impl<'a> PermissionEnforcement<'a> {
         }
 
         let old_perm = self.storage.get_anonymous_permission(owner, folder_id).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_rights = old_perm.as_ref().map(|p| p.rights().bits());
 
         let perm = CalendarPermission::anonymous_permission(
             folder_id.to_string(),
@@ -309,7 +310,7 @@ impl<'a> PermissionEnforcement<'a> {
             "anonymous".to_string(),
             "set_anonymous".to_string(),
             old_rights,
-            Some(perm.rights),
+            Some(perm.rights().bits()),
         );
         self.storage.add_audit_entry(&audit).await?;
 

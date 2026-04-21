@@ -1,5 +1,6 @@
 // src/calendar.rs
 use crate::ical_parser;
+use crate::util::nfc;
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -407,7 +408,7 @@ pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
         Ok(properties) => properties,
         Err(_) => {
             // Fallback to legacy parsing if nom parser fails
-            let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
+            let unfolded = ical_parser::unfold_ical_content(ics);
             let mut properties = Vec::new();
             for line in unfolded.lines() {
                 if line.is_empty() {
@@ -425,7 +426,7 @@ pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
 }
 
 fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
-    let unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "");
+    let unfolded = ical_parser::unfold_ical_content(ics);
     let mut blocks = Vec::new();
     let mut current = Vec::new();
     let mut in_vevent = false;
@@ -1161,19 +1162,20 @@ fn parse_ical_param(key: &str, name: &str) -> Option<String> {
 
 fn parse_ical_actor_line(key: &str, value: &str) -> (Option<String>, Option<String>) {
     let name = parse_ical_param(key, "CN").map(|v| unescape_ical_text(&v));
-    let email = value
+    let raw_email = value
         .strip_prefix("mailto:")
         .or_else(|| value.strip_prefix("MAILTO:"))
-        .unwrap_or(value)
-        .to_string();
+        .unwrap_or(value);
+    let email = nfc(raw_email);
     (name, Some(email))
 }
 
 fn normalize_mailto(email: &str) -> String {
-    if email.to_ascii_lowercase().starts_with("mailto:") {
-        email.to_string()
+    let nfc_email = nfc(email);
+    if nfc_email.to_ascii_lowercase().starts_with("mailto:") {
+        nfc_email
     } else {
-        format!("mailto:{email}")
+        format!("mailto:{nfc_email}")
     }
 }
 
@@ -1325,7 +1327,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         Some(b"UID") => current.uid = Some(value),
                         Some(b"ClientUid") => current.client_uid = Some(value),
                         Some(b"OrganizerName") => current.organizer_name = Some(value),
-                        Some(b"OrganizerEmail") => current.organizer_email = Some(value),
+                        Some(b"OrganizerEmail") => current.organizer_email = Some(nfc(&value)),
                         Some(b"BusyStatus") => {
                             if let Some(ex) = current.current_exception.as_mut() {
                                 ex.busy_status = value.parse().ok();
@@ -1783,7 +1785,7 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
                     let value = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
                     match stack.last().map(|v| v.as_slice()) {
                         Some(b"Name") => attendee.name = Some(value),
-                        Some(b"EmailAddress") => attendee.email = value,
+                        Some(b"EmailAddress") => attendee.email = nfc(&value),
                         Some(b"ResponseType") => {
                             let (status, partstat) = match value.as_str() {
                                 "Accept" => (Some(3), Some("ACCEPTED".to_string())),

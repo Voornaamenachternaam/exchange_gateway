@@ -1,7 +1,8 @@
 // src/permission/delegate.rs
-use crate::permission::types::{DelegateInfo, PermissionLevel, PermissionRights, PermissionAuditEntry};
+use crate::permission::types::{DelegateInfo, PermissionLevel, PermissionAuditEntry};
 use crate::permission::storage::PermissionStorage;
 use crate::storage::Storage;
+use crate::util::normalize_email;
 use anyhow::Result;
 
 pub struct DelegateManager<'a> {
@@ -31,7 +32,7 @@ impl<'a> DelegateManager<'a> {
         calendar_permission: PermissionLevel,
         actor_email: &str,
     ) -> Result<DelegateInfo> {
-        if delegator == delegate_email {
+        if normalize_email(delegator) == normalize_email(delegate_email) {
             anyhow::bail!("Cannot add self as delegate");
         }
 

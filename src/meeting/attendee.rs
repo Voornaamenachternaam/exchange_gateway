@@ -1,4 +1,5 @@
 // src/meeting/attendee.rs
+use crate::util::normalize_email;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -245,12 +246,14 @@ impl AttendeeTracker {
     }
 
     pub fn add_attendee(&mut self, email: String, name: Option<String>, role: AttendeeRole) {
+        let email = normalize_email(&email);
         if !self.attendees.iter().any(|a| a.email == email) {
             self.attendees.push(AttendeeResponse::new(email, name, role));
         }
     }
 
     pub fn remove_attendee(&mut self, email: &str) -> bool {
+        let email = normalize_email(email);
         let len_before = self.attendees.len();
         self.attendees.retain(|a| a.email != email);
         self.attendees.len() != len_before
@@ -261,6 +264,7 @@ impl AttendeeTracker {
         email: &str,
         status: AttendeeStatus,
     ) -> Result<(), &'static str> {
+        let email = normalize_email(email);
         if let Some(attendee) = self.attendees.iter_mut().find(|a| a.email == email) {
             attendee.respond(status);
             Ok(())
@@ -275,6 +279,7 @@ impl AttendeeTracker {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<(), &'static str> {
+        let email = normalize_email(email);
         if let Some(attendee) = self.attendees.iter_mut().find(|a| a.email == email) {
             attendee.propose_new_time(start, end);
             Ok(())
@@ -284,10 +289,12 @@ impl AttendeeTracker {
     }
 
     pub fn get_attendee(&self, email: &str) -> Option<&AttendeeResponse> {
+        let email = normalize_email(email);
         self.attendees.iter().find(|a| a.email == email)
     }
 
     pub fn get_attendee_mut(&mut self, email: &str) -> Option<&mut AttendeeResponse> {
+        let email = normalize_email(email);
         self.attendees.iter_mut().find(|a| a.email == email)
     }
 
