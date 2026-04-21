@@ -268,9 +268,8 @@ pub fn parse_ical_datetime(
         }
     }
 
-    if input.len() == 8
-        && input.chars().all(|c| c.is_ascii_digit())
-        && let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d")
+    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
     {
         let dt = date.and_hms_opt(0, 0, 0).ok_or_else(|| {
             nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
