@@ -226,8 +226,7 @@ pub fn parse_vtimezone_block(
 ) -> Result<Option<String>, nom::Err<nom::error::Error<&str>>> {
     let unfolded = unfold_ical_content(input);
 
-    if let Some(start) = unfolded.find("BEGIN:VTIMEZONE")
-        && let Some(end) = unfolded.find("END:VTIMEZONE")
+    if let (Some(start), Some(end)) = (unfolded.find("BEGIN:VTIMEZONE"), unfolded.find("END:VTIMEZONE"))
     {
         let block = &unfolded[start..end + "END:VTIMEZONE".len()];
         return Ok(Some(block.to_string()));
