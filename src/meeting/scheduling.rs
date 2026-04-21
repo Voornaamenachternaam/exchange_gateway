@@ -124,6 +124,7 @@ pub fn escape_ical_param(s: &str) -> String {
 }
 
 pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
+pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     let parsed = ical_parser::parse_all_vevents(ical).ok()?;
     let event_props = parsed.first()?;
 
@@ -138,7 +139,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         if key.starts_with("UID") {
             uid = Some(value.trim().to_string());
         } else if key.starts_with("SEQUENCE") {
-            sequence = value.trim().parse().ok();
+            sequence = value.trim().parse().ok().unwrap_or(0);
         } else if key.starts_with("ORGANIZER") {
             // Extract email from mailto: format, NFC-normalize for storage
             let email = normalize_email(value);
