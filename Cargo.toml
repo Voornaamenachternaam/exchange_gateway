@@ -57,7 +57,7 @@ bytes = "^1.11.1"
 tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter", "registry", "json"] }
 tracing-opentelemetry = "^0.29.0"
-opentelemetry = { version = "^0.29.0", features = ["trace", "logs"] }
+opentelemetry = { version = "^0.31.0", features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "^0.29.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "^0.29.0", features = ["trace", "grpc-tonic"] }
 
