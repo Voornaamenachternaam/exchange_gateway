@@ -23,6 +23,9 @@ pub use autodiscover::AutodiscoverJsonParams;
 pub use config::Config;
 pub use error::{GatewayError, Result};
 pub use models::AppState;
-pub use permission::{CalendarPermission, PermissionLevel, PermissionRights, DelegateInfo, DelegatePermission, PermissionEnforcement, PermissionCheck, DelegateManager};
+pub use permission::{
+    CalendarPermission, DelegateInfo, DelegateManager, DelegatePermission, PermissionCheck,
+    PermissionEnforcement, PermissionLevel, PermissionRights,
+};
 pub use storage::Storage;
 pub use util::xml_escape;

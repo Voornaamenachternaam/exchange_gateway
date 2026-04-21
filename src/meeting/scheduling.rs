@@ -64,7 +64,8 @@ fn build_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
     }
     lines.push(format!("DTSTART:{}", format_ical_datetime(item.start)));
     lines.push(format!("DTEND:{}", format_ical_datetime(item.end)));
-    lines.push(format!("ORGANIZER;CN={}:mailto:{}", 
+    lines.push(format!(
+        "ORGANIZER;CN={}:mailto:{}",
         escape_ical_param(ctx.organizer_name.as_deref().unwrap_or("")),
         ctx.organizer_email
     ));
@@ -110,13 +111,17 @@ pub fn escape_ical_text(s: &str) -> String {
 /// Escape and quote a parameter value for iCalendar property parameters.
 /// Per RFC 5545, parameter values containing special characters must be quoted.
 pub fn escape_ical_param(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\")
+    let escaped = s
+        .replace('\\', "\\\\")
         .replace(';', "\\;")
         .replace(':', "\\:")
         .replace(',', "\\,")
         .replace('"', "\\'");
     // Quote if contains special chars or spaces
-    if escaped.chars().any(|c| c == ';' || c == ':' || c == ',' || c == ' ' || c == '"' || c == '\\' || c == '\n') {
+    if escaped
+        .chars()
+        .any(|c| c == ';' || c == ':' || c == ',' || c == ' ' || c == '"' || c == '\\' || c == '\n')
+    {
         format!("\"{}\"", escaped)
     } else {
         escaped
@@ -157,16 +162,21 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
             // Skip if this attendee is the organizer
             if let Some(ref org_email) = organizer_email
-                && email == *org_email {
-                    continue;
-                }
+                && email == *org_email
+            {
+                continue;
+            }
 
             // Extract partstat from the key
-            let partstat = key.split(';')
+            let partstat = key
+                .split(';')
                 .find_map(|p| {
                     let (k, v) = p.split_once('=')?;
                     if k.eq_ignore_ascii_case("PARTSTAT") {
-                        Some(v.trim_matches(|c: char| c == '"' || c.is_whitespace()).to_uppercase())
+                        Some(
+                            v.trim_matches(|c: char| c == '"' || c.is_whitespace())
+                                .to_uppercase(),
+                        )
                     } else {
                         None
                     }
@@ -235,7 +245,9 @@ mod tests {
 
     #[test]
     fn test_format_ical_datetime() {
-        let dt = DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z").unwrap().with_timezone(&Utc);
+        let dt = DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         assert_eq!(format_ical_datetime(dt), "20240115T103000Z");
     }
 

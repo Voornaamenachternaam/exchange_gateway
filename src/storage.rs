@@ -478,7 +478,10 @@ impl Storage {
         struct OwnerRow {
             owner: String,
         }
-        let path = format!("get_ews_item_owner?server_id={}", urlencoding::encode(server_id));
+        let path = format!(
+            "get_ews_item_owner?server_id={}",
+            urlencoding::encode(server_id)
+        );
         let row: Option<OwnerRow> = self.get_json(&path).await?;
         Ok(row.map(|r| r.owner))
     }
@@ -685,7 +688,8 @@ impl Storage {
             owner: &'a str,
             uid: &'a str,
         }
-        self.post_json("delete_meeting_state", &Req { owner, uid }).await
+        self.post_json("delete_meeting_state", &Req { owner, uid })
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -769,21 +773,14 @@ impl Storage {
         .await
     }
 
-    pub async fn delete_meeting_attendees(
-        &self,
-        owner: &str,
-        meeting_uid: &str,
-    ) -> Result<()> {
+    pub async fn delete_meeting_attendees(&self, owner: &str, meeting_uid: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
             owner: &'a str,
             meeting_uid: &'a str,
         }
-        self.post_json(
-            "delete_meeting_attendees",
-            &Req { owner, meeting_uid },
-        )
-        .await
+        self.post_json("delete_meeting_attendees", &Req { owner, meeting_uid })
+            .await
     }
 
     pub async fn enqueue_scheduling(

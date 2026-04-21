@@ -43,9 +43,7 @@ fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push_str("=\"");
         match attr.decode_and_unescape_value(decoder) {
             Ok(value) => out.push_str(&xml_escape(&value)),
-            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(
-                attr.value.as_ref(),
-            ))),
+            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
         out.push('"');
     }
@@ -61,9 +59,7 @@ fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push_str("=\"");
         match attr.decode_and_unescape_value(decoder) {
             Ok(value) => out.push_str(&xml_escape(&value)),
-            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(
-                attr.value.as_ref(),
-            ))),
+            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
         out.push('"');
     }

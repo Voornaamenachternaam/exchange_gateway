@@ -450,9 +450,9 @@ fn split_ical_blocks(ics: &str) -> Vec<Vec<String>> {
 }
 
 #[must_use]
-    fn extract_vtimezone_block(ics: &str) -> Option<String> {
-        ical_parser::parse_vtimezone_block(ics).ok().flatten()
-    }
+fn extract_vtimezone_block(ics: &str) -> Option<String> {
+    ical_parser::parse_vtimezone_block(ics).ok().flatten()
+}
 
 fn parse_categories_value(value: &str) -> Vec<String> {
     value
@@ -515,9 +515,9 @@ fn format_ical_datetime_with_timezone(
     (None, dt.format("%Y%m%dT%H%M%SZ").to_string())
 }
 
-    fn parse_duration_minutes(trigger: &str) -> Option<i32> {
-        ical_parser::parse_ical_duration_minutes(trigger).ok()
-    }
+fn parse_duration_minutes(trigger: &str) -> Option<i32> {
+    ical_parser::parse_ical_duration_minutes(trigger).ok()
+}
 
 fn fold_ics_line(line: &str) -> String {
     const MAX_LINE_LEN: usize = 75;
@@ -1271,9 +1271,10 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     match stack.last().map(|v| v.as_slice()) {
                         Some(b"ClientId") => current.client_id = Some(value),
                         Some(b"ServerId")
-                            if !stack.iter().any(|v| v.as_slice() == b"Exception") => {
-                                current.server_id = Some(value);
-                            }
+                            if !stack.iter().any(|v| v.as_slice() == b"Exception") =>
+                        {
+                            current.server_id = Some(value);
+                        }
                         Some(b"InstanceId") => {
                             current.instance_id = parse_datetime(&value);
                         }

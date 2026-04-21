@@ -56,7 +56,7 @@ impl Config {
         if self.bind.is_empty() {
             return Err(anyhow::anyhow!("Config: 'bind' address is required"));
         }
-        
+
         if !self.bind.contains(':') {
             return Err(anyhow::anyhow!(
                 "Config: 'bind' must be in format 'host:port'"
@@ -67,11 +67,15 @@ impl Config {
         validate_url(&self.worker_url, "worker_url")?;
 
         if self.worker_secret.expose_secret().len() < 16 {
-            return Err(anyhow::anyhow!("Config: 'worker_secret' must be at least 16 characters"));
+            return Err(anyhow::anyhow!(
+                "Config: 'worker_secret' must be at least 16 characters"
+            ));
         }
 
         if self.hmac_secret.expose_secret().len() < 32 {
-            return Err(anyhow::anyhow!("Config: 'hmac_secret' must be at least 32 characters"));
+            return Err(anyhow::anyhow!(
+                "Config: 'hmac_secret' must be at least 32 characters"
+            ));
         }
 
         if !self.gateway_host.is_empty() && self.gateway_host.contains("://") {
