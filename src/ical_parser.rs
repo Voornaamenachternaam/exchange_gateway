@@ -60,7 +60,7 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     let mut in_quotes = false;
     let mut escape_next = false;
     let mut parsing_value = false;
-    let chars = params_str.chars().peekable();
+    let chars = params_str.chars();
 
     for c in chars {
         if escape_next {
