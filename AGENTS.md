@@ -45,5 +45,14 @@ cargo clippy         # Lint (2 known dead_code warnings: is_stub_action, folded_
 - iCal text escaping: 3 duplicate `escape_ical_text` impls (calendar.rs, meeting/message.rs, meeting/scheduling.rs) — Phase 2 candidate for icalendar consolidation
 
 ## Warnings
-- `is_stub_action` in ews.rs: dead code, safe to ignore
-- `folded_line` in meeting/message.rs: dead code, safe to ignore
+- `is_stub_action` in ews.rs: suppressed with `#[allow(dead_code)]` (compile-time stub detection, may be used later)
+- `folded_line` in meeting/message.rs: suppressed with `#[allow(dead_code)]` (convenience wrapper for fold_ical_line)
+
+## Type Aliases
+- `PropertyLine` / `VeventProps` / `NomError` in `ical_parser.rs`: reduce clippy type_complexity
+- `DeviceInfo` in `eas.rs`: parsed device information tuple
+
+## FromStr Implementations
+- `DistinguishedFolder::from_str` → `impl FromStr` (ews_folders.rs)
+- `PermissionLevel::from_str` → `impl FromStr` (permission/types.rs)
+- `DelegatePermission::from_str` → `impl FromStr` (permission/types.rs)

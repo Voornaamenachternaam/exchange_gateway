@@ -64,6 +64,7 @@ impl<'a> DelegateManager<'a> {
         Ok(delegate)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_delegate(
         &self,
         delegator: &str,

@@ -7,7 +7,10 @@ pub fn unfold_ical_content(input: &str) -> String {
     icalendar::parser::unfold(input)
 }
 
-pub fn parse_property_line(input: &str) -> Result<(String, Vec<(String, String)>, String), nom::Err<nom::error::Error<&str>>> {
+/// Parsed iCalendar property line: (name, params, value).
+pub type PropertyLine = (String, Vec<(String, String)>, String);
+
+pub fn parse_property_line(input: &str) -> Result<PropertyLine, nom::Err<nom::error::Error<&str>>> {
     // Find the colon that separates name/params from value, respecting quoted strings
     // iCalendar property format: NAME;PARAM1=VALUE1;PARAM2="VALUE WITH ;":PROPERTY_VALUE
     let colon_pos = find_value_colon(input)
@@ -56,9 +59,9 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     let mut in_quotes = false;
     let mut escape_next = false;
     let mut parsing_value = false;
-    let mut chars = params_str.chars().peekable();
+    let chars = params_str.chars().peekable();
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         if escape_next {
             if parsing_value {
                 current_value.push(c);
@@ -170,7 +173,13 @@ pub fn parse_vevent_block(input: &str) -> Result<Vec<(String, String)>, nom::Err
     parse_property_lines(content)
 }
 
-pub fn parse_all_vevents(input: &str) -> Result<Vec<Vec<(String, String)>>, nom::Err<nom::error::Error<&str>>> {
+/// Parsed VEVENT: a list of (key, value) property pairs.
+pub type VeventProps = Vec<(String, String)>;
+
+/// Nom error type used by iCal parsers.
+pub type NomError<'i> = nom::Err<nom::error::Error<&'i str>>;
+
+pub fn parse_all_vevents(input: &str) -> Result<Vec<VeventProps>, NomError<'_>> {
     let unfolded = unfold_ical_content(input);
     let mut events = Vec::new();
     let mut remaining = unfolded.as_str();
@@ -197,12 +206,11 @@ pub fn parse_all_vevents(input: &str) -> Result<Vec<Vec<(String, String)>>, nom:
 pub fn parse_vtimezone_block(input: &str) -> Result<Option<String>, nom::Err<nom::error::Error<&str>>> {
     let unfolded = unfold_ical_content(input);
 
-    if let Some(start) = unfolded.find("BEGIN:VTIMEZONE") {
-        if let Some(end) = unfolded.find("END:VTIMEZONE") {
+    if let Some(start) = unfolded.find("BEGIN:VTIMEZONE")
+        && let Some(end) = unfolded.find("END:VTIMEZONE") {
             let block = &unfolded[start..end + "END:VTIMEZONE".len()];
             return Ok(Some(block.to_string()));
         }
-    }
 
     Ok(None)
 }
@@ -210,8 +218,7 @@ pub fn parse_vtimezone_block(input: &str) -> Result<Option<String>, nom::Err<nom
 pub fn parse_ical_datetime(input: &str) -> Result<DateTime<Utc>, nom::Err<nom::error::Error<&str>>> {
     let input = input.trim();
 
-    if input.ends_with('Z') {
-        let inner = &input[..input.len() - 1];
+    if let Some(inner) = input.strip_suffix('Z') {
         if let Ok(dt) = NaiveDateTime::parse_from_str(inner, "%Y%m%dT%H%M%S") {
             return Ok(dt.and_utc());
         }
@@ -229,12 +236,11 @@ pub fn parse_ical_datetime(input: &str) -> Result<DateTime<Utc>, nom::Err<nom::e
         }
     }
 
-    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
+    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit())
+        && let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
             let dt = date.and_hms_opt(0, 0, 0).ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify)))?;
             return Ok(dt.and_utc());
         }
-    }
 
     Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify)))
 }
@@ -245,7 +251,7 @@ pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
         let start = pos + search.len();
         let remainder = &input[start..];
         let end = remainder
-            .find(|c: char| c == ';' || c == ':' || c == '\n')
+            .find([';', ':', '\n'])
             .unwrap_or(remainder.len());
         Some(remainder[..end].trim_matches('"').to_string())
     } else {
@@ -299,8 +305,8 @@ pub fn unescape_ical_text(input: &str) -> String {
 }
 
 pub fn parse_ical_duration_minutes(input: &str) -> Result<i32, nom::Err<nom::error::Error<&str>>> {
-    let (negative, input) = if input.starts_with('-') {
-        (true, &input[1..])
+    let (negative, input) = if let Some(stripped) = input.strip_prefix('-') {
+        (true, stripped)
     } else {
         (false, input)
     };

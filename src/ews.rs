@@ -8,6 +8,7 @@ use crate::util::nfc;
 use crate::ews_folders::{
     DistinguishedFolder, folder_id_for, render_folder_xml, validate_folder_request,
 };
+use std::str::FromStr;
 use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::models::AppState;
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
@@ -97,6 +98,7 @@ impl EwsAction {
     /// Returns true if this action is a stub/no-op implementation.
     /// Evaluated at compile time.
     #[must_use]
+    #[allow(dead_code)]
     const fn is_stub_action(&self) -> bool {
         matches!(
             self,
@@ -504,7 +506,7 @@ fn validate_item_change_key(
     action: &EwsAction,
     body: &str,
     item: &EwsItemRow,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     if let Some(requested) = extract_requested_change_key(body) {
         let expected = changekey_for_item(item);
         if requested != expected {
@@ -513,7 +515,7 @@ fn validate_item_change_key(
                 "ErrorIrresolvableConflict",
                 "Item ChangeKey does not match the current stored version",
                 StatusCode::OK,
-            ));
+            ).into());
         }
     }
     Ok(())
@@ -1282,7 +1284,7 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
 
-fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Result<(), Response> {
+fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Result<(), Box<Response>> {
     let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
     let explicit_id = extract_first_attr(body, b"FolderId", b"Id");
     let parent_id = extract_first_attr(body, b"ParentFolderId", b"Id");
@@ -1316,7 +1318,7 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
                 "ErrorFolderNotFound",
                 "Requested folder was not found for this mailbox",
                 StatusCode::OK,
-            ));
+            ).into());
         }
     }
 
@@ -1331,7 +1333,7 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
             error_code,
             "Requested folder was not found for this mailbox",
             StatusCode::OK,
-        ));
+        ).into());
     }
     Ok(())
 }
@@ -1484,7 +1486,7 @@ async fn load_current_calendar_items(
 async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::GetFolder, owner, body) {
-        return resp;
+        return *resp;
     }
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
@@ -1511,7 +1513,7 @@ async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str
 async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
-        return resp;
+        return *resp;
     }
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
@@ -1539,7 +1541,7 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
 async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindItem, owner, body) {
-        return resp;
+        return *resp;
     }
     let max = extract_int(body, b"MaxEntriesReturned", 50);
     let offset = extract_int(body, b"Offset", 0);
@@ -1759,7 +1761,7 @@ async fn handle_sync_folder_items(
 ) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::SyncFolderItems, owner, body) {
-        return resp;
+        return *resp;
     }
     let max_changes = extract_int(body, b"MaxChangesReturned", 100);
     let shape = requested_item_shape(body);
@@ -1986,7 +1988,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
 
     if let Err(resp) = validate_requested_folder(&EwsAction::CreateItem, owner, body) {
-        return resp;
+        return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
@@ -2116,7 +2118,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
     let stored_item = match state
         .storage
-        .get_ews_item_by_server_id(&owner, &item_id)
+        .get_ews_item_by_server_id(owner, &item_id)
         .await
     {
         Ok(v) => v,
@@ -2138,7 +2140,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     };
     if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item) {
-        return resp;
+        return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
@@ -2360,7 +2362,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
     let existing = match state
         .storage
-        .get_ews_item_by_server_id(&owner, &item_id)
+        .get_ews_item_by_server_id(owner, &item_id)
         .await
     {
         Ok(v) => v,
@@ -2382,7 +2384,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     };
     if let Err(resp) = validate_item_change_key(&EwsAction::DeleteItem, body, &existing) {
-        return resp;
+        return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,

@@ -300,11 +300,10 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 return Err("Add requires ClientId");
             }
         }
-        "meetingresponse" => {
-            if extract_first_tag_text(xml, b"UserResponse").is_none() {
+        "meetingresponse"
+            if extract_first_tag_text(xml, b"UserResponse").is_none() => {
                 return Err("MeetingResponse requires UserResponse");
             }
-        }
         _ => {}
     }
     Ok(())
@@ -530,20 +529,16 @@ fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> 
             .any(|a| nfc(&a.email).to_ascii_lowercase().contains(&q))
 }
 
+/// Parsed device information: (friendly_name, model, os, phone_number, imei, user_agent)
+type DeviceInfo = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+
 fn make_request_id() -> String {
     Uuid::new_v4().to_string()
 }
 
 fn parse_device_information(
     xml: &str,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> DeviceInfo {
     (
         extract_first_tag_text(xml, b"FriendlyName"),
         extract_first_tag_text(xml, b"Model"),
@@ -1517,7 +1512,7 @@ async fn handle_resolve_recipients(
     let freebusy_results = join_all(freebusy_futures).await;
 
     let mut recipient_xml = String::new();
-    for (recipient, freebusy) in recipients.iter().zip(freebusy_results.into_iter()) {
+    for (recipient, freebusy) in recipients.iter().zip(freebusy_results) {
         let avail_xml = if availability_window.is_some() {
             format!(
                 "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",

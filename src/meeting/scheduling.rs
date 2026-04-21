@@ -156,11 +156,10 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
             let email = normalize_email(value);
 
             // Skip if this attendee is the organizer
-            if let Some(ref org_email) = organizer_email {
-                if email == *org_email {
+            if let Some(ref org_email) = organizer_email
+                && email == *org_email {
                     continue;
                 }
-            }
 
             // Extract partstat from the key
             let partstat = key.split(';')
@@ -222,7 +221,7 @@ fn build_cancel_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
     lines.push("BEGIN:VEVENT".to_string());
     lines.push(format!("UID:{}", ctx.uid));
     lines.push(format!("DTSTAMP:{}", format_ical_datetime(Utc::now())));
-    lines.push(format!("STATUS:CANCELLED"));
+    lines.push("STATUS:CANCELLED".to_string());
     if !item.subject.is_empty() {
         lines.push(format!("SUMMARY:{}", escape_ical_text(&item.subject)));
     }

@@ -2,6 +2,7 @@
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -111,7 +112,9 @@ impl From<PermissionRights> for u32 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum PermissionLevel {
+    #[default]
     None = 0,
     FreeBusy = 1,
     Reviewer = 2,
@@ -124,11 +127,6 @@ pub enum PermissionLevel {
     Owner = 9,
 }
 
-impl Default for PermissionLevel {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 impl PermissionLevel {
     pub fn to_rights(&self) -> PermissionRights {
@@ -177,22 +175,6 @@ impl PermissionLevel {
         Self::None
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "none" => Some(Self::None),
-            "freebusy" | "freebusyonly" => Some(Self::FreeBusy),
-            "reviewer" => Some(Self::Reviewer),
-            "contributor" => Some(Self::Contributor),
-            "noneditingauthor" => Some(Self::NonEditingAuthor),
-            "author" => Some(Self::Author),
-            "publishingauthor" => Some(Self::PublishingAuthor),
-            "editor" => Some(Self::Editor),
-            "publishingeditor" => Some(Self::PublishingEditor),
-            "owner" => Some(Self::Owner),
-            _ => None,
-        }
-    }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::None => "None",
@@ -213,6 +195,26 @@ impl PermissionLevel {
 impl fmt::Display for PermissionLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for PermissionLevel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "freebusy" | "freebusyonly" => Ok(Self::FreeBusy),
+            "reviewer" => Ok(Self::Reviewer),
+            "contributor" => Ok(Self::Contributor),
+            "noneditingauthor" => Ok(Self::NonEditingAuthor),
+            "author" => Ok(Self::Author),
+            "publishingauthor" => Ok(Self::PublishingAuthor),
+            "editor" => Ok(Self::Editor),
+            "publishingeditor" => Ok(Self::PublishingEditor),
+            "owner" => Ok(Self::Owner),
+            _ => Err(()),
+        }
     }
 }
 
@@ -377,17 +379,14 @@ impl DelegateInfo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum DelegatePermission {
+    #[default]
     None = 0,
     Author = 1,
     Editor = 2,
 }
 
-impl Default for DelegatePermission {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 impl DelegatePermission {
     pub fn to_rights(&self) -> PermissionRights {
@@ -395,15 +394,6 @@ impl DelegatePermission {
             Self::None => PermissionRights::none(),
             Self::Author => PermissionRights::author(),
             Self::Editor => PermissionRights::editor(),
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "none" => Some(Self::None),
-            "author" => Some(Self::Author),
-            "editor" => Some(Self::Editor),
-            _ => None,
         }
     }
 
@@ -419,6 +409,19 @@ impl DelegatePermission {
 impl fmt::Display for DelegatePermission {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for DelegatePermission {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "author" => Ok(Self::Author),
+            "editor" => Ok(Self::Editor),
+            _ => Err(()),
+        }
     }
 }
 

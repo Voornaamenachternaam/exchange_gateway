@@ -411,6 +411,7 @@ pub fn render_client_mutation_responses(results: &[ClientMutationResult]) -> Str
     xml
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn apply_meeting_response(
     state: Arc<AppState>,
     owner: &str,
@@ -1033,6 +1034,7 @@ impl Default for SyncOptions {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,

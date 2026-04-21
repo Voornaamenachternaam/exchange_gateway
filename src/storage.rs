@@ -395,6 +395,7 @@ impl Storage {
         Ok(row.map(|r| (r.policy_key, r.policy_status)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_device_info(
         &self,
         owner: &str,
@@ -611,6 +612,7 @@ impl Storage {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_meeting_state(
         &self,
         owner: &str,
@@ -686,6 +688,7 @@ impl Storage {
         self.post_json("delete_meeting_state", &Req { owner, uid }).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_meeting_attendee(
         &self,
         owner: &str,
