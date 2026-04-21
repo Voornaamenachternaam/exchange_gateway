@@ -288,7 +288,29 @@ pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
     if let Some(pos) = input.find(&search) {
         let start = pos + search.len();
         let remainder = &input[start..];
-        let end = remainder.find([';', ':', '\n']).unwrap_or(remainder.len());
+pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
+    let search = format!("{}=", param_name);
+    if let Some(pos) = input.find(&search) {
+        let start = pos + search.len();
+        let remainder = &input[start..];
+        let mut in_quotes = false;
+        let end = remainder
+            .char_indices()
+            .find(|&(_, c)| {
+                if c == '"' {
+                    in_quotes = !in_quotes;
+                    false
+                } else {
+                    !in_quotes && (c == ';' || c == ':' || c == '\n')
+                }
+            })
+            .map(|(idx, _)| idx)
+            .unwrap_or(remainder.len());
+        Some(remainder[..end].trim_matches('"').to_string())
+    } else {
+        None
+    }
+}
         Some(remainder[..end].trim_matches('"').to_string())
     } else {
         None
