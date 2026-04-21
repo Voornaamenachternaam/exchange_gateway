@@ -1,7 +1,8 @@
 // src/permission/enforcement.rs
-use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionLevel, PermissionRights};
 use crate::permission::storage::PermissionStorage;
+use crate::permission::types::{CalendarPermission, PermissionLevel, PermissionRights};
 use crate::storage::Storage;
+use crate::util::normalize_email;
 use anyhow::Result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,12 +53,12 @@ impl PermissionContext {
     }
 
     pub fn is_owner(&self) -> bool {
-        self.actor_email == self.folder_owner
+        normalize_email(&self.actor_email) == normalize_email(&self.folder_owner)
     }
 
     pub fn owns_item(&self) -> bool {
         match &self.item_owner {
-            Some(owner) => owner == &self.actor_email,
+            Some(owner) => normalize_email(&self.actor_email) == normalize_email(owner),
             None => false, // SECURITY: Deny by default when ownership is unknown
         }
     }
@@ -88,7 +89,11 @@ impl<'a> PermissionEnforcement<'a> {
         };
 
         // Check calendar_permission table for explicit folder permissions
-        if let Some(perm) = self.storage.get_permission(owner, &ctx.folder_id, &ctx.actor_email).await? {
+        if let Some(perm) = self
+            .storage
+            .get_permission(owner, &ctx.folder_id, &ctx.actor_email)
+            .await?
+        {
             return Ok(perm.rights());
         }
 
@@ -104,24 +109,41 @@ impl<'a> PermissionEnforcement<'a> {
         }
 
         // Check default permission for the folder
-        if let Some(default_perm) = self.storage.get_default_permission(owner, &ctx.folder_id).await? {
+        if let Some(default_perm) = self
+            .storage
+            .get_default_permission(owner, &ctx.folder_id)
+            .await?
+        {
             return Ok(default_perm.rights());
         }
 
         // Check anonymous permission
-        if let Some(anon_perm) = self.storage.get_anonymous_permission(owner, &ctx.folder_id).await? {
+        if let Some(anon_perm) = self
+            .storage
+            .get_anonymous_permission(owner, &ctx.folder_id)
+            .await?
+        {
             return Ok(anon_perm.rights());
         }
 
         Ok(PermissionRights::none())
     }
 
-    pub async fn check_permission(&self, ctx: &PermissionContext, check: PermissionCheck) -> Result<bool> {
+    pub async fn check_permission(
+        &self,
+        ctx: &PermissionContext,
+        check: PermissionCheck,
+    ) -> Result<bool> {
         let rights = self.get_effective_rights(ctx).await?;
         Ok(self.check_rights(&rights, check, ctx))
     }
 
-    fn check_rights(&self, rights: &PermissionRights, check: PermissionCheck, ctx: &PermissionContext) -> bool {
+    fn check_rights(
+        &self,
+        rights: &PermissionRights,
+        check: PermissionCheck,
+        ctx: &PermissionContext,
+    ) -> bool {
         match check {
             PermissionCheck::ReadItem => rights.can_read_any() || ctx.owns_item(),
             PermissionCheck::CreateItem => rights.can_create(),
@@ -141,7 +163,8 @@ impl<'a> PermissionEnforcement<'a> {
     }
 
     pub async fn can_create_item(&self, ctx: &PermissionContext) -> Result<bool> {
-        self.check_permission(ctx, PermissionCheck::CreateItem).await
+        self.check_permission(ctx, PermissionCheck::CreateItem)
+            .await
     }
 
     pub async fn can_edit_item(&self, ctx: &PermissionContext) -> Result<bool> {
@@ -154,18 +177,26 @@ impl<'a> PermissionEnforcement<'a> {
 
     pub async fn can_delete_item(&self, ctx: &PermissionContext) -> Result<bool> {
         if ctx.owns_item() {
-            self.check_permission(ctx, PermissionCheck::DeleteOwned).await
+            self.check_permission(ctx, PermissionCheck::DeleteOwned)
+                .await
         } else {
             self.check_permission(ctx, PermissionCheck::DeleteAny).await
         }
     }
 
     pub async fn can_modify_permissions(&self, ctx: &PermissionContext) -> Result<bool> {
-        self.check_permission(ctx, PermissionCheck::FolderOwner).await
+        self.check_permission(ctx, PermissionCheck::FolderOwner)
+            .await
     }
 
-    pub async fn get_permissions_for_display(&self, owner: &str, folder_id: &str) -> Result<Vec<CalendarPermission>> {
-        self.storage.get_permissions_for_folder(owner, folder_id).await
+    pub async fn get_permissions_for_display(
+        &self,
+        owner: &str,
+        folder_id: &str,
+    ) -> Result<Vec<CalendarPermission>> {
+        self.storage
+            .get_permissions_for_folder(owner, folder_id)
+            .await
     }
 
     pub async fn set_permission(
@@ -177,13 +208,23 @@ impl<'a> PermissionEnforcement<'a> {
         level: PermissionLevel,
         actor_email: &str,
     ) -> Result<CalendarPermission> {
-        let ctx = PermissionContext::new(actor_email.to_string(), owner.to_string(), folder_id.to_string());
-        if !self.check_permission(&ctx, PermissionCheck::FolderOwner).await? {
+        let ctx = PermissionContext::new(
+            actor_email.to_string(),
+            owner.to_string(),
+            folder_id.to_string(),
+        );
+        if !self
+            .check_permission(&ctx, PermissionCheck::FolderOwner)
+            .await?
+        {
             anyhow::bail!("Permission denied: only folder owner can modify permissions");
         }
 
-        let old_perm = self.storage.get_permission(owner, folder_id, user_email).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_perm = self
+            .storage
+            .get_permission(owner, folder_id, user_email)
+            .await?;
+        let old_rights = old_perm.as_ref().map(|p| p.rights().bits());
 
         let mut perm = CalendarPermission::new(
             folder_id.to_string(),
@@ -202,7 +243,7 @@ impl<'a> PermissionEnforcement<'a> {
             user_email.to_string(),
             "set".to_string(),
             old_rights,
-            Some(perm.rights),
+            Some(perm.rights().bits()),
         );
         self.storage.add_audit_entry(&audit).await?;
 
@@ -216,15 +257,26 @@ impl<'a> PermissionEnforcement<'a> {
         user_email: &str,
         actor_email: &str,
     ) -> Result<()> {
-        let ctx = PermissionContext::new(actor_email.to_string(), owner.to_string(), folder_id.to_string());
-        if !self.check_permission(&ctx, PermissionCheck::FolderOwner).await? {
+        let ctx = PermissionContext::new(
+            actor_email.to_string(),
+            owner.to_string(),
+            folder_id.to_string(),
+        );
+        if !self
+            .check_permission(&ctx, PermissionCheck::FolderOwner)
+            .await?
+        {
             anyhow::bail!("Permission denied: only folder owner can modify permissions");
         }
 
-        let old_perm = self.storage.get_permission(owner, folder_id, user_email).await?;
-        let _old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_perm = self
+            .storage
+            .get_permission(owner, folder_id, user_email)
+            .await?;
 
-        self.storage.delete_permission(owner, folder_id, user_email).await?;
+        self.storage
+            .delete_permission(owner, folder_id, user_email)
+            .await?;
 
         if let Some(perm) = old_perm {
             let audit = crate::permission::types::PermissionAuditEntry::new(
@@ -233,7 +285,7 @@ impl<'a> PermissionEnforcement<'a> {
                 actor_email.to_string(),
                 user_email.to_string(),
                 "remove".to_string(),
-                Some(perm.rights),
+                Some(perm.rights().bits()),
                 None,
             );
             self.storage.add_audit_entry(&audit).await?;
@@ -249,13 +301,23 @@ impl<'a> PermissionEnforcement<'a> {
         level: PermissionLevel,
         actor_email: &str,
     ) -> Result<CalendarPermission> {
-        let ctx = PermissionContext::new(actor_email.to_string(), owner.to_string(), folder_id.to_string());
-        if !self.check_permission(&ctx, PermissionCheck::FolderOwner).await? {
+        let ctx = PermissionContext::new(
+            actor_email.to_string(),
+            owner.to_string(),
+            folder_id.to_string(),
+        );
+        if !self
+            .check_permission(&ctx, PermissionCheck::FolderOwner)
+            .await?
+        {
             anyhow::bail!("Permission denied: only folder owner can modify permissions");
         }
 
-        let old_perm = self.storage.get_default_permission(owner, folder_id).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_perm = self
+            .storage
+            .get_default_permission(owner, folder_id)
+            .await?;
+        let old_rights = old_perm.as_ref().map(|p| p.rights().bits());
 
         let perm = CalendarPermission::default_permission(
             folder_id.to_string(),
@@ -272,7 +334,7 @@ impl<'a> PermissionEnforcement<'a> {
             "default".to_string(),
             "set_default".to_string(),
             old_rights,
-            Some(perm.rights),
+            Some(perm.rights().bits()),
         );
         self.storage.add_audit_entry(&audit).await?;
 
@@ -286,13 +348,23 @@ impl<'a> PermissionEnforcement<'a> {
         level: PermissionLevel,
         actor_email: &str,
     ) -> Result<CalendarPermission> {
-        let ctx = PermissionContext::new(actor_email.to_string(), owner.to_string(), folder_id.to_string());
-        if !self.check_permission(&ctx, PermissionCheck::FolderOwner).await? {
+        let ctx = PermissionContext::new(
+            actor_email.to_string(),
+            owner.to_string(),
+            folder_id.to_string(),
+        );
+        if !self
+            .check_permission(&ctx, PermissionCheck::FolderOwner)
+            .await?
+        {
             anyhow::bail!("Permission denied: only folder owner can modify permissions");
         }
 
-        let old_perm = self.storage.get_anonymous_permission(owner, folder_id).await?;
-        let old_rights = old_perm.as_ref().map(|p| p.rights);
+        let old_perm = self
+            .storage
+            .get_anonymous_permission(owner, folder_id)
+            .await?;
+        let old_rights = old_perm.as_ref().map(|p| p.rights().bits());
 
         let perm = CalendarPermission::anonymous_permission(
             folder_id.to_string(),
@@ -309,7 +381,7 @@ impl<'a> PermissionEnforcement<'a> {
             "anonymous".to_string(),
             "set_anonymous".to_string(),
             old_rights,
-            Some(perm.rights),
+            Some(perm.rights().bits()),
         );
         self.storage.add_audit_entry(&audit).await?;
 
@@ -320,8 +392,6 @@ impl<'a> PermissionEnforcement<'a> {
         let level = perm.permission_level();
         let rights = perm.rights();
         let can_read = rights.can_read_any();
-        let can_edit = rights.can_edit_any() || rights.can_edit_owned();
-        let can_delete = rights.can_delete_any() || rights.can_delete_owned();
         let can_create = rights.can_create();
         let is_owner = rights.is_folder_owner();
         let is_visible = rights.is_folder_visible();
@@ -343,14 +413,40 @@ impl<'a> PermissionEnforcement<'a> {
     <t:PermissionLevel>{}</t:PermissionLevel>
 </t:Permission>"#,
             crate::util::xml_escape(&perm.user_email),
-            perm.user_name.as_ref().map(|n| format!("<t:DisplayName>{}</t:DisplayName>", crate::util::xml_escape(n))).unwrap_or_default(),
+            perm.user_name
+                .as_ref()
+                .map(|n| format!(
+                    "<t:DisplayName>{}</t:DisplayName>",
+                    crate::util::xml_escape(n)
+                ))
+                .unwrap_or_default(),
             if can_create { "true" } else { "false" },
-            if rights.can_create_subfolder() { "true" } else { "false" },
+            if rights.can_create_subfolder() {
+                "true"
+            } else {
+                "false"
+            },
             if is_owner { "true" } else { "false" },
             if is_visible { "true" } else { "false" },
-            if rights.is_folder_contact() { "true" } else { "false" },
-            if rights.can_edit_any() { "All" } else if rights.can_edit_owned() { "Owned" } else { "None" },
-            if rights.can_delete_any() { "All" } else if rights.can_delete_owned() { "Owned" } else { "None" },
+            if rights.is_folder_contact() {
+                "true"
+            } else {
+                "false"
+            },
+            if rights.can_edit_any() {
+                "All"
+            } else if rights.can_edit_owned() {
+                "Owned"
+            } else {
+                "None"
+            },
+            if rights.can_delete_any() {
+                "All"
+            } else if rights.can_delete_owned() {
+                "Owned"
+            } else {
+                "None"
+            },
             if can_read { "FullDetails" } else { "None" },
             level.as_str()
         )
