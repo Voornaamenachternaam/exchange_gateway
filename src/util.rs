@@ -58,7 +58,7 @@ pub fn normalize_email(email: &str) -> String {
     let stripped = trimmed.strip_prefix("mailto:").unwrap_or(
         trimmed.strip_prefix("MAILTO:").unwrap_or(trimmed)
     );
-    stripped.nfc().collect::<String>().to_ascii_lowercase()
+    stripped.nfc().collect::<String>().to_lowercase()
 }
 
 #[cfg(test)]
