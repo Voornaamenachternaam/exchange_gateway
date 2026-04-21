@@ -2,8 +2,6 @@
 use crate::util::xml_escape_text;
 use anyhow::{Result, anyhow};
 use base64::Engine;
-use std::collections::HashMap;
-use std::sync::LazyLock;
 
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
@@ -13,9 +11,1011 @@ const LITERAL: u8 = 0x04;
 const STR_T: u8 = 0x83;
 const OPAQUE: u8 = 0xC3;
 
-static TAG_TO_NAME: LazyLock<HashMap<(u8, u8), &'static str>> = LazyLock::new(build_tag_to_name);
-static NAME_TO_TAG: LazyLock<HashMap<&'static str, (u8, u8)>> =
-    LazyLock::new(|| TAG_TO_NAME.iter().map(|(&k, &v)| (v, k)).collect());
+static TAG_TO_NAME: phf::Map<[u8; 2], &'static str> = phf::phf_map! {
+    [0u8, 0x05u8] => "Sync",
+    [0u8, 0x06u8] => "Responses",
+    [0u8, 0x07u8] => "Add",
+    [0u8, 0x08u8] => "Change",
+    [0u8, 0x09u8] => "Delete",
+    [0u8, 0x0Au8] => "Fetch",
+    [0u8, 0x0Bu8] => "SyncKey",
+    [0u8, 0x0Cu8] => "ClientId",
+    [0u8, 0x0Du8] => "ServerId",
+    [0u8, 0x0Eu8] => "Status",
+    [0u8, 0x0Fu8] => "Collection",
+    [0u8, 0x10u8] => "Class",
+    [0u8, 0x12u8] => "CollectionId",
+    [0u8, 0x13u8] => "GetChanges",
+    [0u8, 0x14u8] => "MoreAvailable",
+    [0u8, 0x15u8] => "WindowSize",
+    [0u8, 0x16u8] => "Commands",
+    [0u8, 0x17u8] => "Options",
+    [0u8, 0x18u8] => "FilterType",
+    [0u8, 0x1Bu8] => "Conflict",
+    [0u8, 0x1Cu8] => "Collections",
+    [0u8, 0x1Du8] => "ApplicationData",
+    [0u8, 0x1Eu8] => "DeletesAsMoves",
+    [0u8, 0x20u8] => "Supported",
+    [0u8, 0x21u8] => "SoftDelete",
+    [0u8, 0x22u8] => "MIMESupport",
+    [0u8, 0x23u8] => "MIMETruncation",
+    [0u8, 0x24u8] => "Wait",
+    [0u8, 0x25u8] => "Limit",
+    [0u8, 0x26u8] => "Partial",
+    [0u8, 0x27u8] => "ConversationMode",
+    [0u8, 0x28u8] => "MaxItems",
+    [0u8, 0x29u8] => "HeartbeatInterval",
+    [1u8, 0x05u8] => "Contacts:Anniversary",
+    [1u8, 0x06u8] => "Contacts:AssistantName",
+    [1u8, 0x07u8] => "Contacts:AssistantPhoneNumber",
+    [1u8, 0x08u8] => "Contacts:Birthday",
+    [1u8, 0x13u8] => "Contacts:BusinessPhoneNumber",
+    [1u8, 0x19u8] => "Contacts:CompanyName",
+    [1u8, 0x1Bu8] => "Contacts:Email1Address",
+    [1u8, 0x1Cu8] => "Contacts:Email2Address",
+    [1u8, 0x1Du8] => "Contacts:Email3Address",
+    [1u8, 0x1Fu8] => "Contacts:FirstName",
+    [1u8, 0x21u8] => "Contacts:HomeCity",
+    [1u8, 0x22u8] => "Contacts:HomeCountry",
+    [1u8, 0x26u8] => "Contacts:HomePhoneNumber",
+    [1u8, 0x29u8] => "Contacts:LastName",
+    [1u8, 0x2Bu8] => "Contacts:MobilePhoneNumber",
+    [1u8, 0x2Fu8] => "Contacts:Suffix",
+    [1u8, 0x30u8] => "Contacts:Title",
+    [1u8, 0x33u8] => "Contacts:JobTitle",
+    [1u8, 0x35u8] => "Contacts:MiddleName",
+    [1u8, 0x37u8] => "Contacts:NickName",
+    [1u8, 0x39u8] => "Contacts:OfficeLocation",
+    [1u8, 0x45u8] => "Contacts:WebPage",
+    [1u8, 0x47u8] => "Contacts:YomiCompanyName",
+    [1u8, 0x48u8] => "Contacts:YomiFirstName",
+    [1u8, 0x49u8] => "Contacts:YomiLastName",
+    [2u8, 0x05u8] => "Email:Attachment",
+    [2u8, 0x06u8] => "Email:Attachments",
+    [2u8, 0x07u8] => "Email:AttName",
+    [2u8, 0x08u8] => "Email:AttSize",
+    [2u8, 0x0Cu8] => "Email:Body",
+    [2u8, 0x0Eu8] => "Email:DateReceived",
+    [2u8, 0x11u8] => "Email:DisplayTo",
+    [2u8, 0x14u8] => "Email:Subject",
+    [2u8, 0x15u8] => "Email:Read",
+    [2u8, 0x16u8] => "Email:To",
+    [2u8, 0x17u8] => "Email:Cc",
+    [2u8, 0x18u8] => "Email:From",
+    [2u8, 0x19u8] => "Email:Reply-To",
+    [2u8, 0x1Au8] => "Email:AllDayEvent",
+    [2u8, 0x1Bu8] => "Email:Categories",
+    [2u8, 0x1Cu8] => "Email:Category",
+    [2u8, 0x1Du8] => "Email:DtStamp",
+    [2u8, 0x1Eu8] => "Email:EndTime",
+    [2u8, 0x1Fu8] => "Email:InstanceType",
+    [2u8, 0x20u8] => "Email:BusyStatus",
+    [2u8, 0x24u8] => "Email:Location",
+    [2u8, 0x25u8] => "Email:MeetingRequest",
+    [2u8, 0x26u8] => "Email:Organizer",
+    [2u8, 0x28u8] => "Email:Recurrence",
+    [2u8, 0x2Bu8] => "Email:Reminder",
+    [2u8, 0x2Cu8] => "Email:RequiredAttendees",
+    [2u8, 0x2Du8] => "Email:OptionalAttendees",
+    [2u8, 0x2Eu8] => "Email:ResourceAttendees",
+    [2u8, 0x2Fu8] => "Email:ResponseRequested",
+    [2u8, 0x30u8] => "Email:Sensitivity",
+    [2u8, 0x31u8] => "Email:StartTime",
+    [2u8, 0x32u8] => "Email:Timezone",
+    [2u8, 0x33u8] => "Email:GlobalObjId",
+    [2u8, 0x34u8] => "Email:ThreadTopic",
+    [2u8, 0x39u8] => "Email:InternetCPID",
+    [2u8, 0x3Au8] => "Email:Flag",
+    [2u8, 0x3Bu8] => "Email:FlagStatus",
+    [2u8, 0x3Cu8] => "Email:ContentClass",
+    [2u8, 0x3Du8] => "Email:FlagType",
+    [2u8, 0x3Eu8] => "Email:CompleteTime",
+    [2u8, 0x40u8] => "Email:DisallowNewTimeProposal",
+    [4u8, 0x05u8] => "Calendar:Timezone",
+    [4u8, 0x06u8] => "Calendar:AllDayEvent",
+    [4u8, 0x07u8] => "Calendar:Attendees",
+    [4u8, 0x08u8] => "Calendar:Attendee",
+    [4u8, 0x09u8] => "Calendar:Email",
+    [4u8, 0x0Au8] => "Calendar:Name",
+    [4u8, 0x0Bu8] => "Calendar:Body",
+    [4u8, 0x0Du8] => "Calendar:BusyStatus",
+    [4u8, 0x0Eu8] => "Calendar:Categories",
+    [4u8, 0x0Fu8] => "Calendar:Category",
+    [4u8, 0x11u8] => "Calendar:DtStamp",
+    [4u8, 0x12u8] => "Calendar:EndTime",
+    [4u8, 0x13u8] => "Calendar:Exception",
+    [4u8, 0x14u8] => "Calendar:Exceptions",
+    [4u8, 0x15u8] => "Calendar:Deleted",
+    [4u8, 0x16u8] => "Calendar:ExceptionStartTime",
+    [4u8, 0x17u8] => "Calendar:Location",
+    [4u8, 0x18u8] => "Calendar:MeetingStatus",
+    [4u8, 0x19u8] => "Calendar:OrganizerEmail",
+    [4u8, 0x1Au8] => "Calendar:OrganizerName",
+    [4u8, 0x1Bu8] => "Calendar:Recurrence",
+    [4u8, 0x1Cu8] => "Calendar:Type",
+    [4u8, 0x1Du8] => "Calendar:Until",
+    [4u8, 0x1Eu8] => "Calendar:Occurrences",
+    [4u8, 0x1Fu8] => "Calendar:Interval",
+    [4u8, 0x20u8] => "Calendar:DayOfWeek",
+    [4u8, 0x21u8] => "Calendar:DayOfMonth",
+    [4u8, 0x22u8] => "Calendar:WeekOfMonth",
+    [4u8, 0x23u8] => "Calendar:MonthOfYear",
+    [4u8, 0x24u8] => "Calendar:Reminder",
+    [4u8, 0x25u8] => "Calendar:Sensitivity",
+    [4u8, 0x26u8] => "Calendar:Subject",
+    [4u8, 0x27u8] => "Calendar:StartTime",
+    [4u8, 0x28u8] => "Calendar:UID",
+    [4u8, 0x29u8] => "Calendar:AttendeeStatus",
+    [4u8, 0x2Au8] => "Calendar:AttendeeType",
+    [4u8, 0x33u8] => "Calendar:DisallowNewTimeProposal",
+    [4u8, 0x34u8] => "Calendar:ResponseRequested",
+    [4u8, 0x35u8] => "Calendar:AppointmentReplyTime",
+    [4u8, 0x36u8] => "Calendar:ResponseType",
+    [4u8, 0x37u8] => "Calendar:CalendarType",
+    [4u8, 0x38u8] => "Calendar:IsLeapMonth",
+    [4u8, 0x39u8] => "Calendar:FirstDayOfWeek",
+    [4u8, 0x3Au8] => "Calendar:OnlineMeetingConfLink",
+    [4u8, 0x3Bu8] => "Calendar:OnlineMeetingExternalLink",
+    [4u8, 0x3Cu8] => "Calendar:ClientUid",
+    [4u8, 0x3Du8] => "Calendar:StartTimeZoneId",
+    [4u8, 0x3Eu8] => "Calendar:StartTimeZone",
+    [4u8, 0x3Fu8] => "Calendar:EndTimeZone",
+    [4u8, 0x40u8] => "Calendar:EndTimeZoneId",
+    [5u8, 0x05u8] => "MoveItems",
+    [5u8, 0x06u8] => "Move",
+    [5u8, 0x07u8] => "SrcMsgId",
+    [5u8, 0x08u8] => "SrcFldId",
+    [5u8, 0x09u8] => "DstFldId",
+    [5u8, 0x0Au8] => "MoveResponse",
+    [5u8, 0x0Bu8] => "MoveStatus",
+    [6u8, 0x05u8] => "GetItemEstimate",
+    [6u8, 0x06u8] => "GIEVersion",
+    [6u8, 0x07u8] => "GIECollections",
+    [6u8, 0x08u8] => "GIECollection",
+    [6u8, 0x09u8] => "GIEClass",
+    [6u8, 0x0Au8] => "GIECollectionId",
+    [6u8, 0x0Bu8] => "DateTime",
+    [6u8, 0x0Cu8] => "Estimate",
+    [6u8, 0x0Du8] => "Response",
+    [6u8, 0x0Eu8] => "Status",
+    [7u8, 0x07u8] => "DisplayName",
+    [7u8, 0x08u8] => "ServerId",
+    [7u8, 0x09u8] => "ParentId",
+    [7u8, 0x0Au8] => "Type",
+    [7u8, 0x0Cu8] => "Status",
+    [7u8, 0x0Eu8] => "Changes",
+    [7u8, 0x0Fu8] => "Add",
+    [7u8, 0x10u8] => "Delete",
+    [7u8, 0x11u8] => "Update",
+    [7u8, 0x12u8] => "SyncKey",
+    [7u8, 0x13u8] => "FolderCreate",
+    [7u8, 0x14u8] => "FolderDelete",
+    [7u8, 0x15u8] => "FolderUpdate",
+    [7u8, 0x16u8] => "FolderSync",
+    [7u8, 0x17u8] => "Count",
+    [8u8, 0x05u8] => "CalendarId",
+    [8u8, 0x06u8] => "MeetingCollectionId",
+    [8u8, 0x07u8] => "MeetingResponse",
+    [8u8, 0x08u8] => "RequestId",
+    [8u8, 0x09u8] => "Request",
+    [8u8, 0x0Au8] => "Result",
+    [8u8, 0x0Bu8] => "Status",
+    [8u8, 0x0Cu8] => "UserResponse",
+    [8u8, 0x0Eu8] => "InstanceId",
+    [8u8, 0x0Fu8] => "LongId",
+    [8u8, 0x10u8] => "ProposedStartTime",
+    [8u8, 0x11u8] => "ProposedEndTime",
+    [8u8, 0x12u8] => "SendResponse",
+    [9u8, 0x08u8] => "Tasks:Complete",
+    [9u8, 0x09u8] => "Tasks:DateCompleted",
+    [9u8, 0x0Du8] => "Tasks:DueDate",
+    [9u8, 0x0Fu8] => "Tasks:Importance",
+    [9u8, 0x17u8] => "Tasks:StartDate",
+    [9u8, 0x18u8] => "Tasks:Subject",
+    [9u8, 0x19u8] => "Tasks:ReminderSet",
+    [9u8, 0x1Au8] => "Tasks:ReminderTime",
+    [9u8, 0x1Bu8] => "Tasks:Sensitivity",
+    [9u8, 0x1Cu8] => "Tasks:Recurrence",
+    [9u8, 0x1Du8] => "Tasks:Type",
+    [9u8, 0x1Eu8] => "Tasks:Start",
+    [9u8, 0x1Fu8] => "Tasks:Until",
+    [9u8, 0x20u8] => "Tasks:Occurrences",
+    [9u8, 0x21u8] => "Tasks:Interval",
+    [9u8, 0x22u8] => "Tasks:DayOfWeek",
+    [9u8, 0x23u8] => "Tasks:DayOfMonth",
+    [9u8, 0x24u8] => "Tasks:WeekOfMonth",
+    [9u8, 0x25u8] => "Tasks:MonthOfYear",
+    [9u8, 0x26u8] => "Tasks:Regenerate",
+    [9u8, 0x27u8] => "Tasks:DeadOccur",
+    [9u8, 0x28u8] => "Tasks:Categories",
+    [9u8, 0x29u8] => "Tasks:Category",
+    [10u8, 0x05u8] => "ResolveRecipients",
+    [10u8, 0x06u8] => "Response",
+    [10u8, 0x07u8] => "Status",
+    [10u8, 0x08u8] => "Type",
+    [10u8, 0x09u8] => "Recipient",
+    [10u8, 0x0Au8] => "DisplayName",
+    [10u8, 0x0Bu8] => "EmailAddress",
+    [10u8, 0x0Cu8] => "Certificates",
+    [10u8, 0x0Du8] => "Certificate",
+    [10u8, 0x0Eu8] => "MiniCertificate",
+    [10u8, 0x0Fu8] => "Options",
+    [10u8, 0x10u8] => "To",
+    [10u8, 0x11u8] => "CertificateRetrieval",
+    [10u8, 0x12u8] => "RecipientCount",
+    [10u8, 0x13u8] => "MaxCertificates",
+    [10u8, 0x14u8] => "MaxAmbiguousRecipients",
+    [10u8, 0x15u8] => "CertificateCount",
+    [10u8, 0x16u8] => "Availability",
+    [10u8, 0x17u8] => "StartTime",
+    [10u8, 0x18u8] => "EndTime",
+    [10u8, 0x19u8] => "MergedFreeBusy",
+    [10u8, 0x1Au8] => "Picture",
+    [10u8, 0x1Bu8] => "MaxSize",
+    [10u8, 0x1Cu8] => "Data",
+    [10u8, 0x1Du8] => "MaxPictures",
+    [11u8, 0x05u8] => "ValidateCert",
+    [11u8, 0x06u8] => "Certificates",
+    [11u8, 0x07u8] => "Certificate",
+    [11u8, 0x08u8] => "CertificateChain",
+    [11u8, 0x09u8] => "CheckCRL",
+    [11u8, 0x0Au8] => "CertificateStatus",
+    [11u8, 0x0Bu8] => "Status",
+    [12u8, 0x05u8] => "Contacts2:CustomerId",
+    [12u8, 0x06u8] => "Contacts2:GovernmentId",
+    [12u8, 0x07u8] => "Contacts2:IMAddress",
+    [12u8, 0x08u8] => "Contacts2:IMAddress2",
+    [12u8, 0x09u8] => "Contacts2:IMAddress3",
+    [12u8, 0x0Au8] => "Contacts2:ManagerName",
+    [12u8, 0x0Bu8] => "Contacts2:CompanyMainPhone",
+    [12u8, 0x0Cu8] => "Contacts2:AccountName",
+    [12u8, 0x0Du8] => "Contacts2:MMS",
+    [12u8, 0x0Eu8] => "Contacts2:NickName",
+    [13u8, 0x05u8] => "Ping",
+    [13u8, 0x07u8] => "Status",
+    [13u8, 0x08u8] => "HeartbeatInterval",
+    [13u8, 0x09u8] => "Folders",
+    [13u8, 0x0Au8] => "Folder",
+    [13u8, 0x0Bu8] => "Id",
+    [13u8, 0x0Cu8] => "Class",
+    [13u8, 0x0Du8] => "MaxFolders",
+    [14u8, 0x05u8] => "Provision",
+    [14u8, 0x06u8] => "Policies",
+    [14u8, 0x07u8] => "Policy",
+    [14u8, 0x08u8] => "PolicyType",
+    [14u8, 0x09u8] => "PolicyKey",
+    [14u8, 0x0Au8] => "Data",
+    [14u8, 0x0Bu8] => "Status",
+    [14u8, 0x0Cu8] => "RemoteWipe",
+    [14u8, 0x0Du8] => "EASProvisionDoc",
+    [14u8, 0x0Eu8] => "DevicePasswordEnabled",
+    [14u8, 0x0Fu8] => "AlphanumericDevicePasswordRequired",
+    [14u8, 0x10u8] => "RequireStorageCardEncryption",
+    [14u8, 0x11u8] => "PasswordRecoveryEnabled",
+    [14u8, 0x13u8] => "AttachmentsEnabled",
+    [14u8, 0x14u8] => "MinDevicePasswordLength",
+    [14u8, 0x15u8] => "MaxInactivityTimeDeviceLock",
+    [14u8, 0x16u8] => "MaxDevicePasswordFailedAttempts",
+    [14u8, 0x17u8] => "MaxAttachmentSize",
+    [14u8, 0x18u8] => "AllowSimpleDevicePassword",
+    [14u8, 0x19u8] => "DevicePasswordExpiration",
+    [14u8, 0x1Au8] => "DevicePasswordHistory",
+    [14u8, 0x1Bu8] => "AllowStorageCard",
+    [14u8, 0x1Cu8] => "AllowCamera",
+    [14u8, 0x1Du8] => "RequireDeviceEncryption",
+    [14u8, 0x1Eu8] => "AllowUnsignedApplications",
+    [14u8, 0x1Fu8] => "AllowUnsignedInstallationPackages",
+    [14u8, 0x20u8] => "MinDevicePasswordComplexCharacters",
+    [14u8, 0x21u8] => "AllowWifi",
+    [14u8, 0x22u8] => "AllowTextMessaging",
+    [14u8, 0x23u8] => "AllowPOPIMAPEmail",
+    [14u8, 0x24u8] => "AllowBluetooth",
+    [14u8, 0x25u8] => "AllowIrDA",
+    [14u8, 0x26u8] => "RequireManualSyncWhenRoaming",
+    [14u8, 0x27u8] => "AllowDesktopSync",
+    [14u8, 0x28u8] => "MaxCalendarAgeFilter",
+    [14u8, 0x29u8] => "AllowHTMLEmail",
+    [14u8, 0x2Au8] => "MaxEmailAgeFilter",
+    [14u8, 0x2Bu8] => "MaxEmailBodyTruncationSize",
+    [14u8, 0x2Cu8] => "MaxEmailHTMLBodyTruncationSize",
+    [14u8, 0x2Du8] => "RequireSignedSMIMEMessages",
+    [14u8, 0x2Eu8] => "RequireEncryptedSMIMEMessages",
+    [14u8, 0x2Fu8] => "RequireSignedSMIMEAlgorithm",
+    [14u8, 0x30u8] => "RequireEncryptionSMIMEAlgorithm",
+    [14u8, 0x31u8] => "AllowSMIMEEncryptionAlgorithmNegotiation",
+    [14u8, 0x32u8] => "AllowSMIMESoftCerts",
+    [14u8, 0x33u8] => "AllowBrowser",
+    [14u8, 0x34u8] => "AllowConsumerEmail",
+    [14u8, 0x35u8] => "AllowRemoteDesktop",
+    [14u8, 0x36u8] => "AllowInternetSharing",
+    [14u8, 0x37u8] => "UnapprovedInROMApplicationList",
+    [14u8, 0x38u8] => "ApplicationName",
+    [14u8, 0x39u8] => "ApprovedApplicationList",
+    [14u8, 0x3Au8] => "Hash",
+    [15u8, 0x05u8] => "Search",
+    [15u8, 0x07u8] => "Store",
+    [15u8, 0x08u8] => "Name",
+    [15u8, 0x09u8] => "Query",
+    [15u8, 0x0Au8] => "Options",
+    [15u8, 0x0Bu8] => "Range",
+    [15u8, 0x0Cu8] => "Status",
+    [15u8, 0x0Du8] => "Response",
+    [15u8, 0x0Eu8] => "Result",
+    [15u8, 0x0Fu8] => "Properties",
+    [15u8, 0x10u8] => "Total",
+    [15u8, 0x11u8] => "EqualTo",
+    [15u8, 0x12u8] => "Value",
+    [15u8, 0x13u8] => "And",
+    [15u8, 0x14u8] => "Or",
+    [15u8, 0x15u8] => "FreeText",
+    [15u8, 0x17u8] => "DeepTraversal",
+    [15u8, 0x18u8] => "LongId",
+    [15u8, 0x19u8] => "RebuildResults",
+    [15u8, 0x1Au8] => "LeafName",
+    [15u8, 0x1Bu8] => "Class",
+    [15u8, 0x1Cu8] => "CollectionId",
+    [15u8, 0x1Du8] => "QueryId",
+    [15u8, 0x1Eu8] => "MaxResults",
+    [16u8, 0x05u8] => "GAL:DisplayName",
+    [16u8, 0x06u8] => "GAL:Phone",
+    [16u8, 0x07u8] => "GAL:Office",
+    [16u8, 0x08u8] => "GAL:Title",
+    [16u8, 0x09u8] => "GAL:Company",
+    [16u8, 0x0Au8] => "GAL:Alias",
+    [16u8, 0x0Bu8] => "GAL:FirstName",
+    [16u8, 0x0Cu8] => "GAL:LastName",
+    [16u8, 0x0Du8] => "GAL:HomePhone",
+    [16u8, 0x0Eu8] => "GAL:MobilePhone",
+    [16u8, 0x0Fu8] => "GAL:EmailAddress",
+    [16u8, 0x10u8] => "GAL:Picture",
+    [16u8, 0x11u8] => "GAL:Status",
+    [16u8, 0x12u8] => "GAL:Data",
+    [17u8, 0x05u8] => "AirSyncBase:BodyPreference",
+    [17u8, 0x06u8] => "AirSyncBase:Type",
+    [17u8, 0x07u8] => "AirSyncBase:TruncationSize",
+    [17u8, 0x08u8] => "AirSyncBase:AllOrNone",
+    [17u8, 0x0Au8] => "AirSyncBase:Body",
+    [17u8, 0x0Bu8] => "AirSyncBase:Data",
+    [17u8, 0x0Cu8] => "AirSyncBase:EstimatedDataSize",
+    [17u8, 0x0Du8] => "AirSyncBase:Truncated",
+    [17u8, 0x0Eu8] => "AirSyncBase:Attachments",
+    [17u8, 0x0Fu8] => "AirSyncBase:Attachment",
+    [17u8, 0x10u8] => "AirSyncBase:DisplayName",
+    [17u8, 0x11u8] => "AirSyncBase:FileReference",
+    [17u8, 0x12u8] => "AirSyncBase:Method",
+    [17u8, 0x13u8] => "AirSyncBase:ContentId",
+    [17u8, 0x14u8] => "AirSyncBase:ContentLocation",
+    [17u8, 0x15u8] => "AirSyncBase:IsInline",
+    [17u8, 0x16u8] => "AirSyncBase:NativeBodyType",
+    [17u8, 0x17u8] => "AirSyncBase:ContentType",
+    [17u8, 0x18u8] => "AirSyncBase:Preview",
+    [17u8, 0x19u8] => "AirSyncBase:BodyPartPreference",
+    [17u8, 0x1Au8] => "AirSyncBase:BodyPart",
+    [17u8, 0x1Bu8] => "AirSyncBase:Status",
+    [17u8, 0x1Cu8] => "AirSyncBase:Add",
+    [17u8, 0x1Du8] => "AirSyncBase:Delete",
+    [17u8, 0x1Eu8] => "AirSyncBase:ClientId",
+    [17u8, 0x1Fu8] => "AirSyncBase:Content",
+    [17u8, 0x20u8] => "AirSyncBase:Location",
+    [17u8, 0x21u8] => "AirSyncBase:Annotation",
+    [17u8, 0x22u8] => "AirSyncBase:Street",
+    [17u8, 0x23u8] => "AirSyncBase:City",
+    [17u8, 0x24u8] => "AirSyncBase:State",
+    [17u8, 0x25u8] => "AirSyncBase:Country",
+    [17u8, 0x26u8] => "AirSyncBase:PostalCode",
+    [17u8, 0x27u8] => "AirSyncBase:Latitude",
+    [17u8, 0x28u8] => "AirSyncBase:Longitude",
+    [17u8, 0x29u8] => "AirSyncBase:Accuracy",
+    [17u8, 0x2Au8] => "AirSyncBase:Altitude",
+    [17u8, 0x2Bu8] => "AirSyncBase:AltitudeAccuracy",
+    [17u8, 0x2Cu8] => "AirSyncBase:LocationUri",
+    [17u8, 0x2Du8] => "AirSyncBase:InstanceId",
+    [18u8, 0x05u8] => "Settings",
+    [18u8, 0x06u8] => "Status",
+    [18u8, 0x07u8] => "Get",
+    [18u8, 0x08u8] => "Set",
+    [18u8, 0x09u8] => "Oof",
+    [18u8, 0x0Au8] => "OofState",
+    [18u8, 0x0Bu8] => "StartTime",
+    [18u8, 0x0Cu8] => "EndTime",
+    [18u8, 0x0Du8] => "OofMessage",
+    [18u8, 0x0Eu8] => "AppliesToInternal",
+    [18u8, 0x0Fu8] => "AppliesToExternalKnown",
+    [18u8, 0x10u8] => "AppliesToExternalUnknown",
+    [18u8, 0x11u8] => "Enabled",
+    [18u8, 0x12u8] => "ReplyMessage",
+    [18u8, 0x13u8] => "BodyType",
+    [18u8, 0x14u8] => "DevicePassword",
+    [18u8, 0x15u8] => "Password",
+    [18u8, 0x16u8] => "DeviceInformation",
+    [18u8, 0x17u8] => "Model",
+    [18u8, 0x18u8] => "IMEI",
+    [18u8, 0x19u8] => "FriendlyName",
+    [18u8, 0x1Au8] => "OS",
+    [18u8, 0x1Bu8] => "OSLanguage",
+    [18u8, 0x1Cu8] => "PhoneNumber",
+    [18u8, 0x1Du8] => "UserInformation",
+    [18u8, 0x1Eu8] => "EmailAddresses",
+    [18u8, 0x1Fu8] => "SMTPAddress",
+    [18u8, 0x20u8] => "UserAgent",
+    [18u8, 0x21u8] => "EnableOutboundSMS",
+    [18u8, 0x22u8] => "MobileOperator",
+    [18u8, 0x23u8] => "PrimarySmtpAddress",
+    [18u8, 0x24u8] => "Accounts",
+    [18u8, 0x25u8] => "Account",
+    [18u8, 0x26u8] => "AccountId",
+    [18u8, 0x27u8] => "AccountName",
+    [18u8, 0x28u8] => "UserDisplayName",
+    [18u8, 0x29u8] => "SendDisabled",
+    [18u8, 0x2Bu8] => "RightsManagementInformation",
+    [19u8, 0x05u8] => "DocumentLibrary:LinkId",
+    [19u8, 0x06u8] => "DocumentLibrary:DisplayName",
+    [19u8, 0x07u8] => "DocumentLibrary:IsFolder",
+    [19u8, 0x08u8] => "DocumentLibrary:CreationDate",
+    [19u8, 0x09u8] => "DocumentLibrary:LastModifiedDate",
+    [19u8, 0x0Au8] => "DocumentLibrary:IsHidden",
+    [19u8, 0x0Bu8] => "DocumentLibrary:ContentLength",
+    [19u8, 0x0Cu8] => "DocumentLibrary:ContentType",
+    [20u8, 0x05u8] => "ItemOperations",
+    [20u8, 0x06u8] => "Fetch",
+    [20u8, 0x07u8] => "Store",
+    [20u8, 0x08u8] => "Options",
+    [20u8, 0x09u8] => "Range",
+    [20u8, 0x0Au8] => "Total",
+    [20u8, 0x0Bu8] => "Properties",
+    [20u8, 0x0Cu8] => "Data",
+    [20u8, 0x0Du8] => "Status",
+    [20u8, 0x0Eu8] => "Response",
+    [20u8, 0x0Fu8] => "Version",
+    [20u8, 0x10u8] => "Schema",
+    [20u8, 0x11u8] => "Part",
+    [20u8, 0x12u8] => "EmptyFolderContents",
+    [20u8, 0x13u8] => "DeleteSubFolders",
+    [20u8, 0x14u8] => "UserName",
+    [20u8, 0x15u8] => "IOPassword",
+    [20u8, 0x16u8] => "Move",
+    [20u8, 0x17u8] => "DstFldId",
+    [20u8, 0x18u8] => "ConversationId",
+    [20u8, 0x19u8] => "MoveAlways",
+    [21u8, 0x05u8] => "SendMail",
+    [21u8, 0x06u8] => "SmartForward",
+    [21u8, 0x07u8] => "SmartReply",
+    [21u8, 0x08u8] => "SaveInSentItems",
+    [21u8, 0x09u8] => "ReplaceMime",
+    [21u8, 0x0Bu8] => "Mime",
+    [21u8, 0x0Cu8] => "ClientId",
+    [21u8, 0x0Du8] => "Status",
+    [21u8, 0x0Eu8] => "AccountId",
+    [21u8, 0x0Fu8] => "Forwardees",
+    [21u8, 0x10u8] => "Forwardee",
+    [21u8, 0x11u8] => "ForwardeeName",
+    [21u8, 0x12u8] => "ForwardeeEmail",
+    [22u8, 0x05u8] => "Email2:UmCallerId",
+    [22u8, 0x06u8] => "Email2:UmUserNotes",
+    [22u8, 0x07u8] => "Email2:UmAttDuration",
+    [22u8, 0x08u8] => "Email2:UmAttOrder",
+    [22u8, 0x09u8] => "Email2:ConversationId",
+    [22u8, 0x0Au8] => "Email2:ConversationIndex",
+    [22u8, 0x0Bu8] => "Email2:LastVerbExecuted",
+    [22u8, 0x0Cu8] => "Email2:LastVerbExecutionTime",
+    [22u8, 0x0Du8] => "Email2:ReceivedAsBcc",
+    [22u8, 0x0Eu8] => "Email2:Sender",
+    [22u8, 0x0Fu8] => "Email2:CalendarType",
+    [22u8, 0x10u8] => "Email2:IsLeapMonth",
+    [22u8, 0x11u8] => "Email2:AccountId",
+    [22u8, 0x12u8] => "Email2:FirstDayOfWeek",
+    [22u8, 0x13u8] => "Email2:MeetingMessageType",
+    [23u8, 0x05u8] => "Notes:Subject",
+    [23u8, 0x06u8] => "Notes:MessageClass",
+    [23u8, 0x07u8] => "Notes:LastModifiedDate",
+    [23u8, 0x08u8] => "Notes:Categories",
+    [23u8, 0x09u8] => "Notes:Category",
+    [23u8, 0x0Bu8] => "Notes:Body",
+    [24u8, 0x05u8] => "RightsManagement:RightsManagementSupport",
+    [24u8, 0x06u8] => "RightsManagement:RightsManagementTemplates",
+    [24u8, 0x07u8] => "RightsManagement:RightsManagementTemplate",
+    [24u8, 0x08u8] => "RightsManagement:RightsManagementLicense",
+    [24u8, 0x09u8] => "RightsManagement:EditAllowed",
+    [24u8, 0x0Au8] => "RightsManagement:ReplyAllowed",
+    [24u8, 0x0Bu8] => "RightsManagement:ReplyAllAllowed",
+    [24u8, 0x0Cu8] => "RightsManagement:ForwardAllowed",
+    [24u8, 0x0Du8] => "RightsManagement:ModifyRecipientsAllowed",
+    [24u8, 0x0Eu8] => "RightsManagement:ExtractAllowed",
+    [24u8, 0x0Fu8] => "RightsManagement:PrintAllowed",
+    [24u8, 0x10u8] => "RightsManagement:ExportAllowed",
+    [24u8, 0x11u8] => "RightsManagement:ProgrammaticAccessAllowed",
+    [24u8, 0x12u8] => "RightsManagement:RMOwner",
+    [24u8, 0x13u8] => "RightsManagement:ContentExpiryDate",
+    [24u8, 0x14u8] => "RightsManagement:ContentExpiryDateString",
+    [24u8, 0x15u8] => "RightsManagement:ContentExpiryInterval",
+    [24u8, 0x16u8] => "RightsManagement:ContentExpiryIntervalType",
+    [24u8, 0x17u8] => "RightsManagement:TemplateID",
+    [24u8, 0x18u8] => "RightsManagement:TemplateName",
+    [24u8, 0x19u8] => "RightsManagement:TemplateDescription",
+    [24u8, 0x1Au8] => "RightsManagement:ContentOwner",
+    [24u8, 0x1Bu8] => "RightsManagement:RemoveRightsManagementDistribution",
+};
+
+static NAME_TO_TAG: phf::Map<&'static str, [u8; 2]> = phf::phf_map! {
+    "Sync" => [0u8, 0x05u8],
+    "Responses" => [0u8, 0x06u8],
+    "Change" => [0u8, 0x08u8],
+    "Collection" => [0u8, 0x0Fu8],
+    "GetChanges" => [0u8, 0x13u8],
+    "MoreAvailable" => [0u8, 0x14u8],
+    "WindowSize" => [0u8, 0x15u8],
+    "Commands" => [0u8, 0x16u8],
+    "FilterType" => [0u8, 0x18u8],
+    "Conflict" => [0u8, 0x1Bu8],
+    "Collections" => [0u8, 0x1Cu8],
+    "ApplicationData" => [0u8, 0x1Du8],
+    "DeletesAsMoves" => [0u8, 0x1Eu8],
+    "Supported" => [0u8, 0x20u8],
+    "SoftDelete" => [0u8, 0x21u8],
+    "MIMESupport" => [0u8, 0x22u8],
+    "MIMETruncation" => [0u8, 0x23u8],
+    "Wait" => [0u8, 0x24u8],
+    "Limit" => [0u8, 0x25u8],
+    "Partial" => [0u8, 0x26u8],
+    "ConversationMode" => [0u8, 0x27u8],
+    "MaxItems" => [0u8, 0x28u8],
+    "Contacts:Anniversary" => [1u8, 0x05u8],
+    "Contacts:AssistantName" => [1u8, 0x06u8],
+    "Contacts:AssistantPhoneNumber" => [1u8, 0x07u8],
+    "Contacts:Birthday" => [1u8, 0x08u8],
+    "Contacts:BusinessPhoneNumber" => [1u8, 0x13u8],
+    "Contacts:CompanyName" => [1u8, 0x19u8],
+    "Contacts:Email1Address" => [1u8, 0x1Bu8],
+    "Contacts:Email2Address" => [1u8, 0x1Cu8],
+    "Contacts:Email3Address" => [1u8, 0x1Du8],
+    "Contacts:FirstName" => [1u8, 0x1Fu8],
+    "Contacts:HomeCity" => [1u8, 0x21u8],
+    "Contacts:HomeCountry" => [1u8, 0x22u8],
+    "Contacts:HomePhoneNumber" => [1u8, 0x26u8],
+    "Contacts:LastName" => [1u8, 0x29u8],
+    "Contacts:MobilePhoneNumber" => [1u8, 0x2Bu8],
+    "Contacts:Suffix" => [1u8, 0x2Fu8],
+    "Contacts:Title" => [1u8, 0x30u8],
+    "Contacts:JobTitle" => [1u8, 0x33u8],
+    "Contacts:MiddleName" => [1u8, 0x35u8],
+    "Contacts:NickName" => [1u8, 0x37u8],
+    "Contacts:OfficeLocation" => [1u8, 0x39u8],
+    "Contacts:WebPage" => [1u8, 0x45u8],
+    "Contacts:YomiCompanyName" => [1u8, 0x47u8],
+    "Contacts:YomiFirstName" => [1u8, 0x48u8],
+    "Contacts:YomiLastName" => [1u8, 0x49u8],
+    "Email:Attachment" => [2u8, 0x05u8],
+    "Email:Attachments" => [2u8, 0x06u8],
+    "Email:AttName" => [2u8, 0x07u8],
+    "Email:AttSize" => [2u8, 0x08u8],
+    "Email:Body" => [2u8, 0x0Cu8],
+    "Email:DateReceived" => [2u8, 0x0Eu8],
+    "Email:DisplayTo" => [2u8, 0x11u8],
+    "Email:Subject" => [2u8, 0x14u8],
+    "Email:Read" => [2u8, 0x15u8],
+    "Email:To" => [2u8, 0x16u8],
+    "Email:Cc" => [2u8, 0x17u8],
+    "Email:From" => [2u8, 0x18u8],
+    "Email:Reply-To" => [2u8, 0x19u8],
+    "Email:AllDayEvent" => [2u8, 0x1Au8],
+    "Email:Categories" => [2u8, 0x1Bu8],
+    "Email:Category" => [2u8, 0x1Cu8],
+    "Email:DtStamp" => [2u8, 0x1Du8],
+    "Email:EndTime" => [2u8, 0x1Eu8],
+    "Email:InstanceType" => [2u8, 0x1Fu8],
+    "Email:BusyStatus" => [2u8, 0x20u8],
+    "Email:Location" => [2u8, 0x24u8],
+    "Email:MeetingRequest" => [2u8, 0x25u8],
+    "Email:Organizer" => [2u8, 0x26u8],
+    "Email:Recurrence" => [2u8, 0x28u8],
+    "Email:Reminder" => [2u8, 0x2Bu8],
+    "Email:RequiredAttendees" => [2u8, 0x2Cu8],
+    "Email:OptionalAttendees" => [2u8, 0x2Du8],
+    "Email:ResourceAttendees" => [2u8, 0x2Eu8],
+    "Email:ResponseRequested" => [2u8, 0x2Fu8],
+    "Email:Sensitivity" => [2u8, 0x30u8],
+    "Email:StartTime" => [2u8, 0x31u8],
+    "Email:Timezone" => [2u8, 0x32u8],
+    "Email:GlobalObjId" => [2u8, 0x33u8],
+    "Email:ThreadTopic" => [2u8, 0x34u8],
+    "Email:InternetCPID" => [2u8, 0x39u8],
+    "Email:Flag" => [2u8, 0x3Au8],
+    "Email:FlagStatus" => [2u8, 0x3Bu8],
+    "Email:ContentClass" => [2u8, 0x3Cu8],
+    "Email:FlagType" => [2u8, 0x3Du8],
+    "Email:CompleteTime" => [2u8, 0x3Eu8],
+    "Email:DisallowNewTimeProposal" => [2u8, 0x40u8],
+    "Calendar:Timezone" => [4u8, 0x05u8],
+    "Calendar:AllDayEvent" => [4u8, 0x06u8],
+    "Calendar:Attendees" => [4u8, 0x07u8],
+    "Calendar:Attendee" => [4u8, 0x08u8],
+    "Calendar:Email" => [4u8, 0x09u8],
+    "Calendar:Name" => [4u8, 0x0Au8],
+    "Calendar:Body" => [4u8, 0x0Bu8],
+    "Calendar:BusyStatus" => [4u8, 0x0Du8],
+    "Calendar:Categories" => [4u8, 0x0Eu8],
+    "Calendar:Category" => [4u8, 0x0Fu8],
+    "Calendar:DtStamp" => [4u8, 0x11u8],
+    "Calendar:EndTime" => [4u8, 0x12u8],
+    "Calendar:Exception" => [4u8, 0x13u8],
+    "Calendar:Exceptions" => [4u8, 0x14u8],
+    "Calendar:Deleted" => [4u8, 0x15u8],
+    "Calendar:ExceptionStartTime" => [4u8, 0x16u8],
+    "Calendar:Location" => [4u8, 0x17u8],
+    "Calendar:MeetingStatus" => [4u8, 0x18u8],
+    "Calendar:OrganizerEmail" => [4u8, 0x19u8],
+    "Calendar:OrganizerName" => [4u8, 0x1Au8],
+    "Calendar:Recurrence" => [4u8, 0x1Bu8],
+    "Calendar:Type" => [4u8, 0x1Cu8],
+    "Calendar:Until" => [4u8, 0x1Du8],
+    "Calendar:Occurrences" => [4u8, 0x1Eu8],
+    "Calendar:Interval" => [4u8, 0x1Fu8],
+    "Calendar:DayOfWeek" => [4u8, 0x20u8],
+    "Calendar:DayOfMonth" => [4u8, 0x21u8],
+    "Calendar:WeekOfMonth" => [4u8, 0x22u8],
+    "Calendar:MonthOfYear" => [4u8, 0x23u8],
+    "Calendar:Reminder" => [4u8, 0x24u8],
+    "Calendar:Sensitivity" => [4u8, 0x25u8],
+    "Calendar:Subject" => [4u8, 0x26u8],
+    "Calendar:StartTime" => [4u8, 0x27u8],
+    "Calendar:UID" => [4u8, 0x28u8],
+    "Calendar:AttendeeStatus" => [4u8, 0x29u8],
+    "Calendar:AttendeeType" => [4u8, 0x2Au8],
+    "Calendar:DisallowNewTimeProposal" => [4u8, 0x33u8],
+    "Calendar:ResponseRequested" => [4u8, 0x34u8],
+    "Calendar:AppointmentReplyTime" => [4u8, 0x35u8],
+    "Calendar:ResponseType" => [4u8, 0x36u8],
+    "Calendar:CalendarType" => [4u8, 0x37u8],
+    "Calendar:IsLeapMonth" => [4u8, 0x38u8],
+    "Calendar:FirstDayOfWeek" => [4u8, 0x39u8],
+    "Calendar:OnlineMeetingConfLink" => [4u8, 0x3Au8],
+    "Calendar:OnlineMeetingExternalLink" => [4u8, 0x3Bu8],
+    "Calendar:ClientUid" => [4u8, 0x3Cu8],
+    "Calendar:StartTimeZoneId" => [4u8, 0x3Du8],
+    "Calendar:StartTimeZone" => [4u8, 0x3Eu8],
+    "Calendar:EndTimeZone" => [4u8, 0x3Fu8],
+    "Calendar:EndTimeZoneId" => [4u8, 0x40u8],
+    "MoveItems" => [5u8, 0x05u8],
+    "SrcMsgId" => [5u8, 0x07u8],
+    "SrcFldId" => [5u8, 0x08u8],
+    "MoveResponse" => [5u8, 0x0Au8],
+    "MoveStatus" => [5u8, 0x0Bu8],
+    "GetItemEstimate" => [6u8, 0x05u8],
+    "GIEVersion" => [6u8, 0x06u8],
+    "GIECollections" => [6u8, 0x07u8],
+    "GIECollection" => [6u8, 0x08u8],
+    "GIEClass" => [6u8, 0x09u8],
+    "GIECollectionId" => [6u8, 0x0Au8],
+    "DateTime" => [6u8, 0x0Bu8],
+    "Estimate" => [6u8, 0x0Cu8],
+    "ServerId" => [7u8, 0x08u8],
+    "ParentId" => [7u8, 0x09u8],
+    "Changes" => [7u8, 0x0Eu8],
+    "Add" => [7u8, 0x0Fu8],
+    "Delete" => [7u8, 0x10u8],
+    "Update" => [7u8, 0x11u8],
+    "SyncKey" => [7u8, 0x12u8],
+    "FolderCreate" => [7u8, 0x13u8],
+    "FolderDelete" => [7u8, 0x14u8],
+    "FolderUpdate" => [7u8, 0x15u8],
+    "FolderSync" => [7u8, 0x16u8],
+    "Count" => [7u8, 0x17u8],
+    "CalendarId" => [8u8, 0x05u8],
+    "MeetingCollectionId" => [8u8, 0x06u8],
+    "MeetingResponse" => [8u8, 0x07u8],
+    "RequestId" => [8u8, 0x08u8],
+    "Request" => [8u8, 0x09u8],
+    "UserResponse" => [8u8, 0x0Cu8],
+    "InstanceId" => [8u8, 0x0Eu8],
+    "ProposedStartTime" => [8u8, 0x10u8],
+    "ProposedEndTime" => [8u8, 0x11u8],
+    "SendResponse" => [8u8, 0x12u8],
+    "Tasks:Complete" => [9u8, 0x08u8],
+    "Tasks:DateCompleted" => [9u8, 0x09u8],
+    "Tasks:DueDate" => [9u8, 0x0Du8],
+    "Tasks:Importance" => [9u8, 0x0Fu8],
+    "Tasks:StartDate" => [9u8, 0x17u8],
+    "Tasks:Subject" => [9u8, 0x18u8],
+    "Tasks:ReminderSet" => [9u8, 0x19u8],
+    "Tasks:ReminderTime" => [9u8, 0x1Au8],
+    "Tasks:Sensitivity" => [9u8, 0x1Bu8],
+    "Tasks:Recurrence" => [9u8, 0x1Cu8],
+    "Tasks:Type" => [9u8, 0x1Du8],
+    "Tasks:Start" => [9u8, 0x1Eu8],
+    "Tasks:Until" => [9u8, 0x1Fu8],
+    "Tasks:Occurrences" => [9u8, 0x20u8],
+    "Tasks:Interval" => [9u8, 0x21u8],
+    "Tasks:DayOfWeek" => [9u8, 0x22u8],
+    "Tasks:DayOfMonth" => [9u8, 0x23u8],
+    "Tasks:WeekOfMonth" => [9u8, 0x24u8],
+    "Tasks:MonthOfYear" => [9u8, 0x25u8],
+    "Tasks:Regenerate" => [9u8, 0x26u8],
+    "Tasks:DeadOccur" => [9u8, 0x27u8],
+    "Tasks:Categories" => [9u8, 0x28u8],
+    "Tasks:Category" => [9u8, 0x29u8],
+    "ResolveRecipients" => [10u8, 0x05u8],
+    "Type" => [10u8, 0x08u8],
+    "Recipient" => [10u8, 0x09u8],
+    "DisplayName" => [10u8, 0x0Au8],
+    "EmailAddress" => [10u8, 0x0Bu8],
+    "MiniCertificate" => [10u8, 0x0Eu8],
+    "To" => [10u8, 0x10u8],
+    "CertificateRetrieval" => [10u8, 0x11u8],
+    "RecipientCount" => [10u8, 0x12u8],
+    "MaxCertificates" => [10u8, 0x13u8],
+    "MaxAmbiguousRecipients" => [10u8, 0x14u8],
+    "CertificateCount" => [10u8, 0x15u8],
+    "Availability" => [10u8, 0x16u8],
+    "MergedFreeBusy" => [10u8, 0x19u8],
+    "Picture" => [10u8, 0x1Au8],
+    "MaxSize" => [10u8, 0x1Bu8],
+    "MaxPictures" => [10u8, 0x1Du8],
+    "ValidateCert" => [11u8, 0x05u8],
+    "Certificates" => [11u8, 0x06u8],
+    "Certificate" => [11u8, 0x07u8],
+    "CertificateChain" => [11u8, 0x08u8],
+    "CheckCRL" => [11u8, 0x09u8],
+    "CertificateStatus" => [11u8, 0x0Au8],
+    "Contacts2:CustomerId" => [12u8, 0x05u8],
+    "Contacts2:GovernmentId" => [12u8, 0x06u8],
+    "Contacts2:IMAddress" => [12u8, 0x07u8],
+    "Contacts2:IMAddress2" => [12u8, 0x08u8],
+    "Contacts2:IMAddress3" => [12u8, 0x09u8],
+    "Contacts2:ManagerName" => [12u8, 0x0Au8],
+    "Contacts2:CompanyMainPhone" => [12u8, 0x0Bu8],
+    "Contacts2:AccountName" => [12u8, 0x0Cu8],
+    "Contacts2:MMS" => [12u8, 0x0Du8],
+    "Contacts2:NickName" => [12u8, 0x0Eu8],
+    "Ping" => [13u8, 0x05u8],
+    "HeartbeatInterval" => [13u8, 0x08u8],
+    "Folders" => [13u8, 0x09u8],
+    "Folder" => [13u8, 0x0Au8],
+    "Id" => [13u8, 0x0Bu8],
+    "MaxFolders" => [13u8, 0x0Du8],
+    "Provision" => [14u8, 0x05u8],
+    "Policies" => [14u8, 0x06u8],
+    "Policy" => [14u8, 0x07u8],
+    "PolicyType" => [14u8, 0x08u8],
+    "PolicyKey" => [14u8, 0x09u8],
+    "RemoteWipe" => [14u8, 0x0Cu8],
+    "EASProvisionDoc" => [14u8, 0x0Du8],
+    "DevicePasswordEnabled" => [14u8, 0x0Eu8],
+    "AlphanumericDevicePasswordRequired" => [14u8, 0x0Fu8],
+    "RequireStorageCardEncryption" => [14u8, 0x10u8],
+    "PasswordRecoveryEnabled" => [14u8, 0x11u8],
+    "AttachmentsEnabled" => [14u8, 0x13u8],
+    "MinDevicePasswordLength" => [14u8, 0x14u8],
+    "MaxInactivityTimeDeviceLock" => [14u8, 0x15u8],
+    "MaxDevicePasswordFailedAttempts" => [14u8, 0x16u8],
+    "MaxAttachmentSize" => [14u8, 0x17u8],
+    "AllowSimpleDevicePassword" => [14u8, 0x18u8],
+    "DevicePasswordExpiration" => [14u8, 0x19u8],
+    "DevicePasswordHistory" => [14u8, 0x1Au8],
+    "AllowStorageCard" => [14u8, 0x1Bu8],
+    "AllowCamera" => [14u8, 0x1Cu8],
+    "RequireDeviceEncryption" => [14u8, 0x1Du8],
+    "AllowUnsignedApplications" => [14u8, 0x1Eu8],
+    "AllowUnsignedInstallationPackages" => [14u8, 0x1Fu8],
+    "MinDevicePasswordComplexCharacters" => [14u8, 0x20u8],
+    "AllowWifi" => [14u8, 0x21u8],
+    "AllowTextMessaging" => [14u8, 0x22u8],
+    "AllowPOPIMAPEmail" => [14u8, 0x23u8],
+    "AllowBluetooth" => [14u8, 0x24u8],
+    "AllowIrDA" => [14u8, 0x25u8],
+    "RequireManualSyncWhenRoaming" => [14u8, 0x26u8],
+    "AllowDesktopSync" => [14u8, 0x27u8],
+    "MaxCalendarAgeFilter" => [14u8, 0x28u8],
+    "AllowHTMLEmail" => [14u8, 0x29u8],
+    "MaxEmailAgeFilter" => [14u8, 0x2Au8],
+    "MaxEmailBodyTruncationSize" => [14u8, 0x2Bu8],
+    "MaxEmailHTMLBodyTruncationSize" => [14u8, 0x2Cu8],
+    "RequireSignedSMIMEMessages" => [14u8, 0x2Du8],
+    "RequireEncryptedSMIMEMessages" => [14u8, 0x2Eu8],
+    "RequireSignedSMIMEAlgorithm" => [14u8, 0x2Fu8],
+    "RequireEncryptionSMIMEAlgorithm" => [14u8, 0x30u8],
+    "AllowSMIMEEncryptionAlgorithmNegotiation" => [14u8, 0x31u8],
+    "AllowSMIMESoftCerts" => [14u8, 0x32u8],
+    "AllowBrowser" => [14u8, 0x33u8],
+    "AllowConsumerEmail" => [14u8, 0x34u8],
+    "AllowRemoteDesktop" => [14u8, 0x35u8],
+    "AllowInternetSharing" => [14u8, 0x36u8],
+    "UnapprovedInROMApplicationList" => [14u8, 0x37u8],
+    "ApplicationName" => [14u8, 0x38u8],
+    "ApprovedApplicationList" => [14u8, 0x39u8],
+    "Hash" => [14u8, 0x3Au8],
+    "Search" => [15u8, 0x05u8],
+    "Name" => [15u8, 0x08u8],
+    "Query" => [15u8, 0x09u8],
+    "Result" => [15u8, 0x0Eu8],
+    "EqualTo" => [15u8, 0x11u8],
+    "Value" => [15u8, 0x12u8],
+    "And" => [15u8, 0x13u8],
+    "Or" => [15u8, 0x14u8],
+    "FreeText" => [15u8, 0x15u8],
+    "DeepTraversal" => [15u8, 0x17u8],
+    "LongId" => [15u8, 0x18u8],
+    "RebuildResults" => [15u8, 0x19u8],
+    "LeafName" => [15u8, 0x1Au8],
+    "Class" => [15u8, 0x1Bu8],
+    "CollectionId" => [15u8, 0x1Cu8],
+    "QueryId" => [15u8, 0x1Du8],
+    "MaxResults" => [15u8, 0x1Eu8],
+    "GAL:DisplayName" => [16u8, 0x05u8],
+    "GAL:Phone" => [16u8, 0x06u8],
+    "GAL:Office" => [16u8, 0x07u8],
+    "GAL:Title" => [16u8, 0x08u8],
+    "GAL:Company" => [16u8, 0x09u8],
+    "GAL:Alias" => [16u8, 0x0Au8],
+    "GAL:FirstName" => [16u8, 0x0Bu8],
+    "GAL:LastName" => [16u8, 0x0Cu8],
+    "GAL:HomePhone" => [16u8, 0x0Du8],
+    "GAL:MobilePhone" => [16u8, 0x0Eu8],
+    "GAL:EmailAddress" => [16u8, 0x0Fu8],
+    "GAL:Picture" => [16u8, 0x10u8],
+    "GAL:Status" => [16u8, 0x11u8],
+    "GAL:Data" => [16u8, 0x12u8],
+    "AirSyncBase:BodyPreference" => [17u8, 0x05u8],
+    "AirSyncBase:Type" => [17u8, 0x06u8],
+    "AirSyncBase:TruncationSize" => [17u8, 0x07u8],
+    "AirSyncBase:AllOrNone" => [17u8, 0x08u8],
+    "AirSyncBase:Body" => [17u8, 0x0Au8],
+    "AirSyncBase:Data" => [17u8, 0x0Bu8],
+    "AirSyncBase:EstimatedDataSize" => [17u8, 0x0Cu8],
+    "AirSyncBase:Truncated" => [17u8, 0x0Du8],
+    "AirSyncBase:Attachments" => [17u8, 0x0Eu8],
+    "AirSyncBase:Attachment" => [17u8, 0x0Fu8],
+    "AirSyncBase:DisplayName" => [17u8, 0x10u8],
+    "AirSyncBase:FileReference" => [17u8, 0x11u8],
+    "AirSyncBase:Method" => [17u8, 0x12u8],
+    "AirSyncBase:ContentId" => [17u8, 0x13u8],
+    "AirSyncBase:ContentLocation" => [17u8, 0x14u8],
+    "AirSyncBase:IsInline" => [17u8, 0x15u8],
+    "AirSyncBase:NativeBodyType" => [17u8, 0x16u8],
+    "AirSyncBase:ContentType" => [17u8, 0x17u8],
+    "AirSyncBase:Preview" => [17u8, 0x18u8],
+    "AirSyncBase:BodyPartPreference" => [17u8, 0x19u8],
+    "AirSyncBase:BodyPart" => [17u8, 0x1Au8],
+    "AirSyncBase:Status" => [17u8, 0x1Bu8],
+    "AirSyncBase:Add" => [17u8, 0x1Cu8],
+    "AirSyncBase:Delete" => [17u8, 0x1Du8],
+    "AirSyncBase:ClientId" => [17u8, 0x1Eu8],
+    "AirSyncBase:Content" => [17u8, 0x1Fu8],
+    "AirSyncBase:Location" => [17u8, 0x20u8],
+    "AirSyncBase:Annotation" => [17u8, 0x21u8],
+    "AirSyncBase:Street" => [17u8, 0x22u8],
+    "AirSyncBase:City" => [17u8, 0x23u8],
+    "AirSyncBase:State" => [17u8, 0x24u8],
+    "AirSyncBase:Country" => [17u8, 0x25u8],
+    "AirSyncBase:PostalCode" => [17u8, 0x26u8],
+    "AirSyncBase:Latitude" => [17u8, 0x27u8],
+    "AirSyncBase:Longitude" => [17u8, 0x28u8],
+    "AirSyncBase:Accuracy" => [17u8, 0x29u8],
+    "AirSyncBase:Altitude" => [17u8, 0x2Au8],
+    "AirSyncBase:AltitudeAccuracy" => [17u8, 0x2Bu8],
+    "AirSyncBase:LocationUri" => [17u8, 0x2Cu8],
+    "AirSyncBase:InstanceId" => [17u8, 0x2Du8],
+    "Settings" => [18u8, 0x05u8],
+    "Get" => [18u8, 0x07u8],
+    "Set" => [18u8, 0x08u8],
+    "Oof" => [18u8, 0x09u8],
+    "OofState" => [18u8, 0x0Au8],
+    "StartTime" => [18u8, 0x0Bu8],
+    "EndTime" => [18u8, 0x0Cu8],
+    "OofMessage" => [18u8, 0x0Du8],
+    "AppliesToInternal" => [18u8, 0x0Eu8],
+    "AppliesToExternalKnown" => [18u8, 0x0Fu8],
+    "AppliesToExternalUnknown" => [18u8, 0x10u8],
+    "Enabled" => [18u8, 0x11u8],
+    "ReplyMessage" => [18u8, 0x12u8],
+    "BodyType" => [18u8, 0x13u8],
+    "DevicePassword" => [18u8, 0x14u8],
+    "Password" => [18u8, 0x15u8],
+    "DeviceInformation" => [18u8, 0x16u8],
+    "Model" => [18u8, 0x17u8],
+    "IMEI" => [18u8, 0x18u8],
+    "FriendlyName" => [18u8, 0x19u8],
+    "OS" => [18u8, 0x1Au8],
+    "OSLanguage" => [18u8, 0x1Bu8],
+    "PhoneNumber" => [18u8, 0x1Cu8],
+    "UserInformation" => [18u8, 0x1Du8],
+    "EmailAddresses" => [18u8, 0x1Eu8],
+    "SMTPAddress" => [18u8, 0x1Fu8],
+    "UserAgent" => [18u8, 0x20u8],
+    "EnableOutboundSMS" => [18u8, 0x21u8],
+    "MobileOperator" => [18u8, 0x22u8],
+    "PrimarySmtpAddress" => [18u8, 0x23u8],
+    "Accounts" => [18u8, 0x24u8],
+    "Account" => [18u8, 0x25u8],
+    "AccountName" => [18u8, 0x27u8],
+    "UserDisplayName" => [18u8, 0x28u8],
+    "SendDisabled" => [18u8, 0x29u8],
+    "RightsManagementInformation" => [18u8, 0x2Bu8],
+    "DocumentLibrary:LinkId" => [19u8, 0x05u8],
+    "DocumentLibrary:DisplayName" => [19u8, 0x06u8],
+    "DocumentLibrary:IsFolder" => [19u8, 0x07u8],
+    "DocumentLibrary:CreationDate" => [19u8, 0x08u8],
+    "DocumentLibrary:LastModifiedDate" => [19u8, 0x09u8],
+    "DocumentLibrary:IsHidden" => [19u8, 0x0Au8],
+    "DocumentLibrary:ContentLength" => [19u8, 0x0Bu8],
+    "DocumentLibrary:ContentType" => [19u8, 0x0Cu8],
+    "ItemOperations" => [20u8, 0x05u8],
+    "Fetch" => [20u8, 0x06u8],
+    "Store" => [20u8, 0x07u8],
+    "Options" => [20u8, 0x08u8],
+    "Range" => [20u8, 0x09u8],
+    "Total" => [20u8, 0x0Au8],
+    "Properties" => [20u8, 0x0Bu8],
+    "Data" => [20u8, 0x0Cu8],
+    "Response" => [20u8, 0x0Eu8],
+    "Version" => [20u8, 0x0Fu8],
+    "Schema" => [20u8, 0x10u8],
+    "Part" => [20u8, 0x11u8],
+    "EmptyFolderContents" => [20u8, 0x12u8],
+    "DeleteSubFolders" => [20u8, 0x13u8],
+    "UserName" => [20u8, 0x14u8],
+    "IOPassword" => [20u8, 0x15u8],
+    "Move" => [20u8, 0x16u8],
+    "DstFldId" => [20u8, 0x17u8],
+    "ConversationId" => [20u8, 0x18u8],
+    "MoveAlways" => [20u8, 0x19u8],
+    "SendMail" => [21u8, 0x05u8],
+    "SmartForward" => [21u8, 0x06u8],
+    "SmartReply" => [21u8, 0x07u8],
+    "SaveInSentItems" => [21u8, 0x08u8],
+    "ReplaceMime" => [21u8, 0x09u8],
+    "Mime" => [21u8, 0x0Bu8],
+    "ClientId" => [21u8, 0x0Cu8],
+    "Status" => [21u8, 0x0Du8],
+    "AccountId" => [21u8, 0x0Eu8],
+    "Forwardees" => [21u8, 0x0Fu8],
+    "Forwardee" => [21u8, 0x10u8],
+    "ForwardeeName" => [21u8, 0x11u8],
+    "ForwardeeEmail" => [21u8, 0x12u8],
+    "Email2:UmCallerId" => [22u8, 0x05u8],
+    "Email2:UmUserNotes" => [22u8, 0x06u8],
+    "Email2:UmAttDuration" => [22u8, 0x07u8],
+    "Email2:UmAttOrder" => [22u8, 0x08u8],
+    "Email2:ConversationId" => [22u8, 0x09u8],
+    "Email2:ConversationIndex" => [22u8, 0x0Au8],
+    "Email2:LastVerbExecuted" => [22u8, 0x0Bu8],
+    "Email2:LastVerbExecutionTime" => [22u8, 0x0Cu8],
+    "Email2:ReceivedAsBcc" => [22u8, 0x0Du8],
+    "Email2:Sender" => [22u8, 0x0Eu8],
+    "Email2:CalendarType" => [22u8, 0x0Fu8],
+    "Email2:IsLeapMonth" => [22u8, 0x10u8],
+    "Email2:AccountId" => [22u8, 0x11u8],
+    "Email2:FirstDayOfWeek" => [22u8, 0x12u8],
+    "Email2:MeetingMessageType" => [22u8, 0x13u8],
+    "Notes:Subject" => [23u8, 0x05u8],
+    "Notes:MessageClass" => [23u8, 0x06u8],
+    "Notes:LastModifiedDate" => [23u8, 0x07u8],
+    "Notes:Categories" => [23u8, 0x08u8],
+    "Notes:Category" => [23u8, 0x09u8],
+    "Notes:Body" => [23u8, 0x0Bu8],
+    "RightsManagement:RightsManagementSupport" => [24u8, 0x05u8],
+    "RightsManagement:RightsManagementTemplates" => [24u8, 0x06u8],
+    "RightsManagement:RightsManagementTemplate" => [24u8, 0x07u8],
+    "RightsManagement:RightsManagementLicense" => [24u8, 0x08u8],
+    "RightsManagement:EditAllowed" => [24u8, 0x09u8],
+    "RightsManagement:ReplyAllowed" => [24u8, 0x0Au8],
+    "RightsManagement:ReplyAllAllowed" => [24u8, 0x0Bu8],
+    "RightsManagement:ForwardAllowed" => [24u8, 0x0Cu8],
+    "RightsManagement:ModifyRecipientsAllowed" => [24u8, 0x0Du8],
+    "RightsManagement:ExtractAllowed" => [24u8, 0x0Eu8],
+    "RightsManagement:PrintAllowed" => [24u8, 0x0Fu8],
+    "RightsManagement:ExportAllowed" => [24u8, 0x10u8],
+    "RightsManagement:ProgrammaticAccessAllowed" => [24u8, 0x11u8],
+    "RightsManagement:RMOwner" => [24u8, 0x12u8],
+    "RightsManagement:ContentExpiryDate" => [24u8, 0x13u8],
+    "RightsManagement:ContentExpiryDateString" => [24u8, 0x14u8],
+    "RightsManagement:ContentExpiryInterval" => [24u8, 0x15u8],
+    "RightsManagement:ContentExpiryIntervalType" => [24u8, 0x16u8],
+    "RightsManagement:TemplateID" => [24u8, 0x17u8],
+    "RightsManagement:TemplateName" => [24u8, 0x18u8],
+    "RightsManagement:TemplateDescription" => [24u8, 0x19u8],
+    "RightsManagement:ContentOwner" => [24u8, 0x1Au8],
+    "RightsManagement:RemoveRightsManagementDistribution" => [24u8, 0x1Bu8],
+};
 
 fn namespace_to_code_page(ns: &str) -> Option<u8> {
     match ns {
@@ -50,15 +1050,15 @@ fn namespace_to_code_page(ns: &str) -> Option<u8> {
 fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<(u8, u8)> {
     if let Some(&pair) = NAME_TO_TAG.get(qualified_or_local) {
         if let Some(cp) = override_cp {
-            if pair.0 == cp {
-                return Some(pair);
+            if pair[0] == cp {
+                return Some((pair[0], pair[1]));
             }
         } else {
-            return Some(pair);
+            return Some((pair[0], pair[1]));
         }
     }
 
-    for (&(cp, id), &name) in TAG_TO_NAME.iter() {
+    for (&pair, &name) in TAG_TO_NAME.entries() {
         let local = if let Some(p) = name.rfind(':') {
             &name[p + 1..]
         } else {
@@ -66,568 +1066,15 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
         };
         if local == qualified_or_local {
             if let Some(ocp) = override_cp {
-                if cp == ocp {
-                    return Some((cp, id));
+                if pair[0] == ocp {
+                    return Some((pair[0], pair[1]));
                 }
             } else {
-                return Some((cp, id));
+                return Some((pair[0], pair[1]));
             }
         }
     }
     None
-}
-
-#[rustfmt::skip]
-fn build_tag_to_name() -> HashMap<(u8, u8), &'static str> {
-    let mut m: HashMap<(u8, u8), &'static str> = HashMap::new();
-
-    m.insert((0, 0x05), "Sync");
-    m.insert((0, 0x06), "Responses");
-    m.insert((0, 0x07), "Add");
-    m.insert((0, 0x08), "Change");
-    m.insert((0, 0x09), "Delete");
-    m.insert((0, 0x0A), "Fetch");
-    m.insert((0, 0x0B), "SyncKey");
-    m.insert((0, 0x0C), "ClientId");
-    m.insert((0, 0x0D), "ServerId");
-    m.insert((0, 0x0E), "Status");
-    m.insert((0, 0x0F), "Collection");
-    m.insert((0, 0x10), "Class");
-    m.insert((0, 0x12), "CollectionId");
-    m.insert((0, 0x13), "GetChanges");
-    m.insert((0, 0x14), "MoreAvailable");
-    m.insert((0, 0x15), "WindowSize");
-    m.insert((0, 0x16), "Commands");
-    m.insert((0, 0x17), "Options");
-    m.insert((0, 0x18), "FilterType");
-    m.insert((0, 0x1B), "Conflict");
-    m.insert((0, 0x1C), "Collections");
-    m.insert((0, 0x1D), "ApplicationData");
-    m.insert((0, 0x1E), "DeletesAsMoves");
-    m.insert((0, 0x20), "Supported");
-    m.insert((0, 0x21), "SoftDelete");
-    m.insert((0, 0x22), "MIMESupport");
-    m.insert((0, 0x23), "MIMETruncation");
-    m.insert((0, 0x24), "Wait");
-    m.insert((0, 0x25), "Limit");
-    m.insert((0, 0x26), "Partial");
-    m.insert((0, 0x27), "ConversationMode");
-    m.insert((0, 0x28), "MaxItems");
-    m.insert((0, 0x29), "HeartbeatInterval");
-
-    m.insert((1, 0x05), "Contacts:Anniversary");
-    m.insert((1, 0x06), "Contacts:AssistantName");
-    m.insert((1, 0x07), "Contacts:AssistantPhoneNumber");
-    m.insert((1, 0x08), "Contacts:Birthday");
-    m.insert((1, 0x13), "Contacts:BusinessPhoneNumber");
-    m.insert((1, 0x19), "Contacts:CompanyName");
-    m.insert((1, 0x1B), "Contacts:Email1Address");
-    m.insert((1, 0x1C), "Contacts:Email2Address");
-    m.insert((1, 0x1D), "Contacts:Email3Address");
-    m.insert((1, 0x1F), "Contacts:FirstName");
-    m.insert((1, 0x21), "Contacts:HomeCity");
-    m.insert((1, 0x22), "Contacts:HomeCountry");
-    m.insert((1, 0x26), "Contacts:HomePhoneNumber");
-    m.insert((1, 0x29), "Contacts:LastName");
-    m.insert((1, 0x2B), "Contacts:MobilePhoneNumber");
-    m.insert((1, 0x2F), "Contacts:Suffix");
-    m.insert((1, 0x30), "Contacts:Title");
-    m.insert((1, 0x33), "Contacts:JobTitle");
-    m.insert((1, 0x35), "Contacts:MiddleName");
-    m.insert((1, 0x37), "Contacts:NickName");
-    m.insert((1, 0x39), "Contacts:OfficeLocation");
-    m.insert((1, 0x45), "Contacts:WebPage");
-    m.insert((1, 0x47), "Contacts:YomiCompanyName");
-    m.insert((1, 0x48), "Contacts:YomiFirstName");
-    m.insert((1, 0x49), "Contacts:YomiLastName");
-
-    m.insert((2, 0x05), "Email:Attachment");
-    m.insert((2, 0x06), "Email:Attachments");
-    m.insert((2, 0x07), "Email:AttName");
-    m.insert((2, 0x08), "Email:AttSize");
-    m.insert((2, 0x0C), "Email:Body");
-    m.insert((2, 0x0E), "Email:DateReceived");
-    m.insert((2, 0x11), "Email:DisplayTo");
-    m.insert((2, 0x14), "Email:Subject");
-    m.insert((2, 0x15), "Email:Read");
-    m.insert((2, 0x16), "Email:To");
-    m.insert((2, 0x17), "Email:Cc");
-    m.insert((2, 0x18), "Email:From");
-    m.insert((2, 0x19), "Email:Reply-To");
-    m.insert((2, 0x1A), "Email:AllDayEvent");
-    m.insert((2, 0x1B), "Email:Categories");
-    m.insert((2, 0x1C), "Email:Category");
-    m.insert((2, 0x1D), "Email:DtStamp");
-    m.insert((2, 0x1E), "Email:EndTime");
-    m.insert((2, 0x1F), "Email:InstanceType");
-    m.insert((2, 0x20), "Email:BusyStatus");
-    m.insert((2, 0x24), "Email:Location");
-    m.insert((2, 0x25), "Email:MeetingRequest");
-    m.insert((2, 0x26), "Email:Organizer");
-    m.insert((2, 0x28), "Email:Recurrence");
-    m.insert((2, 0x2B), "Email:Reminder");
-    m.insert((2, 0x2C), "Email:RequiredAttendees");
-    m.insert((2, 0x2D), "Email:OptionalAttendees");
-    m.insert((2, 0x2E), "Email:ResourceAttendees");
-    m.insert((2, 0x2F), "Email:ResponseRequested");
-    m.insert((2, 0x30), "Email:Sensitivity");
-    m.insert((2, 0x31), "Email:StartTime");
-    m.insert((2, 0x32), "Email:Timezone");
-    m.insert((2, 0x33), "Email:GlobalObjId");
-    m.insert((2, 0x34), "Email:ThreadTopic");
-    m.insert((2, 0x39), "Email:InternetCPID");
-    m.insert((2, 0x3A), "Email:Flag");
-    m.insert((2, 0x3B), "Email:FlagStatus");
-    m.insert((2, 0x3C), "Email:ContentClass");
-    m.insert((2, 0x3D), "Email:FlagType");
-    m.insert((2, 0x3E), "Email:CompleteTime");
-    m.insert((2, 0x40), "Email:DisallowNewTimeProposal");
-
-    m.insert((4, 0x05), "Calendar:Timezone");
-    m.insert((4, 0x06), "Calendar:AllDayEvent");
-    m.insert((4, 0x07), "Calendar:Attendees");
-    m.insert((4, 0x08), "Calendar:Attendee");
-    m.insert((4, 0x09), "Calendar:Email");
-    m.insert((4, 0x0A), "Calendar:Name");
-    m.insert((4, 0x0B), "Calendar:Body");
-    m.insert((4, 0x0D), "Calendar:BusyStatus");
-    m.insert((4, 0x0E), "Calendar:Categories");
-    m.insert((4, 0x0F), "Calendar:Category");
-    m.insert((4, 0x11), "Calendar:DtStamp");
-    m.insert((4, 0x12), "Calendar:EndTime");
-    m.insert((4, 0x13), "Calendar:Exception");
-    m.insert((4, 0x14), "Calendar:Exceptions");
-    m.insert((4, 0x15), "Calendar:Deleted");
-    m.insert((4, 0x16), "Calendar:ExceptionStartTime");
-    m.insert((4, 0x17), "Calendar:Location");
-    m.insert((4, 0x18), "Calendar:MeetingStatus");
-    m.insert((4, 0x19), "Calendar:OrganizerEmail");
-    m.insert((4, 0x1A), "Calendar:OrganizerName");
-    m.insert((4, 0x1B), "Calendar:Recurrence");
-    m.insert((4, 0x1C), "Calendar:Type");
-    m.insert((4, 0x1D), "Calendar:Until");
-    m.insert((4, 0x1E), "Calendar:Occurrences");
-    m.insert((4, 0x1F), "Calendar:Interval");
-    m.insert((4, 0x20), "Calendar:DayOfWeek");
-    m.insert((4, 0x21), "Calendar:DayOfMonth");
-    m.insert((4, 0x22), "Calendar:WeekOfMonth");
-    m.insert((4, 0x23), "Calendar:MonthOfYear");
-    m.insert((4, 0x24), "Calendar:Reminder");
-    m.insert((4, 0x25), "Calendar:Sensitivity");
-    m.insert((4, 0x26), "Calendar:Subject");
-    m.insert((4, 0x27), "Calendar:StartTime");
-    m.insert((4, 0x28), "Calendar:UID");
-    m.insert((4, 0x29), "Calendar:AttendeeStatus");
-    m.insert((4, 0x2A), "Calendar:AttendeeType");
-    m.insert((4, 0x33), "Calendar:DisallowNewTimeProposal");
-    m.insert((4, 0x34), "Calendar:ResponseRequested");
-    m.insert((4, 0x35), "Calendar:AppointmentReplyTime");
-    m.insert((4, 0x36), "Calendar:ResponseType");
-    m.insert((4, 0x37), "Calendar:CalendarType");
-    m.insert((4, 0x38), "Calendar:IsLeapMonth");
-    m.insert((4, 0x39), "Calendar:FirstDayOfWeek");
-    m.insert((4, 0x3A), "Calendar:OnlineMeetingConfLink");
-    m.insert((4, 0x3B), "Calendar:OnlineMeetingExternalLink");
-    m.insert((4, 0x3C), "Calendar:ClientUid");
-    m.insert((4, 0x3D), "Calendar:StartTimeZoneId");
-    m.insert((4, 0x3E), "Calendar:StartTimeZone");
-    m.insert((4, 0x3F), "Calendar:EndTimeZone");
-    m.insert((4, 0x40), "Calendar:EndTimeZoneId");
-
-    m.insert((5, 0x05), "MoveItems");
-    m.insert((5, 0x06), "Move");
-    m.insert((5, 0x07), "SrcMsgId");
-    m.insert((5, 0x08), "SrcFldId");
-    m.insert((5, 0x09), "DstFldId");
-    m.insert((5, 0x0A), "MoveResponse");
-    m.insert((5, 0x0B), "MoveStatus");
-
-    m.insert((6, 0x05), "GetItemEstimate");
-    m.insert((6, 0x06), "GIEVersion");
-    m.insert((6, 0x07), "GIECollections");
-    m.insert((6, 0x08), "GIECollection");
-    m.insert((6, 0x09), "GIEClass");
-    m.insert((6, 0x0A), "GIECollectionId");
-    m.insert((6, 0x0B), "DateTime");
-    m.insert((6, 0x0C), "Estimate");
-    m.insert((6, 0x0D), "Response");
-    m.insert((6, 0x0E), "Status");
-
-    m.insert((7, 0x07), "DisplayName");
-    m.insert((7, 0x08), "ServerId");
-    m.insert((7, 0x09), "ParentId");
-    m.insert((7, 0x0A), "Type");
-    m.insert((7, 0x0C), "Status");
-    m.insert((7, 0x0E), "Changes");
-    m.insert((7, 0x0F), "Add");
-    m.insert((7, 0x10), "Delete");
-    m.insert((7, 0x11), "Update");
-    m.insert((7, 0x12), "SyncKey");
-    m.insert((7, 0x13), "FolderCreate");
-    m.insert((7, 0x14), "FolderDelete");
-    m.insert((7, 0x15), "FolderUpdate");
-    m.insert((7, 0x16), "FolderSync");
-    m.insert((7, 0x17), "Count");
-
-    m.insert((8, 0x05), "CalendarId");
-    m.insert((8, 0x06), "MeetingCollectionId");
-    m.insert((8, 0x07), "MeetingResponse");
-    m.insert((8, 0x08), "RequestId");
-    m.insert((8, 0x09), "Request");
-    m.insert((8, 0x0A), "Result");
-    m.insert((8, 0x0B), "Status");
-    m.insert((8, 0x0C), "UserResponse");
-    m.insert((8, 0x0E), "InstanceId");
-    m.insert((8, 0x0F), "LongId");
-    m.insert((8, 0x10), "ProposedStartTime");
-    m.insert((8, 0x11), "ProposedEndTime");
-    m.insert((8, 0x12), "SendResponse");
-
-    m.insert((9, 0x08), "Tasks:Complete");
-    m.insert((9, 0x09), "Tasks:DateCompleted");
-    m.insert((9, 0x0D), "Tasks:DueDate");
-    m.insert((9, 0x0F), "Tasks:Importance");
-    m.insert((9, 0x17), "Tasks:StartDate");
-    m.insert((9, 0x18), "Tasks:Subject");
-    m.insert((9, 0x19), "Tasks:ReminderSet");
-    m.insert((9, 0x1A), "Tasks:ReminderTime");
-    m.insert((9, 0x1B), "Tasks:Sensitivity");
-    m.insert((9, 0x1C), "Tasks:Recurrence");
-    m.insert((9, 0x1D), "Tasks:Type");
-    m.insert((9, 0x1E), "Tasks:Start");
-    m.insert((9, 0x1F), "Tasks:Until");
-    m.insert((9, 0x20), "Tasks:Occurrences");
-    m.insert((9, 0x21), "Tasks:Interval");
-    m.insert((9, 0x22), "Tasks:DayOfWeek");
-    m.insert((9, 0x23), "Tasks:DayOfMonth");
-    m.insert((9, 0x24), "Tasks:WeekOfMonth");
-    m.insert((9, 0x25), "Tasks:MonthOfYear");
-    m.insert((9, 0x26), "Tasks:Regenerate");
-    m.insert((9, 0x27), "Tasks:DeadOccur");
-    m.insert((9, 0x28), "Tasks:Categories");
-    m.insert((9, 0x29), "Tasks:Category");
-
-    m.insert((10, 0x05), "ResolveRecipients");
-    m.insert((10, 0x06), "Response");
-    m.insert((10, 0x07), "Status");
-    m.insert((10, 0x08), "Type");
-    m.insert((10, 0x09), "Recipient");
-    m.insert((10, 0x0A), "DisplayName");
-    m.insert((10, 0x0B), "EmailAddress");
-    m.insert((10, 0x0C), "Certificates");
-    m.insert((10, 0x0D), "Certificate");
-    m.insert((10, 0x0E), "MiniCertificate");
-    m.insert((10, 0x0F), "Options");
-    m.insert((10, 0x10), "To");
-    m.insert((10, 0x11), "CertificateRetrieval");
-    m.insert((10, 0x12), "RecipientCount");
-    m.insert((10, 0x13), "MaxCertificates");
-    m.insert((10, 0x14), "MaxAmbiguousRecipients");
-    m.insert((10, 0x15), "CertificateCount");
-    m.insert((10, 0x16), "Availability");
-    m.insert((10, 0x17), "StartTime");
-    m.insert((10, 0x18), "EndTime");
-    m.insert((10, 0x19), "MergedFreeBusy");
-    m.insert((10, 0x1A), "Picture");
-    m.insert((10, 0x1B), "MaxSize");
-    m.insert((10, 0x1C), "Data");
-    m.insert((10, 0x1D), "MaxPictures");
-
-    m.insert((11, 0x05), "ValidateCert");
-    m.insert((11, 0x06), "Certificates");
-    m.insert((11, 0x07), "Certificate");
-    m.insert((11, 0x08), "CertificateChain");
-    m.insert((11, 0x09), "CheckCRL");
-    m.insert((11, 0x0A), "CertificateStatus");
-    m.insert((11, 0x0B), "Status");
-
-    m.insert((12, 0x05), "Contacts2:CustomerId");
-    m.insert((12, 0x06), "Contacts2:GovernmentId");
-    m.insert((12, 0x07), "Contacts2:IMAddress");
-    m.insert((12, 0x08), "Contacts2:IMAddress2");
-    m.insert((12, 0x09), "Contacts2:IMAddress3");
-    m.insert((12, 0x0A), "Contacts2:ManagerName");
-    m.insert((12, 0x0B), "Contacts2:CompanyMainPhone");
-    m.insert((12, 0x0C), "Contacts2:AccountName");
-    m.insert((12, 0x0D), "Contacts2:MMS");
-    m.insert((12, 0x0E), "Contacts2:NickName");
-
-    m.insert((13, 0x05), "Ping");
-    m.insert((13, 0x07), "Status");
-    m.insert((13, 0x08), "HeartbeatInterval");
-    m.insert((13, 0x09), "Folders");
-    m.insert((13, 0x0A), "Folder");
-    m.insert((13, 0x0B), "Id");
-    m.insert((13, 0x0C), "Class");
-    m.insert((13, 0x0D), "MaxFolders");
-
-    m.insert((14, 0x05), "Provision");
-    m.insert((14, 0x06), "Policies");
-    m.insert((14, 0x07), "Policy");
-    m.insert((14, 0x08), "PolicyType");
-    m.insert((14, 0x09), "PolicyKey");
-    m.insert((14, 0x0A), "Data");
-    m.insert((14, 0x0B), "Status");
-    m.insert((14, 0x0C), "RemoteWipe");
-    m.insert((14, 0x0D), "EASProvisionDoc");
-    m.insert((14, 0x0E), "DevicePasswordEnabled");
-    m.insert((14, 0x0F), "AlphanumericDevicePasswordRequired");
-    m.insert((14, 0x10), "RequireStorageCardEncryption");
-    m.insert((14, 0x11), "PasswordRecoveryEnabled");
-    m.insert((14, 0x13), "AttachmentsEnabled");
-    m.insert((14, 0x14), "MinDevicePasswordLength");
-    m.insert((14, 0x15), "MaxInactivityTimeDeviceLock");
-    m.insert((14, 0x16), "MaxDevicePasswordFailedAttempts");
-    m.insert((14, 0x17), "MaxAttachmentSize");
-    m.insert((14, 0x18), "AllowSimpleDevicePassword");
-    m.insert((14, 0x19), "DevicePasswordExpiration");
-    m.insert((14, 0x1A), "DevicePasswordHistory");
-    m.insert((14, 0x1B), "AllowStorageCard");
-    m.insert((14, 0x1C), "AllowCamera");
-    m.insert((14, 0x1D), "RequireDeviceEncryption");
-    m.insert((14, 0x1E), "AllowUnsignedApplications");
-    m.insert((14, 0x1F), "AllowUnsignedInstallationPackages");
-    m.insert((14, 0x20), "MinDevicePasswordComplexCharacters");
-    m.insert((14, 0x21), "AllowWifi");
-    m.insert((14, 0x22), "AllowTextMessaging");
-    m.insert((14, 0x23), "AllowPOPIMAPEmail");
-    m.insert((14, 0x24), "AllowBluetooth");
-    m.insert((14, 0x25), "AllowIrDA");
-    m.insert((14, 0x26), "RequireManualSyncWhenRoaming");
-    m.insert((14, 0x27), "AllowDesktopSync");
-    m.insert((14, 0x28), "MaxCalendarAgeFilter");
-    m.insert((14, 0x29), "AllowHTMLEmail");
-    m.insert((14, 0x2A), "MaxEmailAgeFilter");
-    m.insert((14, 0x2B), "MaxEmailBodyTruncationSize");
-    m.insert((14, 0x2C), "MaxEmailHTMLBodyTruncationSize");
-    m.insert((14, 0x2D), "RequireSignedSMIMEMessages");
-    m.insert((14, 0x2E), "RequireEncryptedSMIMEMessages");
-    m.insert((14, 0x2F), "RequireSignedSMIMEAlgorithm");
-    m.insert((14, 0x30), "RequireEncryptionSMIMEAlgorithm");
-    m.insert((14, 0x31), "AllowSMIMEEncryptionAlgorithmNegotiation");
-    m.insert((14, 0x32), "AllowSMIMESoftCerts");
-    m.insert((14, 0x33), "AllowBrowser");
-    m.insert((14, 0x34), "AllowConsumerEmail");
-    m.insert((14, 0x35), "AllowRemoteDesktop");
-    m.insert((14, 0x36), "AllowInternetSharing");
-    m.insert((14, 0x37), "UnapprovedInROMApplicationList");
-    m.insert((14, 0x38), "ApplicationName");
-    m.insert((14, 0x39), "ApprovedApplicationList");
-    m.insert((14, 0x3A), "Hash");
-
-    m.insert((15, 0x05), "Search");
-    m.insert((15, 0x07), "Store");
-    m.insert((15, 0x08), "Name");
-    m.insert((15, 0x09), "Query");
-    m.insert((15, 0x0A), "Options");
-    m.insert((15, 0x0B), "Range");
-    m.insert((15, 0x0C), "Status");
-    m.insert((15, 0x0D), "Response");
-    m.insert((15, 0x0E), "Result");
-    m.insert((15, 0x0F), "Properties");
-    m.insert((15, 0x10), "Total");
-    m.insert((15, 0x11), "EqualTo");
-    m.insert((15, 0x12), "Value");
-    m.insert((15, 0x13), "And");
-    m.insert((15, 0x14), "Or");
-    m.insert((15, 0x15), "FreeText");
-    m.insert((15, 0x17), "DeepTraversal");
-    m.insert((15, 0x18), "LongId");
-    m.insert((15, 0x19), "RebuildResults");
-    m.insert((15, 0x1A), "LeafName");
-    m.insert((15, 0x1B), "Class");
-    m.insert((15, 0x1C), "CollectionId");
-    m.insert((15, 0x1D), "QueryId");
-    m.insert((15, 0x1E), "MaxResults");
-
-    m.insert((16, 0x05), "GAL:DisplayName");
-    m.insert((16, 0x06), "GAL:Phone");
-    m.insert((16, 0x07), "GAL:Office");
-    m.insert((16, 0x08), "GAL:Title");
-    m.insert((16, 0x09), "GAL:Company");
-    m.insert((16, 0x0A), "GAL:Alias");
-    m.insert((16, 0x0B), "GAL:FirstName");
-    m.insert((16, 0x0C), "GAL:LastName");
-    m.insert((16, 0x0D), "GAL:HomePhone");
-    m.insert((16, 0x0E), "GAL:MobilePhone");
-    m.insert((16, 0x0F), "GAL:EmailAddress");
-    m.insert((16, 0x10), "GAL:Picture");
-    m.insert((16, 0x11), "GAL:Status");
-    m.insert((16, 0x12), "GAL:Data");
-
-    m.insert((17, 0x05), "AirSyncBase:BodyPreference");
-    m.insert((17, 0x06), "AirSyncBase:Type");
-    m.insert((17, 0x07), "AirSyncBase:TruncationSize");
-    m.insert((17, 0x08), "AirSyncBase:AllOrNone");
-    m.insert((17, 0x0A), "AirSyncBase:Body");
-    m.insert((17, 0x0B), "AirSyncBase:Data");
-    m.insert((17, 0x0C), "AirSyncBase:EstimatedDataSize");
-    m.insert((17, 0x0D), "AirSyncBase:Truncated");
-    m.insert((17, 0x0E), "AirSyncBase:Attachments");
-    m.insert((17, 0x0F), "AirSyncBase:Attachment");
-    m.insert((17, 0x10), "AirSyncBase:DisplayName");
-    m.insert((17, 0x11), "AirSyncBase:FileReference");
-    m.insert((17, 0x12), "AirSyncBase:Method");
-    m.insert((17, 0x13), "AirSyncBase:ContentId");
-    m.insert((17, 0x14), "AirSyncBase:ContentLocation");
-    m.insert((17, 0x15), "AirSyncBase:IsInline");
-    m.insert((17, 0x16), "AirSyncBase:NativeBodyType");
-    m.insert((17, 0x17), "AirSyncBase:ContentType");
-    m.insert((17, 0x18), "AirSyncBase:Preview");
-    m.insert((17, 0x19), "AirSyncBase:BodyPartPreference");
-    m.insert((17, 0x1A), "AirSyncBase:BodyPart");
-    m.insert((17, 0x1B), "AirSyncBase:Status");
-    m.insert((17, 0x1C), "AirSyncBase:Add");
-    m.insert((17, 0x1D), "AirSyncBase:Delete");
-    m.insert((17, 0x1E), "AirSyncBase:ClientId");
-    m.insert((17, 0x1F), "AirSyncBase:Content");
-    m.insert((17, 0x20), "AirSyncBase:Location");
-    m.insert((17, 0x21), "AirSyncBase:Annotation");
-    m.insert((17, 0x22), "AirSyncBase:Street");
-    m.insert((17, 0x23), "AirSyncBase:City");
-    m.insert((17, 0x24), "AirSyncBase:State");
-    m.insert((17, 0x25), "AirSyncBase:Country");
-    m.insert((17, 0x26), "AirSyncBase:PostalCode");
-    m.insert((17, 0x27), "AirSyncBase:Latitude");
-    m.insert((17, 0x28), "AirSyncBase:Longitude");
-    m.insert((17, 0x29), "AirSyncBase:Accuracy");
-    m.insert((17, 0x2A), "AirSyncBase:Altitude");
-    m.insert((17, 0x2B), "AirSyncBase:AltitudeAccuracy");
-    m.insert((17, 0x2C), "AirSyncBase:LocationUri");
-    m.insert((17, 0x2D), "AirSyncBase:InstanceId");
-
-    m.insert((18, 0x05), "Settings");
-    m.insert((18, 0x06), "Status");
-    m.insert((18, 0x07), "Get");
-    m.insert((18, 0x08), "Set");
-    m.insert((18, 0x09), "Oof");
-    m.insert((18, 0x0A), "OofState");
-    m.insert((18, 0x0B), "StartTime");
-    m.insert((18, 0x0C), "EndTime");
-    m.insert((18, 0x0D), "OofMessage");
-    m.insert((18, 0x0E), "AppliesToInternal");
-    m.insert((18, 0x0F), "AppliesToExternalKnown");
-    m.insert((18, 0x10), "AppliesToExternalUnknown");
-    m.insert((18, 0x11), "Enabled");
-    m.insert((18, 0x12), "ReplyMessage");
-    m.insert((18, 0x13), "BodyType");
-    m.insert((18, 0x14), "DevicePassword");
-    m.insert((18, 0x15), "Password");
-    m.insert((18, 0x16), "DeviceInformation");
-    m.insert((18, 0x17), "Model");
-    m.insert((18, 0x18), "IMEI");
-    m.insert((18, 0x19), "FriendlyName");
-    m.insert((18, 0x1A), "OS");
-    m.insert((18, 0x1B), "OSLanguage");
-    m.insert((18, 0x1C), "PhoneNumber");
-    m.insert((18, 0x1D), "UserInformation");
-    m.insert((18, 0x1E), "EmailAddresses");
-    m.insert((18, 0x1F), "SMTPAddress");
-    m.insert((18, 0x20), "UserAgent");
-    m.insert((18, 0x21), "EnableOutboundSMS");
-    m.insert((18, 0x22), "MobileOperator");
-    m.insert((18, 0x23), "PrimarySmtpAddress");
-    m.insert((18, 0x24), "Accounts");
-    m.insert((18, 0x25), "Account");
-    m.insert((18, 0x26), "AccountId");
-    m.insert((18, 0x27), "AccountName");
-    m.insert((18, 0x28), "UserDisplayName");
-    m.insert((18, 0x29), "SendDisabled");
-    m.insert((18, 0x2B), "RightsManagementInformation");
-
-    m.insert((19, 0x05), "DocumentLibrary:LinkId");
-    m.insert((19, 0x06), "DocumentLibrary:DisplayName");
-    m.insert((19, 0x07), "DocumentLibrary:IsFolder");
-    m.insert((19, 0x08), "DocumentLibrary:CreationDate");
-    m.insert((19, 0x09), "DocumentLibrary:LastModifiedDate");
-    m.insert((19, 0x0A), "DocumentLibrary:IsHidden");
-    m.insert((19, 0x0B), "DocumentLibrary:ContentLength");
-    m.insert((19, 0x0C), "DocumentLibrary:ContentType");
-
-    m.insert((20, 0x05), "ItemOperations");
-    m.insert((20, 0x06), "Fetch");
-    m.insert((20, 0x07), "Store");
-    m.insert((20, 0x08), "Options");
-    m.insert((20, 0x09), "Range");
-    m.insert((20, 0x0A), "Total");
-    m.insert((20, 0x0B), "Properties");
-    m.insert((20, 0x0C), "Data");
-    m.insert((20, 0x0D), "Status");
-    m.insert((20, 0x0E), "Response");
-    m.insert((20, 0x0F), "Version");
-    m.insert((20, 0x10), "Schema");
-    m.insert((20, 0x11), "Part");
-    m.insert((20, 0x12), "EmptyFolderContents");
-    m.insert((20, 0x13), "DeleteSubFolders");
-    m.insert((20, 0x14), "UserName");
-    m.insert((20, 0x15), "IOPassword");
-    m.insert((20, 0x16), "Move");
-    m.insert((20, 0x17), "DstFldId");
-    m.insert((20, 0x18), "ConversationId");
-    m.insert((20, 0x19), "MoveAlways");
-
-    m.insert((21, 0x05), "SendMail");
-    m.insert((21, 0x06), "SmartForward");
-    m.insert((21, 0x07), "SmartReply");
-    m.insert((21, 0x08), "SaveInSentItems");
-    m.insert((21, 0x09), "ReplaceMime");
-    m.insert((21, 0x0B), "Mime");
-    m.insert((21, 0x0C), "ClientId");
-    m.insert((21, 0x0D), "Status");
-    m.insert((21, 0x0E), "AccountId");
-    m.insert((21, 0x0F), "Forwardees");
-    m.insert((21, 0x10), "Forwardee");
-    m.insert((21, 0x11), "ForwardeeName");
-    m.insert((21, 0x12), "ForwardeeEmail");
-
-    m.insert((22, 0x05), "Email2:UmCallerId");
-    m.insert((22, 0x06), "Email2:UmUserNotes");
-    m.insert((22, 0x07), "Email2:UmAttDuration");
-    m.insert((22, 0x08), "Email2:UmAttOrder");
-    m.insert((22, 0x09), "Email2:ConversationId");
-    m.insert((22, 0x0A), "Email2:ConversationIndex");
-    m.insert((22, 0x0B), "Email2:LastVerbExecuted");
-    m.insert((22, 0x0C), "Email2:LastVerbExecutionTime");
-    m.insert((22, 0x0D), "Email2:ReceivedAsBcc");
-    m.insert((22, 0x0E), "Email2:Sender");
-    m.insert((22, 0x0F), "Email2:CalendarType");
-    m.insert((22, 0x10), "Email2:IsLeapMonth");
-    m.insert((22, 0x11), "Email2:AccountId");
-    m.insert((22, 0x12), "Email2:FirstDayOfWeek");
-    m.insert((22, 0x13), "Email2:MeetingMessageType");
-
-    m.insert((23, 0x05), "Notes:Subject");
-    m.insert((23, 0x06), "Notes:MessageClass");
-    m.insert((23, 0x07), "Notes:LastModifiedDate");
-    m.insert((23, 0x08), "Notes:Categories");
-    m.insert((23, 0x09), "Notes:Category");
-    m.insert((23, 0x0B), "Notes:Body");
-
-    m.insert((24, 0x05), "RightsManagement:RightsManagementSupport");
-    m.insert((24, 0x06), "RightsManagement:RightsManagementTemplates");
-    m.insert((24, 0x07), "RightsManagement:RightsManagementTemplate");
-    m.insert((24, 0x08), "RightsManagement:RightsManagementLicense");
-    m.insert((24, 0x09), "RightsManagement:EditAllowed");
-    m.insert((24, 0x0A), "RightsManagement:ReplyAllowed");
-    m.insert((24, 0x0B), "RightsManagement:ReplyAllAllowed");
-    m.insert((24, 0x0C), "RightsManagement:ForwardAllowed");
-    m.insert((24, 0x0D), "RightsManagement:ModifyRecipientsAllowed");
-    m.insert((24, 0x0E), "RightsManagement:ExtractAllowed");
-    m.insert((24, 0x0F), "RightsManagement:PrintAllowed");
-    m.insert((24, 0x10), "RightsManagement:ExportAllowed");
-    m.insert((24, 0x11), "RightsManagement:ProgrammaticAccessAllowed");
-    m.insert((24, 0x12), "RightsManagement:RMOwner");
-    m.insert((24, 0x13), "RightsManagement:ContentExpiryDate");
-    m.insert((24, 0x14), "RightsManagement:ContentExpiryDateString");
-    m.insert((24, 0x15), "RightsManagement:ContentExpiryInterval");
-    m.insert((24, 0x16), "RightsManagement:ContentExpiryIntervalType");
-    m.insert((24, 0x17), "RightsManagement:TemplateID");
-    m.insert((24, 0x18), "RightsManagement:TemplateName");
-    m.insert((24, 0x19), "RightsManagement:TemplateDescription");
-    m.insert((24, 0x1A), "RightsManagement:ContentOwner");
-    m.insert((24, 0x1B), "RightsManagement:RemoveRightsManagementDistribution");
-
-    m
 }
 
 pub struct Wbxml;
@@ -759,7 +1206,7 @@ impl Wbxml {
                     if token >= 0x05 {
                         let has_content = (token & 0x40) != 0;
                         let tag_id = token & 0x3F;
-                        if let Some(name) = TAG_TO_NAME.get(&(current_code_page, tag_id)) {
+                        if let Some(name) = TAG_TO_NAME.get(&[current_code_page, tag_id]) {
                             output.push_str(&format!("<{name}>"));
                             if has_content {
                                 xml_stack.push(name.to_string());

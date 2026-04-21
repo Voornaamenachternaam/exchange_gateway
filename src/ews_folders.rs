@@ -1,5 +1,6 @@
 // src/ews_folders.rs
 use crate::util::xml_escape;
+use const_hex;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,25 +19,9 @@ pub enum DistinguishedFolder {
     Journal,
 }
 
-impl DistinguishedFolder {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "calendar" => Some(Self::Calendar),
-            "msgfolderroot" | "root" => Some(Self::MsgFolderRoot),
-            "inbox" => Some(Self::Inbox),
-            "sentitems" => Some(Self::SentItems),
-            "deleteditems" => Some(Self::DeletedItems),
-            "drafts" => Some(Self::Drafts),
-            "outbox" => Some(Self::Outbox),
-            "junkemail" | "junk" => Some(Self::JunkEmail),
-            "contacts" => Some(Self::Contacts),
-            "tasks" => Some(Self::Tasks),
-            "notes" => Some(Self::Notes),
-            "journal" => Some(Self::Journal),
-            _ => None,
-        }
-    }
+use std::str::FromStr;
 
+impl DistinguishedFolder {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Calendar => "Calendar",
@@ -94,6 +79,28 @@ impl DistinguishedFolder {
     }
 }
 
+impl FromStr for DistinguishedFolder {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "calendar" => Ok(Self::Calendar),
+            "msgfolderroot" | "root" => Ok(Self::MsgFolderRoot),
+            "inbox" => Ok(Self::Inbox),
+            "sentitems" => Ok(Self::SentItems),
+            "deleteditems" => Ok(Self::DeletedItems),
+            "drafts" => Ok(Self::Drafts),
+            "outbox" => Ok(Self::Outbox),
+            "junkemail" | "junk" => Ok(Self::JunkEmail),
+            "contacts" => Ok(Self::Contacts),
+            "tasks" => Ok(Self::Tasks),
+            "notes" => Ok(Self::Notes),
+            "journal" => Ok(Self::Journal),
+            _ => Err(()),
+        }
+    }
+}
+
 pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
     let suffix = match folder {
         DistinguishedFolder::Calendar => "/calendar",
@@ -118,14 +125,7 @@ pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
         DistinguishedFolder::MsgFolderRoot => "ROOT",
         _ => "FLD",
     };
-    format!(
-        "{}-{}",
-        tag,
-        digest[..12]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>()
-    )
+    format!("{}-{}", tag, const_hex::encode(&digest[..12]))
 }
 
 pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: usize) -> String {
@@ -199,7 +199,7 @@ pub fn validate_folder_request(
         }
     }
 
-    if distinguished_id.is_some_and(|did| DistinguishedFolder::from_str(did).is_none()) {
+    if distinguished_id.is_some_and(|did| DistinguishedFolder::from_str(did).is_err()) {
         return Some("ErrorFolderNotFound");
     }
     None

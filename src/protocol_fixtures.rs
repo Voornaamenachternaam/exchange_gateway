@@ -34,7 +34,8 @@ pub const EAS_COMPOSEMAIL_NS: &str = "ComposeMail:";
 pub const AUTODISCOVER_XML_HEADER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">"#;
 
-pub const AUTODISCOVER_OUTLOOK_NS: &str = "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a";
+pub const AUTODISCOVER_OUTLOOK_NS: &str =
+    "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a";
 pub const AUTODISCOVER_SOAP_NS: &str = "http://schemas.microsoft.com/exchange/2010/Autodiscover";
 
 pub const EAS_SUCCESS_STATUS: &str = "1";

@@ -1,5 +1,5 @@
 // src/autodiscover.rs
-use crate::util::xml_escape;
+use crate::util::{nfc, xml_escape};
 use axum::http::StatusCode;
 use serde::Deserialize;
 
@@ -34,7 +34,7 @@ fn extract_email_from_v1_xml(body: &str) -> Option<String> {
         .find("<EMailAddress>")
         .map(|i| i + "<EMailAddress>".len())?;
     let end = body[start..].find("</EMailAddress>").map(|i| start + i)?;
-    let email = body[start..end].trim().to_string();
+    let email = nfc(body[start..end].trim());
     if email.contains('@') {
         Some(email)
     } else {
@@ -53,7 +53,7 @@ fn extract_email_from_soap(body: &str) -> Option<String> {
             body[start..].find(close).map(|j| start + j)
         }) {
             let start = body.find(open).map(|i| i + open.len()).unwrap_or(0);
-            let email = body[start..end].trim().to_string();
+            let email = nfc(body[start..end].trim());
             if email.contains('@') {
                 return Some(email);
             }

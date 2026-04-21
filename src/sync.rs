@@ -1,11 +1,11 @@
 // src/sync.rs
 use crate::caldav::CaldavClient;
 use crate::calendar::{
-    Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_eas_sync_mutations,
-    parse_ics_event, render_ics,
+    Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_datetime,
+    parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
 use crate::models::AppState;
-use crate::util::{xml_escape, parse_datetime as util_parse_datetime};
+use crate::util::{normalize_email, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -411,6 +411,7 @@ pub fn render_client_mutation_responses(results: &[ClientMutationResult]) -> Str
     xml
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn apply_meeting_response(
     state: Arc<AppState>,
     owner: &str,
@@ -448,7 +449,7 @@ pub async fn apply_meeting_response(
     if let Some(attendee) = item
         .attendees
         .iter_mut()
-        .find(|a| a.email.eq_ignore_ascii_case(owner))
+        .find(|a| normalize_email(&a.email) == normalize_email(owner))
     {
         attendee.attendee_status = Some(status);
         attendee.partstat = Some(partstat.to_string());
@@ -487,7 +488,6 @@ pub async fn apply_meeting_response(
         .await?;
     Ok(())
 }
-
 
 fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
     match content_class.to_ascii_lowercase().as_str() {
@@ -559,7 +559,7 @@ fn map_rrule_to_recurrence_xml(
                 "BYMONTHDAY" => day_of_month = v.parse().unwrap_or(1),
                 "BYMONTH" => month_of_year = v.parse().unwrap_or(1),
                 "UNTIL" => {
-                    if let Some(dt) = util_parse_datetime(v) {
+                    if let Some(dt) = parse_datetime(v) {
                         until = Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
                     }
                 }
@@ -1033,6 +1033,7 @@ impl Default for SyncOptions {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn perform_sync(
     state: Arc<AppState>,
     owner: &str,

@@ -2,7 +2,7 @@
 use crate::calendar::{
     CalendarItem, extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_recurrence,
 };
-use crate::util::{xml_escape_text, xml_escape_attr};
+use crate::util::{nfc, xml_escape};
 use quick_xml::Reader;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 
@@ -42,10 +42,8 @@ fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
         match attr.decode_and_unescape_value(decoder) {
-            Ok(value) => out.push_str(&xml_escape_attr(&value)),
-            Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(
-                attr.value.as_ref(),
-            ))),
+            Ok(value) => out.push_str(&xml_escape(&value)),
+            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
         out.push('"');
     }
@@ -60,10 +58,8 @@ fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
         match attr.decode_and_unescape_value(decoder) {
-            Ok(value) => out.push_str(&xml_escape_attr(&value)),
-            Err(_) => out.push_str(&xml_escape_attr(&String::from_utf8_lossy(
-                attr.value.as_ref(),
-            ))),
+            Ok(value) => out.push_str(&xml_escape(&value)),
+            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
         out.push('"');
     }
@@ -396,7 +392,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 }
                 _ => {
                     if let Some(v) = extract_ews_field(payload, b"EmailAddress") {
-                        item.organizer_email = Some(v);
+                        item.organizer_email = Some(nfc(&v));
                     }
                     if let Some(v) = extract_ews_field(payload, b"Name") {
                         item.organizer_name = Some(v);

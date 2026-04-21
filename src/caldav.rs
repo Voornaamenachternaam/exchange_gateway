@@ -1,6 +1,7 @@
 // src/caldav.rs
 use crate::config::Config;
 use anyhow::Result;
+use const_hex;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
@@ -268,13 +269,7 @@ impl CaldavClient {
     }
 
     fn synthetic_etag(&self, ics: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(ics.as_bytes());
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect()
+        const_hex::encode(Sha256::digest(ics.as_bytes()))
     }
 }
 

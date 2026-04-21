@@ -9,10 +9,11 @@ use crate::ews_folders::{
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::models::AppState;
+use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::EwsItemRow;
-use crate::permission::{PermissionEnforcement, PermissionContext, PermissionCheck};
 use crate::sync::generate_server_id;
+use crate::util::nfc;
 use crate::util::xml_escape;
 use axum::{
     extract::State,
@@ -22,10 +23,12 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Datelike;
+use const_hex;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -95,6 +98,7 @@ impl EwsAction {
     /// Returns true if this action is a stub/no-op implementation.
     /// Evaluated at compile time.
     #[must_use]
+    #[allow(dead_code)]
     const fn is_stub_action(&self) -> bool {
         matches!(
             self,
@@ -180,12 +184,12 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
     if !xml.contains(EWS_MSG_NS) && !xml.contains("xmlns:m=") {
         return Err("Missing EWS messages namespace");
     }
-    
+
     // Use const fn for compile-time optimization
     if action.requires_mime_validation() && xml.contains("IncludeMimeContent") {
         return Err("This operation does not support IncludeMimeContent");
     }
-    
+
     Ok(())
 }
 
@@ -415,7 +419,7 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn owner_from_username(username: &str) -> &str {
+pub fn owner_from_username(username: &str) -> &str {
     username
 }
 fn folder_id_for_owner(owner: &str) -> String {
@@ -432,7 +436,7 @@ fn changekey_for_item(item: &EwsItemRow) -> String {
         h.update(u.as_bytes());
     }
     let digest = h.finalize();
-    digest[..12].iter().map(|b| format!("{:02x}", b)).collect()
+    const_hex::encode(&digest[..12])
 }
 
 fn busy_status_to_ews(value: u8) -> &'static str {
@@ -502,7 +506,7 @@ fn validate_item_change_key(
     action: &EwsAction,
     body: &str,
     item: &EwsItemRow,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     if let Some(requested) = extract_requested_change_key(body) {
         let expected = changekey_for_item(item);
         if requested != expected {
@@ -511,7 +515,8 @@ fn validate_item_change_key(
                 "ErrorIrresolvableConflict",
                 "Item ChangeKey does not match the current stored version",
                 StatusCode::OK,
-            ));
+            )
+            .into());
         }
     }
     Ok(())
@@ -1280,7 +1285,11 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
 
-fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Result<(), Response> {
+fn validate_requested_folder(
+    action: &EwsAction,
+    owner: &str,
+    body: &str,
+) -> Result<(), Box<Response>> {
     let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
     let explicit_id = extract_first_attr(body, b"FolderId", b"Id");
     let parent_id = extract_first_attr(body, b"ParentFolderId", b"Id");
@@ -1314,7 +1323,8 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
                 "ErrorFolderNotFound",
                 "Requested folder was not found for this mailbox",
                 StatusCode::OK,
-            ));
+            )
+            .into());
         }
     }
 
@@ -1329,7 +1339,8 @@ fn validate_requested_folder(action: &EwsAction, owner: &str, body: &str) -> Res
             error_code,
             "Requested folder was not found for this mailbox",
             StatusCode::OK,
-        ));
+        )
+        .into());
     }
     Ok(())
 }
@@ -1437,9 +1448,11 @@ async fn load_current_calendar_items(
                 {
                     let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
                     let safe_etag = if etag.is_empty() {
-                        let mut h = Sha256::new();
-                        h.update(server_id.as_bytes());
-                        h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+                        const_hex::encode({
+                            let mut h = Sha256::new();
+                            h.update(server_id.as_bytes());
+                            h.finalize()
+                        })
                     } else {
                         etag.clone()
                     };
@@ -1480,7 +1493,7 @@ async fn load_current_calendar_items(
 async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::GetFolder, owner, body) {
-        return resp;
+        return *resp;
     }
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
@@ -1507,7 +1520,7 @@ async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str
 async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
-        return resp;
+        return *resp;
     }
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
@@ -1535,7 +1548,7 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
 async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindItem, owner, body) {
-        return resp;
+        return *resp;
     }
     let max = extract_int(body, b"MaxEntriesReturned", 50);
     let offset = extract_int(body, b"Offset", 0);
@@ -1636,9 +1649,13 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     // Now perform permission check against the actual owner's folder
     let calendar_folder_id = folder_id_for(&owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
-    let perm_ctx = PermissionContext::new(auth.username.clone(), owner.clone(), calendar_folder_id.clone());
+    let perm_ctx = PermissionContext::new(
+        auth.username.clone(),
+        owner.clone(),
+        calendar_folder_id.clone(),
+    );
     match enforcement.can_read_item(&perm_ctx).await {
-        Ok(true) => {},
+        Ok(true) => {}
         Ok(false) => {
             return operation_error_response(
                 &EwsAction::GetItem,
@@ -1755,7 +1772,7 @@ async fn handle_sync_folder_items(
 ) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::SyncFolderItems, owner, body) {
-        return resp;
+        return *resp;
     }
     let max_changes = extract_int(body, b"MaxChangesReturned", 100);
     let shape = requested_item_shape(body);
@@ -1959,9 +1976,13 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     // Permission check must run BEFORE folder validation
     let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
-    let perm_ctx = PermissionContext::new(auth.username.clone(), owner.to_string(), calendar_folder_id.clone());
+    let perm_ctx = PermissionContext::new(
+        auth.username.clone(),
+        owner.to_string(),
+        calendar_folder_id.clone(),
+    );
     match enforcement.can_create_item(&perm_ctx).await {
-        Ok(true) => {},
+        Ok(true) => {}
         Ok(false) => {
             return operation_error_response(
                 &EwsAction::CreateItem,
@@ -1980,9 +2001,8 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         }
     }
 
-
     if let Err(resp) = validate_requested_folder(&EwsAction::CreateItem, owner, body) {
-        return resp;
+        return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
@@ -2080,28 +2100,32 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
- let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
- let enforcement = PermissionEnforcement::new(&state.storage);
- let perm_ctx = PermissionContext::new(auth.username.clone(), owner.to_string(), calendar_folder_id.clone());
- match enforcement.can_edit_item(&perm_ctx).await {
-  Ok(true) => {},
-  Ok(false) => {
-   return operation_error_response(
-    &EwsAction::UpdateItem,
-    "ErrorAccessDenied",
-    "You do not have permission to edit this calendar item",
-    StatusCode::FORBIDDEN,
-   );
-  }
-  Err(e) => {
-   return operation_error_response(
-    &EwsAction::UpdateItem,
-    "ErrorInternalServerError",
-    &format!("Permission check failed: {}", e),
-    StatusCode::INTERNAL_SERVER_ERROR,
-   );
-  }
- }
+    let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
+    let enforcement = PermissionEnforcement::new(&state.storage);
+    let perm_ctx = PermissionContext::new(
+        auth.username.clone(),
+        owner.to_string(),
+        calendar_folder_id.clone(),
+    );
+    match enforcement.can_edit_item(&perm_ctx).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorAccessDenied",
+                "You do not have permission to edit this calendar item",
+                StatusCode::FORBIDDEN,
+            );
+        }
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                &format!("Permission check failed: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    }
     if item_id.is_empty() {
         return operation_error_response(
             &EwsAction::UpdateItem,
@@ -2134,7 +2158,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     };
     if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item) {
-        return resp;
+        return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
@@ -2235,7 +2259,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             current_item.organizer_name = Some(v);
         }
         if let Some(v) = extract_ews_field(body, b"OrganizerEmail") {
-            current_item.organizer_email = Some(v);
+            current_item.organizer_email = Some(nfc(&v));
         }
         if body.contains("RequiredAttendees") || body.contains("OptionalAttendees") {
             current_item.attendees = parse_ews_attendees(body);
@@ -2324,28 +2348,32 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
- let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
- let enforcement = PermissionEnforcement::new(&state.storage);
- let perm_ctx = PermissionContext::new(auth.username.clone(), owner.to_string(), calendar_folder_id.clone());
- match enforcement.can_delete_item(&perm_ctx).await {
-  Ok(true) => {},
-  Ok(false) => {
-   return operation_error_response(
-    &EwsAction::DeleteItem,
-    "ErrorAccessDenied",
-    "You do not have permission to delete this calendar item",
-    StatusCode::FORBIDDEN,
-   );
-  }
-  Err(e) => {
-   return operation_error_response(
-    &EwsAction::DeleteItem,
-    "ErrorInternalServerError",
-    &format!("Permission check failed: {}", e),
-    StatusCode::INTERNAL_SERVER_ERROR,
-   );
-  }
- }
+    let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
+    let enforcement = PermissionEnforcement::new(&state.storage);
+    let perm_ctx = PermissionContext::new(
+        auth.username.clone(),
+        owner.to_string(),
+        calendar_folder_id.clone(),
+    );
+    match enforcement.can_delete_item(&perm_ctx).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorAccessDenied",
+                "You do not have permission to delete this calendar item",
+                StatusCode::FORBIDDEN,
+            );
+        }
+        Err(e) => {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInternalServerError",
+                &format!("Permission check failed: {}", e),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    }
     if item_id.is_empty() {
         return operation_error_response(
             &EwsAction::DeleteItem,
@@ -2378,7 +2406,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     };
     if let Err(resp) = validate_item_change_key(&EwsAction::DeleteItem, body, &existing) {
-        return resp;
+        return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,

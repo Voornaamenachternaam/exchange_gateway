@@ -1,5 +1,6 @@
 // src/storage.rs
 use anyhow::{Result, anyhow};
+use const_hex;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use reqwest_tracing::TracingMiddleware;
@@ -129,10 +130,10 @@ impl Storage {
         let payload = serde_json::to_vec(body)?;
         hasher.update(&payload);
         let digest = hasher.finalize();
-        Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
+        Ok(const_hex::encode(digest))
     }
 
-    async fn post_json<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<()> {
+    pub async fn post_json<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> Result<()> {
         let clean_path = path.trim_start_matches('/');
         let url = format!("{}/{}", self.base_url, clean_path);
         let idempotency_key = self.make_idempotency_key(clean_path, body)?;
@@ -152,7 +153,7 @@ impl Storage {
         Ok(())
     }
 
-    async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+    pub async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
         let resp = self
             .client
@@ -394,6 +395,7 @@ impl Storage {
         Ok(row.map(|r| (r.policy_key, r.policy_status)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_device_info(
         &self,
         owner: &str,
@@ -476,7 +478,10 @@ impl Storage {
         struct OwnerRow {
             owner: String,
         }
-        let path = format!("get_ews_item_owner?server_id={}", urlencoding::encode(server_id));
+        let path = format!(
+            "get_ews_item_owner?server_id={}",
+            urlencoding::encode(server_id)
+        );
         let row: Option<OwnerRow> = self.get_json(&path).await?;
         Ok(row.map(|r| r.owner))
     }
@@ -610,6 +615,7 @@ impl Storage {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_meeting_state(
         &self,
         owner: &str,
@@ -682,9 +688,11 @@ impl Storage {
             owner: &'a str,
             uid: &'a str,
         }
-        self.post_json("delete_meeting_state", &Req { owner, uid }).await
+        self.post_json("delete_meeting_state", &Req { owner, uid })
+            .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_meeting_attendee(
         &self,
         owner: &str,
@@ -765,21 +773,14 @@ impl Storage {
         .await
     }
 
-    pub async fn delete_meeting_attendees(
-        &self,
-        owner: &str,
-        meeting_uid: &str,
-    ) -> Result<()> {
+    pub async fn delete_meeting_attendees(&self, owner: &str, meeting_uid: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
             owner: &'a str,
             meeting_uid: &'a str,
         }
-        self.post_json(
-            "delete_meeting_attendees",
-            &Req { owner, meeting_uid },
-        )
-        .await
+        self.post_json("delete_meeting_attendees", &Req { owner, meeting_uid })
+            .await
     }
 
     pub async fn enqueue_scheduling(
