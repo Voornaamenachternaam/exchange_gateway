@@ -135,10 +135,10 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
     // First pass: extract UID, SEQUENCE, and ORGANIZER
     for (key, value) in event_props {
-        if key == "UID" {
-            uid = Some(value.clone());
-        } else if key == "SEQUENCE" {
-            sequence = value.parse().unwrap_or(0);
+        if key.starts_with("UID") {
+            uid = Some(value.trim().to_string());
+        } else if key.starts_with("SEQUENCE") {
+            sequence = value.trim().parse().ok();
         } else if key.starts_with("ORGANIZER") {
             // Extract email from mailto: format, NFC-normalize for storage
             let email = normalize_email(value);
