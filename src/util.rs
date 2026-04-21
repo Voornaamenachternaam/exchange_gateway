@@ -60,7 +60,7 @@ pub fn normalize_email(email: &str) -> String {
     } else {
         trimmed
     };
-    stripped.nfc().collect::<String>().to_ascii_lowercase()
+    stripped.nfc().collect::<String>().to_lowercase()
 }
 
 #[cfg(test)]
