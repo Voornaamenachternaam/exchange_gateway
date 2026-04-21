@@ -54,8 +54,9 @@ pub fn nfc(input: &str) -> String {
 /// This handles the common case where the same email arrives in different
 /// Unicode normalization forms (e.g., NFD from CalDAV vs NFC from EWS).
 pub fn normalize_email(email: &str) -> String {
-    let stripped = email.strip_prefix("mailto:").unwrap_or(
-        email.strip_prefix("MAILTO:").unwrap_or(email)
+    let trimmed = email.trim();
+    let stripped = trimmed.strip_prefix("mailto:").unwrap_or(
+        trimmed.strip_prefix("MAILTO:").unwrap_or(trimmed)
     );
     stripped.nfc().collect::<String>().to_ascii_lowercase()
 }
