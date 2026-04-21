@@ -143,7 +143,7 @@ bitflags = "^2.9.0"
 unicode-normalization = "^0.1.25"
 
 # Compile-time perfect hash — replaces runtime HashMap for WBXML lookup tables (NEW)
-phf = { version = "^0.12.1", features = ["macros"] }
+phf = { version = "^0.13.1", features = ["macros"] }
 
 # RFC 5545 iCalendar builder and parser — replaces custom iCal escape/unescape/fold/parse/render (NEW)
 icalendar = { version = "^0.17.10", features = ["parser"] }
