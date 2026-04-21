@@ -2236,7 +2236,21 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             current_item.disallow_new_time_proposal = Some(v.eq_ignore_ascii_case("true"));
         }
         if let Some(v) = extract_ews_field(body, b"OrganizerName") {
-            current_item.organizer_name = Some(v);
+let stored_item = match state
+    .storage
+    .get_ews_item_by_server_id(owner, &item_id)
+    .await
+{
+    Ok(v) => v,
+    Err(e) => {
+        return operation_error_response(
+            &EwsAction::UpdateItem,
+            "ErrorInternalServerError",
+            &format!("Failed to load item: {}", e),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+};
         }
         if let Some(v) = extract_ews_field(body, b"OrganizerEmail") {
             current_item.organizer_email = Some(nfc(&v));
