@@ -139,7 +139,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         if key.starts_with("UID") {
             uid = Some(value.trim().to_string());
         } else if key.starts_with("SEQUENCE") {
-            sequence = value.trim().parse().ok().unwrap_or(0);
+            sequence = value.trim().parse::<u32>().unwrap_or(0);
         } else if key.starts_with("ORGANIZER") {
             // Extract email from mailto: format, NFC-normalize for storage
             let email = normalize_email(value);
