@@ -1,14 +1,10 @@
 // src/meeting/state.rs
+use bitflags::bitflags;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-const ASF_MEETING: u8 = 0x01;
-const ASF_RECEIVED: u8 = 0x02;
-const ASF_CANCELED: u8 = 0x04;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MeetingStatus {
     #[default]
     Appointment = 0,
@@ -19,7 +15,6 @@ pub enum MeetingStatus {
     OrganizerCanceled = 5,
     ReceivedCanceled = 7,
 }
-
 
 impl From<u8> for MeetingStatus {
     fn from(value: u8) -> Self {
@@ -50,11 +45,27 @@ impl fmt::Display for MeetingStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeetingStateFlags {
-    pub is_meeting: bool,
-    pub is_received: bool,
-    pub is_canceled: bool,
+bitflags! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct MeetingStateFlags: u8 {
+        const IS_MEETING  = 0x01;
+        const IS_RECEIVED = 0x02;
+        const IS_CANCELED = 0x04;
+    }
+}
+
+// Serde: serialize as u8, deserialize from u8 — preserves wire format
+impl Serialize for MeetingStateFlags {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(self.bits())
+    }
+}
+
+impl<'de> Deserialize<'de> for MeetingStateFlags {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bits = u8::deserialize(deserializer)?;
+        Ok(Self::from_bits_retain(bits))
+    }
 }
 
 impl MeetingStateFlags {
@@ -63,44 +74,46 @@ impl MeetingStateFlags {
     }
 
     pub fn from_byte(value: u8) -> Self {
-        Self {
-            is_meeting: value & ASF_MEETING != 0,
-            is_received: value & ASF_RECEIVED != 0,
-            is_canceled: value & ASF_CANCELED != 0,
-        }
+        Self::from_bits_retain(value)
     }
 
     pub fn to_byte(&self) -> u8 {
-        let mut value = 0u8;
-        if self.is_meeting {
-            value |= ASF_MEETING;
-        }
-        if self.is_received {
-            value |= ASF_RECEIVED;
-        }
-        if self.is_canceled {
-            value |= ASF_CANCELED;
-        }
-        value
+        self.bits()
     }
 
-    pub fn to_meeting_status(&self, is_organizer: bool, response_type: Option<u8>) -> MeetingStatus {
-        if self.is_canceled {
+    pub fn is_meeting(&self) -> bool {
+        self.contains(Self::IS_MEETING)
+    }
+
+    pub fn is_received(&self) -> bool {
+        self.contains(Self::IS_RECEIVED)
+    }
+
+    pub fn is_canceled(&self) -> bool {
+        self.contains(Self::IS_CANCELED)
+    }
+
+    pub fn to_meeting_status(
+        &self,
+        is_organizer: bool,
+        response_type: Option<u8>,
+    ) -> MeetingStatus {
+        if self.is_canceled() {
             if is_organizer {
                 return MeetingStatus::OrganizerCanceled;
             } else {
                 return MeetingStatus::ReceivedCanceled;
             }
         }
-        
-        if !self.is_meeting {
+
+        if !self.is_meeting() {
             return MeetingStatus::Appointment;
         }
-        
+
         if is_organizer {
             return MeetingStatus::Organizer;
         }
-        
+
         match response_type {
             Some(2) => MeetingStatus::Tentative,
             Some(3) => MeetingStatus::Accepted,
@@ -109,9 +122,7 @@ impl MeetingStateFlags {
         }
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MeetingState {
     #[default]
     Draft,
@@ -121,7 +132,6 @@ pub enum MeetingState {
     Cancelled,
     Completed,
 }
-
 
 impl fmt::Display for MeetingState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -152,7 +162,12 @@ pub struct MeetingContext {
 }
 
 impl MeetingContext {
-    pub fn new(uid: String, organizer_email: String, start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
+    pub fn new(
+        uid: String,
+        organizer_email: String,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Self {
         Self::with_timestamp(uid, organizer_email, start, end, Utc::now())
     }
 
@@ -250,7 +265,9 @@ impl MeetingStateMachine {
         if !self.can_send_request() {
             return Err("Cannot send request from current state");
         }
-        self.context.state_flags.is_meeting = true;
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_MEETING);
         self.context.state = MeetingState::RequestSent;
         self.context.increment_sequence();
         Ok(())
@@ -261,12 +278,19 @@ impl MeetingStateMachine {
     }
 
     /// Receive request with a specific timestamp (for testing)
-    pub fn receive_request_with_timestamp(&mut self, now: DateTime<Utc>) -> Result<(), &'static str> {
+    pub fn receive_request_with_timestamp(
+        &mut self,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
         if self.context.state != MeetingState::Draft {
             return Err("Cannot receive request in current state");
         }
-        self.context.state_flags.is_meeting = true;
-        self.context.state_flags.is_received = true;
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_MEETING);
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_RECEIVED);
         self.context.state = MeetingState::PendingResponses;
         self.context.updated_at = now;
         Ok(())
@@ -277,7 +301,11 @@ impl MeetingStateMachine {
     }
 
     /// Update meeting with a specific timestamp (for testing)
-    pub fn update_meeting_with_timestamp(&mut self, significant_change: bool, now: DateTime<Utc>) -> Result<(), &'static str> {
+    pub fn update_meeting_with_timestamp(
+        &mut self,
+        significant_change: bool,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
         if !self.can_update() {
             return Err("Cannot update meeting from current state");
         }
@@ -292,7 +320,9 @@ impl MeetingStateMachine {
         if !self.can_cancel() {
             return Err("Cannot cancel meeting from current state");
         }
-        self.context.state_flags.is_canceled = true;
+        self.context
+            .state_flags
+            .insert(MeetingStateFlags::IS_CANCELED);
         self.context.state = MeetingState::Cancelled;
         self.context.increment_sequence();
         Ok(())
@@ -303,7 +333,10 @@ impl MeetingStateMachine {
     }
 
     /// Mark as completed with a specific timestamp (for testing)
-    pub fn mark_completed_with_timestamp(&mut self, now: DateTime<Utc>) -> Result<(), &'static str> {
+    pub fn mark_completed_with_timestamp(
+        &mut self,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
         if !self.context.is_past_meeting_at(now) {
             return Err("Meeting has not ended yet");
         }
@@ -369,42 +402,32 @@ mod tests {
     #[test]
     fn test_state_flags_from_byte() {
         let flags = MeetingStateFlags::from_byte(0x01);
-        assert!(flags.is_meeting);
-        assert!(!flags.is_received);
-        assert!(!flags.is_canceled);
+        assert!(flags.is_meeting());
+        assert!(!flags.is_received());
+        assert!(!flags.is_canceled());
 
         let flags = MeetingStateFlags::from_byte(0x03);
-        assert!(flags.is_meeting);
-        assert!(flags.is_received);
-        assert!(!flags.is_canceled);
+        assert!(flags.is_meeting());
+        assert!(flags.is_received());
+        assert!(!flags.is_canceled());
 
         let flags = MeetingStateFlags::from_byte(0x07);
-        assert!(flags.is_meeting);
-        assert!(flags.is_received);
-        assert!(flags.is_canceled);
+        assert!(flags.is_meeting());
+        assert!(flags.is_received());
+        assert!(flags.is_canceled());
     }
 
     #[test]
     fn test_state_flags_to_byte() {
-        let flags = MeetingStateFlags {
-            is_meeting: true,
-            is_received: false,
-            is_canceled: false,
-        };
+        let flags = MeetingStateFlags::IS_MEETING;
         assert_eq!(flags.to_byte(), 0x01);
 
-        let flags = MeetingStateFlags {
-            is_meeting: true,
-            is_received: true,
-            is_canceled: false,
-        };
+        let flags = MeetingStateFlags::IS_MEETING | MeetingStateFlags::IS_RECEIVED;
         assert_eq!(flags.to_byte(), 0x03);
 
-        let flags = MeetingStateFlags {
-            is_meeting: true,
-            is_received: true,
-            is_canceled: true,
-        };
+        let flags = MeetingStateFlags::IS_MEETING
+            | MeetingStateFlags::IS_RECEIVED
+            | MeetingStateFlags::IS_CANCELED;
         assert_eq!(flags.to_byte(), 0x07);
     }
 
@@ -438,10 +461,10 @@ mod tests {
         let mut machine = MeetingStateMachine::new(ctx);
 
         assert_eq!(machine.context().sequence, 0);
-        
+
         machine.send_request().unwrap();
         assert_eq!(machine.context().sequence, 1);
-        
+
         machine.update_meeting(true).unwrap();
         assert_eq!(machine.context().sequence, 2);
     }
