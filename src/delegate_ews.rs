@@ -17,11 +17,7 @@ impl DelegateEwsHandler {
         Self { storage }
     }
 
-    pub async fn handle_add_delegate(
-        &self,
-        auth_email: &str,
-        body: &str,
-    ) -> String {
+    pub async fn handle_add_delegate(&self, auth_email: &str, body: &str) -> String {
         let parsed = parse_add_delegate_request(body);
         let delegate_email = match parsed.delegate_email {
             Some(e) => e,
@@ -39,7 +35,9 @@ impl DelegateEwsHandler {
                 auth_email,
                 &delegate_email,
                 parsed.delegate_name.as_deref(),
-                parsed.calendar_permission.unwrap_or(PermissionLevel::Reviewer),
+                parsed
+                    .calendar_permission
+                    .unwrap_or(PermissionLevel::Reviewer),
                 auth_email,
             )
             .await
@@ -49,11 +47,7 @@ impl DelegateEwsHandler {
         }
     }
 
-    pub async fn handle_remove_delegate(
-        &self,
-        auth_email: &str,
-        body: &str,
-    ) -> String {
+    pub async fn handle_remove_delegate(&self, auth_email: &str, body: &str) -> String {
         let delegate_email = match parse_remove_delegate_request(body) {
             Some(e) => e,
             None => {
@@ -74,11 +68,7 @@ impl DelegateEwsHandler {
         }
     }
 
-    pub async fn handle_update_delegate(
-        &self,
-        auth_email: &str,
-        body: &str,
-    ) -> String {
+    pub async fn handle_update_delegate(&self, auth_email: &str, body: &str) -> String {
         let parsed = parse_update_delegate_request(body);
         let delegate_email = match parsed.delegate_email {
             Some(e) => e,
@@ -108,10 +98,7 @@ impl DelegateEwsHandler {
         }
     }
 
-    pub async fn handle_get_delegate(
-        &self,
-        auth_email: &str,
-    ) -> String {
+    pub async fn handle_get_delegate(&self, auth_email: &str) -> String {
         let manager = DelegateManager::new(&self.storage);
         match manager.get_delegates(auth_email).await {
             Ok(delegates) => render_get_delegate_response(&delegates, &manager),
@@ -120,6 +107,7 @@ impl DelegateEwsHandler {
     }
 }
 
+#[derive(Default)]
 struct ParsedDelegateRequest {
     delegate_email: Option<String>,
     delegate_name: Option<String>,
@@ -127,19 +115,6 @@ struct ParsedDelegateRequest {
     receive_copies: Option<bool>,
     receive_infos: Option<bool>,
     view_private: Option<bool>,
-}
-
-impl Default for ParsedDelegateRequest {
-    fn default() -> Self {
-        Self {
-            delegate_email: None,
-            delegate_name: None,
-            calendar_permission: None,
-            receive_copies: None,
-            receive_infos: None,
-            view_private: None,
-        }
-    }
 }
 
 fn parse_add_delegate_request(xml: &str) -> ParsedDelegateRequest {
@@ -225,16 +200,12 @@ fn parse_remove_delegate_request(xml: &str) -> Option<String> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                if e.name().local_name().as_ref() == b"EmailAddress" {
-                    in_email = true;
-                }
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"EmailAddress" => {
+                in_email = true;
             }
             Ok(Event::Text(e)) => {
-                if in_email {
-                    if let Ok(text) = e.decode() {
-                        return Some(text.into_owned());
-                    }
+                if in_email && let Ok(text) = e.decode() {
+                    return Some(text.into_owned());
                 }
             }
             Ok(Event::End(_)) => {
@@ -276,9 +247,7 @@ fn render_add_delegate_response(delegate: &DelegateInfo, manager: &DelegateManag
             </m:ResponseMessages>
             <m:DeliverMeetingRequests>DelegatesAndMe</m:DeliverMeetingRequests>
         </m:AddDelegateResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        delegate_xml,
+        EWS_MSG_NS, EWS_TYPE_NS, delegate_xml,
     )
 }
 
@@ -291,8 +260,7 @@ fn render_remove_delegate_response() -> String {
                 </m:DelegateUserResponseMessageType>
             </m:ResponseMessages>
         </m:RemoveDelegateResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
+        EWS_MSG_NS, EWS_TYPE_NS,
     )
 }
 
@@ -307,9 +275,7 @@ fn render_update_delegate_response(delegate: &DelegateInfo, manager: &DelegateMa
                 </m:DelegateUserResponseMessageType>
             </m:ResponseMessages>
         </m:UpdateDelegateResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        delegate_xml,
+        EWS_MSG_NS, EWS_TYPE_NS, delegate_xml,
     )
 }
 
@@ -341,10 +307,7 @@ fn render_get_delegate_response(delegates: &[DelegateInfo], manager: &DelegateMa
             </m:ResponseMessages>
             <m:DeliverMeetingRequests>{}</m:DeliverMeetingRequests>
         </m:GetDelegateResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        delegates_xml,
-        deliver_meeting_requests,
+        EWS_MSG_NS, EWS_TYPE_NS, delegates_xml, deliver_meeting_requests,
     )
 }
 

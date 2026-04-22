@@ -65,21 +65,31 @@ impl Config {
             return Err(anyhow::anyhow!("Config: 'bind' address is required"));
         }
         if !self.bind.contains(':') {
-            return Err(anyhow::anyhow!("Config: 'bind' must be in format 'host:port'"));
+            return Err(anyhow::anyhow!(
+                "Config: 'bind' must be in format 'host:port'"
+            ));
         }
         validate_url(&self.caldav_base, "caldav_base")?;
         validate_url(&self.worker_url, "worker_url")?;
         if self.worker_secret.expose_secret().len() < 16 {
-            return Err(anyhow::anyhow!("Config: 'worker_secret' must be at least 16 characters"));
+            return Err(anyhow::anyhow!(
+                "Config: 'worker_secret' must be at least 16 characters"
+            ));
         }
         if self.hmac_secret.expose_secret().len() < 32 {
-            return Err(anyhow::anyhow!("Config: 'hmac_secret' must be at least 32 characters"));
+            return Err(anyhow::anyhow!(
+                "Config: 'hmac_secret' must be at least 32 characters"
+            ));
         }
         if !self.gateway_host.is_empty() && self.gateway_host.contains("://") {
-            return Err(anyhow::anyhow!("Config: 'gateway_host' must be a hostname only, not a URL"));
+            return Err(anyhow::anyhow!(
+                "Config: 'gateway_host' must be a hostname only, not a URL"
+            ));
         }
         if self.max_attachment_bytes > 50 * 1024 * 1024 {
-            return Err(anyhow::anyhow!("Config: 'max_attachment_bytes' must not exceed 50MB"));
+            return Err(anyhow::anyhow!(
+                "Config: 'max_attachment_bytes' must not exceed 50MB"
+            ));
         }
         Ok(())
     }
@@ -98,10 +108,17 @@ fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
     match Url::parse(url) {
         Ok(parsed) => {
             if !matches!(parsed.scheme(), "http" | "https") {
-                return Err(anyhow::anyhow!("Config: '{}' must use http or https scheme", field_name));
+                return Err(anyhow::anyhow!(
+                    "Config: '{}' must use http or https scheme",
+                    field_name
+                ));
             }
             Ok(())
         }
-        Err(e) => Err(anyhow::anyhow!("Config: '{}' is not a valid URL: {}", field_name, e)),
+        Err(e) => Err(anyhow::anyhow!(
+            "Config: '{}' is not a valid URL: {}",
+            field_name,
+            e
+        )),
     }
 }
