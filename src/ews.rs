@@ -241,10 +241,6 @@ fn ews_response(status: StatusCode, xml: String) -> Response {
         status,
         [
             ("Content-Type", "text/xml; charset=utf-8"),
-            (
-                "Strict-Transport-Security",
-                "max-age=63072000; includeSubDomains",
-            ),
         ],
         xml,
     )
