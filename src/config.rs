@@ -50,14 +50,8 @@ impl Config {
 
     pub fn worker_secret(&self) -> &str {
         self.worker_secret.expose_secret()
-    }
-
-    pub fn hmac_secret(&self) -> &str {
-        self.hmac_secret.expose_secret()
-    }
-
     pub fn max_attachment_bytes(&self) -> usize {
-        self.max_attachment_bytes.max(1024)
+        self.max_attachment_bytes
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -86,11 +80,18 @@ impl Config {
                 "Config: 'gateway_host' must be a hostname only, not a URL"
             ));
         }
-        if self.max_attachment_bytes > 750 * 1024 {
+        if self.max_attachment_bytes < 1024 {
             return Err(anyhow::anyhow!(
-                "Config: 'max_attachment_bytes' must not exceed 750KB (Cloudflare D1 row limit)"
+                "Config: 'max_attachment_bytes' must be at least 1024 bytes"
             ));
         }
+        if self.max_attachment_bytes > 50 * 1024 * 1024 {
+            return Err(anyhow::anyhow!(
+                "Config: 'max_attachment_bytes' must not exceed 50MB"
+            ));
+        }
+        Ok(())
+    }
         Ok(())
     }
 }
