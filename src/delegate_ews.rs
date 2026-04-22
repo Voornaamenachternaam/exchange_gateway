@@ -204,8 +204,11 @@ fn parse_remove_delegate_request(xml: &str) -> Option<String> {
                 in_email = true;
             }
             Ok(Event::Text(e)) => {
-                if in_email && let Ok(text) = e.decode() {
-                    return Some(text.into_owned());
+                if in_email {
+                    match e.decode() {
+                        Ok(text) => return Some(text.into_owned()),
+                        Err(err) => tracing::error!("Failed to decode email text: {}", err),
+                    }
                 }
             }
             Ok(Event::End(_)) => {
