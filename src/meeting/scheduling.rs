@@ -152,9 +152,10 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
             // Skip if this attendee is the organizer
             if let Some(ref org_email) = organizer_email
-                && email == *org_email {
-                    continue;
-                }
+                && email == *org_email
+            {
+                continue;
+            }
 
             // Extract partstat from the key
             let partstat = key
