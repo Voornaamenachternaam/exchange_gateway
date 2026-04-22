@@ -203,7 +203,7 @@ impl fmt::Display for PermissionRights {
             parts.push("FreeBusyDetailed");
         }
         if parts.is_empty() {
-            write!(f, "None")
+            write!(f, "Unknown(0x{:08X})", self.bits())
         } else {
             write!(f, "{}", parts.join("|"))
         }
