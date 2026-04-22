@@ -326,7 +326,7 @@ pub async fn handle(
 fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     let auth = headers.get("authorization")?.to_str().ok()?;
     let auth = auth.trim();
-    if !auth.to_ascii_lowercase().starts_with("basic ") {
+    if !auth.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("basic ")) {
         return None;
     }
     let b64 = &auth[6..].trim();
