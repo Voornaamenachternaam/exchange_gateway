@@ -875,6 +875,133 @@ impl Storage {
         );
         self.get_json(&path).await
     }
+
+    pub async fn upsert_calendar_attachment(
+        &self,
+        attachment: &crate::attachment::AttachmentRecord,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            id: &'a str,
+            parent_item_server_id: &'a str,
+            owner: &'a str,
+            name: &'a str,
+            content_type: &'a str,
+            content_size: i64,
+            content_base64: &'a str,
+            is_inline: i32,
+            content_id: Option<&'a str>,
+            content_location: Option<&'a str>,
+            attachment_type: &'a str,
+            last_modified_time: Option<&'a str>,
+        }
+        self.post_json(
+            "upsert_calendar_attachment",
+            &Req {
+                id: &attachment.id,
+                parent_item_server_id: &attachment.parent_item_server_id,
+                owner: &attachment.owner,
+                name: &attachment.name,
+                content_type: &attachment.content_type,
+                content_size: attachment.content_size,
+                content_base64: &attachment.content_base64,
+                is_inline: if attachment.is_inline { 1 } else { 0 },
+                content_id: attachment.content_id.as_deref(),
+                content_location: attachment.content_location.as_deref(),
+                attachment_type: &attachment.attachment_type,
+                last_modified_time: attachment.last_modified_time.as_deref(),
+            },
+        )
+        .await
+    }
+
+    pub async fn get_calendar_attachment(
+        &self,
+        owner: &str,
+        attachment_id: &str,
+    ) -> Result<Option<crate::attachment::AttachmentRecord>> {
+        let path = format!(
+            "get_calendar_attachment?owner={}&attachment_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(attachment_id)
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn get_calendar_attachments_for_item(
+        &self,
+        owner: &str,
+        parent_item_server_id: &str,
+    ) -> Result<Vec<crate::attachment::AttachmentRecord>> {
+        let path = format!(
+            "get_calendar_attachments_for_item?owner={}&parent_item_server_id={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(parent_item_server_id)
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn delete_calendar_attachment(&self, owner: &str, attachment_id: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            attachment_id: &'a str,
+        }
+        self.post_json(
+            "delete_calendar_attachment",
+            &Req {
+                owner,
+                attachment_id,
+            },
+        )
+        .await
+    }
+
+    pub async fn upsert_room_list(&self, room_list: &crate::room::RoomListRecord) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            id: &'a str,
+            email: &'a str,
+            name: &'a str,
+        }
+        self.post_json(
+            "upsert_room_list",
+            &Req {
+                id: &room_list.id,
+                email: &room_list.email,
+                name: &room_list.name,
+            },
+        )
+        .await
+    }
+
+    pub async fn get_room_lists(&self, owner: &str) -> Result<Vec<crate::room::RoomListRecord>> {
+        let path = format!("get_room_lists?owner={}", urlencoding::encode(owner));
+        self.get_json(&path).await
+    }
+
+    pub async fn delete_room_list(&self, owner: &str, email: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            email: &'a str,
+        }
+        self.post_json("delete_room_list", &Req { owner, email }).await
+    }
+
+    pub async fn get_all_rooms(&self, owner: &str) -> Result<Vec<crate::room::RoomRecord>> {
+        let path = format!("get_all_rooms?owner={}", urlencoding::encode(owner));
+        self.get_json(&path).await
+    }
+
+    pub async fn delete_room(&self, owner: &str, email: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            email: &'a str,
+        }
+        self.post_json("delete_room", &Req { owner, email }).await
+    }
 }
 
 #[derive(Deserialize)]

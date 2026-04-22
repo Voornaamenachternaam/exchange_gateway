@@ -1,5 +1,7 @@
 // src/models.rs
+use crate::attachment::AttachmentManager;
 use crate::config::Config;
+use crate::room::RoomManager;
 use crate::storage::Storage;
 use std::sync::Arc;
 
@@ -7,11 +9,24 @@ use std::sync::Arc;
 pub struct AppState {
     pub cfg: Config,
     pub storage: Arc<Storage>,
+    pub attachment_manager: Arc<AttachmentManager>,
+    pub room_manager: Arc<RoomManager>,
 }
 
 impl AppState {
     pub fn new(cfg: Config, storage: Arc<Storage>) -> Self {
-        Self { cfg, storage }
+        let max_attachment_bytes = cfg.max_attachment_bytes();
+        let attachment_manager = Arc::new(AttachmentManager::new(
+            storage.clone(),
+            max_attachment_bytes,
+        ));
+        let room_manager = Arc::new(RoomManager::new(storage.clone()));
+        Self {
+            cfg,
+            storage,
+            attachment_manager,
+            room_manager,
+        }
     }
 
     pub fn gateway_host(&self) -> &str {

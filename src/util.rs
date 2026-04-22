@@ -3,15 +3,10 @@
 use std::borrow::Cow;
 use unicode_normalization::UnicodeNormalization;
 
-/// Escape all XML special characters: `& < > " '`
-/// Delegates to `quick_xml::escape::escape` for standards compliance.
 pub fn xml_escape(s: &str) -> Cow<'_, str> {
     quick_xml::escape::escape(s)
 }
 
-/// Escape XML text content characters: `& < >`
-/// Delegates to `quick_xml::escape::partial_escape` per XML spec
-/// (only `&` and `<` are mandatory in PCDATA; `>` escaped for SGML compat).
 pub fn xml_escape_text(s: &str) -> Cow<'_, str> {
     quick_xml::escape::partial_escape(s)
 }
@@ -43,17 +38,10 @@ pub fn truncate_string(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
-/// Apply NFC Unicode normalization to a string.
-/// Ensures canonical byte representation for consistent comparison
-/// of internationalized text (e.g., email addresses with non-ASCII characters).
 pub fn nfc(input: &str) -> String {
     input.nfc().collect()
 }
 
-/// Normalize an email address for consistent comparison and storage.
-/// Strips "mailto:" prefix, applies NFC Unicode normalization, and lowercases.
-/// This handles the common case where the same email arrives in different
-/// Unicode normalization forms (e.g., NFD from CalDAV vs NFC from EWS).
 pub fn normalize_email(email: &str) -> String {
     let trimmed = email.trim();
     let stripped = trimmed

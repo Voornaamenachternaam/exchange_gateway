@@ -1,151 +1,78 @@
 # Cargo.toml
 [package]
 name = "exchange_gateway"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.95.0"
 
 [dependencies]
-# Async runtime - use targeted features instead of "full" for smaller binary
 tokio = { version = "^1.51.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
+axum-extra = { version = "^0.12.6", features = ["typed-header"] }
 hyper = "^1.9.0"
 hyper-util = "^0.1.20"
-
-# HTTP client with compression and retry support
 reqwest = { version = "^0.13.2", features = ["rustls", "json", "gzip", "brotli", "deflate", "stream"] }
 reqwest-middleware = "^0.5.1"
 reqwest-retry = "^0.9.1"
 reqwest-tracing = "^0.7.0"
-
-# XML parsing with async support
 quick-xml = { version = "^0.39.2", features = ["serialize", "async-tokio", "encoding"] }
-
-# Parser combinators for better parsing infrastructure
 nom = "^8.0.0"
-
-# Serialization
 serde = { version = "^1.0.228", features = ["derive", "rc", "std"] }
 serde_json = "^1.0.149"
 toml = "^1.1.2"
-
-# Input validation with derive macros
 validator = { version = "^0.20.0", features = ["derive"] }
-
-# Error handling
 anyhow = "^1.0.102"
 thiserror = "^2.0.18"
-
-# UUIDs - v7 for time-ordered, v4 for random
 uuid = { version = "^1.23.0", features = ["v4", "v7", "serde"] }
-
-# Date/time handling
 chrono = { version = "^0.4.44", features = ["serde", "clock", "std"] }
 chrono-tz = "^0.10.4"
-
-# Calendar recurrence rules
 rrule = "^0.14.0"
-
-# Cryptographic primitives
 hmac = "^0.13.0"
 sha2 = "^0.11.0"
-
-# Byte handling
 bytes = "^1.11.1"
-
-# Logging and tracing
 tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter", "registry", "json"] }
 tracing-opentelemetry = "^0.29.0"
 opentelemetry = { version = "^0.29.0", features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "^0.29.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "^0.29.0", features = ["trace", "grpc-tonic"] }
-
-# URL handling
 urlencoding = "^2.1.3"
 base64 = "^0.22.1"
+base64ct = { version = "^1.8.3", features = ["std"] }
 url = "^2.5.8"
 percent-encoding = "^2.3.2"
-
-# Tower middleware
 tower = { version = "^0.5.3", features = ["util", "limit", "timeout", "buffer"] }
 tower-http = { version = "^0.6.8", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full", "set-header"] }
-
-# Concurrency primitives - parking_lot for better performance than std sync
 parking_lot = { version = "^0.12.5", features = ["send_guard"] }
-
-# Async utilities - use futures-util instead of full futures crate
 futures-util = "^0.3.32"
 futures-core = "^0.3.32"
-
-# Compact string storage for memory efficiency
 compact_str = { version = "^0.9.0", features = ["serde", "bytes"] }
-
-# HTTP header utilities
 headers = "^0.4.1"
-
-# Compression
 flate2 = "^1.1.9"
-
-# Tokio utilities
 tokio-util = { version = "^0.7.18", features = ["codec", "io", "compat", "rt"] }
 tokio-stream = { version = "^0.1.18", features = ["sync", "net"] }
-
-# Security - protect sensitive data in memory
 secrecy = { version = "^0.10.3", features = ["serde"] }
 zeroize = { version = "^1.8.2", features = ["derive", "serde"] }
 subtle = "^2.6.1"
-
-# Async utilities
 pin-project-lite = "^0.2.17"
 http-body-util = "^0.1.3"
-
-# MIME type handling
 mime = "^0.3.17"
-
-# LRU caching
 lru = "^0.16.3"
-
-# Fast string searching
+moka = { version = "^0.12.15", features = ["sync"] }
+arc-swap = "^1.9.1"
 memchr = "^2.7.5"
-
-# Fast integer/float formatting
 itoa = "^1.0.15"
 ryu = "^1.0.20"
-
-# Windows timezone mapping
-# Note: strum version is pinned to 0.27.x (tilde versioning) to match windows-timezones' transitive dependency.
-# This ensures compatibility with the IntoEnumIterator trait that windows-timezones re-exports.
-# Using a different version would cause trait conflicts. When windows-timezones updates its strum dependency,
-# this can be updated accordingly.
 windows-timezones = { version = "^0.5.1", features = ["strum", "chrono-tz"] }
 strum = "~0.27.2"
-
-# Concurrent data structures (NEW)
 dashmap = "^6.1.0"
-
-# Small vector optimizations (NEW)
 smallvec = { version = "^1.15.0", features = ["serde", "write"] }
-
-# HTTP type definitions (NEW)
 http = "^1.3.0"
-
-# Memory-efficient string handling (NEW)
 smartstring = "^1.0.1"
-
-# Fast hex encoding — replaces hand-rolled format!("{:02x}") loops (NEW)
 const-hex = "^1.18.1"
-
-# Bitflags derive macro — replaces manual bitflag implementations (NEW)
 bitflags = "^2.9.0"
-
-# Unicode normalization (NFC/NFD) — ensures canonical string comparison for email addresses (NEW)
 unicode-normalization = "^0.1.25"
-
-# Compile-time perfect hash — replaces runtime HashMap for WBXML lookup tables (NEW)
 phf = { version = "^0.13.1", features = ["macros"] }
-
-# RFC 5545 iCalendar builder and parser — replaces custom iCal escape/unescape/fold/parse/render (NEW)
 icalendar = { version = "^0.17.10", features = ["parser"] }
 
 [dev-dependencies]
@@ -160,7 +87,6 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-# Enable debug assertions in release for overflow checking (remove in production)
 debug-assertions = false
 overflow-checks = false
 
@@ -168,11 +94,9 @@ overflow-checks = false
 opt-level = 1
 debug = true
 
-# Faster incremental builds
 [profile.dev.package."*"]
 opt-level = 3
 
-# Profile for profiling
 [profile.profiling]
 inherits = "release"
 debug = true

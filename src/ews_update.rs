@@ -2,7 +2,7 @@
 use crate::calendar::{
     CalendarItem, extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_recurrence,
 };
-use crate::util::{nfc, xml_escape};
+use crate::util::{nfc, xml_escape, xml_escape_text};
 use quick_xml::Reader;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 

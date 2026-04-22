@@ -104,10 +104,7 @@ async fn main() -> anyhow::Result<()> {
 
     let storage = Arc::new(Storage::new(&config.worker_url, config.worker_secret())?);
 
-    let app_state = Arc::new(AppState {
-        cfg: config.clone(),
-        storage,
-    });
+    let app_state = Arc::new(AppState::new(config.clone(), storage));
 
     let app = Router::new()
         .route("/health", get(health_check))

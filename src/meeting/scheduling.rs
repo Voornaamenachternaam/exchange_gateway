@@ -108,8 +108,6 @@ pub fn escape_ical_text(s: &str) -> String {
         .replace('\n', "\\n")
 }
 
-/// Escape and quote a parameter value for iCalendar property parameters.
-/// Per RFC 5545, parameter values containing special characters must be quoted.
 pub fn escape_ical_param(s: &str) -> String {
     let escaped = s
         .replace('\\', "\\\\")
@@ -140,19 +138,12 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
     // First pass: extract UID, SEQUENCE, and ORGANIZER
     for (key, value) in event_props {
-    // First pass: extract UID, SEQUENCE, and ORGANIZER
-    for (key, value) in event_props {
         let key_upper = key.to_uppercase();
         if key_upper.starts_with("UID") {
             uid = Some(value.trim().to_string());
         } else if key_upper.starts_with("SEQUENCE") {
             sequence = value.trim().parse::<u32>().unwrap_or(0);
         } else if key_upper.starts_with("ORGANIZER") {
-            uid = Some(value.trim().to_string());
-        } else if key.starts_with("SEQUENCE") {
-            sequence = value.trim().parse::<u32>().unwrap_or(0);
-        } else if key.starts_with("ORGANIZER") {
-            // Extract email from mailto: format, NFC-normalize for storage
             let email = normalize_email(value);
             organizer_email = Some(email);
         }
@@ -164,14 +155,13 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     // Second pass: find the first ATTENDEE that is not the organizer
     for (key, value) in event_props {
         if key.starts_with("ATTENDEE") {
-            // Extract email from mailto: format, NFC-normalize for storage
             let email = normalize_email(value);
 
             // Skip if this attendee is the organizer
             if let Some(ref org_email) = organizer_email {
                 if email == *org_email {
-            {
-                continue;
+                    continue;
+                }
             }
 
             // Extract partstat from the key
@@ -192,7 +182,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
             responding_attendee_email = Some(email);
             responding_partstat = Some(partstat);
-            break; // Take the first non-organizer attendee
+            break;
         }
     }
 

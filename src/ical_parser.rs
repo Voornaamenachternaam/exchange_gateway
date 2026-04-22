@@ -1,13 +1,10 @@
 // src/ical_parser.rs
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 
-/// Unfold iCal content lines per RFC 5545 §3.1.
-/// Delegates to `icalendar::parser::unfold` for standards compliance.
 pub fn unfold_ical_content(input: &str) -> String {
     icalendar::parser::unfold(input)
 }
 
-/// Parsed iCalendar property line: (name, params, value).
 pub type PropertyLine = (String, Vec<(String, String)>, String);
 
 pub fn parse_property_line(input: &str) -> Result<PropertyLine, nom::Err<nom::error::Error<&str>>> {
@@ -153,21 +150,19 @@ pub fn parse_property_lines(
                     let full_key = if params.is_empty() {
                         name
                     } else {
-pub fn parse_property_line(input: &str) -> Result<PropertyLine, NomError<'_>> {
-    let colon_pos = find_value_colon(input).ok_or_else(|| {
-        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))
-    })?;
-    let before_colon = &input[..colon_pos];
-    let value = &input[colon_pos + 1..];
-
-    let mut parts = before_colon.splitn(2, ';');
-    let name = parts.next().unwrap_or("").to_string();
-    let params_str = parts.next().unwrap_or("");
-    let params = parse_parameters(params_str);
-
-    Ok((name, params, value.to_string()))
-}
-                        format!("{}{}", name, params_str)
+                        format!(
+                            "{};{}",
+                            name,
+                            params
+                                .iter()
+                                .map(|(k, v)| if v.is_empty() {
+                                    k.clone()
+                                } else {
+                                    format!("{}={}", k, v)
+                                })
+                                .collect::<Vec<_>>()
+                                .join(";")
+                        )
                     };
                     properties.push((full_key, value));
                 }
@@ -201,10 +196,8 @@ pub fn parse_vevent_block(
     parse_property_lines(content)
 }
 
-/// Parsed VEVENT: a list of (key, value) property pairs.
 pub type VeventProps = Vec<(String, String)>;
 
-/// Nom error type used by iCal parsers.
 pub type NomError<'i> = nom::Err<nom::error::Error<&'i str>>;
 
 pub fn parse_all_vevents(input: &str) -> Result<Vec<VeventProps>, NomError<'_>> {
@@ -236,8 +229,10 @@ pub fn parse_vtimezone_block(
 ) -> Result<Option<String>, nom::Err<nom::error::Error<&str>>> {
     let unfolded = unfold_ical_content(input);
 
-    if let (Some(start), Some(end)) = (unfolded.find("BEGIN:VTIMEZONE"), unfolded.find("END:VTIMEZONE"))
-    {
+    if let (Some(start), Some(end)) = (
+        unfolded.find("BEGIN:VTIMEZONE"),
+        unfolded.find("END:VTIMEZONE"),
+    ) {
         let block = &unfolded[start..end + "END:VTIMEZONE".len()];
         return Ok(Some(block.to_string()));
     }
@@ -268,12 +263,11 @@ pub fn parse_ical_datetime(
         }
     }
 
-    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
+    if input.len() == 8
+        && input.chars().all(|c| c.is_ascii_digit())
+        && let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d")
+        && let Some(dt) = date.and_hms_opt(0, 0, 0)
     {
-        let dt = date.and_hms_opt(0, 0, 0).ok_or_else(|| {
-            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
-        })?;
         return Ok(dt.and_utc());
     }
 
@@ -283,11 +277,6 @@ pub fn parse_ical_datetime(
     )))
 }
 
-pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
-    let search = format!("{}=", param_name);
-    if let Some(pos) = input.find(&search) {
-        let start = pos + search.len();
-        let remainder = &input[start..];
 pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
     let search = format!("{}=", param_name);
     if let Some(pos) = input.find(&search) {
@@ -311,12 +300,6 @@ pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
         None
     }
 }
-        Some(remainder[..end].trim_matches('"').to_string())
-    } else {
-        None
-    }
-}
-
 pub fn unescape_ical_text(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
