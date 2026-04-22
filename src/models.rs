@@ -16,7 +16,10 @@ pub struct AppState {
 impl AppState {
     pub fn new(cfg: Config, storage: Arc<Storage>) -> Self {
         let max_attachment_bytes = cfg.max_attachment_bytes();
-        let attachment_manager = Arc::new(AttachmentManager::new(storage.clone(), max_attachment_bytes));
+        let attachment_manager = Arc::new(AttachmentManager::new(
+            storage.clone(),
+            max_attachment_bytes,
+        ));
         let room_manager = Arc::new(RoomManager::new(storage.clone()));
         Self {
             cfg,

@@ -1,6 +1,6 @@
 // src/ews.rs
 use crate::attachment::{
-    parse_create_attachment_request, parse_get_attachment_request, parse_delete_attachment_request,
+    parse_create_attachment_request, parse_delete_attachment_request, parse_get_attachment_request,
     render_create_attachment_response, render_delete_attachment_response,
     render_file_attachment_xml, render_get_attachment_response,
 };
@@ -18,8 +18,7 @@ use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::room::{
-    parse_get_rooms_request, render_get_room_lists_response,
-    render_get_rooms_response,
+    parse_get_rooms_request, render_get_room_lists_response, render_get_rooms_response,
 };
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
@@ -242,7 +241,10 @@ fn ews_response(status: StatusCode, xml: String) -> Response {
         status,
         [
             ("Content-Type", "text/xml; charset=utf-8"),
-            ("Strict-Transport-Security", "max-age=63072000; includeSubDomains"),
+            (
+                "Strict-Transport-Security",
+                "max-age=63072000; includeSubDomains",
+            ),
         ],
         xml,
     )
@@ -306,9 +308,9 @@ pub async fn handle(
         EwsAction::GetRoomLists => handle_get_room_lists(&state).await,
         EwsAction::GetRooms => handle_get_rooms(&state, &body).await,
         EwsAction::GetDelegate => handle_get_delegate(&state, &auth).await,
-            EwsAction::AddDelegate => handle_add_delegate(&state, &auth, &body).await,
-            EwsAction::RemoveDelegate => handle_remove_delegate(&state, &auth, &body).await,
-            EwsAction::UpdateDelegate => handle_update_delegate(&state, &auth, &body).await,
+        EwsAction::AddDelegate => handle_add_delegate(&state, &auth, &body).await,
+        EwsAction::RemoveDelegate => handle_remove_delegate(&state, &auth, &body).await,
+        EwsAction::UpdateDelegate => handle_update_delegate(&state, &auth, &body).await,
         EwsAction::GetUserPhoto => handle_get_user_photo(&auth, &body).await,
         EwsAction::MarkAsJunk => handle_mark_as_junk(&auth, &body).await,
         EwsAction::GetAppManifests => handle_get_app_manifests().await,
@@ -389,9 +391,9 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"GetRoomLists" => EwsAction::GetRoomLists,
                     b"GetRooms" => EwsAction::GetRooms,
                     b"GetDelegate" => EwsAction::GetDelegate,
-            b"AddDelegate" => EwsAction::AddDelegate,
-            b"RemoveDelegate" => EwsAction::RemoveDelegate,
-            b"UpdateDelegate" => EwsAction::UpdateDelegate,
+                    b"AddDelegate" => EwsAction::AddDelegate,
+                    b"RemoveDelegate" => EwsAction::RemoveDelegate,
+                    b"UpdateDelegate" => EwsAction::UpdateDelegate,
                     b"GetUserPhoto" => EwsAction::GetUserPhoto,
                     b"MarkAsJunk" => EwsAction::MarkAsJunk,
                     b"GetAppManifests" => EwsAction::GetAppManifests,
@@ -1297,7 +1299,13 @@ fn merge_merged_freebusy(a: &str, b: &str) -> String {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [("WWW-Authenticate", "Basic realm=\"EWS\""), ("Strict-Transport-Security", "max-age=63072000; includeSubDomains")],
+        [
+            ("WWW-Authenticate", "Basic realm=\"EWS\""),
+            (
+                "Strict-Transport-Security",
+                "max-age=63072000; includeSubDomains",
+            ),
+        ],
         "Unauthorized",
     )
         .into_response()
@@ -1315,7 +1323,7 @@ fn soap_ok(inner: String) -> Response {
         type_ns = EWS_TYPE_NS,
         inner = inner
     );
-            ews_response(StatusCode::OK, xml)
+    ews_response(StatusCode::OK, xml)
 }
 
 fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
@@ -1575,10 +1583,11 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
         .to_ascii_lowercase();
     let (total_count, cal_xml) = match distinguished_str.as_str() {
         "msgfolderroot" | "" => {
-            let count = load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
-                .await
-                .map(|v| v.len())
-                .unwrap_or(0);
+            let count =
+                load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
+                    .await
+                    .map(|v| v.len())
+                    .unwrap_or(0);
             (
                 1usize,
                 render_folder_xml(owner, DistinguishedFolder::Calendar, count),
@@ -1620,18 +1629,21 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     }
     let view_window = parse_calendar_view_window(body);
     let shape = requested_item_shape(body);
-    let items = match load_current_calendar_items(state, owner, auth.password.expose_secret(), view_window).await {
-        Ok(v) => v,
-        Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred while querying items");
-            return operation_error_response(
-                &EwsAction::FindItem,
-                "ErrorInternalServerError",
-                "An internal error occurred while querying items",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
+    let items =
+        match load_current_calendar_items(state, owner, auth.password.expose_secret(), view_window)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(error = %e, "An internal error occurred while querying items");
+                return operation_error_response(
+                    &EwsAction::FindItem,
+                    "ErrorInternalServerError",
+                    "An internal error occurred while querying items",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
     let folder_id = folder_id_for_owner(owner);
     let total_items = items.len();
     let paged = items.into_iter().skip(offset).take(max).collect::<Vec<_>>();
@@ -1686,7 +1698,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
             );
         }
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred");
+            tracing::error!(error = %e, "An internal error occurred");
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorInternalServerError",
@@ -1715,7 +1727,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
             );
         }
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred during permission check");
+            tracing::error!(error = %e, "An internal error occurred during permission check");
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorInternalServerError",
@@ -1732,7 +1744,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred while loading the item");
+            tracing::error!(error = %e, "An internal error occurred while loading the item");
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorInternalServerError",
@@ -1754,7 +1766,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred");
+            tracing::error!(error = %e, "An internal error occurred");
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorInternalServerError",
@@ -1879,7 +1891,7 @@ async fn handle_sync_folder_items(
     {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred");
+            tracing::error!(error = %e, "An internal error occurred");
             return operation_error_response(
                 &EwsAction::SyncFolderItems,
                 "ErrorInternalServerError",
@@ -1888,10 +1900,12 @@ async fn handle_sync_folder_items(
             );
         }
     };
-    let items = match load_current_calendar_items(state, owner, auth.password.expose_secret(), None).await {
+    let items = match load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred");
+            tracing::error!(error = %e, "An internal error occurred");
             return operation_error_response(
                 &EwsAction::SyncFolderItems,
                 "ErrorInternalServerError",
@@ -2047,7 +2061,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred during permission check");
+            tracing::error!(error = %e, "An internal error occurred during permission check");
             return operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorInternalServerError",
@@ -2063,7 +2077,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred");
+            tracing::error!(error = %e, "An internal error occurred");
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorInternalServerError",
@@ -2084,7 +2098,10 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
-    let calendars = match caldav.find_user_calendars(owner, auth.password.expose_secret()).await {
+    let calendars = match caldav
+        .find_user_calendars(owner, auth.password.expose_secret())
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(
@@ -2113,12 +2130,19 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     };
     let ics = render_ics(&item);
     let (href, etag) = match caldav
-        .put_event(&collection_href, None, &ics, owner, auth.password.expose_secret(), None)
+        .put_event(
+            &collection_href,
+            None,
+            &ics,
+            owner,
+            auth.password.expose_secret(),
+            None,
+        )
         .await
     {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred while saving the item");
+            tracing::error!(error = %e, "An internal error occurred while saving the item");
             return operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorInternalServerError",
@@ -2129,11 +2153,11 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     };
     let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
     if let Err(e) = state
-            .storage
+        .storage
         .upsert_item_map(owner, &collection_href, &href, &server_id, &item.uid, &etag)
         .await
-        {
-            tracing::error!(error = %e, owner = %owner, "Failed to persist created item mapping");
+    {
+        tracing::error!(error = %e, owner = %owner, "Failed to persist created item mapping");
         return operation_error_response(
             &EwsAction::CreateItem,
             "ErrorInternalServerError",
@@ -2178,7 +2202,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred during permission check");
+            tracing::error!(error = %e, "An internal error occurred during permission check");
             return operation_error_response(
                 &EwsAction::UpdateItem,
                 "ErrorInternalServerError",
@@ -2202,7 +2226,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred while loading the item");
+            tracing::error!(error = %e, "An internal error occurred while loading the item");
             return operation_error_response(
                 &EwsAction::UpdateItem,
                 "ErrorInternalServerError",
@@ -2225,7 +2249,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred");
+            tracing::error!(error = %e, "An internal error occurred");
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorInternalServerError",
@@ -2235,12 +2259,16 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         }
     };
     let (existing_ics, existing_etag) = match caldav
-        .get_event(&stored_item.resource_href, owner, auth.password.expose_secret())
+        .get_event(
+            &stored_item.resource_href,
+            owner,
+            auth.password.expose_secret(),
+        )
         .await
     {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred while fetching the event");
+            tracing::error!(error = %e, "An internal error occurred while fetching the event");
             return operation_error_response(
                 &EwsAction::UpdateItem,
                 "ErrorInternalServerError",
@@ -2362,7 +2390,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred while saving the update");
+            tracing::error!(error = %e, "An internal error occurred while saving the update");
             return operation_error_response(
                 &EwsAction::UpdateItem,
                 "ErrorInternalServerError",
@@ -2383,7 +2411,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         )
         .await
     {
-            tracing::error!(error = %e, owner = %owner, "Failed to persist update mapping");
+        tracing::error!(error = %e, owner = %owner, "Failed to persist update mapping");
         return operation_error_response(
             &EwsAction::UpdateItem,
             "ErrorInternalServerError",
@@ -2432,7 +2460,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred during permission check");
+            tracing::error!(error = %e, "An internal error occurred during permission check");
             return operation_error_response(
                 &EwsAction::DeleteItem,
                 "ErrorInternalServerError",
@@ -2456,7 +2484,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     {
         Ok(v) => v,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred while resolving the item");
+            tracing::error!(error = %e, "An internal error occurred while resolving the item");
             return operation_error_response(
                 &EwsAction::DeleteItem,
                 "ErrorInternalServerError",
@@ -2479,7 +2507,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
         Err(e) => {
-        tracing::error!(error = %e, "An internal error occurred");
+            tracing::error!(error = %e, "An internal error occurred");
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorInternalServerError",
@@ -2497,7 +2525,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         )
         .await
     {
-            tracing::error!(error = %e, owner = %owner, href = %existing.resource_href, "CalDAV delete_event failed");
+        tracing::error!(error = %e, owner = %owner, href = %existing.resource_href, "CalDAV delete_event failed");
         return operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorInternalServerError",
@@ -2506,7 +2534,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     }
     if let Err(e) = state.storage.add_delete_tombstone(owner, &item_id).await {
-    tracing::error!(error = %e, "Internal error");
+        tracing::error!(error = %e, "Internal error");
         return operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorInternalServerError",
@@ -2515,11 +2543,11 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         );
     }
     if let Err(e) = state
-            .storage
+        .storage
         .delete_item_by_server_id(owner, &item_id)
         .await
-        {
-            tracing::error!(error = %e, owner = %owner, item_id = %item_id, "Failed to delete mapping");
+    {
+        tracing::error!(error = %e, owner = %owner, item_id = %item_id, "Failed to delete mapping");
         return operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorInternalServerError",
@@ -2584,8 +2612,15 @@ async fn handle_get_user_availability(
     let mut combined_merged = String::new();
     let mut responses = String::new();
     for mailbox in &mailboxes {
-        let (merged, events_xml) =
-            merged_freebusy_for_mailbox(state, mailbox, auth.password.expose_secret(), start, end, interval).await;
+        let (merged, events_xml) = merged_freebusy_for_mailbox(
+            state,
+            mailbox,
+            auth.password.expose_secret(),
+            start,
+            end,
+            interval,
+        )
+        .await;
         combined_merged = if combined_merged.is_empty() {
             merged.clone()
         } else {
@@ -2997,7 +3032,11 @@ async fn handle_get_persona(auth: &AuthContext, _body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_create_attachment(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_create_attachment(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     let Some(parsed) = parse_create_attachment_request(body) else {
         return operation_error_response(
             &EwsAction::CreateAttachment,
@@ -3067,7 +3106,11 @@ async fn handle_get_attachment(state: &Arc<AppState>, auth: &AuthContext, body: 
     soap_ok(inner)
 }
 
-async fn handle_delete_attachment(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_delete_attachment(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     let owner = crate::util::normalize_email(&auth.username);
     if let Some(parsed) = parse_delete_attachment_request(body) {
         match state

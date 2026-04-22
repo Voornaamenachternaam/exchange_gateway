@@ -632,7 +632,10 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
     h.insert("X-MS-ProtocolVersion", "16.1".parse().unwrap());
     h.insert("Cache-Control", "private, no-store".parse().unwrap());
     h.insert("Pragma", "no-cache".parse().unwrap());
-    h.insert("Strict-Transport-Security", "max-age=63072000; includeSubDomains".parse().unwrap());
+    h.insert(
+        "Strict-Transport-Security",
+        "max-age=63072000; includeSubDomains".parse().unwrap(),
+    );
     h.insert("X-Request-Id", request_id.parse().unwrap());
 }
 
