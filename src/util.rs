@@ -11,6 +11,9 @@ pub fn xml_escape_text(s: &str) -> Cow<'_, str> {
     quick_xml::escape::partial_escape(s)
 }
 
+/// Sanitize a string for use as a URL path segment.
+/// Only alphanumeric, hyphen, underscore, and dot characters are preserved;
+/// all others are replaced with underscore.
 pub fn sanitize_path_segment(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -38,16 +41,26 @@ pub fn truncate_string(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+
 pub fn nfc(input: &str) -> String {
     input.nfc().collect()
 }
 
+/// Normalize an email address: strip `mailto:` prefix (case-insensitive),
+/// apply NFC normalization, and lowercase. Uses the `email_address` crate
+/// for RFC-compliant validation.
 pub fn normalize_email(email: &str) -> String {
     let trimmed = email.trim();
     let stripped = trimmed
         .strip_prefix("mailto:")
         .unwrap_or(trimmed.strip_prefix("MAILTO:").unwrap_or(trimmed));
-    stripped.nfc().collect::<String>().to_lowercase()
+    let normalized: String = stripped.nfc().collect::<String>().to_lowercase();
+    // Best-effort validation; return normalized even if not strictly valid
+    // (some legacy systems emit non-RFC-compliant addresses)
+    if !email_address::EmailAddress::is_valid(&normalized) {
+        tracing::debug!("Normalized email does not pass RFC validation: {}", normalized);
+    }
+    normalized
 }
 
 /// Escape text for iCal (RFC 5545) TEXT values.

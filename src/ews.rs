@@ -2805,7 +2805,6 @@ async fn handle_get_room_lists(state: &Arc<AppState>) -> Response {
             soap_ok(inner)
         }
         Err(e) => {
-        Err(e) => {
             tracing::error!(error = %e, "GetRoomLists failed");
             operation_error_response(
                 &EwsAction::GetRoomLists,
@@ -2837,38 +2836,6 @@ async fn handle_get_rooms(state: &Arc<AppState>, body: &str) -> Response {
                 "An internal error occurred while fetching rooms",
                 StatusCode::INTERNAL_SERVER_ERROR,
             )
-        }
-    }
-}
-    }
-}
-
-async fn handle_get_rooms(state: &Arc<AppState>, body: &str) -> Response {
-    let room_manager = &state.room_manager;
-    let rooms = if let Some(room_list_email) = parse_get_rooms_request(body) {
-        room_manager.get_rooms_for_list(&room_list_email).await
-    } else {
-        room_manager.get_all_rooms().await
-    };
-    match rooms {
-        Ok(rooms) => {
-            let inner = render_get_rooms_response(&rooms);
-            soap_ok(inner)
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "GetRooms failed");
-            let inner = format!(
-                r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}">
-                    <m:ResponseMessages>
-                        <m:GetRoomsResponseMessage ResponseClass="Success">
-                            <m:ResponseCode>NoError</m:ResponseCode>
-                            <m:Rooms/>
-                        </m:GetRoomsResponseMessage>
-                    </m:ResponseMessages>
-                </m:GetRoomsResponse>"#,
-                EWS_MSG_NS, EWS_TYPE_NS
-            );
-            soap_ok(inner)
         }
     }
 }

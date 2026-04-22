@@ -165,66 +165,49 @@ impl fmt::Display for PermissionRights {
         if self.is_empty() {
             return write!(f, "None");
         }
-        let mut parts = Vec::new();
+        let mut parts: Vec<String> = Vec::new();
         if self.can_read_any() {
-            parts.push("ReadAny");
+            parts.push("ReadAny".to_string());
         }
         if self.can_create() {
-            parts.push("Create");
+            parts.push("Create".to_string());
         }
         if self.can_edit_owned() {
-            parts.push("EditOwned");
+            parts.push("EditOwned".to_string());
         }
         if self.can_delete_owned() {
-            parts.push("DeleteOwned");
+            parts.push("DeleteOwned".to_string());
         }
         if self.can_edit_any() {
-            parts.push("EditAny");
+            parts.push("EditAny".to_string());
         }
         if self.can_delete_any() {
-            parts.push("DeleteAny");
+            parts.push("DeleteAny".to_string());
         }
         if self.can_create_subfolder() {
-            parts.push("CreateSubfolder");
+            parts.push("CreateSubfolder".to_string());
         }
         if self.is_folder_owner() {
-            parts.push("FolderOwner");
+            parts.push("FolderOwner".to_string());
         }
         if self.is_folder_contact() {
-            parts.push("FolderContact");
+            parts.push("FolderContact".to_string());
         }
         if self.is_folder_visible() {
-            parts.push("FolderVisible");
+            parts.push("FolderVisible".to_string());
         }
         if self.can_freebusy_simple() {
-            parts.push("FreeBusySimple");
+            parts.push("FreeBusySimple".to_string());
         }
         if self.can_freebusy_detailed() {
-            parts.push("FreeBusyDetailed");
+            parts.push("FreeBusyDetailed".to_string());
         }
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut parts = Vec::new();
-        if self.can_read() { parts.push("Read"); }
-        if self.can_create() { parts.push("Create"); }
-        if self.can_update() { parts.push("Update"); }
-        if self.can_delete() { parts.push("Delete"); }
-        if self.can_freebusy_basic() { parts.push("FreeBusyBasic"); }
-        if self.can_freebusy_detailed() { parts.push("FreeBusyDetailed"); }
-
-        let known_bits = self.bits() & 0x3F; // Adjust mask based on your defined flags
-        let unknown_bits = self.bits() & !0x3F;
-
-        if parts.is_empty() && unknown_bits == 0 {
-            write!(f, "None")
-        } else {
-            if unknown_bits != 0 {
-                parts.push(&format!("Unknown(0x{:08X})", unknown_bits));
-            }
-            write!(f, "{}", parts.join("|"))
+        let known_mask = PermissionRights::all().bits();
+        let unknown_bits = self.bits() & !known_mask;
+        if unknown_bits != 0 {
+            parts.push(format!("Unknown(0x{:08X})", unknown_bits));
         }
-    }
-            write!(f, "{}", parts.join("|"))
-        }
+        write!(f, "{}", parts.join("|"))
     }
 }
 
