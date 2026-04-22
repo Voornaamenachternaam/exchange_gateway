@@ -147,11 +147,18 @@ impl AttachmentManager {
         };
 
         let decoded_len = STANDARD
-        let decoded = STANDARD.decode(content_base64).map_err(|e| {
-            log::error!("Invalid base64 content: {}", e);
-            anyhow!("Invalid base64 content: {}", e)
-        })?;
-        let decoded_len = decoded.len();
+        // Cheap upper bound first to reject oversize inputs without allocating the full decode.
+        let estimated_len = content_base64.len() / 4 * 3;
+        if estimated_len > self.max_attachment_bytes.saturating_add(3) {
+            return Err(anyhow!(
+                "Attachment size exceeds maximum allowed size {}",
+                self.max_attachment_bytes
+            ));
+        }
+        let decoded_len = STANDARD
+            .decode(content_base64)
+            .map_err(|e| anyhow!("Invalid base64 attachment content: {}", e))?
+            .len();
         if decoded_len > self.max_attachment_bytes {
             return Err(anyhow!(
                 "Attachment size {} exceeds maximum allowed size {}",
