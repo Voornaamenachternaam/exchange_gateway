@@ -86,9 +86,9 @@ impl Config {
                 "Config: 'gateway_host' must be a hostname only, not a URL"
             ));
         }
-        if self.max_attachment_bytes > 50 * 1024 * 1024 {
+        if self.max_attachment_bytes > 750 * 1024 {
             return Err(anyhow::anyhow!(
-                "Config: 'max_attachment_bytes' must not exceed 50MB"
+                "Config: 'max_attachment_bytes' must not exceed 750KB (Cloudflare D1 row limit)"
             ));
         }
         Ok(())
