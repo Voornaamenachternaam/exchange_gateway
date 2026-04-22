@@ -329,10 +329,12 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     if !auth.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("basic ")) {
         return None;
     }
-    let b64 = &auth[6..].trim();
+    let b64 = auth[6..].trim();
     let mut decoded = zeroize::Zeroizing::new(Vec::new());
     STANDARD.decode_vec(b64.as_bytes(), decoded.as_mut()).ok()?;
-    let creds = zeroize::Zeroizing::new(String::from_utf8(decoded.to_vec()).ok()?);
+    let creds = zeroize::Zeroizing::new(
+        std::str::from_utf8(&decoded).ok()?.to_owned(),
+    );
     let idx = creds.find(':')?;
     let user = creds[..idx].to_string();
     let pass = SecretString::from(creds[idx + 1..].to_string());
