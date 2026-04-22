@@ -253,9 +253,12 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                     b"ParentItemId" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"Id"
-                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
-                            {
-                                parent_item_id = Some(v.into_owned());
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"Id" {
+                                match attr.decode_and_unescape_value(reader.decoder()) {
+                                    Ok(v) => parent_item_id = Some(v.into_owned()),
+                                    Err(e) => log::error!("Failed to decode Id attribute: {}", e),
+                                }
                             }
                         }
                     }
