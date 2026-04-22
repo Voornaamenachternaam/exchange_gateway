@@ -311,9 +311,9 @@ fn render_get_delegate_response(delegates: &[DelegateInfo], manager: &DelegateMa
     )
 }
 
-fn render_delegate_error(code: &str, message: &str) -> String {
+fn render_delegate_error(response_element: &str, code: &str, message: &str) -> String {
     format!(
-        r#"<m:GetDelegateResponse xmlns:m="{}" xmlns:t="{}">
+        r#"<m:{response_element} xmlns:m="{}" xmlns:t="{}">
             <m:ResponseMessages>
                 <m:DelegateUserResponseMessageType ResponseClass="Error">
                     <m:MessageText>{}</m:MessageText>
@@ -321,10 +321,11 @@ fn render_delegate_error(code: &str, message: &str) -> String {
                     <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
                 </m:DelegateUserResponseMessageType>
             </m:ResponseMessages>
-        </m:GetDelegateResponse>"#,
+        </m:{response_element}>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
         xml_escape(message),
         xml_escape(code),
     )
+}
 }
