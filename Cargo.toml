@@ -6,7 +6,7 @@ edition = "2024"
 rust-version = "1.95.0"
 
 [dependencies]
-tokio = { version = "^1.51.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
+tokio = { version = "^1.52.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
 hyper = "^1.9.0"
@@ -23,7 +23,7 @@ toml = "^1.1.2"
 validator = { version = "^0.20.0", features = ["derive"] }
 anyhow = "^1.0.102"
 thiserror = "^2.0.18"
-uuid = { version = "^1.23.0", features = ["v4", "v7", "serde"] }
+uuid = { version = "^1.23.1", features = ["v4", "v7", "serde"] }
 chrono = { version = "^0.4.44", features = ["serde", "clock", "std"] }
 chrono-tz = "^0.10.4"
 rrule = "^0.14.0"
@@ -33,7 +33,7 @@ bytes = "^1.11.1"
 tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter", "registry", "json"] }
 tracing-opentelemetry = "^0.29.0"
-opentelemetry = { version = "^0.29.0", features = ["trace", "logs"] }
+opentelemetry = { version = "^0.29.1", features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "^0.29.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "^0.29.0", features = ["trace", "grpc-tonic"] }
 urlencoding = "^2.1.3"
@@ -57,20 +57,20 @@ subtle = "^2.6.1"
 pin-project-lite = "^0.2.17"
 http-body-util = "^0.1.3"
 mime = "^0.3.17"
-lru = "^0.16.3"
+lru = "^0.16.4"
 moka = { version = "^0.12.15", features = ["sync"] }
 arc-swap = "^1.9.1"
-memchr = "^2.7.5"
-itoa = "^1.0.15"
-ryu = "^1.0.20"
+memchr = "^2.8.0"
+itoa = "^1.0.18"
+ryu = "^1.0.23"
 windows-timezones = { version = "^0.5.1", features = ["strum", "chrono-tz"] }
 strum = "~0.27.2"
 dashmap = "^6.1.0"
-smallvec = { version = "^1.15.0", features = ["serde", "write"] }
-http = "^1.3.0"
+smallvec = { version = "^1.15.1", features = ["serde", "write"] }
+http = "^1.4.0"
 smartstring = "^1.0.1"
 const-hex = "^1.18.1"
-bitflags = "^2.9.0"
+bitflags = "^2.11.1"
 unicode-normalization = "^0.1.25"
 phf = { version = "^0.13.1", features = ["macros"] }
 icalendar = { version = "^0.17.10", features = ["parser"] }
@@ -79,7 +79,7 @@ icalendar = { version = "^0.17.10", features = ["parser"] }
 proptest = "^1.11.0"
 criterion = { version = "^0.8.2", features = ["async_tokio"] }
 tokio-test = "^0.4.5"
-insta = "^1.43.0"
+insta = "^1.47.2"
 pretty_assertions = "^1.4.1"
 
 [profile.release]
