@@ -116,7 +116,13 @@ impl RoomManager {
     }
 
     pub async fn add_room_list(&self, email: &str, name: &str) -> Result<RoomList> {
-        let id = uuid::Uuid::new_v4().to_string();
+        let existing = self.storage.get_room_lists().await?;
+        let id = existing
+            .iter()
+            .find(|r| r.email == email)
+            .map(|r| r.id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
         let room_list = RoomList {
             id,
             email: email.to_string(),
@@ -135,7 +141,13 @@ impl RoomManager {
         room_list_email: Option<&str>,
         capacity: i32,
     ) -> Result<Room> {
-        let id = uuid::Uuid::new_v4().to_string();
+        let existing = self.storage.get_all_rooms().await?;
+        let id = existing
+            .iter()
+            .find(|r| r.email == email)
+            .map(|r| r.id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
         let room = Room {
             id,
             room_list_email: room_list_email.map(String::from),
