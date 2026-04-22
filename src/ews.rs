@@ -3129,8 +3129,8 @@ async fn handle_delete_attachment(
                 operation_error_response(
                     &EwsAction::DeleteAttachment,
                     "ErrorDeleteOperationFailed",
-                    &e.to_string(),
                     "An internal error occurred while deleting the attachment",
+                    StatusCode::INTERNAL_SERVER_ERROR,
                 )
             }
         }
