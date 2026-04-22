@@ -144,11 +144,11 @@ impl AttachmentManager {
         let content_type = if content_type.is_empty() {
             "application/octet-stream".to_string()
         } else if content_type.len() > MAX_CONTENT_TYPE_LEN {
-            content_type
-                .char_indices()
-                .take_while(|(idx, c)| *idx + c.len_utf8() <= MAX_CONTENT_TYPE_LEN)
-                .map(|(_, c)| c)
-                .collect()
+            let mut end = MAX_CONTENT_TYPE_LEN;
+            while !content_type.is_char_boundary(end) {
+                end -= 1;
+            }
+            content_type[..end].to_string()
         } else {
             content_type.to_string()
         };
