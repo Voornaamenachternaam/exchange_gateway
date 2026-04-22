@@ -133,10 +133,11 @@ impl AttachmentManager {
         let name = if name.is_empty() {
             "attachment.dat".to_string()
         } else if name.len() > MAX_ATTACHMENT_NAME_LEN {
-            name.char_indices()
-                .take_while(|(idx, c)| *idx + c.len_utf8() <= MAX_ATTACHMENT_NAME_LEN)
-                .map(|(_, c)| c)
-                .collect()
+            let mut end = MAX_ATTACHMENT_NAME_LEN;
+            while !name.is_char_boundary(end) {
+                end -= 1;
+            }
+            name[..end].to_string()
         } else {
             name.to_string()
         };
