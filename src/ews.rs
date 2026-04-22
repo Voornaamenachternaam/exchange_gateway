@@ -3124,7 +3124,7 @@ async fn handle_delete_attachment(
                 &EwsAction::DeleteAttachment,
                 "ErrorItemNotFound",
                 "Attachment not found",
-                StatusCode::NOT_FOUND,
+                StatusCode::OK,
             ),
             Err(e) => {
                 tracing::error!(error = %e, "DeleteAttachment failed");
