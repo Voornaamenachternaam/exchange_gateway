@@ -332,7 +332,7 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     let b64 = &auth[6..].trim();
     let mut decoded = zeroize::Zeroizing::new(Vec::new());
     STANDARD.decode_vec(b64.as_bytes(), decoded.as_mut()).ok()?;
-    let creds = zeroize::Zeroizing::new(String::from_utf8(decoded.to_vec()).ok()?);
+    let creds = String::from_utf8(std::mem::take(decoded.as_mut())).map(zeroize::Zeroizing::new).map_err(|e| { tracing::error!(error = ?e, "Failed to decode credentials"); e }).ok()?;
     let idx = creds.find(':')?;
     let user = creds[..idx].to_string();
     let pass = SecretString::from(creds[idx + 1..].to_string());
