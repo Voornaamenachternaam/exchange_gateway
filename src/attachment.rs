@@ -147,10 +147,11 @@ impl AttachmentManager {
         };
 
         let decoded_len = STANDARD
-            .decode(content_base64)
-            .map(|v| v.len())
-            .unwrap_or(0);
-
+        let decoded = STANDARD.decode(content_base64).map_err(|e| {
+            log::error!("Invalid base64 content: {}", e);
+            anyhow!("Invalid base64 content: {}", e)
+        })?;
+        let decoded_len = decoded.len();
         if decoded_len > self.max_attachment_bytes {
             return Err(anyhow!(
                 "Attachment size {} exceeds maximum allowed size {}",
