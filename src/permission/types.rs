@@ -202,9 +202,27 @@ impl fmt::Display for PermissionRights {
         if self.can_freebusy_detailed() {
             parts.push("FreeBusyDetailed");
         }
-        if parts.is_empty() {
-            write!(f, "Unknown(0x{:08X})", self.bits())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut parts = Vec::new();
+        if self.can_read() { parts.push("Read"); }
+        if self.can_create() { parts.push("Create"); }
+        if self.can_update() { parts.push("Update"); }
+        if self.can_delete() { parts.push("Delete"); }
+        if self.can_freebusy_basic() { parts.push("FreeBusyBasic"); }
+        if self.can_freebusy_detailed() { parts.push("FreeBusyDetailed"); }
+
+        let known_bits = self.bits() & 0x3F; // Adjust mask based on your defined flags
+        let unknown_bits = self.bits() & !0x3F;
+
+        if parts.is_empty() && unknown_bits == 0 {
+            write!(f, "None")
         } else {
+            if unknown_bits != 0 {
+                parts.push(&format!("Unknown(0x{:08X})", unknown_bits));
+            }
+            write!(f, "{}", parts.join("|"))
+        }
+    }
             write!(f, "{}", parts.join("|"))
         }
     }
