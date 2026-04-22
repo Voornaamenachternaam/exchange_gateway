@@ -1,9 +1,15 @@
 // src/ews.rs
+use crate::attachment::{
+    parse_create_attachment_request, parse_get_attachment_request, parse_delete_attachment_request,
+    render_create_attachment_response, render_delete_attachment_response,
+    render_file_attachment_xml, render_get_attachment_response,
+};
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
 };
+use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
     DistinguishedFolder, folder_id_for, render_folder_xml, validate_folder_request,
 };
@@ -11,6 +17,10 @@ use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
+use crate::room::{
+    parse_get_rooms_request, render_get_room_lists_response,
+    render_get_rooms_response,
+};
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
 use crate::util::nfc;
@@ -72,6 +82,9 @@ enum EwsAction {
     GetRoomLists,
     GetRooms,
     GetDelegate,
+    AddDelegate,
+    RemoveDelegate,
+    UpdateDelegate,
     GetUserPhoto,
     MarkAsJunk,
     GetAppManifests,
@@ -88,15 +101,11 @@ enum EwsAction {
 }
 
 impl EwsAction {
-    /// Returns true if this action requires MIME content validation.
-    /// Evaluated at compile time.
     #[must_use]
     const fn requires_mime_validation(&self) -> bool {
         matches!(self, EwsAction::FindItem | EwsAction::SyncFolderItems)
     }
 
-    /// Returns true if this action is a stub/no-op implementation.
-    /// Evaluated at compile time.
     #[must_use]
     #[allow(dead_code)]
     const fn is_stub_action(&self) -> bool {
@@ -130,8 +139,6 @@ impl EwsAction {
         )
     }
 
-    /// Returns the response message name for this action.
-    /// Evaluated at compile time.
     #[must_use]
     const fn response_message_name(&self) -> &'static str {
         match self {
@@ -160,6 +167,9 @@ impl EwsAction {
             EwsAction::GetRoomLists => "GetRoomListsResponseMessage",
             EwsAction::GetRooms => "GetRoomsResponseMessage",
             EwsAction::GetDelegate => "GetDelegateResponseMessage",
+            EwsAction::AddDelegate => "AddDelegateResponseMessage",
+            EwsAction::RemoveDelegate => "RemoveDelegateResponseMessage",
+            EwsAction::UpdateDelegate => "UpdateDelegateResponseMessage",
             EwsAction::GetUserPhoto => "GetUserPhotoResponseMessage",
             EwsAction::MarkAsJunk => "MarkAsJunkResponseMessage",
             EwsAction::GetAppManifests => "GetAppManifestsResponseMessage",
@@ -273,9 +283,12 @@ pub async fn handle(
         EwsAction::FindPeople => handle_find_people(&auth, &body).await,
         EwsAction::GetConversationItems => handle_get_conversation_items().await,
         EwsAction::ConvertId => handle_convert_id(&auth, &body).await,
-        EwsAction::GetRoomLists => handle_get_room_lists().await,
-        EwsAction::GetRooms => handle_get_rooms(&auth, &body).await,
-        EwsAction::GetDelegate => handle_get_delegate(&auth).await,
+        EwsAction::GetRoomLists => handle_get_room_lists(&state).await,
+        EwsAction::GetRooms => handle_get_rooms(&state, &body).await,
+        EwsAction::GetDelegate => handle_get_delegate(&state, &auth).await,
+            EwsAction::AddDelegate => handle_add_delegate(&state, &auth, &body).await,
+            EwsAction::RemoveDelegate => handle_remove_delegate(&state, &auth, &body).await,
+            EwsAction::UpdateDelegate => handle_update_delegate(&state, &auth, &body).await,
         EwsAction::GetUserPhoto => handle_get_user_photo(&auth, &body).await,
         EwsAction::MarkAsJunk => handle_mark_as_junk(&auth, &body).await,
         EwsAction::GetAppManifests => handle_get_app_manifests().await,
@@ -286,9 +299,9 @@ pub async fn handle(
         EwsAction::GetReminders => handle_get_reminders(&auth, &body).await,
         EwsAction::PerformReminderAction => handle_perform_reminder_action(&auth, &body).await,
         EwsAction::GetPersona => handle_get_persona(&auth, &body).await,
-        EwsAction::CreateAttachment => handle_create_attachment(&auth, &body).await,
-        EwsAction::GetAttachment => handle_get_attachment(&auth, &body).await,
-        EwsAction::DeleteAttachment => handle_delete_attachment(&auth, &body).await,
+        EwsAction::CreateAttachment => handle_create_attachment(&state, &auth, &body).await,
+        EwsAction::GetAttachment => handle_get_attachment(&state, &auth, &body).await,
+        EwsAction::DeleteAttachment => handle_delete_attachment(&state, &auth, &body).await,
     }
 }
 
@@ -339,6 +352,9 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"GetRoomLists" => EwsAction::GetRoomLists,
                     b"GetRooms" => EwsAction::GetRooms,
                     b"GetDelegate" => EwsAction::GetDelegate,
+            b"AddDelegate" => EwsAction::AddDelegate,
+            b"RemoveDelegate" => EwsAction::RemoveDelegate,
+            b"UpdateDelegate" => EwsAction::UpdateDelegate,
                     b"GetUserPhoto" => EwsAction::GetUserPhoto,
                     b"MarkAsJunk" => EwsAction::MarkAsJunk,
                     b"GetAppManifests" => EwsAction::GetAppManifests,
@@ -2692,48 +2708,82 @@ async fn handle_convert_id(auth: &AuthContext, _body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_get_room_lists() -> Response {
-    let inner = format!(
-        r#"<m:GetRoomListsResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:GetRoomListsResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:RoomLists/>
-</m:GetRoomListsResponseMessage>
-</m:ResponseMessages>
-</m:GetRoomListsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
-    );
+async fn handle_get_room_lists(state: &Arc<AppState>) -> Response {
+    let room_manager = &state.room_manager;
+    match room_manager.get_room_lists().await {
+        Ok(room_lists) => {
+            let inner = render_get_room_lists_response(&room_lists);
+            soap_ok(inner)
+        }
+        Err(e) => {
+            tracing::error!("GetRoomLists error: {}", e);
+            let inner = format!(
+                r#"<m:GetRoomListsResponse xmlns:m="{}" xmlns:t="{}">
+                    <m:ResponseMessages>
+                        <m:GetRoomListsResponseMessage ResponseClass="Success">
+                            <m:ResponseCode>NoError</m:ResponseCode>
+                            <m:RoomLists/>
+                        </m:GetRoomListsResponseMessage>
+                    </m:ResponseMessages>
+                </m:GetRoomListsResponse>"#,
+                EWS_MSG_NS, EWS_TYPE_NS
+            );
+            soap_ok(inner)
+        }
+    }
+}
+
+async fn handle_get_rooms(state: &Arc<AppState>, body: &str) -> Response {
+    let room_manager = &state.room_manager;
+    let rooms = if let Some(room_list_email) = parse_get_rooms_request(body) {
+        room_manager.get_rooms_for_list(&room_list_email).await
+    } else {
+        room_manager.get_all_rooms().await
+    };
+    match rooms {
+        Ok(rooms) => {
+            let inner = render_get_rooms_response(&rooms);
+            soap_ok(inner)
+        }
+        Err(e) => {
+            tracing::error!("GetRooms error: {}", e);
+            let inner = format!(
+                r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}">
+                    <m:ResponseMessages>
+                        <m:GetRoomsResponseMessage ResponseClass="Success">
+                            <m:ResponseCode>NoError</m:ResponseCode>
+                            <m:Rooms/>
+                        </m:GetRoomsResponseMessage>
+                    </m:ResponseMessages>
+                </m:GetRoomsResponse>"#,
+                EWS_MSG_NS, EWS_TYPE_NS
+            );
+            soap_ok(inner)
+        }
+    }
+}
+
+async fn handle_get_delegate(state: &Arc<AppState>, auth: &AuthContext) -> Response {
+    let handler = DelegateEwsHandler::new(state.storage.clone());
+    let inner = handler.handle_get_delegate(&auth.username).await;
     soap_ok(inner)
 }
 
-async fn handle_get_rooms(_auth: &AuthContext, _body: &str) -> Response {
-    let inner = format!(
-        r#"<m:GetRoomsResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:GetRoomsResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:Rooms/>
-</m:GetRoomsResponseMessage>
-</m:ResponseMessages>
-</m:GetRoomsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
-    );
+async fn handle_add_delegate(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let handler = DelegateEwsHandler::new(state.storage.clone());
+    let inner = handler.handle_add_delegate(&auth.username, body).await;
     soap_ok(inner)
 }
 
-async fn handle_get_delegate(_auth: &AuthContext) -> Response {
-    let inner = format!(
-        r#"<m:GetDelegateResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:DelegateUserResponseMessageType ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:DeliverMeetingRequests>DelegatesAndMe</m:DeliverMeetingRequests>
-</m:DelegateUserResponseMessageType>
-</m:ResponseMessages>
-</m:GetDelegateResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
-    );
+async fn handle_remove_delegate(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let handler = DelegateEwsHandler::new(state.storage.clone());
+    let inner = handler.handle_remove_delegate(&auth.username, body).await;
+    soap_ok(inner)
+}
+
+async fn handle_update_delegate(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let handler = DelegateEwsHandler::new(state.storage.clone());
+    let inner = handler.handle_update_delegate(&auth.username, body).await;
     soap_ok(inner)
 }
 
@@ -2891,108 +2941,110 @@ async fn handle_get_persona(auth: &AuthContext, _body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_create_attachment(_auth: &AuthContext, body: &str) -> Response {
-    let parent_id = extract_ews_field(body, b"ItemId")
-        .or_else(|| extract_ews_field(body, b"ParentItemId"))
-        .unwrap_or_else(|| "unknown".to_string());
-    let attachment_id = uuid::Uuid::new_v4();
-    let inner = format!(
-        r#"<m:CreateAttachmentResponse xmlns:m="{}" xmlns:t="{}">
-        <m:ResponseMessages>
-        <m:CreateAttachmentResponseMessage ResponseClass="Success">
-        <m:ResponseCode>NoError</m:ResponseCode>
-        <m:Attachments>
-        <t:FileAttachment>
-        <t:AttachmentId Id="{}" RootItemId="{}" RootItemChangeKey="01"/>
-        </t:FileAttachment>
-        </m:Attachments>
-        </m:CreateAttachmentResponseMessage>
-        </m:ResponseMessages>
-        </m:CreateAttachmentResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        attachment_id,
-        xml_escape(&parent_id)
-    );
-    soap_ok(inner)
-}
-
-async fn handle_get_attachment(_auth: &AuthContext, body: &str) -> Response {
-    let attachment_ids: Vec<String> = {
-        let mut ids = Vec::new();
-        let mut reader = Reader::from_str(body);
-        reader.config_mut().trim_text(true);
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let local_name = e.name().local_name();
-                    if local_name.as_ref() == b"AttachmentId" {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id"
-                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
-                            {
-                                ids.push(v.into_owned());
-                            }
-                        }
-                    }
-                }
-                Ok(Event::Eof) | Err(_) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-        ids
+async fn handle_create_attachment(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let Some(parsed) = parse_create_attachment_request(body) else {
+        return operation_error_response(
+            &EwsAction::CreateAttachment,
+            "ErrorInvalidRequest",
+            "Could not parse CreateAttachment request",
+            StatusCode::BAD_REQUEST,
+        );
     };
-    let attachments_xml = attachment_ids
-        .iter()
-        .map(|id| {
-            format!(
-                r#"<t:FileAttachment>
-            <t:AttachmentId Id="{}"/>
-            <t:Name>attachment.dat</t:Name>
-            <t:ContentType>application/octet-stream</t:ContentType>
-            <t:Size>0</t:Size>
-            <t:IsInline>false</t:IsInline>
-            </t:FileAttachment>"#,
-                xml_escape(id)
+    let owner = crate::util::normalize_email(&auth.username);
+    match state
+        .attachment_manager
+        .create_file_attachment(
+            &owner,
+            &parsed.parent_item_id,
+            &parsed.name,
+            &parsed.content_type,
+            &parsed.content_base64,
+            parsed.is_inline,
+            parsed.content_id.as_deref(),
+            parsed.content_location.as_deref(),
+        )
+        .await
+    {
+        Ok(attachment) => {
+            let inner = render_create_attachment_response(&attachment.id, &parsed.parent_item_id);
+            soap_ok(inner)
+        }
+        Err(e) => {
+            tracing::error!("CreateAttachment error: {}", e);
+            operation_error_response(
+                &EwsAction::CreateAttachment,
+                "ErrorSavePropertyError",
+                &e.to_string(),
+                StatusCode::INTERNAL_SERVER_ERROR,
             )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let inner = format!(
-        r#"<m:GetAttachmentResponse xmlns:m="{}" xmlns:t="{}">
-        <m:ResponseMessages>
-        <m:GetAttachmentResponseMessage ResponseClass="Success">
-        <m:ResponseCode>NoError</m:ResponseCode>
-        <m:Attachments>
-        {}
-        </m:Attachments>
-        </m:GetAttachmentResponseMessage>
-        </m:ResponseMessages>
-        </m:GetAttachmentResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, attachments_xml
-    );
+        }
+    }
+}
+
+async fn handle_get_attachment(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let attachment_ids = parse_get_attachment_request(body);
+    let owner = crate::util::normalize_email(&auth.username);
+    let mut attachments_xml = String::new();
+    for id in &attachment_ids {
+        match state.attachment_manager.get_attachment(&owner, id).await {
+            Ok(Some(attachment)) => {
+                attachments_xml.push_str(&render_file_attachment_xml(&attachment, true));
+            }
+            Ok(None) => {
+                attachments_xml.push_str(&format!(
+                    r#"<t:FileAttachment>
+                        <t:AttachmentId Id="{}"/>
+                        <t:Name>attachment.dat</t:Name>
+                        <t:ContentType>application/octet-stream</t:ContentType>
+                        <t:Size>0</t:Size>
+                        <t:IsInline>false</t:IsInline>
+                    </t:FileAttachment>"#,
+                    xml_escape(id)
+                ));
+            }
+            Err(e) => {
+                tracing::warn!("GetAttachment error for {}: {}", id, e);
+            }
+        }
+    }
+    let inner = render_get_attachment_response(&attachments_xml);
     soap_ok(inner)
 }
 
-async fn handle_delete_attachment(_auth: &AuthContext, body: &str) -> Response {
-    let root_item_id = extract_first_attr(body, b"AttachmentId", b"RootItemId")
-        .or_else(|| extract_first_attr(body, b"ParentItemId", b"Id"))
-        .or_else(|| extract_ews_field(body, b"RootItemId"))
-        .unwrap_or_else(|| "unknown".to_string());
-    let inner = format!(
-        r#"<m:DeleteAttachmentResponse xmlns:m="{}" xmlns:t="{}">
-        <m:ResponseMessages>
-        <m:DeleteAttachmentResponseMessage ResponseClass="Success">
-        <m:ResponseCode>NoError</m:ResponseCode>
-        <m:RootItemId RootItemId="{}" RootItemChangeKey="01"/>
-        </m:DeleteAttachmentResponseMessage>
-        </m:ResponseMessages>
-        </m:DeleteAttachmentResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        xml_escape(&root_item_id)
-    );
-    soap_ok(inner)
+async fn handle_delete_attachment(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let owner = crate::util::normalize_email(&auth.username);
+    if let Some(parsed) = parse_delete_attachment_request(body) {
+        match state
+            .attachment_manager
+            .delete_attachment(&owner, &parsed.attachment_id)
+            .await
+        {
+            Ok(Some(root_item_id)) => {
+                let inner = render_delete_attachment_response(&root_item_id);
+                soap_ok(inner)
+            }
+            Ok(None) => operation_error_response(
+                &EwsAction::DeleteAttachment,
+                "ErrorItemNotFound",
+                "Attachment not found",
+                StatusCode::NOT_FOUND,
+            ),
+            Err(e) => {
+                tracing::error!("DeleteAttachment error: {}", e);
+                operation_error_response(
+                    &EwsAction::DeleteAttachment,
+                    "ErrorDeleteOperationFailed",
+                    &e.to_string(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
+    } else {
+        operation_error_response(
+            &EwsAction::DeleteAttachment,
+            "ErrorInvalidRequest",
+            "Could not parse DeleteAttachment request",
+            StatusCode::BAD_REQUEST,
+        )
+    }
 }
