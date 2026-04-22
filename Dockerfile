@@ -2,7 +2,7 @@
 # Multi-stage Dockerfile for exchange_gateway.
 # Build with: docker build -t exchange_gateway .
 
-FROM rust:1.94.1-slim AS builder
+FROM rust:1.95.0-slim AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Cargo.toml ./

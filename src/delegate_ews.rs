@@ -120,6 +120,7 @@ impl DelegateEwsHandler {
     }
 }
 
+#[derive(Default)]
 struct ParsedDelegateRequest {
     delegate_email: Option<String>,
     delegate_name: Option<String>,
@@ -129,18 +130,6 @@ struct ParsedDelegateRequest {
     view_private: Option<bool>,
 }
 
-impl Default for ParsedDelegateRequest {
-    fn default() -> Self {
-        Self {
-            delegate_email: None,
-            delegate_name: None,
-            calendar_permission: None,
-            receive_copies: None,
-            receive_infos: None,
-            view_private: None,
-        }
-    }
-}
 
 fn parse_add_delegate_request(xml: &str) -> ParsedDelegateRequest {
     let mut result = ParsedDelegateRequest::default();
@@ -225,17 +214,15 @@ fn parse_remove_delegate_request(xml: &str) -> Option<String> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                if e.name().local_name().as_ref() == b"EmailAddress" {
+            Ok(Event::Start(e))
+                if e.name().local_name().as_ref() == b"EmailAddress" => {
                     in_email = true;
                 }
-            }
             Ok(Event::Text(e)) => {
-                if in_email {
-                    if let Ok(text) = e.decode() {
+                if in_email
+                    && let Ok(text) = e.decode() {
                         return Some(text.into_owned());
                     }
-                }
             }
             Ok(Event::End(_)) => {
                 in_email = false;
@@ -328,11 +315,7 @@ fn render_get_delegate_response(delegates: &[DelegateInfo], manager: &DelegateMa
         .collect::<Vec<_>>()
         .join("\n");
 
-    let deliver_meeting_requests = if delegates.is_empty() {
-        "DelegatesAndMe"
-    } else {
-        "DelegatesAndMe"
-    };
+    let deliver_meeting_requests = "DelegatesAndMe";
 
     format!(
         r#"<m:GetDelegateResponse xmlns:m="{}" xmlns:t="{}">

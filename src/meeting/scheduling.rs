@@ -2,7 +2,7 @@
 
 use crate::calendar::CalendarItem;
 use crate::ical_parser;
-use crate::util::normalize_email;
+use crate::util::{escape_ical_text, normalize_email};
 use chrono::{DateTime, Utc};
 
 pub struct SchedulingContext {
@@ -101,13 +101,6 @@ pub fn format_ical_datetime(dt: DateTime<Utc>) -> String {
     dt.format("%Y%m%dT%H%M%SZ").to_string()
 }
 
-pub fn escape_ical_text(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace(';', "\\;")
-        .replace(',', "\\,")
-        .replace('\n', "\\n")
-}
-
 pub fn escape_ical_param(s: &str) -> String {
     let escaped = s
         .replace('\\', "\\\\")
@@ -158,11 +151,10 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
             let email = normalize_email(value);
 
             // Skip if this attendee is the organizer
-            if let Some(ref org_email) = organizer_email {
-                if email == *org_email {
+            if let Some(ref org_email) = organizer_email
+                && email == *org_email {
                     continue;
                 }
-            }
 
             // Extract partstat from the key
             let partstat = key

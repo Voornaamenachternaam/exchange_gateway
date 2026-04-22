@@ -1,6 +1,6 @@
 // src/calendar.rs
 use crate::ical_parser;
-use crate::util::nfc;
+use crate::util::{escape_ical_text, nfc};
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -371,14 +371,6 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
                     .map(|dt| Utc.from_utc_datetime(&dt))
             })
     }
-}
-
-fn escape_ical_text(input: &str) -> String {
-    input
-        .replace('\\', "\\\\")
-        .replace(';', "\\;")
-        .replace(',', "\\,")
-        .replace('\n', "\\n")
 }
 
 fn unescape_ical_text(input: &str) -> String {

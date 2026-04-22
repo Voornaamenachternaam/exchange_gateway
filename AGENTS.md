@@ -3,8 +3,9 @@
 ## Build & Test
 ```bash
 cargo check          # Compile (Rust 1.95.0, edition 2024)
-cargo test           # 68 unit + integration + snapshot tests
-cargo clippy         # Lint (2 known dead_code warnings: is_stub_action, folded_line)
+cargo test           # 69 unit + integration + snapshot tests
+cargo clippy         # Lint (0 warnings — clean)
+cargo build --release # Production build
 ```
 
 ## Architecture
@@ -13,7 +14,7 @@ cargo clippy         # Lint (2 known dead_code warnings: is_stub_action, folded_
 - **WBXML codec**: `wbxml.rs` (EAS binary XML, compile-time `phf::Map` lookup tables)
 - **Storage**: `storage.rs` (SQLite via sqlx), `permission/` (delegate permissions)
 - **Sync**: `sync.rs` (EAS sync protocol), `ews_folders.rs`, `ews_update.rs`
-- **Utilities**: `util.rs` (XML escape via quick_xml, NFC normalize, email normalize, path sanitize)
+- **Utilities**: `util.rs` (XML escape, iCal text escape, NFC normalize, email normalize, path sanitize, UTF-8 safe truncation)
 - **Timezone**: `timezone.rs` (IANA ↔ Windows mapping via windows-timezones)
 
 ## Key Dependencies
@@ -29,6 +30,8 @@ cargo clippy         # Lint (2 known dead_code warnings: is_stub_action, folded_
 | chrono / chrono-tz | latest | DateTime with timezone support |
 | axum | 0.8.x | HTTP framework |
 | sqlx | 0.8.x | Async SQLite |
+| secrecy | 0.10 | SecretString for config secrets (worker_secret, hmac_secret) |
+| zeroize | 1.8 | Zeroizing config file reads to clear memory |
 
 ## Dependency Decisions
 - **`icu_normalizer`**: REJECTED. 50+ crate tree for zero functional gain over `unicode-normalization`.
@@ -39,10 +42,21 @@ cargo clippy         # Lint (2 known dead_code warnings: is_stub_action, folded_
 
 ## Code Patterns
 - XML escaping: use `crate::util::xml_escape()` / `xml_escape_text()` — delegates to `quick_xml::escape`
+- iCal text escaping: use `crate::util::escape_ical_text()` — char-by-char, handles `\r` stripping
 - iCal unfolding: use `crate::ical_parser::unfold_ical_content()` — delegates to `icalendar::parser::unfold`
 - Email normalization: use `crate::util::normalize_email()` — strips mailto:, NFC, lowercases
+- UTF-8 safe truncation: use `crate::util::truncate_string()` — char_indices boundary-safe with "..."
 - WBXML: static `TAG_TO_NAME`/`NAME_TO_TAG` via `phf::Map` (compile-time, no LazyLock)
-- iCal text escaping: 3 duplicate `escape_ical_text` impls (calendar.rs, meeting/message.rs, meeting/scheduling.rs) — Phase 2 candidate for icalendar consolidation
+
+## Security
+- **HTTPS enforcement**: `forwarded_https_enforced()` checks `x-forwarded-proto` header in EWS/EAS
+- **HSTS**: `Strict-Transport-Security: max-age=63072000; includeSubDomains` on all responses
+- **Cache-Control**: `private, no-store` + `Pragma: no-cache` on all EAS responses
+- **Secret handling**: Config secrets use `SecretString` with `Zeroizing` file reads; `skip_serializing`
+- **Placeholder detection**: Config validation rejects `REPLACE_*` prefixed secrets at startup
+- **Error messages**: All client-facing error responses use generic messages; internal details logged via `tracing::error!`
+- **No unsafe code**: Zero `unsafe` blocks in the codebase
+- **No panics in production**: No `todo!`, `unimplemented!`, or `panic!` in non-test code
 
 ## Warnings
 - `is_stub_action` in ews.rs: suppressed with `#[allow(dead_code)]` (compile-time stub detection, may be used later)

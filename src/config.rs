@@ -75,6 +75,13 @@ impl Config {
         if self.hmac_secret.expose_secret().len() < 32 {
             return Err(anyhow::anyhow!("Config: 'hmac_secret' must be at least 32 characters"));
         }
+        // Reject placeholder values from the example config
+        if self.worker_secret.expose_secret().starts_with("REPLACE_") {
+            return Err(anyhow::anyhow!("Config: 'worker_secret' still contains a placeholder — generate a real secret with: openssl rand -hex 32"));
+        }
+        if self.hmac_secret.expose_secret().starts_with("REPLACE_") {
+            return Err(anyhow::anyhow!("Config: 'hmac_secret' still contains a placeholder — generate a real secret with: openssl rand -hex 32"));
+        }
         if !self.gateway_host.is_empty() && self.gateway_host.contains("://") {
             return Err(anyhow::anyhow!("Config: 'gateway_host' must be a hostname only, not a URL"));
         }

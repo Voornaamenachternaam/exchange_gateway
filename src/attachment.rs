@@ -133,7 +133,10 @@ impl AttachmentManager {
         let name = if name.is_empty() {
             "attachment.dat".to_string()
         } else if name.len() > MAX_ATTACHMENT_NAME_LEN {
-            name[..MAX_ATTACHMENT_NAME_LEN].to_string()
+            name.char_indices()
+                .take_while(|(idx, c)| *idx + c.len_utf8() <= MAX_ATTACHMENT_NAME_LEN)
+                .map(|(_, c)| c)
+                .collect()
         } else {
             name.to_string()
         };
@@ -141,7 +144,10 @@ impl AttachmentManager {
         let content_type = if content_type.is_empty() {
             "application/octet-stream".to_string()
         } else if content_type.len() > MAX_CONTENT_TYPE_LEN {
-            content_type[..MAX_CONTENT_TYPE_LEN].to_string()
+            content_type.char_indices()
+                .take_while(|(idx, c)| *idx + c.len_utf8() <= MAX_CONTENT_TYPE_LEN)
+                .map(|(_, c)| c)
+                .collect()
         } else {
             content_type.to_string()
         };
@@ -239,20 +245,18 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                 match local.as_ref() {
                     b"ParentItemId" => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id" {
-                                if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                            if attr.key.local_name().as_ref() == b"Id"
+                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
                                     parent_item_id = Some(v.into_owned());
                                 }
-                            }
                         }
                     }
                     b"ItemId" if parent_item_id.is_none() => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id" {
-                                if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                            if attr.key.local_name().as_ref() == b"Id"
+                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
                                     parent_item_id = Some(v.into_owned());
                                 }
-                            }
                         }
                     }
                     b"FileAttachment" => {
@@ -286,17 +290,15 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
             }
             Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"ParentItemId" || local.as_ref() == b"ItemId" {
-                    if parent_item_id.is_none() {
+                if (local.as_ref() == b"ParentItemId" || local.as_ref() == b"ItemId")
+                    && parent_item_id.is_none() {
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id" {
-                                if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                            if attr.key.local_name().as_ref() == b"Id"
+                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
                                     parent_item_id = Some(v.into_owned());
                                 }
-                            }
                         }
                     }
-                }
             }
             Ok(Event::Text(e)) => {
                 if let Ok(text) = e.decode() {
@@ -391,11 +393,10 @@ pub fn parse_get_attachment_request(xml: &str) -> Vec<String> {
                 let local = e.name().local_name();
                 if local.as_ref() == b"AttachmentId" || local.as_ref() == b"RequestAttachmentId" {
                     for attr in e.attributes().flatten() {
-                        if attr.key.local_name().as_ref() == b"Id" {
-                            if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                        if attr.key.local_name().as_ref() == b"Id"
+                            && let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
                                 ids.push(v.into_owned());
                             }
-                        }
                     }
                 }
             }
@@ -420,11 +421,10 @@ pub fn parse_delete_attachment_request(xml: &str) -> Option<ParsedDeleteAttachme
                 let local = e.name().local_name();
                 if local.as_ref() == b"AttachmentId" {
                     for attr in e.attributes().flatten() {
-                        if attr.key.local_name().as_ref() == b"Id" {
-                            if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+                        if attr.key.local_name().as_ref() == b"Id"
+                            && let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
                                 attachment_ids.push(v.into_owned());
                             }
-                        }
                     }
                 }
             }

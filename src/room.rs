@@ -182,11 +182,10 @@ pub fn parse_get_rooms_request(xml: &str) -> Option<String> {
                     _ => {}
                 }
             }
-            Ok(Event::End(e)) => {
-                if e.name().local_name().as_ref() == b"RoomList" {
+            Ok(Event::End(e))
+                if e.name().local_name().as_ref() == b"RoomList" => {
                     in_room_list = false;
                 }
-            }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }

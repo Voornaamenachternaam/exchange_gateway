@@ -50,6 +50,23 @@ pub fn normalize_email(email: &str) -> String {
     stripped.nfc().collect::<String>().to_lowercase()
 }
 
+/// Escape text for iCal (RFC 5545) TEXT values.
+/// Escapes `\`, `;`, `,` and newlines; strips `\r`.
+pub fn escape_ical_text(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + s.len() / 10);
+    for c in s.chars() {
+        match c {
+            '\\' => result.push_str("\\\\"),
+            ';' => result.push_str("\\;"),
+            ',' => result.push_str("\\,"),
+            '\n' => result.push_str("\\n"),
+            '\r' => {}
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +124,13 @@ mod tests {
         assert_eq!(normalize_email(nfd_email), "user@\u{00e9}xample.com");
         // Already-normalized ASCII passes through unchanged
         assert_eq!(normalize_email("alice@example.com"), "alice@example.com");
+    }
+
+    #[test]
+    fn test_escape_ical_text() {
+        assert_eq!(escape_ical_text("hello;world"), "hello\\;world");
+        assert_eq!(escape_ical_text("a,b\\c"), "a\\,b\\\\c");
+        assert_eq!(escape_ical_text("line1\nline2"), "line1\\nline2");
+        assert_eq!(escape_ical_text("cr\r\nlf"), "cr\\nlf");
     }
 }

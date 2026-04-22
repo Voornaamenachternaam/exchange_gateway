@@ -249,13 +249,11 @@ pub fn parse_ical_datetime(
         }
     }
 
-    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
-            if let Some(dt) = date.and_hms_opt(0, 0, 0) {
+    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit())
+        && let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d")
+            && let Some(dt) = date.and_hms_opt(0, 0, 0) {
                 return Ok(dt.and_utc());
             }
-        }
-    }
 
     Err(nom::Err::Error(nom::error::Error::new(
         input,

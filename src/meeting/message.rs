@@ -1,7 +1,7 @@
 // src/meeting/message.rs
 use crate::calendar::{Attendee, CalendarItem};
 use crate::meeting::attendee::{AttendeeRole, AttendeeStatus};
-use crate::util::xml_escape;
+use crate::util::{escape_ical_text, xml_escape};
 use chrono::{DateTime, Utc};
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -480,21 +480,6 @@ impl MeetingMessageGenerator {
             xml_escape(calendar_id)
         )
     }
-}
-
-fn escape_ical_text(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() + s.len() / 10);
-    for c in s.chars() {
-        match c {
-            '\\' => result.push_str("\\\\"),
-            ';' => result.push_str("\\;"),
-            ',' => result.push_str("\\,"),
-            '\n' => result.push_str("\\n"),
-            '\r' => {}
-            _ => result.push(c),
-        }
-    }
-    result
 }
 
 #[allow(dead_code)]
