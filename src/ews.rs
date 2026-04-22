@@ -3069,7 +3069,7 @@ async fn handle_create_attachment(
             operation_error_response(
                 &EwsAction::CreateAttachment,
                 "ErrorSavePropertyError",
-                &e.to_string(),
+                "An internal error occurred while saving the attachment",
                 StatusCode::INTERNAL_SERVER_ERROR,
             )
         }
