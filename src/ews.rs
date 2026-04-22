@@ -349,7 +349,7 @@ fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
         .map(|v| v.to_ascii_lowercase())
     {
         Some(v) => v == "https",
-        None => true,
+        None => false,
     }
 }
 
