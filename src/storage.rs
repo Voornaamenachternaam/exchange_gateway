@@ -975,63 +975,32 @@ impl Storage {
         .await
     }
 
-    pub async fn get_room_lists(&self) -> Result<Vec<crate::room::RoomListRecord>> {
-        self.get_json("get_room_lists").await
-    }
-
-    pub async fn delete_room_list(&self, email: &str) -> Result<()> {
-        #[derive(Serialize)]
-        struct Req<'a> {
-            email: &'a str,
-        }
-        self.post_json("delete_room_list", &Req { email }).await
-    }
-
-    pub async fn upsert_room(&self, room: &crate::room::RoomRecord) -> Result<()> {
-        #[derive(Serialize)]
-        struct Req<'a> {
-            id: &'a str,
-            room_list_email: Option<&'a str>,
-            email: &'a str,
-            name: &'a str,
-            capacity: i32,
-            is_available: i32,
-        }
-        self.post_json(
-            "upsert_room",
-            &Req {
-                id: &room.id,
-                room_list_email: room.room_list_email.as_deref(),
-                email: &room.email,
-                name: &room.name,
-                capacity: room.capacity,
-                is_available: if room.is_available { 1 } else { 0 },
-            },
-        )
-        .await
-    }
-
-    pub async fn get_rooms_for_list(
-        &self,
-        room_list_email: &str,
-    ) -> Result<Vec<crate::room::RoomRecord>> {
-        let path = format!(
-            "get_rooms_for_list?room_list_email={}",
-            urlencoding::encode(room_list_email)
-        );
+    pub async fn get_room_lists(&self, owner: &str) -> Result<Vec<crate::room::RoomListRecord>> {
+        let path = format!("get_room_lists?owner={}", urlencoding::encode(owner));
         self.get_json(&path).await
     }
 
-    pub async fn get_all_rooms(&self) -> Result<Vec<crate::room::RoomRecord>> {
-        self.get_json("get_all_rooms").await
-    }
-
-    pub async fn delete_room(&self, email: &str) -> Result<()> {
+    pub async fn delete_room_list(&self, owner: &str, email: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
+            owner: &'a str,
             email: &'a str,
         }
-        self.post_json("delete_room", &Req { email }).await
+        self.post_json("delete_room_list", &Req { owner, email }).await
+    }
+
+    pub async fn get_all_rooms(&self, owner: &str) -> Result<Vec<crate::room::RoomRecord>> {
+        let path = format!("get_all_rooms?owner={}", urlencoding::encode(owner));
+        self.get_json(&path).await
+    }
+
+    pub async fn delete_room(&self, owner: &str, email: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            email: &'a str,
+        }
+        self.post_json("delete_room", &Req { owner, email }).await
     }
 }
 
