@@ -3,9 +3,9 @@ use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::Storage;
 use crate::util::xml_escape;
 use anyhow::Result;
+use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use quick_xml::events::Event;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RoomListRecord {
@@ -106,10 +106,7 @@ impl RoomManager {
     }
 
     pub async fn get_rooms_for_list(&self, room_list_email: &str) -> Result<Vec<Room>> {
-        let recs = self
-            .storage
-            .get_rooms_for_list(room_list_email)
-            .await?;
+        let recs = self.storage.get_rooms_for_list(room_list_email).await?;
         Ok(recs.iter().map(Room::from_record).collect())
     }
 
@@ -182,10 +179,8 @@ pub fn parse_get_rooms_request(xml: &str) -> Option<String> {
                     _ => {}
                 }
             }
-            Ok(Event::End(e)) => {
-                if e.name().local_name().as_ref() == b"RoomList" {
-                    in_room_list = false;
-                }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"RoomList" => {
+                in_room_list = false;
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
@@ -242,9 +237,7 @@ pub fn render_get_room_lists_response(room_lists: &[RoomList]) -> String {
                 </m:GetRoomListsResponseMessage>
             </m:ResponseMessages>
         </m:GetRoomListsResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        addresses_xml,
+        EWS_MSG_NS, EWS_TYPE_NS, addresses_xml,
     )
 }
 
@@ -266,8 +259,6 @@ pub fn render_get_rooms_response(rooms: &[Room]) -> String {
                 </m:GetRoomsResponseMessage>
             </m:ResponseMessages>
         </m:GetRoomsResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        rooms_xml,
+        EWS_MSG_NS, EWS_TYPE_NS, rooms_xml,
     )
 }

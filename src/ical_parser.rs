@@ -144,19 +144,31 @@ pub fn parse_property_lines(
             break;
         }
 
-    if line.contains(':') {
-        match parse_property_line(line) {
-            Ok((name, params, value)) => {
-                let full_key = if params.is_empty() {
-                    name
-                } else {
-                    format!("{};{}", name, params.iter().map(|(k, v)| if v.is_empty() { k.clone() } else { format!("{}={}", k, v) }).collect::<Vec<_>>().join(";"))
-                };
-                properties.push((full_key, value));
+        if line.contains(':') {
+            match parse_property_line(line) {
+                Ok((name, params, value)) => {
+                    let full_key = if params.is_empty() {
+                        name
+                    } else {
+                        format!(
+                            "{};{}",
+                            name,
+                            params
+                                .iter()
+                                .map(|(k, v)| if v.is_empty() {
+                                    k.clone()
+                                } else {
+                                    format!("{}={}", k, v)
+                                })
+                                .collect::<Vec<_>>()
+                                .join(";")
+                        )
+                    };
+                    properties.push((full_key, value));
+                }
+                Err(_) => break,
             }
-            Err(_) => break,
         }
-    }
 
         remaining = if line_end < remaining.len() {
             &remaining[line_end + 1..]
@@ -217,8 +229,10 @@ pub fn parse_vtimezone_block(
 ) -> Result<Option<String>, nom::Err<nom::error::Error<&str>>> {
     let unfolded = unfold_ical_content(input);
 
-    if let (Some(start), Some(end)) = (unfolded.find("BEGIN:VTIMEZONE"), unfolded.find("END:VTIMEZONE"))
-    {
+    if let (Some(start), Some(end)) = (
+        unfolded.find("BEGIN:VTIMEZONE"),
+        unfolded.find("END:VTIMEZONE"),
+    ) {
         let block = &unfolded[start..end + "END:VTIMEZONE".len()];
         return Ok(Some(block.to_string()));
     }
@@ -249,12 +263,12 @@ pub fn parse_ical_datetime(
         }
     }
 
-    if input.len() == 8 && input.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d") {
-            if let Some(dt) = date.and_hms_opt(0, 0, 0) {
-                return Ok(dt.and_utc());
-            }
-        }
+    if input.len() == 8
+        && input.chars().all(|c| c.is_ascii_digit())
+        && let Ok(date) = NaiveDate::parse_from_str(input, "%Y%m%d")
+        && let Some(dt) = date.and_hms_opt(0, 0, 0)
+    {
+        return Ok(dt.and_utc());
     }
 
     Err(nom::Err::Error(nom::error::Error::new(

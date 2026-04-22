@@ -941,11 +941,7 @@ impl Storage {
         self.get_json(&path).await
     }
 
-    pub async fn delete_calendar_attachment(
-        &self,
-        owner: &str,
-        attachment_id: &str,
-    ) -> Result<()> {
+    pub async fn delete_calendar_attachment(&self, owner: &str, attachment_id: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
             owner: &'a str,
@@ -961,10 +957,7 @@ impl Storage {
         .await
     }
 
-    pub async fn upsert_room_list(
-        &self,
-        room_list: &crate::room::RoomListRecord,
-    ) -> Result<()> {
+    pub async fn upsert_room_list(&self, room_list: &crate::room::RoomListRecord) -> Result<()> {
         #[derive(Serialize)]
         struct Req<'a> {
             id: &'a str,
