@@ -1320,7 +1320,7 @@ async function handleUpsertRoom(request, env) {
             return new Response('Missing id/email/name', { status: 400 });
         }
         const capacityInt = Number(capacity) || 0;
-        const isAvailableInt = Number(is_available) || 1;
+        const isAvailableInt = is_available !== undefined && is_available !== null ? Number(is_available) : 1;
         await env.EXCHANGE_DB
             .prepare(`INSERT INTO room (id, room_list_email, email, name, capacity, is_available, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(email) DO UPDATE SET room_list_email = excluded.room_list_email, name = excluded.name, capacity = excluded.capacity, is_available = excluded.is_available, updated_at = CURRENT_TIMESTAMP`)
             .bind(id, room_list_email, email, name, capacityInt, isAvailableInt)
