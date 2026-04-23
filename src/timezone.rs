@@ -213,8 +213,10 @@ fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
     let tz: Tz = iana.parse().ok()?;
 
     // Map IANA → WindowsTimezone using the windows-timezones crate
-    let win_tz = WindowsTimezone::try_from(tz).ok()?;
-    let win_name = win_tz.name().to_string();
+    let win_name = match iana {
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => "UTC".to_string(),
+        _ => WindowsTimezone::try_from(tz).ok()?.name().to_string(),
+    };
 
     // Compute UTC offsets at January and July reference points
     // EAS bias convention: positive = west of UTC (minutes behind UTC)
