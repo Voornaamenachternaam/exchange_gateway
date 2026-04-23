@@ -67,17 +67,20 @@ fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
         .max_by_key(|variant| variant.name().len())
 }
 
-fn windows_name_to_iana(name: &str) -> Option<&'static str> {
-      let n = name.trim();
-      if n.is_empty() {
-          return None;
-      }
-      if let Some(tz) = parse_utc_offset_name(n) {
-          // parse_utc_offset_name must also return &'static str
-          return Some(tz);
-      }
-      find_windows_timezone(n).map(|tz| tz.tzdb_id())
-  }
+fn windows_name_to_iana(name: &str) -> Option<String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+
+    // First try UTC offset names like "(UTC+02:00) Custom" for better compatibility
+    if let Some(tz) = parse_utc_offset_name(n) {
+        return Some(tz);
+    }
+
+    // Then fall back to Windows timezone name resolution
+    find_windows_timezone(n).map(|tz| tz.tzdb_id().to_string())
+}
     let n = name.trim();
     if n.is_empty() {
         return None;
