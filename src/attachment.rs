@@ -133,32 +133,32 @@ impl AttachmentManager {
         let name = if name.is_empty() {
             "attachment.dat".to_string()
         } else if name.len() > MAX_ATTACHMENT_NAME_LEN {
-            let end = name.char_indices().map(|(i, _)| i).take_while(|&i| i <= MAX_ATTACHMENT_NAME_LEN).last().unwrap_or(0);
+            let mut end = MAX_ATTACHMENT_NAME_LEN;
+            while !name.is_char_boundary(end) {
+                end -= 1;
+            }
             name[..end].to_string()
+        } else {
             name.to_string()
         };
 
         let content_type = if content_type.is_empty() {
             "application/octet-stream".to_string()
         } else if content_type.len() > MAX_CONTENT_TYPE_LEN {
-            content_type[..MAX_CONTENT_TYPE_LEN].to_string()
+            let mut end = MAX_CONTENT_TYPE_LEN;
+            while !content_type.is_char_boundary(end) {
+                end -= 1;
+            }
+            content_type[..end].to_string()
         } else {
             content_type.to_string()
         };
 
         let decoded_len = STANDARD
-        // Cheap upper bound first to reject oversize inputs without allocating the full decode.
-        let estimated_len = content_base64.len() / 4 * 3;
-        if estimated_len > self.max_attachment_bytes.saturating_add(3) {
-            return Err(anyhow!(
-                "Attachment size exceeds maximum allowed size {}",
-                self.max_attachment_bytes
-            ));
-        }
-        let decoded_len = STANDARD
             .decode(content_base64)
-            .map_err(|e| anyhow!("Invalid base64 attachment content: {}", e))?
-            .len();
+            .map(|v| v.len())
+            .unwrap_or(0);
+
         if decoded_len > self.max_attachment_bytes {
             return Err(anyhow!(
                 "Attachment size {} exceeds maximum allowed size {}",
@@ -262,12 +262,9 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                     b"ParentItemId" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"Id"
-                        for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id" {
-                                match attr.decode_and_unescape_value(reader.decoder()) {
-                                    Ok(v) => parent_item_id = Some(v.into_owned()),
-                                    Err(e) => log::error!("Failed to decode Id attribute: {}", e),
-                                }
+                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+                            {
+                                parent_item_id = Some(v.into_owned());
                             }
                         }
                     }

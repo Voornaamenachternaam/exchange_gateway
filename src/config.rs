@@ -50,8 +50,14 @@ impl Config {
 
     pub fn worker_secret(&self) -> &str {
         self.worker_secret.expose_secret()
+    }
+
+    pub fn hmac_secret(&self) -> &str {
+        self.hmac_secret.expose_secret()
+    }
+
     pub fn max_attachment_bytes(&self) -> usize {
-        self.max_attachment_bytes
+        self.max_attachment_bytes.max(1024)
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -75,14 +81,20 @@ impl Config {
                 "Config: 'hmac_secret' must be at least 32 characters"
             ));
         }
+        // Reject placeholder values from the example config
+        if self.worker_secret.expose_secret().starts_with("REPLACE_") {
+            return Err(anyhow::anyhow!(
+                "Config: 'worker_secret' still contains a placeholder — generate a real secret with: openssl rand -hex 32"
+            ));
+        }
+        if self.hmac_secret.expose_secret().starts_with("REPLACE_") {
+            return Err(anyhow::anyhow!(
+                "Config: 'hmac_secret' still contains a placeholder — generate a real secret with: openssl rand -hex 32"
+            ));
+        }
         if !self.gateway_host.is_empty() && self.gateway_host.contains("://") {
             return Err(anyhow::anyhow!(
                 "Config: 'gateway_host' must be a hostname only, not a URL"
-            ));
-        }
-        if self.max_attachment_bytes < 1024 {
-            return Err(anyhow::anyhow!(
-                "Config: 'max_attachment_bytes' must be at least 1024 bytes"
             ));
         }
         if self.max_attachment_bytes > 50 * 1024 * 1024 {
@@ -90,8 +102,6 @@ impl Config {
                 "Config: 'max_attachment_bytes' must not exceed 50MB"
             ));
         }
-        Ok(())
-    }
         Ok(())
     }
 }

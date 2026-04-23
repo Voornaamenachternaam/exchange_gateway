@@ -204,11 +204,8 @@ fn parse_remove_delegate_request(xml: &str) -> Option<String> {
                 in_email = true;
             }
             Ok(Event::Text(e)) => {
-                if in_email {
-                    match e.decode() {
-                        Ok(text) => return Some(text.into_owned()),
-                        Err(err) => tracing::error!("Failed to decode email text: {}", err),
-                    }
+                if in_email && let Ok(text) = e.decode() {
+                    return Some(text.into_owned());
                 }
             }
             Ok(Event::End(_)) => {
@@ -297,11 +294,7 @@ fn render_get_delegate_response(delegates: &[DelegateInfo], manager: &DelegateMa
         .collect::<Vec<_>>()
         .join("\n");
 
-    let deliver_meeting_requests = if delegates.is_empty() {
-        "DelegatesAndMe"
-    } else {
-        "DelegatesAndMe"
-    };
+    let deliver_meeting_requests = "DelegatesAndMe";
 
     format!(
         r#"<m:GetDelegateResponse xmlns:m="{}" xmlns:t="{}">
@@ -314,9 +307,9 @@ fn render_get_delegate_response(delegates: &[DelegateInfo], manager: &DelegateMa
     )
 }
 
-fn render_delegate_error(response_element: &str, code: &str, message: &str) -> String {
+fn render_delegate_error(code: &str, message: &str) -> String {
     format!(
-        r#"<m:{response_element} xmlns:m="{}" xmlns:t="{}">
+        r#"<m:GetDelegateResponse xmlns:m="{}" xmlns:t="{}">
             <m:ResponseMessages>
                 <m:DelegateUserResponseMessageType ResponseClass="Error">
                     <m:MessageText>{}</m:MessageText>
@@ -324,11 +317,10 @@ fn render_delegate_error(response_element: &str, code: &str, message: &str) -> S
                     <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
                 </m:DelegateUserResponseMessageType>
             </m:ResponseMessages>
-        </m:{response_element}>"#,
+        </m:GetDelegateResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
         xml_escape(message),
         xml_escape(code),
     )
-}
 }
