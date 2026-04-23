@@ -23,6 +23,19 @@ pub const INVALID_SYNC_KEY_STATUS: &str = "9";
 const DEFAULT_WINDOW_SIZE: usize = 100;
 const MAX_WINDOW_SIZE: usize = 512;
 
+pub struct PerformSyncParams<'a> {
+    pub state: Arc<AppState>,
+    pub owner: &'a str,
+    pub collection_id: &'a str,
+    pub state_collection_id: &'a str,
+    pub incoming_sync_key: &'a str,
+    pub content_class: &'a str,
+    pub opts: SyncOptions,
+    pub username: &'a str,
+    pub password: &'a str,
+    pub client_mutation_responses: &'a str,
+}
+
 #[derive(Clone, Debug)]
 pub enum ClientMutationResult {
     Add {
@@ -411,36 +424,38 @@ pub fn render_client_mutation_responses(results: &[ClientMutationResult]) -> Str
     xml
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn apply_meeting_response(
-    state: Arc<AppState>,
-    owner: &str,
-    username: &str,
-    password: &str,
-    request_id: &str,
-    user_response: u8,
-    _instance_id: Option<chrono::DateTime<Utc>>,
-    _send_response: bool,
-) -> Result<()> {
-    let Some(existing) = state
+pub struct MeetingResponseArgs<'a> {
+    pub state: Arc<AppState>,
+    pub owner: &'a str,
+    pub username: &'a str,
+    pub password: &'a str,
+    pub request_id: &'a str,
+    pub user_response: u8,
+    pub instance_id: Option<chrono::DateTime<Utc>>,
+    pub send_response: bool,
+}
+
+pub async fn apply_meeting_response(args: &MeetingResponseArgs<'_>) -> Result<()> {
+    let Some(existing) = args
+        .state
         .storage
-        .get_ews_item_by_server_id(owner, request_id)
+        .get_ews_item_by_server_id(args.owner, args.request_id)
         .await?
     else {
-        return Err(anyhow!("unknown meeting request id: {request_id}"));
+        return Err(anyhow!("unknown meeting request id: {}", args.request_id));
     };
-    let caldav = CaldavClient::new(&state.cfg)?;
-    let calendars = caldav.find_user_calendars(username, password).await?;
+    let caldav = CaldavClient::new(&args.state.cfg)?;
+    let calendars = caldav.find_user_calendars(args.username, args.password).await?;
     let collection_href = calendars
         .first()
         .ok_or_else(|| anyhow!("no calendars found"))?
         .clone();
     let (existing_ics, existing_etag) = caldav
-        .get_event(&existing.resource_href, username, password)
+        .get_event(&existing.resource_href, args.username, args.password)
         .await?;
     let mut item =
         parse_ics_event(&existing_ics).ok_or_else(|| anyhow!("failed parsing existing event"))?;
-    let (status, partstat) = match user_response {
+    let (status, partstat) = match args.user_response {
         1 => (3, "ACCEPTED"),
         2 => (2, "TENTATIVE"),
         3 => (4, "DECLINED"),
@@ -449,14 +464,14 @@ pub async fn apply_meeting_response(
     if let Some(attendee) = item
         .attendees
         .iter_mut()
-        .find(|a| normalize_email(&a.email) == normalize_email(owner))
+        .find(|a| normalize_email(&a.email) == normalize_email(args.owner))
     {
         attendee.attendee_status = Some(status);
         attendee.partstat = Some(partstat.to_string());
     } else {
         item.attendees.push(Attendee {
             name: None,
-            email: owner.to_string(),
+            email: args.owner.to_string(),
             attendee_type: Some(1),
             attendee_status: Some(status),
             partstat: Some(partstat.to_string()),
@@ -470,18 +485,18 @@ pub async fn apply_meeting_response(
             &collection_href,
             Some(&existing.resource_href),
             &ics,
-            username,
-            password,
+            args.username,
+            args.password,
             existing_etag.as_deref().or(existing.etag.as_deref()),
         )
         .await?;
-    state
+    args.state
         .storage
         .upsert_item_map(
-            owner,
+            args.owner,
             &collection_href,
             &resource_href,
-            request_id,
+            args.request_id,
             &item.uid,
             &etag,
         )
@@ -1033,24 +1048,12 @@ impl Default for SyncOptions {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn perform_sync(
-    state: Arc<AppState>,
-    owner: &str,
-    collection_id: &str,
-    state_collection_id: &str,
-    incoming_sync_key: &str,
-    content_class: &str,
-    opts: SyncOptions,
-    username: &str,
-    password: &str,
-    client_mutation_responses: &str,
-) -> Result<String> {
-    let storage = &state.storage;
-    let window_size = opts.window_size.clamp(1, MAX_WINDOW_SIZE);
+pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
+    let storage = &params.state.storage;
+    let window_size = params.opts.window_size.clamp(1, MAX_WINDOW_SIZE);
 
-    if !content_class.eq_ignore_ascii_case("Calendar") {
-        let class_name = content_class.trim();
+    if !params.content_class.eq_ignore_ascii_case("Calendar") {
+        let class_name = params.content_class.trim();
         let normalized = if class_name.is_empty() {
             "Calendar"
         } else {
@@ -1058,11 +1061,11 @@ pub async fn perform_sync(
         };
         let new_sync_key = Uuid::new_v4().to_string();
         storage
-            .set_sync_key(owner, state_collection_id, &new_sync_key, Some("token"))
+            .set_sync_key(params.owner, params.state_collection_id, &new_sync_key, Some("token"))
             .await?;
-        let pseudo_resource = format!("class://{}/{}", owner, normalized.to_ascii_lowercase());
-        let server_id = generate_server_id(state.cfg.hmac_secret(), &pseudo_resource);
-        let app_data = class_placeholder_app_data(normalized, owner);
+        let pseudo_resource = format!("class://{}/{}", params.owner, normalized.to_ascii_lowercase());
+        let server_id = generate_server_id(params.state.cfg.hmac_secret(), &pseudo_resource);
+        let app_data = class_placeholder_app_data(normalized, params.owner);
         let commands = if app_data.is_empty() {
             String::new()
         } else {
@@ -1085,21 +1088,21 @@ pub async fn perform_sync(
 </Sync>"#,
             xml_escape(normalized),
             new_sync_key,
-            xml_escape(collection_id),
-            client_mutation_responses,
+            xml_escape(params.collection_id),
+            params.client_mutation_responses,
             commands
         ));
     }
 
-    let previous_state = storage.get_sync_key(owner, state_collection_id).await?;
-    if incoming_sync_key != "0" {
+    let previous_state = storage.get_sync_key(params.owner, params.state_collection_id).await?;
+    if params.incoming_sync_key != "0" {
         match previous_state.as_ref() {
-            Some((expected_sync_key, _)) if expected_sync_key == incoming_sync_key => {}
-            _ => return Ok(invalid_sync_key_response(collection_id, "Calendar")),
+            Some((expected_sync_key, _)) if expected_sync_key == params.incoming_sync_key => {}
+            _ => return Ok(invalid_sync_key_response(params.collection_id, "Calendar")),
         }
     }
 
-    let since = if incoming_sync_key == "0" {
+    let since = if params.incoming_sync_key == "0" {
         0
     } else {
         sync_since_from_token(
@@ -1109,13 +1112,13 @@ pub async fn perform_sync(
         )
     };
 
-    if !opts.get_changes && incoming_sync_key != "0" {
+    if !params.opts.get_changes && params.incoming_sync_key != "0" {
         let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
         let new_sync_key = Uuid::new_v4().to_string();
         storage
             .set_sync_key(
-                owner,
-                state_collection_id,
+                params.owner,
+                params.state_collection_id,
                 &new_sync_key,
                 Some(&sync_seq_to_token(latest_seq)),
             )
@@ -1131,23 +1134,23 @@ pub async fn perform_sync(
 {}<Commands></Commands>
 </Collection></Collections>
 </Sync>"#,
-            new_sync_key, collection_id, client_mutation_responses
+            new_sync_key, params.collection_id, params.client_mutation_responses
         ));
     }
 
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
-    let caldav = CaldavClient::new(&state.cfg)?;
-    let calendars = caldav.find_user_calendars(username, password).await?;
+    let caldav = CaldavClient::new(&params.state.cfg)?;
+    let calendars = caldav.find_user_calendars(params.username, params.password).await?;
     let collection_href = calendars
         .first()
         .ok_or_else(|| anyhow!("no calendars found"))?
         .clone();
-    let start = opts.filter_start.format("%Y%m%dT%H%M%SZ").to_string();
+    let start = params.opts.filter_start.format("%Y%m%dT%H%M%SZ").to_string();
     let end = (Utc::now() + Duration::weeks(104))
         .format("%Y%m%dT%H%M%SZ")
         .to_string();
     let events_xml = caldav
-        .query_events(&collection_href, &start, &end, username, password)
+        .query_events(&collection_href, &start, &end, params.username, params.password)
         .await?;
 
     use quick_xml::Reader;
@@ -1207,7 +1210,7 @@ pub async fn perform_sync(
     }
 
     let existing_map = storage
-        .list_ews_items(owner, 4096, 0)
+        .list_ews_items(params.owner, 4096, 0)
         .await?
         .into_iter()
         .map(|item| (item.server_id.clone(), item))
@@ -1224,13 +1227,13 @@ pub async fn perform_sync(
     let mut pending_items: Vec<PendingItem> = Vec::new();
     let mut pending_deletes: Vec<String> = Vec::new();
     let mut seen_ids = HashSet::new();
-    let initial_sync = incoming_sync_key == "0";
+    let initial_sync = params.incoming_sync_key == "0";
 
     for ev in &events {
         if ev.href.is_empty() {
             continue;
         }
-        let server_id = generate_server_id(state.cfg.hmac_secret(), &ev.href);
+        let server_id = generate_server_id(params.state.cfg.hmac_secret(), &ev.href);
         seen_ids.insert(server_id.clone());
         let etag = ev.etag.trim_matches('"').to_string();
         let Some(item) = parse_ics_event(&ev.ics) else {
@@ -1257,13 +1260,13 @@ pub async fn perform_sync(
 
     for server_id in existing_map.keys() {
         if !seen_ids.contains(server_id) {
-            let _ = storage.add_delete_tombstone(owner, server_id).await;
-            let _ = storage.delete_item_by_server_id(owner, server_id).await;
+            let _ = storage.add_delete_tombstone(params.owner, server_id).await;
+            let _ = storage.delete_item_by_server_id(params.owner, server_id).await;
         }
     }
 
     if !initial_sync {
-        let tombstones = storage.list_deleted_since_seq(owner, since).await?;
+        let tombstones = storage.list_deleted_since_seq(params.owner, since).await?;
         for (_, sid) in tombstones {
             if !seen_ids.contains(sid.as_str()) {
                 pending_deletes.push(sid);
@@ -1284,7 +1287,7 @@ pub async fn perform_sync(
         }
         storage
             .upsert_item_map(
-                owner,
+                params.owner,
                 &collection_href,
                 &pi.resource_href,
                 &pi.server_id,
@@ -1325,17 +1328,14 @@ pub async fn perform_sync(
     let new_sync_key = Uuid::new_v4().to_string();
     storage
         .set_sync_key(
-            owner,
-            state_collection_id,
+            params.owner,
+            params.state_collection_id,
             &new_sync_key,
             Some(&sync_seq_to_token(latest_seq)),
         )
         .await?;
-    let more_available_tag = if more_available {
-        "<MoreAvailable/>"
-    } else {
-        ""
-    };
+    let more_available_tag = if more_available { "<MoreAvailable/>" } else { "" };
+    let collection_id_escaped = xml_escape(params.collection_id);
 
     Ok(format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -1349,8 +1349,8 @@ pub async fn perform_sync(
 </Collection></Collections>
 </Sync>"#,
         sync_key = new_sync_key,
-        collection_id = xml_escape(collection_id),
-        responses = client_mutation_responses,
+        collection_id = collection_id_escaped,
+        responses = params.client_mutation_responses,
         more = more_available_tag,
         commands = commands,
     ))

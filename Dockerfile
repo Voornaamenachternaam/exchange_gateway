@@ -2,6 +2,7 @@
 
 FROM rust:1.95.0-slim AS builder
 WORKDIR /app
+ENV RUSTFLAGS="-D warnings"
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
 RUN cargo build --release

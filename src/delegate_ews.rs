@@ -82,15 +82,15 @@ impl DelegateEwsHandler {
 
         let manager = DelegateManager::new(&self.storage);
         match manager
-            .update_delegate(
-                auth_email,
-                &delegate_email,
-                parsed.calendar_permission,
-                parsed.receive_copies,
-                parsed.receive_infos,
-                parsed.view_private,
-                auth_email,
-            )
+            .update_delegate(&crate::permission::delegate::UpdateDelegateParams {
+                delegator: auth_email,
+                delegate_email: &delegate_email,
+                calendar_permission: parsed.calendar_permission,
+                receive_copies: parsed.receive_copies,
+                receive_infos: parsed.receive_infos,
+                view_private: parsed.view_private,
+                actor_email: auth_email,
+            })
             .await
         {
             Ok(delegate) => render_update_delegate_response(&delegate, &manager),

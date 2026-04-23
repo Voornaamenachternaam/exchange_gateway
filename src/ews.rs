@@ -107,39 +107,6 @@ impl EwsAction {
     }
 
     #[must_use]
-    #[allow(dead_code)]
-    const fn is_stub_action(&self) -> bool {
-        matches!(
-            self,
-            EwsAction::GetUserOofSettings
-                | EwsAction::SetUserOofSettings
-                | EwsAction::GetServiceConfiguration
-                | EwsAction::GetServerTimeZones
-                | EwsAction::GetFolderInfo
-                | EwsAction::GetMailTips
-                | EwsAction::FindPeople
-                | EwsAction::GetConversationItems
-                | EwsAction::ConvertId
-                | EwsAction::GetRoomLists
-                | EwsAction::GetRooms
-                | EwsAction::GetDelegate
-                | EwsAction::GetUserPhoto
-                | EwsAction::MarkAsJunk
-                | EwsAction::GetAppManifests
-                | EwsAction::GetAppMarketplaceUrl
-                | EwsAction::InstallApp
-                | EwsAction::UninstallApp
-                | EwsAction::GetClientAccessToken
-                | EwsAction::GetReminders
-                | EwsAction::PerformReminderAction
-                | EwsAction::GetPersona
-                | EwsAction::CreateAttachment
-                | EwsAction::GetAttachment
-                | EwsAction::DeleteAttachment
-        )
-    }
-
-    #[must_use]
     const fn response_message_name(&self) -> &'static str {
         match self {
             EwsAction::GetFolder => "GetFolderResponseMessage",
@@ -3024,16 +2991,16 @@ async fn handle_create_attachment(
     let owner = crate::util::normalize_email(&auth.username);
     match state
         .attachment_manager
-        .create_file_attachment(
-            &owner,
-            &parsed.parent_item_id,
-            &parsed.name,
-            &parsed.content_type,
-            &parsed.content_base64,
-            parsed.is_inline,
-            parsed.content_id.as_deref(),
-            parsed.content_location.as_deref(),
-        )
+        .create_file_attachment(&crate::attachment::CreateAttachmentParams {
+            owner: &owner,
+            parent_item_server_id: &parsed.parent_item_id,
+            name: &parsed.name,
+            content_type: &parsed.content_type,
+            content_base64: &parsed.content_base64,
+            is_inline: parsed.is_inline,
+            content_id: parsed.content_id.as_deref(),
+            content_location: parsed.content_location.as_deref(),
+        })
         .await
     {
         Ok(attachment) => {
