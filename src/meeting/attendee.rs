@@ -2,15 +2,19 @@
 use crate::util::normalize_email;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, strum::Display)]
 pub enum AttendeeStatus {
     #[default]
+    #[strum(serialize = "NEEDS-ACTION")]
     NeedsAction = 0,
+    #[strum(serialize = "ACCEPTED")]
     Accepted = 1,
+    #[strum(serialize = "DECLINED")]
     Declined = 2,
+    #[strum(serialize = "TENTATIVE")]
     Tentative = 3,
+    #[strum(serialize = "NEEDS-ACTION")]
     NotResponded = 5,
 }
 
@@ -23,18 +27,6 @@ impl From<u8> for AttendeeStatus {
             3 => Self::Tentative,
             5 => Self::NotResponded,
             _ => Self::NeedsAction,
-        }
-    }
-}
-
-impl fmt::Display for AttendeeStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NeedsAction => write!(f, "NEEDS-ACTION"),
-            Self::Accepted => write!(f, "ACCEPTED"),
-            Self::Declined => write!(f, "DECLINED"),
-            Self::Tentative => write!(f, "TENTATIVE"),
-            Self::NotResponded => write!(f, "NEEDS-ACTION"),
         }
     }
 }
@@ -79,11 +71,14 @@ impl AttendeeStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, strum::Display)]
 pub enum AttendeeRole {
     #[default]
+    #[strum(serialize = "REQ-PARTICIPANT")]
     Required = 1,
+    #[strum(serialize = "OPT-PARTICIPANT")]
     Optional = 2,
+    #[strum(serialize = "NON-PARTICIPANT")]
     Resource = 3,
 }
 
@@ -94,16 +89,6 @@ impl From<u8> for AttendeeRole {
             2 => Self::Optional,
             3 => Self::Resource,
             _ => Self::Required,
-        }
-    }
-}
-
-impl fmt::Display for AttendeeRole {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Required => write!(f, "REQ-PARTICIPANT"),
-            Self::Optional => write!(f, "OPT-PARTICIPANT"),
-            Self::Resource => write!(f, "NON-PARTICIPANT"),
         }
     }
 }

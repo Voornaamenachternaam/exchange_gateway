@@ -1,6 +1,6 @@
 // src/calendar.rs
 use crate::ical_parser;
-use crate::util::{escape_ical_text, nfc};
+use crate::util::nfc;
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -486,84 +486,8 @@ fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::Dat
     parse_datetime(val)
 }
 
-fn format_ical_datetime_with_timezone(
-    dt: &chrono::DateTime<Utc>,
-    all_day: bool,
-    timezone: Option<&str>,
-) -> (Option<String>, String) {
-    if all_day {
-        return (None, dt.format("%Y%m%d").to_string());
-    }
-    if let Some(tzid) = timezone
-        && let Ok(tz) = tzid.parse::<Tz>()
-    {
-        return (
-            Some(tzid.to_string()),
-            dt.with_timezone(&tz).format("%Y%m%dT%H%M%S").to_string(),
-        );
-    }
-    (None, dt.format("%Y%m%dT%H%M%SZ").to_string())
-}
-
 fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     ical_parser::parse_ical_duration_minutes(trigger).ok()
-}
-
-fn fold_ics_line(line: &str) -> String {
-    const MAX_LINE_LEN: usize = 75;
-    if line.len() <= MAX_LINE_LEN {
-        return line.to_string();
-    }
-    let mut result = String::with_capacity(line.len() + (line.len() / MAX_LINE_LEN) * 3);
-    let mut remaining = line;
-    let mut first = true;
-    while !remaining.is_empty() {
-        let max_take = if first {
-            MAX_LINE_LEN
-        } else {
-            MAX_LINE_LEN - 1
-        };
-        if remaining.len() <= max_take {
-            if !first {
-                result.push_str("\r\n ");
-            }
-            result.push_str(remaining);
-            break;
-        }
-        let mut split_pos = max_take;
-        while split_pos > 0 && !remaining.is_char_boundary(split_pos) {
-            split_pos -= 1;
-        }
-        if split_pos == 0 {
-            split_pos = max_take.min(remaining.len());
-            while split_pos < remaining.len() && !remaining.is_char_boundary(split_pos) {
-                split_pos += 1;
-            }
-        }
-        if !first {
-            result.push_str("\r\n ");
-        }
-        result.push_str(&remaining[..split_pos]);
-        remaining = &remaining[split_pos..];
-        first = false;
-    }
-    result
-}
-
-fn render_valarm(minutes_before_start: i32) -> Vec<String> {
-    let abs = minutes_before_start.abs();
-    let trigger = if abs % 60 == 0 {
-        format!("-PT{}H", abs / 60)
-    } else {
-        format!("-PT{}M", abs)
-    };
-    vec![
-        "BEGIN:VALARM".to_string(),
-        "ACTION:DISPLAY".to_string(),
-        "DESCRIPTION:Reminder".to_string(),
-        format!("TRIGGER:{trigger}"),
-        "END:VALARM".to_string(),
-    ]
 }
 
 fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
@@ -825,184 +749,219 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
 
 #[must_use]
 pub fn render_ics(item: &CalendarItem) -> String {
-    let dtstamp = item
-        .dtstamp
-        .unwrap_or_else(Utc::now)
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string();
+    use icalendar::{Calendar, Class, Component, Event, EventLike, Property};
+
+    let dtstamp = item.dtstamp.unwrap_or_else(Utc::now);
     let uid = if item.uid.is_empty() {
         Uuid::new_v4().to_string()
     } else {
         item.uid.clone()
     };
 
-    let mut lines = vec![
-        "BEGIN:VCALENDAR".to_string(),
-        "VERSION:2.0".to_string(),
-        "PRODID:-//exchange_gateway//EN".to_string(),
-    ];
+    let mut calendar = Calendar::new();
+    calendar.append_property(Property::new("PRODID", "-//exchange_gateway//EN"));
+
+    // Embed timezone blob if present
     if let Some(blob) = &item.timezone_blob {
         for line in blob.lines() {
             let trimmed = line.trim_end();
             if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
+                if let Some(colon_pos) = trimmed.find(':') {
+                    calendar.append_property(
+                        Property::new(&trimmed[..colon_pos], &trimmed[colon_pos + 1..]),
+                    );
+                }
             }
         }
     }
-    let (dtstart_tzid, dtstart_value) =
-        format_ical_datetime_with_timezone(&item.start, item.all_day, item.timezone.as_deref());
-    let (dtend_tzid, dtend_value) =
-        format_ical_datetime_with_timezone(&item.end, item.all_day, item.timezone.as_deref());
-    let dtstart_line = if let Some(tzid) = dtstart_tzid {
-        format!("DTSTART;TZID={}:{}", escape_ical_text(&tzid), dtstart_value)
+
+    // Build the main event using the icalendar crate (handles escaping + folding)
+    let mut event = Event::new();
+    event.uid(&uid);
+    event.timestamp(dtstamp);
+    event.summary(&item.subject);
+
+    if item.all_day {
+        event.all_day(item.start.naive_utc().date());
+    } else if let Some(tzid) = &item.timezone
+        && let Ok(tz) = tzid.parse::<Tz>()
+    {
+        event.starts((item.start.naive_utc(), tz));
+        event.ends((item.end.naive_utc(), tz));
     } else {
-        format!("DTSTART:{}", dtstart_value)
-    };
-    let dtend_line = if let Some(tzid) = dtend_tzid {
-        format!("DTEND;TZID={}:{}", escape_ical_text(&tzid), dtend_value)
-    } else {
-        format!("DTEND:{}", dtend_value)
-    };
-    lines.extend([
-        "BEGIN:VEVENT".to_string(),
-        format!("UID:{uid}"),
-        format!("DTSTAMP:{dtstamp}"),
-        format!("SUMMARY:{}", escape_ical_text(&item.subject)),
-        dtstart_line,
-        dtend_line,
-    ]);
+        event.starts(item.start);
+        event.ends(item.end);
+    }
+
     if !item.location.is_empty() {
-        lines.push(format!("LOCATION:{}", escape_ical_text(&item.location)));
+        event.location(&item.location);
     }
     if !item.description.is_empty() {
-        lines.push(format!(
-            "DESCRIPTION:{}",
-            escape_ical_text(&item.description)
-        ));
+        event.description(&item.description);
     }
+
     if let Some(rrule) = &item.rrule
         && !rrule.is_empty()
     {
-        lines.push(format!("RRULE:{rrule}"));
+        event.add_property("RRULE", rrule);
     }
-    let deleted_exdates: Vec<_> = item
+
+    // EXDATE
+    let mut all_exdates: Vec<String> = item
+        .exdates
+        .iter()
+        .map(|v| {
+            if item.all_day {
+                v.format("%Y%m%d").to_string()
+            } else {
+                v.format("%Y%m%dT%H%M%SZ").to_string()
+            }
+        })
+        .collect();
+    let deleted_exdates: Vec<String> = item
         .exceptions
         .iter()
         .filter(|v| v.deleted)
         .map(|v| {
-            format_ical_datetime_with_timezone(
-                &v.exception_start,
-                item.all_day,
-                item.timezone.as_deref(),
-            )
-            .1
+            if item.all_day {
+                v.exception_start.format("%Y%m%d").to_string()
+            } else {
+                v.exception_start.format("%Y%m%dT%H%M%SZ").to_string()
+            }
         })
         .collect();
-    if !item.exdates.is_empty() || !deleted_exdates.is_empty() {
-        let mut exdates: Vec<String> = item
-            .exdates
-            .iter()
-            .map(|v| {
-                format_ical_datetime_with_timezone(v, item.all_day, item.timezone.as_deref()).1
-            })
-            .collect();
-        exdates.extend(deleted_exdates);
-        exdates.sort();
-        exdates.dedup();
+    all_exdates.extend(deleted_exdates);
+    all_exdates.sort();
+    all_exdates.dedup();
+    if !all_exdates.is_empty() {
+        let exdate_str = all_exdates.join(",");
         if !item.all_day {
             if let Some(tzid) = &item.timezone
                 && tzid.parse::<Tz>().is_ok()
             {
-                lines.push(format!(
-                    "EXDATE;TZID={}:{}",
-                    escape_ical_text(tzid),
-                    exdates.join(",")
-                ));
+                event.append_property(
+                    Property::new("EXDATE", &exdate_str)
+                        .add_parameter("TZID", tzid)
+                        .done(),
+                );
             } else {
-                lines.push(format!("EXDATE:{}", exdates.join(",")));
+                event.append_property(Property::new("EXDATE", &exdate_str));
             }
         } else {
-            lines.push(format!("EXDATE:{}", exdates.join(",")));
+            event.append_property(Property::new("EXDATE", &exdate_str));
         }
     }
+
+    // ORGANIZER
     if let Some(email) = &item.organizer_email {
-        let mut line = String::from("ORGANIZER");
+        let mut org_prop = Property::new("ORGANIZER", &normalize_mailto(email));
         if let Some(name) = &item.organizer_name {
-            line.push_str(&format!(";CN={}", escape_ical_text(name)));
+            org_prop.add_parameter("CN", name);
         }
-        line.push(':');
-        line.push_str(&normalize_mailto(email));
-        lines.push(line);
+        event.append_property(org_prop.done());
     }
+
+    // ATTENDEES — use the icalendar crate's Attendee builder
     for attendee in &item.attendees {
         if attendee.email.is_empty() {
             continue;
         }
-        lines.push(render_attendee_line(attendee));
+        let mut cal_attendee = icalendar::Attendee::new(normalize_mailto(&attendee.email));
+        if let Some(name) = &attendee.name {
+            cal_attendee = cal_attendee.cn(name.clone());
+        }
+        if let Some(kind) = attendee.attendee_type {
+            let role = match kind {
+                2 => icalendar::Role::OptParticipant,
+                3 => icalendar::Role::NonParticipant,
+                _ => icalendar::Role::ReqParticipant,
+            };
+            cal_attendee = cal_attendee.role(role);
+        }
+        if let Some(partstat) = &attendee.partstat {
+            let ps = match partstat.to_uppercase().as_str() {
+                "ACCEPTED" => icalendar::PartStat::Accepted,
+                "DECLINED" => icalendar::PartStat::Declined,
+                "TENTATIVE" => icalendar::PartStat::Tentative,
+                "DELEGATED" => icalendar::PartStat::Delegated,
+                _ => icalendar::PartStat::NeedsAction,
+            };
+            cal_attendee = cal_attendee.partstat(ps);
+        }
+        event.attendee(cal_attendee);
     }
+
+    // CATEGORIES
     if !item.categories.is_empty() {
-        lines.push(format!(
-            "CATEGORIES:{}",
-            item.categories
-                .iter()
-                .map(|v| escape_ical_text(v))
-                .collect::<Vec<_>>()
-                .join(",")
+        event.append_property(Property::new(
+            "CATEGORIES",
+            &item.categories.join(","),
         ));
     }
+
+    // Microsoft-specific and custom X- properties
     if let Some(busy) = item.busy_status {
-        lines.push(format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
-        lines.push(format!(
-            "TRANSP:{}",
-            if busy == 0 { "TRANSPARENT" } else { "OPAQUE" }
-        ));
+        event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", &busy.to_string()));
+        event.add_property("TRANSP", if busy == 0 { "TRANSPARENT" } else { "OPAQUE" });
     }
     if let Some(sensitivity) = item.sensitivity {
-        lines.push(format!("CLASS:{}", sensitivity_to_class(sensitivity)));
+        event.class(match sensitivity {
+            2 => Class::Private,
+            3 => Class::Confidential,
+            _ => Class::Public,
+        });
     }
     if let Some(reminder) = item.reminder {
-        lines.extend(render_valarm(reminder));
+        let abs = reminder.abs();
+        let trigger = if abs % 60 == 0 {
+            chrono::Duration::hours(abs as i64 / 60)
+        } else {
+            -chrono::Duration::minutes(abs as i64)
+        };
+        event.alarm(icalendar::Alarm::display("Reminder", trigger));
     }
     if let Some(v) = item.response_requested {
-        lines.push(format!(
-            "X-MS-RESPONSE-REQUESTED:{}",
-            if v { "TRUE" } else { "FALSE" }
+        event.append_property(Property::new(
+            "X-MS-RESPONSE-REQUESTED",
+            if v { "TRUE" } else { "FALSE" },
         ));
     }
     if let Some(v) = item.disallow_new_time_proposal {
-        lines.push(format!(
-            "X-MS-DISALLOW-COUNTER:{}",
-            if v { "TRUE" } else { "FALSE" }
+        event.append_property(Property::new(
+            "X-MS-DISALLOW-COUNTER",
+            if v { "TRUE" } else { "FALSE" },
         ));
     }
     if let Some(v) = item.appointment_reply_time {
-        lines.push(format!(
-            "X-MS-APPOINTMENT-REPLY-TIME:{}",
-            v.format("%Y%m%dT%H%M%SZ")
+        event.append_property(Property::new(
+            "X-MS-APPOINTMENT-REPLY-TIME",
+            &v.format("%Y%m%dT%H%M%SZ").to_string(),
         ));
     }
     if let Some(v) = item.meeting_status {
-        lines.push(format!("X-MS-MEETING-STATUS:{v}"));
+        event.append_property(Property::new("X-MS-MEETING-STATUS", &v.to_string()));
     }
     if let Some(v) = item.response_type {
-        lines.push(format!("X-MS-RESPONSE-TYPE:{v}"));
+        event.append_property(Property::new("X-MS-RESPONSE-TYPE", &v.to_string()));
     }
     if let Some(v) = &item.online_meeting_conf_link {
-        lines.push(format!("X-MS-OLK-CONFLINK:{}", escape_ical_text(v)));
+        event.append_property(Property::new("X-MS-OLK-CONFLINK", v));
     }
     if let Some(v) = &item.online_meeting_external_link {
-        lines.push(format!("X-MS-OLK-EXTERNALLINK:{}", escape_ical_text(v)));
+        event.append_property(Property::new("X-MS-OLK-EXTERNALLINK", v));
     }
     if let Some(v) = &item.client_uid {
-        lines.push(format!("X-MS-CLIENT-UID:{}", escape_ical_text(v)));
+        event.append_property(Property::new("X-MS-CLIENT-UID", v));
     }
     if !item.all_day
         && let Some(v) = &item.timezone
     {
-        lines.push(format!("X-EAS-TIMEZONE:{}", escape_ical_text(v)));
+        event.append_property(Property::new("X-EAS-TIMEZONE", v));
     }
-    lines.push("END:VEVENT".to_string());
 
+    calendar.push(event.done());
+
+    // Exception instances (non-deleted)
     for exception in item.exceptions.iter().filter(|v| !v.deleted) {
         let base_duration = item.end - item.start;
         let effective_all_day = exception.all_day.unwrap_or(item.all_day);
@@ -1010,134 +969,134 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let effective_end = exception
             .end
             .unwrap_or_else(|| effective_start + base_duration);
-        lines.push("BEGIN:VEVENT".to_string());
-        lines.push(format!("UID:{uid}"));
-        lines.push(format!("DTSTAMP:{dtstamp}"));
-        let (recurrence_tzid, recurrence_value) = format_ical_datetime_with_timezone(
-            &exception.exception_start,
-            effective_all_day,
-            item.timezone.as_deref(),
+
+        let mut ex_event = Event::new();
+        ex_event.uid(&uid);
+        ex_event.timestamp(dtstamp);
+        ex_event.summary(
+            exception
+                .subject
+                .as_deref()
+                .unwrap_or(&item.subject),
         );
-        let (exception_start_tzid, exception_start_value) = format_ical_datetime_with_timezone(
-            &effective_start,
-            effective_all_day,
-            item.timezone.as_deref(),
-        );
-        let (exception_end_tzid, exception_end_value) = format_ical_datetime_with_timezone(
-            &effective_end,
-            effective_all_day,
-            item.timezone.as_deref(),
-        );
-        lines.push(if let Some(tzid) = recurrence_tzid {
-            format!(
-                "RECURRENCE-ID;TZID={}:{}",
-                escape_ical_text(&tzid),
-                recurrence_value
-            )
+
+        if effective_all_day {
+            ex_event.append_property(Property::new(
+                "RECURRENCE-ID",
+                &exception.exception_start.format("%Y%m%d").to_string(),
+            ));
+            ex_event.all_day(effective_start.naive_utc().date());
+        } else if let Some(tzid) = &item.timezone
+            && let Ok(tz) = tzid.parse::<Tz>()
+        {
+            ex_event.append_property(
+                Property::new(
+                    "RECURRENCE-ID",
+                    &exception
+                        .exception_start
+                        .with_timezone(&tz)
+                        .format("%Y%m%dT%H%M%S")
+                        .to_string(),
+                )
+                .add_parameter("TZID", tzid)
+                .done(),
+            );
+            ex_event.starts((effective_start.naive_utc(), tz));
+            ex_event.ends((effective_end.naive_utc(), tz));
         } else {
-            format!("RECURRENCE-ID:{}", recurrence_value)
-        });
-        lines.push(if let Some(tzid) = exception_start_tzid {
-            format!(
-                "DTSTART;TZID={}:{}",
-                escape_ical_text(&tzid),
-                exception_start_value
-            )
-        } else {
-            format!("DTSTART:{}", exception_start_value)
-        });
-        lines.push(if let Some(tzid) = exception_end_tzid {
-            format!(
-                "DTEND;TZID={}:{}",
-                escape_ical_text(&tzid),
-                exception_end_value
-            )
-        } else {
-            format!("DTEND:{}", exception_end_value)
-        });
-        lines.push(format!(
-            "SUMMARY:{}",
-            escape_ical_text(exception.subject.as_deref().unwrap_or(&item.subject))
-        ));
+            ex_event.append_property(Property::new(
+                "RECURRENCE-ID",
+                &exception
+                    .exception_start
+                    .format("%Y%m%dT%H%M%SZ")
+                    .to_string(),
+            ));
+            ex_event.starts(effective_start);
+            ex_event.ends(effective_end);
+        }
+
         if let Some(location) = exception.location.as_deref().or(Some(&item.location))
             && !location.is_empty()
         {
-            lines.push(format!("LOCATION:{}", escape_ical_text(location)));
+            ex_event.location(location);
         }
         if let Some(description) = exception.description.as_deref().or(Some(&item.description))
             && !description.is_empty()
         {
-            lines.push(format!("DESCRIPTION:{}", escape_ical_text(description)));
+            ex_event.description(description);
         }
         if let Some(attendees) = &exception.attendees {
             for attendee in attendees {
-                lines.push(render_attendee_line(attendee));
+                if attendee.email.is_empty() {
+                    continue;
+                }
+                let mut cal_attendee = icalendar::Attendee::new(normalize_mailto(&attendee.email));
+                if let Some(name) = &attendee.name {
+                    cal_attendee = cal_attendee.cn(name.clone());
+                }
+                if let Some(kind) = attendee.attendee_type {
+                    let role = match kind {
+                        2 => icalendar::Role::OptParticipant,
+                        3 => icalendar::Role::NonParticipant,
+                        _ => icalendar::Role::ReqParticipant,
+                    };
+                    cal_attendee = cal_attendee.role(role);
+                }
+                if let Some(partstat) = &attendee.partstat {
+                    let ps = match partstat.to_uppercase().as_str() {
+                        "ACCEPTED" => icalendar::PartStat::Accepted,
+                        "DECLINED" => icalendar::PartStat::Declined,
+                        "TENTATIVE" => icalendar::PartStat::Tentative,
+                        "DELEGATED" => icalendar::PartStat::Delegated,
+                        _ => icalendar::PartStat::NeedsAction,
+                    };
+                    cal_attendee = cal_attendee.partstat(ps);
+                }
+                ex_event.attendee(cal_attendee);
             }
         }
         if let Some(categories) = &exception.categories
             && !categories.is_empty()
         {
-            lines.push(format!(
-                "CATEGORIES:{}",
-                categories
-                    .iter()
-                    .map(|v| escape_ical_text(v))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ));
+            ex_event.append_property(Property::new("CATEGORIES", &categories.join(",")));
         }
         if let Some(busy) = exception.busy_status {
-            lines.push(format!("X-MICROSOFT-CDO-BUSYSTATUS:{busy}"));
+            ex_event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", &busy.to_string()));
         }
         if let Some(sensitivity) = exception.sensitivity {
-            lines.push(format!("CLASS:{}", sensitivity_to_class(sensitivity)));
+            ex_event.class(match sensitivity {
+                2 => Class::Private,
+                3 => Class::Confidential,
+                _ => Class::Public,
+            });
         }
         if let Some(reminder) = exception.reminder {
-            lines.extend(render_valarm(reminder));
+            let abs = reminder.abs();
+            let trigger = if abs % 60 == 0 {
+                -chrono::Duration::hours(abs as i64 / 60)
+            } else {
+                -chrono::Duration::minutes(abs as i64)
+            };
+            ex_event.alarm(icalendar::Alarm::display("Reminder", trigger));
         }
         if let Some(v) = exception.appointment_reply_time {
-            lines.push(format!(
-                "X-MS-APPOINTMENT-REPLY-TIME:{}",
-                v.format("%Y%m%dT%H%M%SZ")
+            ex_event.append_property(Property::new(
+                "X-MS-APPOINTMENT-REPLY-TIME",
+                &v.format("%Y%m%dT%H%M%SZ").to_string(),
             ));
         }
         if let Some(v) = exception.meeting_status {
-            lines.push(format!("X-MS-MEETING-STATUS:{v}"));
+            ex_event.append_property(Property::new("X-MS-MEETING-STATUS", &v.to_string()));
         }
         if let Some(v) = exception.response_type {
-            lines.push(format!("X-MS-RESPONSE-TYPE:{v}"));
+            ex_event.append_property(Property::new("X-MS-RESPONSE-TYPE", &v.to_string()));
         }
-        lines.push("END:VEVENT".to_string());
+
+        calendar.push(ex_event.done());
     }
 
-    lines.push("END:VCALENDAR".to_string());
-    lines
-        .into_iter()
-        .map(|l| fold_ics_line(&l))
-        .collect::<Vec<_>>()
-        .join("\r\n")
-        + "\r\n"
-}
-
-fn render_attendee_line(attendee: &Attendee) -> String {
-    let mut line = String::from("ATTENDEE");
-    if let Some(name) = &attendee.name {
-        line.push_str(&format!(";CN={}", escape_ical_text(name)));
-    }
-    if let Some(kind) = attendee.attendee_type {
-        let role = match kind {
-            2 => "OPT-PARTICIPANT",
-            3 => "NON-PARTICIPANT",
-            _ => "REQ-PARTICIPANT",
-        };
-        line.push_str(&format!(";ROLE={role}"));
-    }
-    if let Some(partstat) = &attendee.partstat {
-        line.push_str(&format!(";PARTSTAT={partstat}"));
-    }
-    line.push(':');
-    line.push_str(&normalize_mailto(&attendee.email));
-    line
+    // The icalendar crate's Display impl handles RFC 5545 line folding and CRLF
+    calendar.to_string()
 }
 
 fn parse_ical_param(key: &str, name: &str) -> Option<String> {
@@ -1193,14 +1152,6 @@ fn class_to_sensitivity(value: &str) -> Option<u8> {
         "CONFIDENTIAL" => Some(3),
         "PUBLIC" => Some(0),
         _ => None,
-    }
-}
-
-fn sensitivity_to_class(value: u8) -> &'static str {
-    match value {
-        2 => "PRIVATE",
-        3 => "CONFIDENTIAL",
-        _ => "PUBLIC",
     }
 }
 
