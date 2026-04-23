@@ -143,8 +143,7 @@ fn parse_utc_offset_name(name: &str) -> Option<String> {
             _ => continue,
         };
         if bytes[i + 1].is_ascii_digit() && bytes[i + 2].is_ascii_digit() {
-            let hours: i32 =
-                (bytes[i + 1] - b'0') as i32 * 10 + (bytes[i + 2] - b'0') as i32;
+            let hours: i32 = (bytes[i + 1] - b'0') as i32 * 10 + (bytes[i + 2] - b'0') as i32;
             if (1..=12).contains(&hours) {
                 // Etc/GMT sign convention is inverted per POSIX
                 return Some(format!("Etc/GMT{}{}", sign, hours));
@@ -160,27 +159,38 @@ const US_DST: [u8; 16] = [0, 0, 3, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0];
 const US_STD: [u8; 16] = [0, 0, 11, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0];
 const NO_DST: [u8; 16] = [0u8; 16];
 
-type TzParams = (
-    i32,
-    String,
-    String,
-    [u8; 16],
-    [u8; 16],
-    i32,
-    i32,
-);
+type TzParams = (i32, String, String, [u8; 16], [u8; 16], i32, i32);
 
 /// Determine DST transition rule set based on IANA timezone region prefix.
 /// Returns (std_date, dst_date, dst_bias).
 fn dst_rules_for(iana: &str) -> ([u8; 16], [u8; 16], i32) {
     // Timezones with no DST transitions
     let no_dst_zones = [
-        "Europe/Moscow", "Europe/Istanbul", "Asia/Dubai", "Asia/Kolkata",
-        "Asia/Calcutta", "Asia/Shanghai", "Asia/Hong_Kong", "Asia/Singapore",
-        "Asia/Tokyo", "Asia/Seoul", "Asia/Taipei", "Asia/Bangkok", "Asia/Jakarta",
-        "Asia/Karachi", "Asia/Dhaka", "Asia/Baghdad", "Africa/Johannesburg",
-        "Africa/Cairo", "Australia/Brisbane", "Australia/Perth",
-        "America/Buenos_Aires", "Pacific/Honolulu", "UTC", "Etc/UTC", "Etc/GMT",
+        "Europe/Moscow",
+        "Europe/Istanbul",
+        "Asia/Dubai",
+        "Asia/Kolkata",
+        "Asia/Calcutta",
+        "Asia/Shanghai",
+        "Asia/Hong_Kong",
+        "Asia/Singapore",
+        "Asia/Tokyo",
+        "Asia/Seoul",
+        "Asia/Taipei",
+        "Asia/Bangkok",
+        "Asia/Jakarta",
+        "Asia/Karachi",
+        "Asia/Dhaka",
+        "Asia/Baghdad",
+        "Africa/Johannesburg",
+        "Africa/Cairo",
+        "Australia/Brisbane",
+        "Australia/Perth",
+        "America/Buenos_Aires",
+        "Pacific/Honolulu",
+        "UTC",
+        "Etc/UTC",
+        "Etc/GMT",
         "GMT",
     ];
     if no_dst_zones.contains(&iana) {

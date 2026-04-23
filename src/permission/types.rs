@@ -109,18 +109,42 @@ impl PermissionRights {
         Self::FREEBUSY_SIMPLE | Self::FREEBUSY_DETAILED | Self::FOLDER_VISIBLE
     }
 
-    pub fn can_read_any(&self) -> bool { self.contains(Self::READ_ANY) }
-    pub fn can_create(&self) -> bool { self.contains(Self::CREATE) }
-    pub fn can_edit_owned(&self) -> bool { self.contains(Self::EDIT_OWNED) }
-    pub fn can_delete_owned(&self) -> bool { self.contains(Self::DELETE_OWNED) }
-    pub fn can_edit_any(&self) -> bool { self.contains(Self::EDIT_ANY) }
-    pub fn can_delete_any(&self) -> bool { self.contains(Self::DELETE_ANY) }
-    pub fn can_create_subfolder(&self) -> bool { self.contains(Self::CREATE_SUBFOLDER) }
-    pub fn is_folder_owner(&self) -> bool { self.contains(Self::FOLDER_OWNER) }
-    pub fn is_folder_contact(&self) -> bool { self.contains(Self::FOLDER_CONTACT) }
-    pub fn is_folder_visible(&self) -> bool { self.contains(Self::FOLDER_VISIBLE) }
-    pub fn can_freebusy_simple(&self) -> bool { self.contains(Self::FREEBUSY_SIMPLE) }
-    pub fn can_freebusy_detailed(&self) -> bool { self.contains(Self::FREEBUSY_DETAILED) }
+    pub fn can_read_any(&self) -> bool {
+        self.contains(Self::READ_ANY)
+    }
+    pub fn can_create(&self) -> bool {
+        self.contains(Self::CREATE)
+    }
+    pub fn can_edit_owned(&self) -> bool {
+        self.contains(Self::EDIT_OWNED)
+    }
+    pub fn can_delete_owned(&self) -> bool {
+        self.contains(Self::DELETE_OWNED)
+    }
+    pub fn can_edit_any(&self) -> bool {
+        self.contains(Self::EDIT_ANY)
+    }
+    pub fn can_delete_any(&self) -> bool {
+        self.contains(Self::DELETE_ANY)
+    }
+    pub fn can_create_subfolder(&self) -> bool {
+        self.contains(Self::CREATE_SUBFOLDER)
+    }
+    pub fn is_folder_owner(&self) -> bool {
+        self.contains(Self::FOLDER_OWNER)
+    }
+    pub fn is_folder_contact(&self) -> bool {
+        self.contains(Self::FOLDER_CONTACT)
+    }
+    pub fn is_folder_visible(&self) -> bool {
+        self.contains(Self::FOLDER_VISIBLE)
+    }
+    pub fn can_freebusy_simple(&self) -> bool {
+        self.contains(Self::FREEBUSY_SIMPLE)
+    }
+    pub fn can_freebusy_detailed(&self) -> bool {
+        self.contains(Self::FREEBUSY_DETAILED)
+    }
 }
 
 impl fmt::Display for PermissionRights {
@@ -129,22 +153,48 @@ impl fmt::Display for PermissionRights {
             return write!(f, "None");
         }
         let mut parts = Vec::new();
-        if self.can_read_any() { parts.push("ReadAny"); }
-        if self.can_create() { parts.push("Create"); }
-        if self.can_edit_owned() { parts.push("EditOwned"); }
-        if self.can_delete_owned() { parts.push("DeleteOwned"); }
-        if self.can_edit_any() { parts.push("EditAny"); }
-        if self.can_delete_any() { parts.push("DeleteAny"); }
-        if self.can_create_subfolder() { parts.push("CreateSubfolder"); }
-        if self.is_folder_owner() { parts.push("FolderOwner"); }
-        if self.is_folder_contact() { parts.push("FolderContact"); }
-        if self.is_folder_visible() { parts.push("FolderVisible"); }
-        if self.can_freebusy_simple() { parts.push("FreeBusySimple"); }
-        if self.can_freebusy_detailed() { parts.push("FreeBusyDetailed"); }
+        if self.can_read_any() {
+            parts.push("ReadAny");
+        }
+        if self.can_create() {
+            parts.push("Create");
+        }
+        if self.can_edit_owned() {
+            parts.push("EditOwned");
+        }
+        if self.can_delete_owned() {
+            parts.push("DeleteOwned");
+        }
+        if self.can_edit_any() {
+            parts.push("EditAny");
+        }
+        if self.can_delete_any() {
+            parts.push("DeleteAny");
+        }
+        if self.can_create_subfolder() {
+            parts.push("CreateSubfolder");
+        }
+        if self.is_folder_owner() {
+            parts.push("FolderOwner");
+        }
+        if self.is_folder_contact() {
+            parts.push("FolderContact");
+        }
+        if self.is_folder_visible() {
+            parts.push("FolderVisible");
+        }
+        if self.can_freebusy_simple() {
+            parts.push("FreeBusySimple");
+        }
+        if self.can_freebusy_detailed() {
+            parts.push("FreeBusyDetailed");
+        }
         let mut res = parts.join("|");
         let unknown_bits = self.bits() & !Self::all().bits();
         if unknown_bits != 0 {
-            if !res.is_empty() { res.push('|'); }
+            if !res.is_empty() {
+                res.push('|');
+            }
             res.push_str(&format!("Unknown(0x{:08X})", unknown_bits));
         }
         write!(f, "{}", res)
@@ -340,7 +390,15 @@ impl CalendarPermission {
     }
 
     pub fn default_permission(folder_id: String, owner: String, rights: PermissionRights) -> Self {
-        Self::build(folder_id, owner, "default", Some("Default"), rights, true, false)
+        Self::build(
+            folder_id,
+            owner,
+            "default",
+            Some("Default"),
+            rights,
+            true,
+            false,
+        )
     }
 
     pub fn anonymous_permission(
@@ -348,7 +406,15 @@ impl CalendarPermission {
         owner: String,
         rights: PermissionRights,
     ) -> Self {
-        Self::build(folder_id, owner, "anonymous", Some("Anonymous"), rights, false, true)
+        Self::build(
+            folder_id,
+            owner,
+            "anonymous",
+            Some("Anonymous"),
+            rights,
+            false,
+            true,
+        )
     }
 
     pub fn rights(&self) -> PermissionRights {

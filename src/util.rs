@@ -61,7 +61,10 @@ pub fn normalize_email(email: &str) -> String {
     // Best-effort validation; return normalized even if not strictly valid
     // (some legacy systems emit non-RFC-compliant addresses)
     if !email_address::EmailAddress::is_valid(&normalized) {
-        tracing::debug!("Normalized email does not pass RFC validation: {}", normalized);
+        tracing::debug!(
+            "Normalized email does not pass RFC validation: {}",
+            normalized
+        );
     }
     normalized
 }
