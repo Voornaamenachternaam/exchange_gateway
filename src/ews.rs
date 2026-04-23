@@ -1,8 +1,7 @@
 // src/ews.rs
 use crate::attachment::{
     parse_create_attachment_request, parse_delete_attachment_request, parse_get_attachment_request,
-    render_create_attachment_response,
-    render_file_attachment_xml, render_get_attachment_response,
+    render_create_attachment_response, render_file_attachment_xml, render_get_attachment_response,
 };
 use crate::caldav::CaldavClient;
 use crate::calendar::{
@@ -2809,7 +2808,9 @@ async fn handle_get_rooms(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     let room_manager = &state.room_manager;
     let owner = crate::util::normalize_email(&auth.username);
     let rooms = if let Some(room_list_email) = parse_get_rooms_request(body) {
-        room_manager.get_rooms_for_list(&owner, &room_list_email).await
+        room_manager
+            .get_rooms_for_list(&owner, &room_list_email)
+            .await
     } else {
         room_manager.get_all_rooms(&owner).await
     };

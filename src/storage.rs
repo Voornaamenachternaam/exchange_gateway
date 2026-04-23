@@ -985,7 +985,8 @@ impl Storage {
             owner: &'a str,
             email: &'a str,
         }
-        self.post_json("delete_room_list", &Req { owner, email }).await
+        self.post_json("delete_room_list", &Req { owner, email })
+            .await
     }
 
     pub async fn get_all_rooms(&self, owner: &str) -> Result<Vec<crate::room::RoomRecord>> {
