@@ -30,12 +30,3 @@ This repository implements an Exchange-compatible gateway in Rust that translate
 ## Cloudflare deployment
 
 See `CLOUDFLARE_DEPLOYMENT.md` for the full production deployment profile (Workers, KV, D1, routes, tunnel, rate-limits, and free-plan hardening controls).
-
-## Rust version
-
-- `rust-version = "1.94.1"`
-- `edition = "2024"`
-
-## License
-
-MIT
