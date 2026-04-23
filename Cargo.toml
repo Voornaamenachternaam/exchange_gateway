@@ -6,7 +6,7 @@ edition = "2024"
 rust-version = "1.95.0"
 
 [dependencies]
-tokio = { version = "^1.51.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
+tokio = { version = "^1.52.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
 hyper = "^1.9.0"
