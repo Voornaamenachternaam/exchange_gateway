@@ -1,5 +1,5 @@
 // worker/index.js
-const FORWARDED_PATH_PREFIXES = ['/ews', '/microsoft-server-activesync'];
+const FORWARDED_PATH_PREFIXES = ['/ews', '/microsoft-server-activesync', '/autodiscover'];
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const HOP_BY_HOP_HEADERS = [
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -246,8 +246,8 @@ async function handleGatewayForward(request, env, ctx) {
     return corsPreflightResponse();
   }
 
-  if (!['OPTIONS', 'POST'].includes(method)) {
-    return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'OPTIONS, POST' } });
+  if (!['OPTIONS', 'GET', 'POST'].includes(method)) {
+    return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'OPTIONS, GET, POST' } });
   }
   if (!isValidOriginBaseUrl(env.ORIGIN_BASE_URL)) {
     return new Response('Worker misconfigured: ORIGIN_BASE_URL must be http/https URL', { status: 500 });

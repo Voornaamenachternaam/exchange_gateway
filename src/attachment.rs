@@ -105,6 +105,17 @@ impl FileAttachment {
     }
 }
 
+pub struct CreateAttachmentParams<'a> {
+    pub owner: &'a str,
+    pub parent_item_server_id: &'a str,
+    pub name: &'a str,
+    pub content_type: &'a str,
+    pub content_base64: &'a str,
+    pub is_inline: bool,
+    pub content_id: Option<&'a str>,
+    pub content_location: Option<&'a str>,
+}
+
 pub struct AttachmentManager {
     storage: Arc<Storage>,
     max_attachment_bytes: usize,
@@ -118,44 +129,33 @@ impl AttachmentManager {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_file_attachment(
-        &self,
-        owner: &str,
-        parent_item_server_id: &str,
-        name: &str,
-        content_type: &str,
-        content_base64: &str,
-        is_inline: bool,
-        content_id: Option<&str>,
-        content_location: Option<&str>,
-    ) -> Result<FileAttachment> {
-        let name = if name.is_empty() {
+    pub async fn create_file_attachment(&self, params: &CreateAttachmentParams<'_>) -> Result<FileAttachment> {
+        let name = if params.name.is_empty() {
             "attachment.dat".to_string()
-        } else if name.len() > MAX_ATTACHMENT_NAME_LEN {
+        } else if params.name.len() > MAX_ATTACHMENT_NAME_LEN {
             let mut end = MAX_ATTACHMENT_NAME_LEN;
-            while !name.is_char_boundary(end) {
+            while !params.name.is_char_boundary(end) {
                 end -= 1;
             }
-            name[..end].to_string()
+            params.name[..end].to_string()
         } else {
-            name.to_string()
+            params.name.to_string()
         };
 
-        let content_type = if content_type.is_empty() {
+        let content_type = if params.content_type.is_empty() {
             "application/octet-stream".to_string()
-        } else if content_type.len() > MAX_CONTENT_TYPE_LEN {
+        } else if params.content_type.len() > MAX_CONTENT_TYPE_LEN {
             let mut end = MAX_CONTENT_TYPE_LEN;
-            while !content_type.is_char_boundary(end) {
+            while !params.content_type.is_char_boundary(end) {
                 end -= 1;
             }
-            content_type[..end].to_string()
+            params.content_type[..end].to_string()
         } else {
-            content_type.to_string()
+            params.content_type.to_string()
         };
 
         let decoded_len = STANDARD
-            .decode(content_base64)
+            .decode(params.content_base64)
             .map(|v| v.len())
             .unwrap_or(0);
 
@@ -172,15 +172,15 @@ impl AttachmentManager {
 
         let attachment = FileAttachment {
             id: id.clone(),
-            parent_item_server_id: parent_item_server_id.to_string(),
-            owner: owner.to_string(),
+            parent_item_server_id: params.parent_item_server_id.to_string(),
+            owner: params.owner.to_string(),
             name: name.clone(),
             content_type: content_type.clone(),
             content_size: decoded_len as i64,
-            content_base64: content_base64.to_string(),
-            is_inline,
-            content_id: content_id.map(String::from),
-            content_location: content_location.map(String::from),
+            content_base64: params.content_base64.to_string(),
+            is_inline: params.is_inline,
+            content_id: params.content_id.map(String::from),
+            content_location: params.content_location.map(String::from),
             last_modified_time: Some(now.clone()),
         };
 

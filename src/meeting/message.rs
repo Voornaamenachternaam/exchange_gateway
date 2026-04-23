@@ -75,6 +75,17 @@ pub struct MeetingMessage {
     pub proposed_end: Option<DateTime<Utc>>,
 }
 
+pub struct CounterParams {
+    pub uid: String,
+    pub organizer_email: String,
+    pub subject: String,
+    pub original_start: DateTime<Utc>,
+    pub original_end: DateTime<Utc>,
+    pub proposed_start: DateTime<Utc>,
+    pub proposed_end: DateTime<Utc>,
+    pub sequence: u32,
+}
+
 impl MeetingMessage {
     pub fn new_request(item: &CalendarItem) -> Self {
         Self {
@@ -154,34 +165,24 @@ impl MeetingMessage {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_counter(
-        uid: &str,
-        organizer_email: &str,
-        subject: &str,
-        original_start: DateTime<Utc>,
-        original_end: DateTime<Utc>,
-        proposed_start: DateTime<Utc>,
-        proposed_end: DateTime<Utc>,
-        sequence: u32,
-    ) -> Self {
+    pub fn new_counter(params: &CounterParams) -> Self {
         Self {
             message_type: MeetingMessageType::Counter,
-            uid: uid.to_string(),
-            sequence,
-            organizer_email: organizer_email.to_string(),
+            uid: params.uid.clone(),
+            sequence: params.sequence,
+            organizer_email: params.organizer_email.clone(),
             organizer_name: None,
-            subject: subject.to_string(),
+            subject: params.subject.clone(),
             description: None,
             location: None,
-            start: original_start,
-            end: original_end,
+            start: params.original_start,
+            end: params.original_end,
             timezone: None,
             attendees: Vec::new(),
             dtstamp: Utc::now(),
             response_status: Some(AttendeeStatus::Tentative),
-            proposed_start: Some(proposed_start),
-            proposed_end: Some(proposed_end),
+            proposed_start: Some(params.proposed_start),
+            proposed_end: Some(params.proposed_end),
         }
     }
 }
@@ -480,11 +481,6 @@ impl MeetingMessageGenerator {
             xml_escape(calendar_id)
         )
     }
-}
-
-#[allow(dead_code)]
-fn folded_line(line: &str) -> String {
-    fold_ical_line(line, 75)
 }
 
 pub fn fold_ical_line(line: &str, max_len: usize) -> String {

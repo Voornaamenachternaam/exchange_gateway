@@ -9,6 +9,16 @@ pub struct DelegateManager<'a> {
     storage: PermissionStorage<'a>,
 }
 
+pub struct UpdateDelegateParams<'a> {
+    pub delegator: &'a str,
+    pub delegate_email: &'a str,
+    pub calendar_permission: Option<PermissionLevel>,
+    pub receive_copies: Option<bool>,
+    pub receive_infos: Option<bool>,
+    pub view_private: Option<bool>,
+    pub actor_email: &'a str,
+}
+
 impl<'a> DelegateManager<'a> {
     pub fn new(storage: &'a Storage) -> Self {
         Self {
@@ -68,35 +78,25 @@ impl<'a> DelegateManager<'a> {
         Ok(delegate)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update_delegate(
-        &self,
-        delegator: &str,
-        delegate_email: &str,
-        calendar_permission: Option<PermissionLevel>,
-        receive_copies: Option<bool>,
-        receive_infos: Option<bool>,
-        view_private: Option<bool>,
-        actor_email: &str,
-    ) -> Result<DelegateInfo> {
+    pub async fn update_delegate(&self, params: &UpdateDelegateParams<'_>) -> Result<DelegateInfo> {
         let mut delegate = self
             .storage
-            .get_delegate(delegator, delegate_email)
+            .get_delegate(params.delegator, params.delegate_email)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Delegate not found"))?;
 
         let old_rights = delegate.to_calendar_rights().bits();
 
-        if let Some(level) = calendar_permission {
+        if let Some(level) = params.calendar_permission {
             delegate.set_calendar_permission(level);
         }
-        if let Some(copies) = receive_copies {
+        if let Some(copies) = params.receive_copies {
             delegate.receive_copies = copies;
         }
-        if let Some(infos) = receive_infos {
+        if let Some(infos) = params.receive_infos {
             delegate.receive_infos = infos;
         }
-        if let Some(private) = view_private {
+        if let Some(private) = params.view_private {
             delegate.view_private = private;
         }
         delegate.updated_at = chrono::Utc::now();
@@ -105,9 +105,9 @@ impl<'a> DelegateManager<'a> {
 
         let audit = PermissionAuditEntry::new(
             "calendar".to_string(),
-            delegator.to_string(),
-            actor_email.to_string(),
-            delegate_email.to_string(),
+            params.delegator.to_string(),
+            params.actor_email.to_string(),
+            params.delegate_email.to_string(),
             "update_delegate".to_string(),
             Some(old_rights),
             Some(delegate.to_calendar_rights().bits()),

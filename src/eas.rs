@@ -90,8 +90,7 @@ struct EasRequest {
     collection_id: Option<String>,
     device_id: Option<String>,
     policy_key: Option<String>,
-    #[allow(dead_code)]
-    protocol_version: Option<String>,
+    _protocol_version: Option<String>,
     window_size: Option<usize>,
     get_changes: bool,
     filter_type: Option<u8>,
@@ -101,8 +100,7 @@ struct EasRequest {
 struct CommandGrammar {
     namespace: &'static str,
     required_tags: &'static [&'static str],
-    #[allow(dead_code)]
-    optional_tags: &'static [&'static str],
+    _optional_tags: &'static [&'static str],
 }
 
 fn command_grammar(command: &str) -> Option<CommandGrammar> {
@@ -110,7 +108,7 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "sync" => Some(CommandGrammar {
             namespace: "AirSync:",
             required_tags: &["Collections", "Collection", "SyncKey"],
-            optional_tags: &[
+            _optional_tags: &[
                 "CollectionId",
                 "Class",
                 "Options",
@@ -132,12 +130,12 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "foldersync" => Some(CommandGrammar {
             namespace: "FolderHierarchy:",
             required_tags: &["SyncKey"],
-            optional_tags: &[],
+            _optional_tags: &[],
         }),
         "provision" => Some(CommandGrammar {
             namespace: "Provision:",
             required_tags: &[],
-            optional_tags: &[
+            _optional_tags: &[
                 "Policies",
                 "Policy",
                 "PolicyType",
@@ -149,7 +147,7 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "settings" => Some(CommandGrammar {
             namespace: "Settings:",
             required_tags: &[],
-            optional_tags: &[
+            _optional_tags: &[
                 "UserInformation",
                 "Oof",
                 "DevicePassword",
@@ -159,7 +157,7 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "ping" => Some(CommandGrammar {
             namespace: "Ping:",
             required_tags: &[],
-            optional_tags: &[
+            _optional_tags: &[
                 "HeartbeatInterval",
                 "Folders",
                 "Folder",
@@ -171,7 +169,7 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "itemoperations" => Some(CommandGrammar {
             namespace: "ItemOperations:",
             required_tags: &[],
-            optional_tags: &[
+            _optional_tags: &[
                 "Fetch",
                 "Store",
                 "CollectionId",
@@ -183,27 +181,27 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "search" => Some(CommandGrammar {
             namespace: "Search:",
             required_tags: &[],
-            optional_tags: &["Store", "Name", "Query", "Options", "Range"],
+            _optional_tags: &["Store", "Name", "Query", "Options", "Range"],
         }),
         "meetingresponse" => Some(CommandGrammar {
             namespace: "MeetingResponse:",
             required_tags: &[],
-            optional_tags: &["RequestId", "UserResponse", "InstanceId", "SendResponse"],
+            _optional_tags: &["RequestId", "UserResponse", "InstanceId", "SendResponse"],
         }),
         "resolverecipients" => Some(CommandGrammar {
             namespace: "ResolveRecipients:",
             required_tags: &[],
-            optional_tags: &["To", "Options", "MaxCertificates", "MaxAmbiguousRecipients"],
+            _optional_tags: &["To", "Options", "MaxCertificates", "MaxAmbiguousRecipients"],
         }),
         "validatecert" => Some(CommandGrammar {
             namespace: "ValidateCert:",
             required_tags: &[],
-            optional_tags: &["Certificates", "Certificate", "CertChain"],
+            _optional_tags: &["Certificates", "Certificate", "CertChain"],
         }),
         "getitemestimate" => Some(CommandGrammar {
             namespace: "GetItemEstimate:",
             required_tags: &[],
-            optional_tags: &[
+            _optional_tags: &[
                 "Collections",
                 "Collection",
                 "SyncKey",
@@ -215,12 +213,12 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "moveitems" => Some(CommandGrammar {
             namespace: "Move:",
             required_tags: &[],
-            optional_tags: &["Move", "SrcMsgId", "SrcFldId", "DstFldId"],
+            _optional_tags: &["Move", "SrcMsgId", "SrcFldId", "DstFldId"],
         }),
         "sendmail" | "smartreply" | "smartforward" => Some(CommandGrammar {
             namespace: "ComposeMail:",
             required_tags: &[],
-            optional_tags: &["ClientId", "Subject", "Body", "Mime"],
+            _optional_tags: &["ClientId", "Subject", "Body", "Mime"],
         }),
         _ => None,
     }
@@ -590,7 +588,7 @@ fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap
         collection_id: extract_first_tag_text(xml, b"CollectionId"),
         device_id: value_from_query(query, "DeviceId"),
         policy_key,
-        protocol_version,
+        _protocol_version: protocol_version,
         window_size,
         get_changes,
         filter_type,
@@ -833,20 +831,20 @@ async fn handle_provision(
     .iter()
     .any(|v| v.is_some())
     {
-        let _ = state
-            .storage
-            .upsert_device_info(
-                owner,
-                &device_id,
-                friendly_name.as_deref().unwrap_or(""),
-                model.as_deref().unwrap_or(""),
-                os.as_deref().unwrap_or(""),
-                phone_number.as_deref().unwrap_or(""),
-                imei.as_deref().unwrap_or(""),
-                user_agent.as_deref().unwrap_or(""),
-            )
-            .await;
-    }
+                let _ = state
+                .storage
+                .upsert_device_info(&crate::storage::DeviceInfoParams {
+                    owner,
+                    device_id: &device_id,
+                    friendly_name: friendly_name.as_deref().unwrap_or(""),
+                    model: model.as_deref().unwrap_or(""),
+                    os: os.as_deref().unwrap_or(""),
+                    phone_number: phone_number.as_deref().unwrap_or(""),
+                    imei: imei.as_deref().unwrap_or(""),
+                    user_agent: user_agent.as_deref().unwrap_or(""),
+                })
+                .await;
+        }
     if incoming_key.as_bytes().ct_eq(b"0").into() {
         let server_policy_key = Uuid::new_v4().simple().to_string();
         let _ = state
@@ -1869,20 +1867,20 @@ pub async fn handle(
                     .map(filter_type_to_start)
                     .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
             };
-            match sync::perform_sync(
-                state,
-                &username,
+            match sync::perform_sync(&sync::PerformSyncParams {
+                state: state.clone(),
+                owner: &username,
                 collection_id,
-                &state_collection_id,
-                incoming_key,
-                class,
+                state_collection_id: &state_collection_id,
+                incoming_sync_key: incoming_key,
+                content_class: class,
                 opts,
-                &username,
-                password.expose_secret(),
-                &mutation_responses,
-            )
+                username: &username,
+                password: password.expose_secret(),
+                client_mutation_responses: &mutation_responses,
+            })
             .await
-            {
+        {
                 Ok(resp_xml) => xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id),
                 Err(e) => {
                     tracing::error!("request_id={} Sync Error: {}", request_id, e);
@@ -1937,17 +1935,17 @@ pub async fn handle(
                     .as_deref()
                     .and_then(parse_datetime);
                 let send_response = xml.contains("<SendResponse") || xml.contains(":SendResponse");
-                if let Err(e) = sync::apply_meeting_response(
-                    state.clone(),
-                    &username,
-                    &username,
-                    password.expose_secret(),
-                    &req_id,
-                    user_response,
-                    instance_id,
-                    send_response,
-                )
-                .await
+            if let Err(e) = sync::apply_meeting_response(&sync::MeetingResponseArgs {
+                state: state.clone(),
+                owner: &username,
+                username: &username,
+                password: password.expose_secret(),
+                request_id: &req_id,
+                user_response,
+                instance_id,
+                send_response,
+            })
+            .await
                 {
                     tracing::error!(
                         "request_id={} failed applying MeetingResponse: {}",

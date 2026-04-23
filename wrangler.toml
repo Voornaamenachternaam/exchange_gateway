@@ -19,6 +19,9 @@ SQL_API_ENABLED = "false"
 MAX_FORWARD_BODY_BYTES = "4194304"
 MAX_API_BODY_BYTES = "262144"
 
+# Secrets (set via: wrangler secret put <NAME>)
+# GATEWAY_SECRET - shared secret between the worker and the Rust gateway
+
 [[d1_databases]]
 binding = "EXCHANGE_DB"
 database_name = "exchange_gateway_db"

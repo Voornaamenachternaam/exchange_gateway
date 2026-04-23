@@ -6,3 +6,5 @@ worker_url = "https://exchange.example.com/api"
 worker_secret = "REPLACE_WITH_GATEWAY_SECRET"
 hmac_secret = "REPLACE_WITH_LONG_RANDOM_HEX"
 gateway_host = "exchange.example.com"
+max_attachment_bytes = 5242880
+room_booking_enabled = true
