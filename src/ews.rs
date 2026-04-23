@@ -3112,7 +3112,18 @@ async fn handle_delete_attachment(
             .await;
 
         let response_msg = match result {
-            Ok(Some(root_item_id)) => render_delete_attachment_response_message(&root_item_id, "NoError"),
+        let response_msg = match result {
+            Ok(Some(root_item_id)) => crate::attachment::render_delete_attachment_response_message(&root_item_id, "NoError"),
+            Ok(None) => crate::attachment::render_delete_attachment_response_message("", "ErrorItemNotFound"),
+            Err(e) => {
+                tracing::error!(error = %e, "DeleteAttachment failed");
+                crate::attachment::render_delete_attachment_response_message("", "ErrorDeleteOperationFailed")
+            }
+        };
+        responses.push(response_msg);
+    }
+
+    soap_ok(crate::attachment::render_delete_attachment_response_wrapper(responses))
             Ok(None) => render_delete_attachment_response_message("", "ErrorItemNotFound"),
             Err(e) => {
                 tracing::error!(error = %e, "DeleteAttachment failed");
