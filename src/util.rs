@@ -51,9 +51,12 @@ pub fn nfc(input: &str) -> String {
 /// for RFC-compliant validation.
 pub fn normalize_email(email: &str) -> String {
     let trimmed = email.trim();
-    let stripped = trimmed
-        .strip_prefix("mailto:")
-        .unwrap_or(trimmed.strip_prefix("MAILTO:").unwrap_or(trimmed));
+    let lower = trimmed.to_lowercase();
+    let stripped = if lower.starts_with("mailto:") {
+        &trimmed["mailto:".len()..]
+    } else {
+        trimmed
+    };
     let normalized: String = stripped.nfc().collect::<String>().to_lowercase();
     // Best-effort validation; return normalized even if not strictly valid
     // (some legacy systems emit non-RFC-compliant addresses)
