@@ -213,19 +213,19 @@ fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
     let win_tz = WindowsTimezone::try_from(tz).ok()?;
     let win_name = win_tz.name().to_string();
 
-    // Compute UTC offset (bias) from chrono-tz at a January reference point
+    // Compute UTC offsets at January and July reference points
     // EAS bias convention: positive = west of UTC (minutes behind UTC)
-    let jan = chrono::NaiveDate::from_ymd_opt(2025, 1, 15)?
-        .and_hms_opt(12, 0, 0)?;
-    let jan_dt = jan.and_local_timezone(tz).single()?;
-    let bias = -(jan_dt.offset().fix().local_minus_utc() / 60);
+    let jan = chrono::NaiveDate::from_ymd_opt(2025, 1, 15)?.and_hms_opt(12, 0, 0)?;
+    let jan_dt = jan.and_local_timezone(tz).earliest()?;
+    let jan_offset = jan_dt.offset().fix().local_minus_utc() / 60;
 
-    // Detect DST by comparing January vs July offsets
-    let jul = chrono::NaiveDate::from_ymd_opt(2025, 7, 15)?
-        .and_hms_opt(12, 0, 0)?;
-    let jul_dt = jul.and_local_timezone(tz).single()?;
-    let has_dst = jan_dt.offset().fix().local_minus_utc()
-        != jul_dt.offset().fix().local_minus_utc();
+    let jul = chrono::NaiveDate::from_ymd_opt(2025, 7, 15)?.and_hms_opt(12, 0, 0)?;
+    let jul_dt = jul.and_local_timezone(tz).earliest()?;
+    let jul_offset = jul_dt.offset().fix().local_minus_utc() / 60;
+
+    let has_dst = jan_offset != jul_offset;
+    // Standard time is the one with the smaller offset (e.g. +10 vs +11, -5 vs -4)
+    let bias = -if has_dst { jan_offset.min(jul_offset) } else { jan_offset };
 
     let (std_date, dst_date, dst_bias) = if has_dst {
         dst_rules_for(iana)
