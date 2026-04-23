@@ -194,9 +194,12 @@ fn dst_rules_for(iana: &str) -> ([u8; 16], [u8; 16], i32) {
     if iana.starts_with("Australia/") || iana.starts_with("Pacific/Auckland") {
         return (EU_STD, EU_DST, -60);
     }
-    // South America: EU rule (matches original for America/Santiago)
-    if iana.starts_with("America/Sao_Paulo") || iana.starts_with("America/Santiago") {
+    // South America
+    if iana.starts_with("America/Sao_Paulo") {
         return (NO_DST, NO_DST, -60);
+    }
+    if iana.starts_with("America/Santiago") {
+        return (EU_STD, EU_DST, -60);
     }
     // US/Americas: US DST rules
     if iana.starts_with("America/") || iana.starts_with("Pacific/") {
