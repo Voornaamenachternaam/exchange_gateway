@@ -237,14 +237,7 @@ fn operation_error_response(
 }
 
 fn ews_response(status: StatusCode, xml: String) -> Response {
-    (
-        status,
-        [
-            ("Content-Type", "text/xml; charset=utf-8"),
-        ],
-        xml,
-    )
-        .into_response()
+    (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
 
 pub async fn handle(
@@ -326,15 +319,16 @@ pub async fn handle(
 fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     let auth = headers.get("authorization")?.to_str().ok()?;
     let auth = auth.trim();
-    if !auth.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("basic ")) {
+    if !auth
+        .get(..6)
+        .is_some_and(|s| s.eq_ignore_ascii_case("basic "))
+    {
         return None;
     }
     let b64 = auth[6..].trim();
     let mut decoded = zeroize::Zeroizing::new(Vec::new());
     STANDARD.decode_vec(b64.as_bytes(), decoded.as_mut()).ok()?;
-    let creds = zeroize::Zeroizing::new(
-        std::str::from_utf8(&decoded).ok()?.to_owned(),
-    );
+    let creds = zeroize::Zeroizing::new(std::str::from_utf8(&decoded).ok()?.to_owned());
     let idx = creds.find(':')?;
     let user = creds[..idx].to_string();
     let pass = SecretString::from(creds[idx + 1..].to_string());
@@ -3110,18 +3104,31 @@ async fn handle_delete_attachment(
 
     let mut responses = String::new();
     for id in attachment_ids {
-        match state.attachment_manager.delete_attachment(&owner, &id).await {
+        match state
+            .attachment_manager
+            .delete_attachment(&owner, &id)
+            .await
+        {
             Ok(Some(root_item_id)) => {
                 responses.push_str(&render_delete_attachment_response(&root_item_id));
             }
             Ok(None) => {
-                responses.push_str(&render_attachment_error_response("ErrorItemNotFound", "Attachment not found"));
+                responses.push_str(&render_attachment_error_response(
+                    "ErrorItemNotFound",
+                    "Attachment not found",
+                ));
             }
             Err(e) => {
                 tracing::error!(error = %e, "DeleteAttachment failed");
-                responses.push_str(&render_attachment_error_response("ErrorDeleteOperationFailed", "Internal error"));
+                responses.push_str(&render_attachment_error_response(
+                    "ErrorDeleteOperationFailed",
+                    "Internal error",
+                ));
             }
         }
     }
-    soap_ok(format!("<m:DeleteAttachmentResponse xmlns:m=\"{}\" xmlns:t=\"{}\"><m:ResponseMessages>{}</m:ResponseMessages></m:DeleteAttachmentResponse>", EWS_MSG_NS, EWS_TYPE_NS, responses))
+    soap_ok(format!(
+        "<m:DeleteAttachmentResponse xmlns:m=\"{}\" xmlns:t=\"{}\"><m:ResponseMessages>{}</m:ResponseMessages></m:DeleteAttachmentResponse>",
+        EWS_MSG_NS, EWS_TYPE_NS, responses
+    ))
 }
