@@ -632,6 +632,10 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
     h.insert("X-MS-ProtocolVersion", "16.1".parse().unwrap());
     h.insert("Cache-Control", "private, no-store".parse().unwrap());
     h.insert("Pragma", "no-cache".parse().unwrap());
+    h.insert(
+        "Strict-Transport-Security",
+        "max-age=63072000; includeSubDomains".parse().unwrap(),
+    );
     h.insert("X-Request-Id", request_id.parse().unwrap());
 }
 
@@ -1069,7 +1073,7 @@ async fn handle_ping(
                 r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
                 changed_folders
                     .iter()
-                    .map(|id| format!("<Folder>{}</Folder>", id))
+                    .map(|id| format!("<Folder>{}</Folder>", xml_escape(id)))
                     .collect::<Vec<_>>()
                     .join("")
             );

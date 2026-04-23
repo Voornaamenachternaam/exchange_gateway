@@ -148,6 +148,10 @@ async fn main() -> anyhow::Result<()> {
                 .layer(SetResponseHeaderLayer::overriding(
                     header::CACHE_CONTROL,
                     HeaderValue::from_static("private, no-store, no-cache, max-age=0"),
+                ))
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::HeaderName::from_static("strict-transport-security"),
+                    HeaderValue::from_static("max-age=63072000; includeSubDomains"),
                 )),
         )
         .with_state(app_state);

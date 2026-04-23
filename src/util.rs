@@ -11,6 +11,9 @@ pub fn xml_escape_text(s: &str) -> Cow<'_, str> {
     quick_xml::escape::partial_escape(s)
 }
 
+/// Sanitize a string for use as a URL path segment.
+/// Only alphanumeric, hyphen, underscore, and dot characters are preserved;
+/// all others are replaced with underscore.
 pub fn sanitize_path_segment(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -38,16 +41,49 @@ pub fn truncate_string(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+
 pub fn nfc(input: &str) -> String {
     input.nfc().collect()
 }
 
+/// Normalize an email address: strip `mailto:` prefix (case-insensitive),
+/// apply NFC normalization, and lowercase. Uses the `email_address` crate
+/// for RFC-compliant validation.
 pub fn normalize_email(email: &str) -> String {
     let trimmed = email.trim();
-    let stripped = trimmed
-        .strip_prefix("mailto:")
-        .unwrap_or(trimmed.strip_prefix("MAILTO:").unwrap_or(trimmed));
-    stripped.nfc().collect::<String>().to_lowercase()
+    let lower = trimmed.to_lowercase();
+    let stripped = if lower.starts_with("mailto:") {
+        &trimmed["mailto:".len()..]
+    } else {
+        trimmed
+    };
+    let normalized: String = stripped.nfc().collect::<String>().to_lowercase();
+    // Best-effort validation; return normalized even if not strictly valid
+    // (some legacy systems emit non-RFC-compliant addresses)
+    if !email_address::EmailAddress::is_valid(&normalized) {
+        tracing::debug!(
+            "Normalized email does not pass RFC validation: {}",
+            normalized
+        );
+    }
+    normalized
+}
+
+/// Escape text for iCal (RFC 5545) TEXT values.
+/// Escapes `\`, `;`, `,` and newlines; strips `\r`.
+pub fn escape_ical_text(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + s.len() / 10);
+    for c in s.chars() {
+        match c {
+            '\\' => result.push_str("\\\\"),
+            ';' => result.push_str("\\;"),
+            ',' => result.push_str("\\,"),
+            '\n' => result.push_str("\\n"),
+            '\r' => {}
+            _ => result.push(c),
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -107,5 +143,13 @@ mod tests {
         assert_eq!(normalize_email(nfd_email), "user@\u{00e9}xample.com");
         // Already-normalized ASCII passes through unchanged
         assert_eq!(normalize_email("alice@example.com"), "alice@example.com");
+    }
+
+    #[test]
+    fn test_escape_ical_text() {
+        assert_eq!(escape_ical_text("hello;world"), "hello\\;world");
+        assert_eq!(escape_ical_text("a,b\\c"), "a\\,b\\\\c");
+        assert_eq!(escape_ical_text("line1\nline2"), "line1\\nline2");
+        assert_eq!(escape_ical_text("cr\r\nlf"), "cr\\nlf");
     }
 }
