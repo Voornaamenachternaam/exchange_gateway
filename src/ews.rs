@@ -3092,7 +3092,9 @@ async fn handle_delete_attachment(
     body: &str,
 ) -> Response {
     let owner = crate::util::normalize_email(&auth.username);
+    // Use structured deserialization for the request
     let attachment_ids = parse_delete_attachment_request(body);
+
     if attachment_ids.is_empty() {
         return operation_error_response(
             &EwsAction::DeleteAttachment,
@@ -3102,33 +3104,23 @@ async fn handle_delete_attachment(
         );
     }
 
-    let mut responses = String::new();
-    for id in attachment_ids {
-        match state
+    let mut responses = Vec::new();
+    for item in attachment_ids {
+        let result = state
             .attachment_manager
-            .delete_attachment(&owner, &id)
-            .await
-        {
-            Ok(Some(root_item_id)) => {
-                responses.push_str(&render_delete_attachment_response(&root_item_id));
-            }
-            Ok(None) => {
-                responses.push_str(&render_attachment_error_response(
-                    "ErrorItemNotFound",
-                    "Attachment not found",
-                ));
-            }
+            .delete_attachment(&owner, &item.attachment_id)
+            .await;
+
+        let response_msg = match result {
+            Ok(Some(root_item_id)) => render_delete_attachment_response_message(&root_item_id, "NoError"),
+            Ok(None) => render_delete_attachment_response_message("", "ErrorItemNotFound"),
             Err(e) => {
                 tracing::error!(error = %e, "DeleteAttachment failed");
-                responses.push_str(&render_attachment_error_response(
-                    "ErrorDeleteOperationFailed",
-                    "Internal error",
-                ));
+                render_delete_attachment_response_message("", "ErrorDeleteOperationFailed")
             }
-        }
+        };
+        responses.push(response_msg);
     }
-    soap_ok(format!(
-        "<m:DeleteAttachmentResponse xmlns:m=\"{}\" xmlns:t=\"{}\"><m:ResponseMessages>{}</m:ResponseMessages></m:DeleteAttachmentResponse>",
-        EWS_MSG_NS, EWS_TYPE_NS, responses
-    ))
+
+    soap_ok(render_delete_attachment_response_wrapper(responses))
 }
