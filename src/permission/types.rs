@@ -165,49 +165,28 @@ impl fmt::Display for PermissionRights {
         if self.is_empty() {
             return write!(f, "None");
         }
-        let mut parts: Vec<String> = Vec::new();
-        if self.can_read_any() {
-            parts.push("ReadAny".to_string());
-        }
-        if self.can_create() {
-            parts.push("Create".to_string());
-        }
-        if self.can_edit_owned() {
-            parts.push("EditOwned".to_string());
-        }
-        if self.can_delete_owned() {
-            parts.push("DeleteOwned".to_string());
-        }
-        if self.can_edit_any() {
-            parts.push("EditAny".to_string());
-        }
-        if self.can_delete_any() {
-            parts.push("DeleteAny".to_string());
-        }
-        if self.can_create_subfolder() {
-            parts.push("CreateSubfolder".to_string());
-        }
-        if self.is_folder_owner() {
-            parts.push("FolderOwner".to_string());
-        }
-        if self.is_folder_contact() {
-            parts.push("FolderContact".to_string());
-        }
-        if self.is_folder_visible() {
-            parts.push("FolderVisible".to_string());
-        }
-        if self.can_freebusy_simple() {
-            parts.push("FreeBusySimple".to_string());
-        }
-        if self.can_freebusy_detailed() {
-            parts.push("FreeBusyDetailed".to_string());
-        }
+        let mut parts = Vec::new();
+        if self.can_read_any() { parts.push("ReadAny"); }
+        if self.can_create() { parts.push("Create"); }
+        if self.can_edit_owned() { parts.push("EditOwned"); }
+        if self.can_delete_owned() { parts.push("DeleteOwned"); }
+        if self.can_edit_any() { parts.push("EditAny"); }
+        if self.can_delete_any() { parts.push("DeleteAny"); }
+        if self.can_create_subfolder() { parts.push("CreateSubfolder"); }
+        if self.is_folder_owner() { parts.push("FolderOwner"); }
+        if self.is_folder_contact() { parts.push("FolderContact"); }
+        if self.is_folder_visible() { parts.push("FolderVisible"); }
+        if self.can_freebusy_simple() { parts.push("FreeBusySimple"); }
+        if self.can_freebusy_detailed() { parts.push("FreeBusyDetailed"); }
+
+        let mut res = parts.join("|");
         let known_mask = PermissionRights::all().bits();
         let unknown_bits = self.bits() & !known_mask;
         if unknown_bits != 0 {
-            parts.push(format!("Unknown(0x{:08X})", unknown_bits));
+            if !res.is_empty() { res.push('|'); }
+            res.push_str(&format!("Unknown(0x{:08X})", unknown_bits));
         }
-        write!(f, "{}", parts.join("|"))
+        write!(f, "{}", res)
     }
 }
 
