@@ -54,7 +54,6 @@ bitflags! {
     }
 }
 
-// Serde: serialize as u8, deserialize from u8 — preserves wire format
 impl Serialize for MeetingStateFlags {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_u8(self.bits())

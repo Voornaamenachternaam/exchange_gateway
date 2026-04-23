@@ -8,8 +8,6 @@ pub fn unfold_ical_content(input: &str) -> String {
 pub type PropertyLine = (String, Vec<(String, String)>, String);
 
 pub fn parse_property_line(input: &str) -> Result<PropertyLine, nom::Err<nom::error::Error<&str>>> {
-    // Find the colon that separates name/params from value, respecting quoted strings
-    // iCalendar property format: NAME;PARAM1=VALUE1;PARAM2="VALUE WITH ;":PROPERTY_VALUE
     let colon_pos = find_value_colon(input).ok_or_else(|| {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))
     })?;
@@ -89,7 +87,6 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
                 parsing_value = true;
             }
             ';' if !in_quotes => {
-                // End of parameter
                 if !current_param.is_empty() {
                     params.push((
                         current_param.clone(),
@@ -110,7 +107,6 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
         }
     }
 
-    // Don't forget the last parameter
     if !current_param.is_empty() {
         params.push((current_param, current_value.trim_matches('"').to_string()));
     }

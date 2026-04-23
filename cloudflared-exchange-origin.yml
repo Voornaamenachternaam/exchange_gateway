@@ -1,36 +1,13 @@
 # cloudflared-exchange-origin.yml
-#
-# Additive ingress rule for cloudflared running on the Ubuntu host.
-#
-# IMPORTANT: Your existing cloudflared instance already serves:
-#   https://stalwart.example.com → Stalwart Mailserver webui
-#
-# DO NOT replace your existing config. ADD the exchange-origin rule
-# to your existing ingress list. The full combined config should look
-# like the example below.
-#
-# The gateway container binds to host port 8134 (docker-compose.yml
-# maps 8134:8134). cloudflared runs on the Ubuntu host, not inside
-# Docker, so it reaches the container via localhost:8134 — NOT via
-# the Docker service name "exchange_gateway".
-#
-# After editing, restart cloudflared:
-#   sudo systemctl restart cloudflared
 
 tunnel: REPLACE_WITH_YOUR_TUNNEL_ID
 credentials-file: /home/YOUR_USER/.cloudflared/REPLACE_WITH_YOUR_TUNNEL_ID.json
 
 ingress:
-  # Existing Stalwart Mailserver webui — LEAVE UNCHANGED
   - hostname: stalwart.example.com
     service: http://localhost:8080
 
-  # NEW: Exchange gateway origin
-  # The Cloudflare Worker (exchange-gateway-db) forwards EWS/EAS traffic
-  # to this hostname. Cloudflare resolves it and routes it through the
-  # tunnel to localhost:8134 on this Ubuntu host.
   - hostname: exchange-origin.example.com
     service: http://localhost:8134
 
-  # Required catch-all — must be last
   - service: http_status:404

@@ -90,7 +90,7 @@ struct EasRequest {
     collection_id: Option<String>,
     device_id: Option<String>,
     policy_key: Option<String>,
-    #[allow(dead_code)] // Parsed from MS-ASProtocolVersion header for future protocol negotiation
+    #[allow(dead_code)]
     protocol_version: Option<String>,
     window_size: Option<usize>,
     get_changes: bool,
@@ -102,7 +102,6 @@ struct CommandGrammar {
     namespace: &'static str,
     required_tags: &'static [&'static str],
     #[allow(dead_code)]
-    // Documents allowed optional tags for protocol completeness; validation not currently required
     optional_tags: &'static [&'static str],
 }
 
@@ -1264,7 +1263,6 @@ async fn handle_item_operations(
             continue;
         };
 
-        // Look up the actual owner of the item (for delegate access support)
         let owner = match state.storage.get_ews_item_owner(&server_id).await {
             Ok(Some(o)) => o,
             Ok(None) => {
@@ -1288,7 +1286,6 @@ async fn handle_item_operations(
             }
         };
 
-        // Perform permission check against the actual owner's folder
         let calendar_folder_id = crate::ews_folders::folder_id_for(
             &owner,
             crate::ews_folders::DistinguishedFolder::Calendar,

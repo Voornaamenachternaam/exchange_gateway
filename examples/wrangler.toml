@@ -1,73 +1,41 @@
 # examples/wrangler.toml
-# Complete Cloudflare Worker configuration for the exchange-gateway edge Worker.
-#
-# Deploy instructions:
-#   1. Create the D1 database:
-#      wrangler d1 create exchange-gateway
-#   2. Apply schema:
-#      wrangler d1 execute exchange-gateway --file=d1_schema.sql
-#   3. Create the KV namespace:
-#      wrangler kv namespace create RATE_LIMIT_KV
-#   4. Replace REPLACE_WITH_* placeholders below with real IDs.
-#   5. Deploy:
-#      wrangler deploy
 
 name = "exchange-gateway-edge"
 main = "../worker/index.js"
 compatibility_date = "2026-03-22"
 compatibility_flags = ["nodejs_compat"]
 
-# ── Runtime environment variables ────────────────────────────────────────────
 [vars]
-# Public hostname of the gateway (used in Autodiscover URL construction).
 GATEWAY_HOST = "exchange.mail.example.com"
 
-# Internal origin URL — the Cloudflare Tunnel service URL for the Rust gateway.
-# This is the cloudflared "service" URL (http://...) exposed by your tunnel.
 ORIGIN_BASE_URL = "https://exchange-origin.example.com"
 
-# Rate limiting: max requests per IP per window.
 RATE_LIMIT_ENABLED = "true"
 RATE_LIMIT_MAX = "120"
 RATE_LIMIT_WINDOW_SEC = "60"
 
-# SQL API: set to "true" only for debugging; leave "false" in production.
 SQL_API_ENABLED = "false"
 
-# Body size limits (bytes).
 MAX_FORWARD_BODY_BYTES = "4194304"
 MAX_API_BODY_BYTES = "262144"
 
-# ── D1 database binding ───────────────────────────────────────────────────────
 [[d1_databases]]
 binding = "EXCHANGE_DB"
 database_name = "exchange-gateway"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
-# ── KV namespace binding (rate-limit counters) ────────────────────────────────
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
-# ── Secrets (set via: wrangler secret put GATEWAY_SECRET) ────────────────────
-# GATEWAY_SECRET — shared secret between Worker and Rust gateway.
-# Set with: wrangler secret put GATEWAY_SECRET
 
-# ── Scheduled cron triggers ───────────────────────────────────────────────────
-# Clean up expired idempotency keys once per hour.
 [triggers]
 crons = ["0 * * * *"]
 
-# ── Deployment routes ─────────────────────────────────────────────────────────
-# Map the Worker to the public hostname.
-# Routes are configured in the Cloudflare dashboard for free-tier deployments
-# (Workers Routes or Custom Domain), not via wrangler.toml.
 
-# ── Build configuration ───────────────────────────────────────────────────────
 [build]
 command = ""
 
-# ── Preview / dev environment ─────────────────────────────────────────────────
 [env.preview]
 name = "exchange-gateway-edge-preview"
 

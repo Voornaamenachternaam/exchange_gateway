@@ -73,12 +73,10 @@ fn windows_name_to_iana(name: &str) -> Option<String> {
         return None;
     }
 
-    // First try UTC offset names like "(UTC+02:00) Custom" for better compatibility
     if let Some(tz) = parse_utc_offset_name(n) {
         return Some(tz);
     }
 
-    // Then fall back to Windows timezone name resolution
     find_windows_timezone(n).map(|tz| tz.tzdb_id().to_string())
 }
 
@@ -134,7 +132,6 @@ fn parse_utc_offset_name(name: &str) -> Option<String> {
     if !lower.contains("utc") && !lower.contains("gmt") {
         return None;
     }
-    // Scan for ±NN patterns (e.g., +05, -08) in offset names like "(UTC+05:00)"
     let bytes = lower.as_bytes();
     for i in 0..bytes.len().saturating_sub(2) {
         let sign = match bytes[i] {
@@ -145,7 +142,6 @@ fn parse_utc_offset_name(name: &str) -> Option<String> {
         if bytes[i + 1].is_ascii_digit() && bytes[i + 2].is_ascii_digit() {
             let hours: i32 = (bytes[i + 1] - b'0') as i32 * 10 + (bytes[i + 2] - b'0') as i32;
             if (1..=12).contains(&hours) {
-                // Etc/GMT sign convention is inverted per POSIX
                 return Some(format!("Etc/GMT{}{}", sign, hours));
             }
         }
@@ -161,10 +157,7 @@ const NO_DST: [u8; 16] = [0u8; 16];
 
 type TzParams = (i32, String, String, [u8; 16], [u8; 16], i32, i32);
 
-/// Determine DST transition rule set based on IANA timezone region prefix.
-/// Returns (std_date, dst_date, dst_bias).
 fn dst_rules_for(iana: &str) -> ([u8; 16], [u8; 16], i32) {
-    // Timezones with no DST transitions
     let no_dst_zones = [
         "Europe/Moscow",
         "Europe/Istanbul",
@@ -196,47 +189,31 @@ fn dst_rules_for(iana: &str) -> ([u8; 16], [u8; 16], i32) {
     if no_dst_zones.contains(&iana) {
         return (NO_DST, NO_DST, 0);
     }
-    // Australia/Sydney: special case — std_date=NO_DST (original behavior preserved)
     if iana == "Australia/Sydney" {
         return (NO_DST, EU_DST, -60);
     }
-    // Southern Hemisphere (Australia/NZ): EU DST rule, standard transition uses EU_STD
     if iana.starts_with("Australia/") || iana.starts_with("Pacific/Auckland") {
         return (EU_STD, EU_DST, -60);
     }
-    // South America
     if iana.starts_with("America/Sao_Paulo") {
         return (NO_DST, NO_DST, -60);
     }
     if iana.starts_with("America/Santiago") {
         return (EU_STD, EU_DST, -60);
     }
-    // US/Americas: US DST rules
     if iana.starts_with("America/") || iana.starts_with("Pacific/") {
         return (US_STD, US_DST, -60);
     }
-    // Default: EU DST rules (Europe, Asia, Africa, etc.)
     (EU_STD, EU_DST, -60)
 }
 
 fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
     let tz: Tz = iana.parse().ok()?;
 
-    // Map IANA → WindowsTimezone using the windows-timezones crate
     let win_name = match iana {
         "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => "UTC".to_string(),
         _ => WindowsTimezone::try_from(tz).ok()?.name().to_string(),
     };
-
-    // Compute UTC offsets at January and July reference points
-    // EAS bias convention: positive = west of UTC (minutes behind UTC)
-    let jan = chrono::NaiveDate::from_ymd_opt(2025, 1, 15)?.and_hms_opt(12, 0, 0)?;
-    let jan_dt = jan.and_local_timezone(tz).earliest()?;
-    let jan_offset = jan_dt.offset().fix().local_minus_utc() / 60;
-
-    let jul = chrono::NaiveDate::from_ymd_opt(2025, 7, 15)?.and_hms_opt(12, 0, 0)?;
-    let jul_dt = jul.and_local_timezone(tz).earliest()?;
-    let jul_offset = jul_dt.offset().fix().local_minus_utc() / 60;
 
     let offsets: Vec<i32> = (1..=12)
         .filter_map(|month| {

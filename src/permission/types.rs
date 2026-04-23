@@ -22,7 +22,6 @@ bitflags! {
     }
 }
 
-/// Serialized as `u32` bits to preserve wire-format compatibility.
 impl Serialize for PermissionRights {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_u32(self.bits())
@@ -41,17 +40,14 @@ impl PermissionRights {
         Self::empty()
     }
 
-    /// `EDIT_ANY` implies `EDIT_OWNED`.
     pub fn edit_any() -> Self {
         Self::EDIT_ANY | Self::EDIT_OWNED
     }
 
-    /// `DELETE_ANY` implies `DELETE_OWNED`.
     pub fn delete_any() -> Self {
         Self::DELETE_ANY | Self::DELETE_OWNED
     }
 
-    /// Detailed free/busy implies simple free/busy.
     pub fn freebusy_detailed() -> Self {
         Self::FREEBUSY_DETAILED | Self::FREEBUSY_SIMPLE
     }
@@ -278,7 +274,6 @@ impl PermissionLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::None => "None",
-            // EWS uses FreeBusyTimeOnly for this permission level
             Self::FreeBusy => "FreeBusyTimeOnly",
             Self::Reviewer => "Reviewer",
             Self::Contributor => "Contributor",

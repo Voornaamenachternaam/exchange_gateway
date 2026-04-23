@@ -395,11 +395,9 @@ fn unescape_ical_text(input: &str) -> String {
 
 #[must_use]
 pub fn parse_ics_content(ics: &str) -> Vec<(String, String)> {
-    // Use nom parser for better performance
     match ical_parser::parse_property_lines(&ical_parser::unfold_ical_content(ics)) {
         Ok(properties) => properties,
         Err(_) => {
-            // Fallback to legacy parsing if nom parser fails
             let unfolded = ical_parser::unfold_ical_content(ics);
             let mut properties = Vec::new();
             for line in unfolded.lines() {

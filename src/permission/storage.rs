@@ -5,11 +5,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
-    // Try RFC3339 first (in case format changes)
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return dt.with_timezone(&chrono::Utc);
     }
-    // Try SQLite's default format: "YYYY-MM-DD HH:MM:SS"
     match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         Ok(dt) => chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc),
         Err(e) => {
@@ -35,8 +33,6 @@ pub struct PermissionRow {
 
 impl From<PermissionRow> for CalendarPermission {
     fn from(row: PermissionRow) -> Self {
-        // Cast i32 to u32 safely - negative values are invalid but won't panic
-        // They represent corrupted data from direct DB manipulation
         let rights = if row.rights >= 0 {
             row.rights as u32
         } else {
@@ -120,7 +116,6 @@ pub struct AuditRow {
 
 impl From<AuditRow> for PermissionAuditEntry {
     fn from(row: AuditRow) -> Self {
-        // Safely cast i32 to u32, treating negative values as 0
         fn safe_i32_to_u32(v: i32) -> u32 {
             if v >= 0 { v as u32 } else { 0 }
         }

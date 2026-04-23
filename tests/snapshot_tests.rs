@@ -1,12 +1,7 @@
 // tests/snapshot_tests.rs
-//! Snapshot tests for protocol responses using insta.
-//!
-//! These tests capture protocol response structures to ensure
-//! backwards compatibility and catch unintended changes.
 
 use insta::assert_snapshot;
 
-/// Test EWS GetFolder response format for calendar folder
 #[test]
 fn test_ews_getfolder_calendar_response() {
     // Simulate a typical GetFolder response for calendar
@@ -37,7 +32,6 @@ fn test_ews_getfolder_calendar_response() {
     assert_snapshot!(response);
 }
 
-/// Test EWS SyncFolderItems response format
 #[test]
 fn test_ews_syncfolderitems_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -71,7 +65,6 @@ fn test_ews_syncfolderitems_response() {
     assert_snapshot!(response);
 }
 
-/// Test EWS CreateItem response format for calendar
 #[test]
 fn test_ews_createitem_calendar_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -98,7 +91,6 @@ fn test_ews_createitem_calendar_response() {
     assert_snapshot!(response);
 }
 
-/// Test EAS Sync response format for calendar
 #[test]
 fn test_eas_sync_calendar_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -129,7 +121,6 @@ fn test_eas_sync_calendar_response() {
     assert_snapshot!(response);
 }
 
-/// Test EAS FolderSync response format
 #[test]
 fn test_eas_foldersync_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -149,7 +140,6 @@ fn test_eas_foldersync_response() {
     assert_snapshot!(response);
 }
 
-/// Test EAS Provision response format
 #[test]
 fn test_eas_provision_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -172,7 +162,6 @@ fn test_eas_provision_response() {
     assert_snapshot!(response);
 }
 
-/// Test EAS Ping response format
 #[test]
 fn test_eas_ping_response() {
     // Ping response with changes detected
@@ -190,7 +179,6 @@ fn test_eas_ping_response() {
     assert_snapshot!(response);
 }
 
-/// Test Autodiscover XML response format
 #[test]
 fn test_autodiscover_xml_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -215,7 +203,6 @@ fn test_autodiscover_xml_response() {
     assert_snapshot!(response);
 }
 
-/// Test Autodiscover JSON response format
 #[test]
 fn test_autodiscover_json_response() {
     let response = r#"{"Protocol":"Exchange","Url":"https://mail.example.com/EWS/Exchange.asmx","EwsUrl":"https://mail.example.com/EWS/Exchange.asmx","ExternalEwsUrl":"https://mail.example.com/EWS/Exchange.asmx","InternalEwsUrl":"https://mail.example.com/EWS/Exchange.asmx","ActiveSyncUrl":"https://mail.example.com/Microsoft-Server-ActiveSync","MobileSyncUrl":"https://mail.example.com/Microsoft-Server-ActiveSync","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}"#;
@@ -223,7 +210,6 @@ fn test_autodiscover_json_response() {
     assert_snapshot!(response);
 }
 
-/// Test error response format - EWS
 #[test]
 fn test_ews_error_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -247,7 +233,6 @@ fn test_ews_error_response() {
     assert_snapshot!(response);
 }
 
-/// Test error response format - EAS
 #[test]
 fn test_eas_error_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>

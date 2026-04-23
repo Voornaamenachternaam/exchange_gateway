@@ -3,7 +3,7 @@
 ## Build & Test
 ```bash
 cargo check          # Compile (Rust 1.95.0, edition 2024)
-cargo test           # 69 unit + integration + snapshot tests
+cargo test           # 70 unit + integration + snapshot tests
 cargo clippy         # Lint (0 warnings — clean)
 cargo build --release # Production build
 ```

@@ -100,23 +100,23 @@ impl RoomManager {
         Self { storage }
     }
 
-    pub async fn get_room_lists(&self) -> Result<Vec<RoomList>> {
-        let recs = self.storage.get_room_lists().await?;
+    pub async fn get_room_lists(&self, owner: &str) -> Result<Vec<RoomList>> {
+        let recs = self.storage.get_room_lists(owner).await?;
         Ok(recs.iter().map(RoomList::from_record).collect())
     }
 
-    pub async fn get_rooms_for_list(&self, room_list_email: &str) -> Result<Vec<Room>> {
-        let recs = self.storage.get_rooms_for_list(room_list_email).await?;
+    pub async fn get_rooms_for_list(&self, owner: &str, room_list_email: &str) -> Result<Vec<Room>> {
+        let recs = self.storage.get_rooms_for_list(owner, room_list_email).await?;
         Ok(recs.iter().map(Room::from_record).collect())
     }
 
-    pub async fn get_all_rooms(&self) -> Result<Vec<Room>> {
-        let recs = self.storage.get_all_rooms().await?;
+    pub async fn get_all_rooms(&self, owner: &str) -> Result<Vec<Room>> {
+        let recs = self.storage.get_all_rooms(owner).await?;
         Ok(recs.iter().map(Room::from_record).collect())
     }
 
-    pub async fn add_room_list(&self, email: &str, name: &str) -> Result<RoomList> {
-        let existing = self.storage.get_room_lists().await?;
+    pub async fn add_room_list(&self, owner: &str, email: &str, name: &str) -> Result<RoomList> {
+        let existing = self.storage.get_room_lists(owner).await?;
         let id = existing
             .iter()
             .find(|r| r.email == email)
@@ -136,12 +136,13 @@ impl RoomManager {
 
     pub async fn add_room(
         &self,
+        owner: &str,
         email: &str,
         name: &str,
         room_list_email: Option<&str>,
         capacity: i32,
     ) -> Result<Room> {
-        let existing = self.storage.get_all_rooms().await?;
+        let existing = self.storage.get_all_rooms(owner).await?;
         let id = existing
             .iter()
             .find(|r| r.email == email)
@@ -160,12 +161,12 @@ impl RoomManager {
         Ok(room)
     }
 
-    pub async fn remove_room_list(&self, email: &str) -> Result<()> {
-        self.storage.delete_room_list(email).await
+    pub async fn remove_room_list(&self, owner: &str, email: &str) -> Result<()> {
+        self.storage.delete_room_list(owner, email).await
     }
 
-    pub async fn remove_room(&self, email: &str) -> Result<()> {
-        self.storage.delete_room(email).await
+    pub async fn remove_room(&self, owner: &str, email: &str) -> Result<()> {
+        self.storage.delete_room(owner, email).await
     }
 }
 

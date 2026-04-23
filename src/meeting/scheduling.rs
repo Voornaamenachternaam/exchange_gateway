@@ -108,7 +108,6 @@ pub fn escape_ical_param(s: &str) -> String {
         .replace(':', "\\:")
         .replace(',', "\\,")
         .replace('"', "\\'");
-    // Quote if contains special chars or spaces
     if escaped
         .chars()
         .any(|c| c == ';' || c == ':' || c == ',' || c == ' ' || c == '"' || c == '\\' || c == '\n')
@@ -129,7 +128,6 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
     let mut responding_attendee_email: Option<String> = None;
     let mut responding_partstat: Option<String> = None;
 
-    // First pass: extract UID, SEQUENCE, and ORGANIZER
     for (key, value) in event_props {
         let key_upper = key.to_uppercase();
         if key_upper.starts_with("UID") {
@@ -142,22 +140,18 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         }
     }
 
-    // UID is required
     let uid = uid?;
 
-    // Second pass: find the first ATTENDEE that is not the organizer
     for (key, value) in event_props {
         if key.starts_with("ATTENDEE") {
             let email = normalize_email(value);
 
-            // Skip if this attendee is the organizer
             if let Some(ref org_email) = organizer_email
                 && email == *org_email
             {
                 continue;
             }
 
-            // Extract partstat from the key
             let partstat = key
                 .split(';')
                 .find_map(|p| {
@@ -179,7 +173,6 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         }
     }
 
-    // Attendee email is required
     let attendee_email = responding_attendee_email?;
 
     let attendee_status = match responding_partstat.as_deref() {
