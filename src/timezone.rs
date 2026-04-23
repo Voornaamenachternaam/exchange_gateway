@@ -226,9 +226,17 @@ fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
     let jul_dt = jul.and_local_timezone(tz).earliest()?;
     let jul_offset = jul_dt.offset().fix().local_minus_utc() / 60;
 
-    let has_dst = jan_offset != jul_offset;
-    // Standard time is the one with the smaller offset (e.g. +10 vs +11, -5 vs -4)
-    let bias = -if has_dst { jan_offset.min(jul_offset) } else { jan_offset };
+    let offsets: Vec<i32> = (1..=12)
+        .filter_map(|month| {
+            chrono::NaiveDate::from_ymd_opt(2025, month, 15)
+                .and_then(|d| d.and_hms_opt(12, 0, 0))
+                .and_then(|dt| dt.and_local_timezone(tz).earliest())
+                .map(|dt| dt.offset().fix().local_minus_utc() / 60)
+        })
+        .collect();
+    let standard_offset = *offsets.iter().min()?;
+    let has_dst = offsets.iter().any(|&offset| offset != standard_offset);
+    let bias = -standard_offset;
 
     let (std_date, dst_date, dst_bias) = if has_dst {
         dst_rules_for(iana)
