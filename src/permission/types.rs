@@ -22,7 +22,7 @@ bitflags! {
     }
 }
 
-// Serde: serialize as u32, deserialize from u32 — preserves wire format compatibility
+/// Serialized as `u32` bits to preserve wire-format compatibility.
 impl Serialize for PermissionRights {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_u32(self.bits())
@@ -37,60 +37,45 @@ impl<'de> Deserialize<'de> for PermissionRights {
 }
 
 impl PermissionRights {
-    // Named single-flag constructors
-    pub fn read_any() -> Self {
-        Self::READ_ANY
+    pub fn none() -> Self {
+        Self::empty()
     }
-    pub fn create() -> Self {
-        Self::CREATE
-    }
-    pub fn edit_owned() -> Self {
-        Self::EDIT_OWNED
-    }
-    pub fn delete_owned() -> Self {
-        Self::DELETE_OWNED
-    }
+
+    /// `EDIT_ANY` implies `EDIT_OWNED`.
     pub fn edit_any() -> Self {
         Self::EDIT_ANY | Self::EDIT_OWNED
     }
+
+    /// `DELETE_ANY` implies `DELETE_OWNED`.
     pub fn delete_any() -> Self {
         Self::DELETE_ANY | Self::DELETE_OWNED
     }
-    pub fn folder_owner() -> Self {
-        Self::FOLDER_OWNER | Self::FOLDER_VISIBLE
-    }
-    pub fn folder_contact() -> Self {
-        Self::FOLDER_CONTACT
-    }
-    pub fn folder_visible() -> Self {
-        Self::FOLDER_VISIBLE
-    }
-    pub fn freebusy_simple() -> Self {
-        Self::FREEBUSY_SIMPLE
-    }
+
+    /// Detailed free/busy implies simple free/busy.
     pub fn freebusy_detailed() -> Self {
         Self::FREEBUSY_DETAILED | Self::FREEBUSY_SIMPLE
     }
 
-    // Named composite constructors (permission levels)
-    pub fn none() -> Self {
-        Self::empty()
-    }
     pub fn reviewer() -> Self {
         Self::READ_ANY | Self::FOLDER_VISIBLE
     }
+
     pub fn contributor() -> Self {
         Self::CREATE | Self::FOLDER_VISIBLE
     }
+
     pub fn author() -> Self {
         Self::READ_ANY | Self::CREATE | Self::EDIT_OWNED | Self::DELETE_OWNED | Self::FOLDER_VISIBLE
     }
+
     pub fn non_editing_author() -> Self {
         Self::READ_ANY | Self::CREATE | Self::DELETE_OWNED | Self::FOLDER_VISIBLE
     }
+
     pub fn editor() -> Self {
         Self::READ_ANY | Self::CREATE | Self::edit_any() | Self::delete_any() | Self::FOLDER_VISIBLE
     }
+
     pub fn publishing_author() -> Self {
         Self::READ_ANY
             | Self::CREATE
@@ -99,6 +84,7 @@ impl PermissionRights {
             | Self::CREATE_SUBFOLDER
             | Self::FOLDER_VISIBLE
     }
+
     pub fn publishing_editor() -> Self {
         Self::READ_ANY
             | Self::CREATE
@@ -107,6 +93,7 @@ impl PermissionRights {
             | Self::CREATE_SUBFOLDER
             | Self::FOLDER_VISIBLE
     }
+
     pub fn owner() -> Self {
         Self::READ_ANY
             | Self::CREATE
@@ -117,11 +104,11 @@ impl PermissionRights {
             | Self::FOLDER_CONTACT
             | Self::FOLDER_VISIBLE
     }
+
     pub fn freebusy() -> Self {
         Self::FREEBUSY_SIMPLE | Self::FREEBUSY_DETAILED | Self::FOLDER_VISIBLE
     }
 
-    // Convenience predicates (preserving the existing API names)
     pub fn can_read_any(&self) -> bool {
         self.contains(Self::READ_ANY)
     }
@@ -202,11 +189,15 @@ impl fmt::Display for PermissionRights {
         if self.can_freebusy_detailed() {
             parts.push("FreeBusyDetailed");
         }
-        if parts.is_empty() {
-            write!(f, "None")
-        } else {
-            write!(f, "{}", parts.join("|"))
+        let mut res = parts.join("|");
+        let unknown_bits = self.bits() & !Self::all().bits();
+        if unknown_bits != 0 {
+            if !res.is_empty() {
+                res.push('|');
+            }
+            res.push_str(&format!("Unknown(0x{:08X})", unknown_bits));
         }
+        write!(f, "{}", res)
     }
 }
 
@@ -313,7 +304,7 @@ impl FromStr for PermissionLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "none" => Ok(Self::None),
-            "freebusy" | "freebusyonly" => Ok(Self::FreeBusy),
+            "freebusy" | "freebusyonly" | "freebusytimeonly" => Ok(Self::FreeBusy),
             "reviewer" => Ok(Self::Reviewer),
             "contributor" => Ok(Self::Contributor),
             "noneditingauthor" => Ok(Self::NonEditingAuthor),
@@ -330,7 +321,6 @@ impl FromStr for PermissionLevel {
 impl From<u8> for PermissionLevel {
     fn from(value: u8) -> Self {
         match value {
-            0 => Self::None,
             1 => Self::FreeBusy,
             2 => Self::Reviewer,
             3 => Self::Contributor,
@@ -366,43 +356,49 @@ pub struct CalendarPermission {
 }
 
 impl CalendarPermission {
+    fn build(
+        folder_id: String,
+        owner: String,
+        user_email: &str,
+        user_name: Option<&str>,
+        rights: PermissionRights,
+        is_default: bool,
+        is_anonymous: bool,
+    ) -> Self {
+        let now = chrono::Utc::now();
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            folder_id,
+            owner,
+            user_email: user_email.to_string(),
+            user_name: user_name.map(str::to_string),
+            rights: rights.bits(),
+            is_default,
+            is_anonymous,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     pub fn new(
         folder_id: String,
         owner: String,
         user_email: String,
         rights: PermissionRights,
     ) -> Self {
-        let now = chrono::Utc::now();
-        let id = uuid::Uuid::new_v4().to_string();
-        Self {
-            id,
-            folder_id,
-            owner,
-            user_email,
-            user_name: None,
-            rights: rights.bits(),
-            is_default: false,
-            is_anonymous: false,
-            created_at: now,
-            updated_at: now,
-        }
+        Self::build(folder_id, owner, &user_email, None, rights, false, false)
     }
 
     pub fn default_permission(folder_id: String, owner: String, rights: PermissionRights) -> Self {
-        let now = chrono::Utc::now();
-        let id = uuid::Uuid::new_v4().to_string();
-        Self {
-            id,
+        Self::build(
             folder_id,
             owner,
-            user_email: "default".to_string(),
-            user_name: Some("Default".to_string()),
-            rights: rights.bits(),
-            is_default: true,
-            is_anonymous: false,
-            created_at: now,
-            updated_at: now,
-        }
+            "default",
+            Some("Default"),
+            rights,
+            true,
+            false,
+        )
     }
 
     pub fn anonymous_permission(
@@ -410,20 +406,15 @@ impl CalendarPermission {
         owner: String,
         rights: PermissionRights,
     ) -> Self {
-        let now = chrono::Utc::now();
-        let id = uuid::Uuid::new_v4().to_string();
-        Self {
-            id,
+        Self::build(
             folder_id,
             owner,
-            user_email: "anonymous".to_string(),
-            user_name: Some("Anonymous".to_string()),
-            rights: rights.bits(),
-            is_default: false,
-            is_anonymous: true,
-            created_at: now,
-            updated_at: now,
-        }
+            "anonymous",
+            Some("Anonymous"),
+            rights,
+            false,
+            true,
+        )
     }
 
     pub fn rights(&self) -> PermissionRights {
@@ -462,9 +453,8 @@ pub struct DelegateInfo {
 impl DelegateInfo {
     pub fn new(delegator: String, delegate_email: String, delegate_name: Option<String>) -> Self {
         let now = chrono::Utc::now();
-        let id = uuid::Uuid::new_v4().to_string();
         Self {
-            id,
+            id: uuid::Uuid::new_v4().to_string(),
             delegator,
             delegate_email,
             delegate_name,
@@ -564,10 +554,8 @@ impl PermissionAuditEntry {
         old_rights: Option<u32>,
         new_rights: Option<u32>,
     ) -> Self {
-        let now = chrono::Utc::now();
-        let id = uuid::Uuid::new_v4().to_string();
         Self {
-            id,
+            id: uuid::Uuid::new_v4().to_string(),
             folder_id,
             owner,
             actor_email,
@@ -575,7 +563,7 @@ impl PermissionAuditEntry {
             operation,
             old_rights,
             new_rights,
-            created_at: now,
+            created_at: chrono::Utc::now(),
         }
     }
 }
@@ -624,5 +612,12 @@ mod tests {
             delegate.calendar_permission_level(),
             PermissionLevel::Reviewer
         );
+    }
+
+    #[test]
+    fn test_permission_level_fromstr_roundtrip() {
+        let level = PermissionLevel::FreeBusy;
+        let parsed = PermissionLevel::from_str(level.as_str()).unwrap();
+        assert_eq!(level, parsed);
     }
 }
