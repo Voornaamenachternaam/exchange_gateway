@@ -57,7 +57,18 @@ const API_METHODS = {
   '/api/upsert_room': 'POST',
   '/api/get_rooms_for_list': 'GET',
   '/api/get_all_rooms': 'GET',
-  '/api/delete_room': 'POST'
+  '/api/delete_room': 'POST',
+  '/api/upsert_meeting_state': 'POST',
+  '/api/get_meeting_state': 'GET',
+  '/api/delete_meeting_state': 'POST',
+  '/api/upsert_meeting_attendee': 'POST',
+  '/api/get_meeting_attendees': 'GET',
+  '/api/delete_meeting_attendee': 'POST',
+  '/api/delete_meeting_attendees': 'POST',
+  '/api/enqueue_scheduling': 'POST',
+  '/api/get_pending_scheduling': 'GET',
+  '/api/mark_scheduling_processed': 'POST',
+  '/api/get_meetings_by_time_range': 'GET'
 };
 
 export default {
@@ -120,6 +131,28 @@ if (path === '/api/delete_delegate') return handleDeleteDelegate(request, env);
 if (path === '/api/add_permission_audit') return handleAddPermissionAudit(request, env);
 if (path === '/api/get_permission_audit_log') return handleGetPermissionAuditLog(url, request, env);
 
+  if (path === '/api/upsert_calendar_attachment') return handleUpsertCalendarAttachment(request, env);
+  if (path === '/api/get_calendar_attachment') return handleGetCalendarAttachment(url, request, env);
+  if (path === '/api/get_calendar_attachments_for_item') return handleGetCalendarAttachmentsForItem(url, request, env);
+  if (path === '/api/delete_calendar_attachment') return handleDeleteCalendarAttachment(request, env);
+  if (path === '/api/upsert_room_list') return handleUpsertRoomList(request, env);
+  if (path === '/api/get_room_lists') return handleGetRoomLists(url, request, env);
+  if (path === '/api/delete_room_list') return handleDeleteRoomList(request, env);
+  if (path === '/api/upsert_room') return handleUpsertRoom(request, env);
+  if (path === '/api/get_rooms_for_list') return handleGetRoomsForList(url, request, env);
+  if (path === '/api/get_all_rooms') return handleGetAllRooms(url, request, env);
+  if (path === '/api/delete_room') return handleDeleteRoom(request, env);
+  if (path === '/api/upsert_meeting_state') return handleUpsertMeetingState(request, env);
+  if (path === '/api/get_meeting_state') return handleGetMeetingState(url, request, env);
+  if (path === '/api/delete_meeting_state') return handleDeleteMeetingState(request, env);
+  if (path === '/api/upsert_meeting_attendee') return handleUpsertMeetingAttendee(request, env);
+  if (path === '/api/get_meeting_attendees') return handleGetMeetingAttendees(url, request, env);
+  if (path === '/api/delete_meeting_attendee') return handleDeleteMeetingAttendee(request, env);
+  if (path === '/api/delete_meeting_attendees') return handleDeleteMeetingAttendees(request, env);
+  if (path === '/api/enqueue_scheduling') return handleEnqueueScheduling(request, env);
+  if (path === '/api/get_pending_scheduling') return handleGetPendingScheduling(url, request, env);
+  if (path === '/api/mark_scheduling_processed') return handleMarkSchedulingProcessed(request, env);
+  if (path === '/api/get_meetings_by_time_range') return handleGetMeetingsByTimeRange(url, request, env);
     if (path.startsWith('/api/')) {
       return withCors(await handleApiRequest(request, env));
     }
@@ -1375,4 +1408,236 @@ async function handleDeleteRoom(request, env) {
         console.error('Error deleting room:', error);
         return new Response('Internal Server Error', { status: 500 });
     }
+}
+
+// Meeting State API handlers (v5)
+
+async function handleUpsertMeetingState(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleUpsertMeetingState');
+  try {
+    const body = await readJson(request);
+    const {
+      owner = '', uid = '', sequence = 0, state = 'Draft',
+      state_flags = 0, is_organizer = 0,
+      organizer_email = null, organizer_name = null,
+      subject = null, location = null,
+      start_time = '', end_time = '', timezone = null
+    } = body;
+    if (!owner || !uid || !start_time || !end_time) {
+      return new Response('Missing owner/uid/start_time/end_time', { status: 400 });
+    }
+    const sequenceInt = Number(sequence) || 0;
+    const stateFlagsInt = Number(state_flags) || 0;
+    const isOrganizerInt = Number(is_organizer) || 0;
+    await env.EXCHANGE_DB
+      .prepare(`INSERT INTO meeting_state (uid, owner, sequence, state, state_flags, is_organizer, organizer_email, organizer_name, subject, location, start_time, end_time, timezone, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(owner, uid) DO UPDATE SET
+          sequence = excluded.sequence, state = excluded.state, state_flags = excluded.state_flags,
+          is_organizer = excluded.is_organizer, organizer_email = excluded.organizer_email,
+          organizer_name = excluded.organizer_name, subject = excluded.subject,
+          location = excluded.location, start_time = excluded.start_time,
+          end_time = excluded.end_time, timezone = excluded.timezone, updated_at = CURRENT_TIMESTAMP`)
+      .bind(uid, owner, sequenceInt, state, stateFlagsInt, isOrganizerInt,
+        organizer_email, organizer_name, subject, location,
+        start_time, end_time, timezone)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') return new Response('Invalid JSON body', { status: 400 });
+    console.error('Error upserting meeting state:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetMeetingState(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const uid = url.searchParams.get('uid') || '';
+  if (!owner || !uid) return new Response('Missing owner/uid', { status: 400 });
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT uid, owner, sequence, state, state_flags, is_organizer, organizer_email, organizer_name, subject, location, start_time, end_time, timezone, created_at, updated_at, last_sequence_time FROM meeting_state WHERE owner = ? AND uid = ? LIMIT 1')
+    .bind(owner, uid)
+    .first();
+  return Response.json(result || null);
+}
+
+async function handleDeleteMeetingState(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleDeleteMeetingState');
+  try {
+    const body = await readJson(request);
+    const { owner = '', uid = '' } = body;
+    if (!owner || !uid) return new Response('Missing owner/uid', { status: 400 });
+    await env.EXCHANGE_DB
+      .prepare('DELETE FROM meeting_state WHERE owner = ? AND uid = ?')
+      .bind(owner, uid)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') return new Response('Invalid JSON body', { status: 400 });
+    console.error('Error deleting meeting state:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+// Meeting Attendee API handlers (v5)
+
+async function handleUpsertMeetingAttendee(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleUpsertMeetingAttendee');
+  try {
+    const body = await readJson(request);
+    const {
+      owner = '', meeting_uid = '', email = '', name = null,
+      status = 0, role = 1,
+      response_time = null, proposed_start = null, proposed_end = null,
+      sequence = 0
+    } = body;
+    if (!owner || !meeting_uid || !email) {
+      return new Response('Missing owner/meeting_uid/email', { status: 400 });
+    }
+    const statusInt = Number(status) || 0;
+    const roleInt = Number(role) || 1;
+    const sequenceInt = Number(sequence) || 0;
+    await env.EXCHANGE_DB
+      .prepare(`INSERT INTO meeting_attendee (meeting_uid, owner, email, name, status, role, response_time, proposed_start, proposed_end, sequence, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(owner, meeting_uid, email) DO UPDATE SET
+          name = excluded.name, status = excluded.status, role = excluded.role,
+          response_time = excluded.response_time, proposed_start = excluded.proposed_start,
+          proposed_end = excluded.proposed_end, sequence = excluded.sequence, updated_at = CURRENT_TIMESTAMP`)
+      .bind(meeting_uid, owner, email, name, statusInt, roleInt,
+        response_time, proposed_start, proposed_end, sequenceInt)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') return new Response('Invalid JSON body', { status: 400 });
+    console.error('Error upserting meeting attendee:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetMeetingAttendees(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const meeting_uid = url.searchParams.get('meeting_uid') || '';
+  if (!owner || !meeting_uid) return new Response('Missing owner/meeting_uid', { status: 400 });
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT meeting_uid, owner, email, name, status, role, response_time, proposed_start, proposed_end, sequence, created_at, updated_at FROM meeting_attendee WHERE owner = ? AND meeting_uid = ? ORDER BY email ASC')
+    .bind(owner, meeting_uid)
+    .all();
+  return Response.json(result.results || []);
+}
+
+async function handleDeleteMeetingAttendee(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleDeleteMeetingAttendee');
+  try {
+    const body = await readJson(request);
+    const { owner = '', meeting_uid = '', email = '' } = body;
+    if (!owner || !meeting_uid || !email) {
+      return new Response('Missing owner/meeting_uid/email', { status: 400 });
+    }
+    await env.EXCHANGE_DB
+      .prepare('DELETE FROM meeting_attendee WHERE owner = ? AND meeting_uid = ? AND email = ?')
+      .bind(owner, meeting_uid, email)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') return new Response('Invalid JSON body', { status: 400 });
+    console.error('Error deleting meeting attendee:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleDeleteMeetingAttendees(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleDeleteMeetingAttendees');
+  try {
+    const body = await readJson(request);
+    const { owner = '', meeting_uid = '' } = body;
+    if (!owner || !meeting_uid) return new Response('Missing owner/meeting_uid', { status: 400 });
+    await env.EXCHANGE_DB
+      .prepare('DELETE FROM meeting_attendee WHERE owner = ? AND meeting_uid = ?')
+      .bind(owner, meeting_uid)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') return new Response('Invalid JSON body', { status: 400 });
+    console.error('Error deleting meeting attendees:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+// Scheduling Queue API handlers (v5)
+
+async function handleEnqueueScheduling(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleEnqueueScheduling');
+  try {
+    const body = await readJson(request);
+    const { owner = '', meeting_uid = '', operation = '', sequence = 0, ical_data = '' } = body;
+    if (!owner || !meeting_uid || !operation) {
+      return new Response('Missing owner/meeting_uid/operation', { status: 400 });
+    }
+    const sequenceInt = Number(sequence) || 0;
+    await env.EXCHANGE_DB
+      .prepare(`INSERT INTO meeting_scheduling_queue (meeting_uid, owner, operation, sequence, ical_data, status, attempts, created_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP)`)
+      .bind(meeting_uid, owner, operation, sequenceInt, ical_data)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') return new Response('Invalid JSON body', { status: 400 });
+    console.error('Error enqueuing scheduling:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetPendingScheduling(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const limit = Number(url.searchParams.get('limit')) || 10;
+  if (!owner) return new Response('Missing owner', { status: 400 });
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT id, meeting_uid, owner, operation, sequence, ical_data, status, attempts, last_attempt, error_message, created_at, processed_at FROM meeting_scheduling_queue WHERE owner = ? AND status = ? ORDER BY id ASC LIMIT ?')
+    .bind(owner, 'pending', Math.min(limit, 100))
+    .all();
+  return Response.json(result.results || []);
+}
+
+async function handleMarkSchedulingProcessed(request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  await checkIdempotency(request, env, 'handleMarkSchedulingProcessed');
+  try {
+    const body = await readJson(request);
+    const { id = 0, status = 'processed', error_message = null } = body;
+    if (!id) return new Response('Missing id', { status: 400 });
+    const idInt = Number(id) || 0;
+    const attempts = 1;
+    await env.EXCHANGE_DB
+      .prepare(`UPDATE meeting_scheduling_queue SET status = ?, error_message = ?, attempts = attempts + ?, last_attempt = CURRENT_TIMESTAMP, processed_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(status, error_message, attempts, idInt)
+      .run();
+    return Response.json({ success: true });
+  } catch (error) {
+    if (error.message === 'Invalid JSON') return new Response('Invalid JSON body', { status: 400 });
+    console.error('Error marking scheduling processed:', error);
+    return new Response('Internal Server Error', { status: 500 });
+  }
+}
+
+async function handleGetMeetingsByTimeRange(url, request, env) {
+  if (!isAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
+  const owner = url.searchParams.get('owner') || '';
+  const start = url.searchParams.get('start') || '';
+  const end = url.searchParams.get('end') || '';
+  if (!owner || !start || !end) return new Response('Missing owner/start/end', { status: 400 });
+  const result = await env.EXCHANGE_DB
+    .prepare('SELECT uid, owner, sequence, state, state_flags, is_organizer, organizer_email, organizer_name, subject, location, start_time, end_time, timezone, created_at, updated_at, last_sequence_time FROM meeting_state WHERE owner = ? AND start_time >= ? AND end_time <= ? ORDER BY start_time ASC')
+    .bind(owner, start, end)
+    .all();
+  return Response.json(result.results || []);
 }

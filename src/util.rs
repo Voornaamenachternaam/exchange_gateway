@@ -11,9 +11,6 @@ pub fn xml_escape_text(s: &str) -> Cow<'_, str> {
     quick_xml::escape::partial_escape(s)
 }
 
-/// Sanitize a string for use as a URL path segment.
-/// Only alphanumeric, hyphen, underscore, and dot characters are preserved;
-/// all others are replaced with underscore.
 pub fn sanitize_path_segment(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -30,7 +27,6 @@ pub fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        // Use char_indices to safely handle multi-byte UTF-8 characters
         let target_len = max_len.saturating_sub(3);
         let end = s
             .char_indices()
@@ -46,9 +42,6 @@ pub fn nfc(input: &str) -> String {
     input.nfc().collect()
 }
 
-/// Normalize an email address: strip `mailto:` prefix (case-insensitive),
-/// apply NFC normalization, and lowercase. Uses the `email_address` crate
-/// for RFC-compliant validation.
 pub fn normalize_email(email: &str) -> String {
     let trimmed = email.trim();
     let lower = trimmed.to_lowercase();
@@ -58,8 +51,6 @@ pub fn normalize_email(email: &str) -> String {
         trimmed
     };
     let normalized: String = stripped.nfc().collect::<String>().to_lowercase();
-    // Best-effort validation; return normalized even if not strictly valid
-    // (some legacy systems emit non-RFC-compliant addresses)
     if !email_address::EmailAddress::is_valid(&normalized) {
         tracing::debug!(
             "Normalized email does not pass RFC validation: {}",
@@ -69,8 +60,6 @@ pub fn normalize_email(email: &str) -> String {
     normalized
 }
 
-/// Escape text for iCal (RFC 5545) TEXT values.
-/// Escapes `\`, `;`, `,` and newlines; strips `\r`.
 pub fn escape_ical_text(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + s.len() / 10);
     for c in s.chars() {
@@ -116,20 +105,16 @@ mod tests {
     }
     #[test]
     fn test_nfc_normalization() {
-        // \u{00e9} = NFC (precomposed é)
-        // \u{0065}\u{0301} = NFD (e + combining acute accent)
         let nfc_e: String = "\u{00e9}".nfc().collect();
         let nfd_e: String = "\u{0065}\u{0301}".nfd().collect();
-        assert_eq!(nfc_e.len(), 2); // NFC: single precomposed char in UTF-8
-        assert_eq!(nfd_e.len(), 3); // NFD: base + combining accent
+        assert_eq!(nfc_e.len(), 2);
+        assert_eq!(nfd_e.len(), 3);
         assert_eq!(super::nfc(&nfd_e), nfc_e);
     }
 
     #[test]
     fn test_normalize_email() {
-        // Lowercases
         assert_eq!(normalize_email("User@Example.COM"), "user@example.com");
-        // Strips mailto: prefix (case-insensitive)
         assert_eq!(
             normalize_email("mailto:User@Example.COM"),
             "user@example.com"
@@ -138,10 +123,8 @@ mod tests {
             normalize_email("MAILTO:User@Example.COM"),
             "user@example.com"
         );
-        // NFC-normalizes decomposed form (NFD \u{0065}\u{0301} = e + combining acute)
         let nfd_email = "user@\u{0065}\u{0301}xample.com";
         assert_eq!(normalize_email(nfd_email), "user@\u{00e9}xample.com");
-        // Already-normalized ASCII passes through unchanged
         assert_eq!(normalize_email("alice@example.com"), "alice@example.com");
     }
 

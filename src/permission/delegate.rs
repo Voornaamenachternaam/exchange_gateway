@@ -246,25 +246,16 @@ impl<'a> DelegateManager<'a> {
     }
 
     fn permission_level_to_delegate_permission_xml(level: PermissionLevel) -> &'static str {
-        // Per [MS-OXODLGT], EWS DelegatePermissions only supports:
-        // None, Reviewer, Author, Editor
-        // Map other levels to the closest supported value
         match level {
             PermissionLevel::None => "None",
-            // FreeBusy is not a valid DelegatePermissionLevel, map to None
-            // (delegate would need folder-level permission for free/busy)
             PermissionLevel::FreeBusy => "None",
             PermissionLevel::Reviewer => "Reviewer",
-            // Contributor/NonEditingAuthor are not valid delegate permission levels
-            // Map to Author as the closest equivalent
             PermissionLevel::Contributor => "Author",
             PermissionLevel::NonEditingAuthor => "Author",
             PermissionLevel::Author => "Author",
             PermissionLevel::PublishingAuthor => "Author",
             PermissionLevel::Editor => "Editor",
             PermissionLevel::PublishingEditor => "Editor",
-            // Owner is not a valid DelegatePermissionLevel
-            // Map to Editor as the highest available permission
             PermissionLevel::Owner => "Editor",
         }
     }

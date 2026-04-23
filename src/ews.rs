@@ -1,7 +1,7 @@
 // src/ews.rs
 use crate::attachment::{
     parse_create_attachment_request, parse_delete_attachment_request, parse_get_attachment_request,
-    render_create_attachment_response, render_delete_attachment_response,
+    render_create_attachment_response,
     render_file_attachment_xml, render_get_attachment_response,
 };
 use crate::caldav::CaldavClient;
@@ -195,7 +195,6 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
         return Err("Missing EWS messages namespace");
     }
 
-    // Use const fn for compile-time optimization
     if action.requires_mime_validation() && xml.contains("IncludeMimeContent") {
         return Err("This operation does not support IncludeMimeContent");
     }
@@ -209,7 +208,6 @@ fn operation_error_response(
     message: &str,
     status: StatusCode,
 ) -> Response {
-    // Use const fn method for response message name
     let resp_msg = action.response_message_name();
     let inner = format!(
         r#"<m:{resp_msg} ResponseClass="Error" xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:{resp_msg}>"#,
@@ -294,8 +292,8 @@ pub async fn handle(
         EwsAction::FindPeople => handle_find_people(&auth, &body).await,
         EwsAction::GetConversationItems => handle_get_conversation_items().await,
         EwsAction::ConvertId => handle_convert_id(&auth, &body).await,
-        EwsAction::GetRoomLists => handle_get_room_lists(&state).await,
-        EwsAction::GetRooms => handle_get_rooms(&state, &body).await,
+        EwsAction::GetRoomLists => handle_get_room_lists(&state, &auth).await,
+        EwsAction::GetRooms => handle_get_rooms(&state, &auth, &body).await,
         EwsAction::GetDelegate => handle_get_delegate(&state, &auth).await,
         EwsAction::AddDelegate => handle_add_delegate(&state, &auth, &body).await,
         EwsAction::RemoveDelegate => handle_remove_delegate(&state, &auth, &body).await,
@@ -1667,7 +1665,6 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 }
 
 async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
-    // First extract the item ID
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
     if item_id.is_empty() {
         return operation_error_response(
@@ -1678,7 +1675,6 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         );
     }
 
-    // Look up the actual owner of the item (for delegate access support)
     let owner = match state.storage.get_ews_item_owner(&item_id).await {
         Ok(Some(o)) => o,
         Ok(None) => {
@@ -1700,7 +1696,6 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         }
     };
 
-    // Now perform permission check against the actual owner's folder
     let calendar_folder_id = folder_id_for(&owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
     let perm_ctx = PermissionContext::new(
@@ -2034,7 +2029,6 @@ async fn handle_unsubscribe(_auth: &AuthContext, _body: &str) -> Response {
 async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
 
-    // Permission check must run BEFORE folder validation
     let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
     let perm_ctx = PermissionContext::new(
@@ -2791,9 +2785,10 @@ async fn handle_convert_id(auth: &AuthContext, _body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_get_room_lists(state: &Arc<AppState>) -> Response {
+async fn handle_get_room_lists(state: &Arc<AppState>, auth: &AuthContext) -> Response {
     let room_manager = &state.room_manager;
-    match room_manager.get_room_lists().await {
+    let owner = crate::util::normalize_email(&auth.username);
+    match room_manager.get_room_lists(&owner).await {
         Ok(room_lists) => {
             let inner = render_get_room_lists_response(&room_lists);
             soap_ok(inner)
@@ -2810,12 +2805,13 @@ async fn handle_get_room_lists(state: &Arc<AppState>) -> Response {
     }
 }
 
-async fn handle_get_rooms(state: &Arc<AppState>, body: &str) -> Response {
+async fn handle_get_rooms(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let room_manager = &state.room_manager;
+    let owner = crate::util::normalize_email(&auth.username);
     let rooms = if let Some(room_list_email) = parse_get_rooms_request(body) {
-        room_manager.get_rooms_for_list(&room_list_email).await
+        room_manager.get_rooms_for_list(&owner, &room_list_email).await
     } else {
-        room_manager.get_all_rooms().await
+        room_manager.get_all_rooms(&owner).await
     };
     match rooms {
         Ok(rooms) => {
@@ -3092,46 +3088,37 @@ async fn handle_delete_attachment(
     body: &str,
 ) -> Response {
     let owner = crate::util::normalize_email(&auth.username);
-    // Use structured deserialization for the request
-    let attachment_ids = parse_delete_attachment_request(body);
-
-    if attachment_ids.is_empty() {
+    let Some(parsed) = parse_delete_attachment_request(body) else {
         return operation_error_response(
             &EwsAction::DeleteAttachment,
             "ErrorInvalidRequest",
             "Could not parse DeleteAttachment request",
             StatusCode::BAD_REQUEST,
         );
+    };
+    match state
+        .attachment_manager
+        .delete_attachment(&owner, &parsed.attachment_id)
+        .await
+    {
+        Ok(Some(root_item_id)) => {
+            let inner = crate::attachment::render_delete_attachment_response(&root_item_id);
+            soap_ok(inner)
+        }
+        Ok(None) => operation_error_response(
+            &EwsAction::DeleteAttachment,
+            "ErrorItemNotFound",
+            "Attachment not found",
+            StatusCode::NOT_FOUND,
+        ),
+        Err(e) => {
+            tracing::error!(error = %e, "DeleteAttachment failed");
+            operation_error_response(
+                &EwsAction::DeleteAttachment,
+                "ErrorDeleteOperationFailed",
+                "An internal error occurred while deleting the attachment",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
     }
-
-    let mut responses = Vec::new();
-    for item in attachment_ids {
-        let result = state
-            .attachment_manager
-            .delete_attachment(&owner, &item.attachment_id)
-            .await;
-
-        let response_msg = match result {
-        let response_msg = match result {
-            Ok(Some(root_item_id)) => crate::attachment::render_delete_attachment_response_message(&root_item_id, "NoError"),
-            Ok(None) => crate::attachment::render_delete_attachment_response_message("", "ErrorItemNotFound"),
-            Err(e) => {
-                tracing::error!(error = %e, "DeleteAttachment failed");
-                crate::attachment::render_delete_attachment_response_message("", "ErrorDeleteOperationFailed")
-            }
-        };
-        responses.push(response_msg);
-    }
-
-    soap_ok(crate::attachment::render_delete_attachment_response_wrapper(responses))
-            Ok(None) => render_delete_attachment_response_message("", "ErrorItemNotFound"),
-            Err(e) => {
-                tracing::error!(error = %e, "DeleteAttachment failed");
-                render_delete_attachment_response_message("", "ErrorDeleteOperationFailed")
-            }
-        };
-        responses.push(response_msg);
-    }
-
-    soap_ok(render_delete_attachment_response_wrapper(responses))
 }

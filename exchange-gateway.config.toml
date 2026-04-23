@@ -1,7 +1,6 @@
 # exchange-gateway.config.toml
-# Example configuration file for exchange_gateway.
 
-bind = "0.0.0.0:8134"
+bind = "[::]:8134"
 caldav_base = "http://stalwart:8080/dav/"
 worker_url = "https://exchange.example.com/api"
 worker_secret = "REPLACE_WITH_GATEWAY_SECRET"

@@ -472,7 +472,6 @@ impl Storage {
         self.get_json(&path).await
     }
 
-    // Look up the owner of an item by server_id (for delegate access)
     pub async fn get_ews_item_owner(&self, server_id: &str) -> Result<Option<String>> {
         #[derive(Deserialize)]
         struct OwnerRow {
@@ -1001,6 +1000,43 @@ impl Storage {
             email: &'a str,
         }
         self.post_json("delete_room", &Req { owner, email }).await
+    }
+
+    pub async fn upsert_room(&self, room: &crate::room::RoomRecord) -> Result<()> {
+        #[derive(Serialize)]
+        struct Req<'a> {
+            id: &'a str,
+            room_list_email: Option<&'a str>,
+            email: &'a str,
+            name: &'a str,
+            capacity: i32,
+            is_available: i32,
+        }
+        self.post_json(
+            "upsert_room",
+            &Req {
+                id: &room.id,
+                room_list_email: room.room_list_email.as_deref(),
+                email: &room.email,
+                name: &room.name,
+                capacity: room.capacity,
+                is_available: if room.is_available { 1 } else { 0 },
+            },
+        )
+        .await
+    }
+
+    pub async fn get_rooms_for_list(
+        &self,
+        owner: &str,
+        room_list_email: &str,
+    ) -> Result<Vec<crate::room::RoomRecord>> {
+        let path = format!(
+            "get_rooms_for_list?owner={}&room_list_email={}",
+            urlencoding::encode(owner),
+            urlencoding::encode(room_list_email)
+        );
+        self.get_json(&path).await
     }
 }
 

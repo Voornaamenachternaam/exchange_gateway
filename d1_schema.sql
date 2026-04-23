@@ -1,6 +1,4 @@
 -- d1_schema.sql
--- Cloudflare D1 database schema for exchange_gateway.
--- Apply with: wrangler d1 execute exchange_gateway_db --file=d1_schema.sql
 
 DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS item_map;
@@ -170,8 +168,6 @@ VALUES (3, 'v3: device_info expanded with model, os, phone_number, imei, user_ag
 INSERT INTO schema_version (version, description)
 VALUES (4, 'v4: Added protocol_version, instance_id, meeting_response, calendar_exceptions for protocol 16.1 compatibility');
 
--- Meeting Workflow Tables (v5)
--- Meeting state machine for lifecycle management
 
 CREATE TABLE meeting_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,7 +190,6 @@ CREATE TABLE meeting_state (
     UNIQUE(owner, uid)
 );
 
--- Attendee tracking for meetings
 CREATE TABLE meeting_attendee (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     meeting_uid TEXT NOT NULL,
@@ -212,7 +207,6 @@ CREATE TABLE meeting_attendee (
     UNIQUE(owner, meeting_uid, email)
 );
 
--- Scheduling queue for RFC 6638 CalDAV scheduling
 CREATE TABLE meeting_scheduling_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     meeting_uid TEXT NOT NULL,
@@ -231,7 +225,6 @@ CREATE TABLE meeting_scheduling_queue (
 INSERT INTO schema_version (version, description)
 VALUES (5, 'v5: Meeting workflow - state machine, attendee tracking, RFC 6638 scheduling queue');
 
--- Meeting workflow indexes
 CREATE INDEX idx_meeting_state_owner ON meeting_state(owner);
 CREATE INDEX idx_meeting_state_uid ON meeting_state(uid);
 CREATE INDEX idx_meeting_state_organizer ON meeting_state(owner, organizer_email);
@@ -241,8 +234,6 @@ CREATE INDEX idx_meeting_attendee_email ON meeting_attendee(owner, email);
 CREATE INDEX idx_meeting_scheduling_pending ON meeting_scheduling_queue(owner, status);
 CREATE INDEX idx_meeting_scheduling_uid ON meeting_scheduling_queue(meeting_uid);
 
--- Calendar Permissions Tables (v6)
--- Based on MS-OXCPERM: Exchange Access and Operation Permissions Protocol
 
 CREATE TABLE calendar_permission (
     id TEXT PRIMARY KEY,
@@ -292,7 +283,6 @@ CREATE TABLE permission_audit (
 INSERT INTO schema_version (version, description)
 VALUES (6, 'v6: Calendar permissions, delegate management, and audit trail based on MS-OXCPERM');
 
--- Permission indexes
 CREATE INDEX idx_permission_folder ON calendar_permission(owner, folder_id);
 CREATE INDEX idx_permission_user ON calendar_permission(owner, user_email);
 CREATE INDEX idx_permission_default ON calendar_permission(owner, folder_id, is_default);
@@ -307,8 +297,6 @@ CREATE INDEX idx_permission_audit_actor ON permission_audit(actor_email);
 CREATE INDEX idx_permission_audit_target ON permission_audit(target_email);
 CREATE INDEX idx_permission_audit_time ON permission_audit(owner, created_at);
 
--- Attachment Support Tables (v7)
--- Based on MS-OXWSATT: Attachment Handling Web Service Protocol
 CREATE TABLE calendar_attachment (
     id TEXT PRIMARY KEY,
     parent_item_server_id TEXT NOT NULL,
@@ -332,8 +320,6 @@ CREATE INDEX idx_attachment_id ON calendar_attachment(id);
 
 INSERT INTO schema_version (version, description) VALUES (7, 'v7: Attachment support - CreateAttachment/GetAttachment/DeleteAttachment with base64 content storage');
 
--- Room/Resource Booking Tables (v8)
--- Based on MS-OXWSMTGS and MS-OXWSCORE: Room lists and room mailboxes
 CREATE TABLE room_list (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL,

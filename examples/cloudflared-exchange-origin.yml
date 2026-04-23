@@ -1,5 +1,4 @@
 # examples/cloudflared-exchange-origin.yml
-# Example Cloudflare Tunnel configuration for exchange_gateway origin.
 
 ingress:
   - hostname: exchange-origin.example.com
