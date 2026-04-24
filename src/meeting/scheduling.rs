@@ -157,9 +157,9 @@ pub fn build_cancel_request(ctx: &SchedulingContext, item: &CalendarItem) -> Str
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
     calendar.append_property(Property::new("METHOD", "CANCEL"));
-    calendar.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
 
     let mut event = Event::new();
+    event.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
     event.uid(&ctx.uid);
     event.timestamp(Utc::now());
     event.status(EventStatus::Cancelled);
