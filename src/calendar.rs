@@ -1010,17 +1010,20 @@ pub fn render_ics(item: &CalendarItem) -> String {
             if end_date != effective_start.naive_utc().date() {
                 ex_event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()));
             }
-            "RECURRENCE-ID",
-            exception.exception_start.format("%Y%m%d").to_string(),
-        ));
-        // all_day(date) sets both DTSTART and DTEND to the same date, which
-        // collapses multi-day events. Set DTSTART as a DATE value and append
-        // DTEND separately so multi-day ranges are preserved.
-        ex_event.starts(effective_start.naive_utc().date());
-        let end_date = effective_end.naive_utc().date();
-        if end_date != effective_start.naive_utc().date() {
-            ex_event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()));
-        }
+        if effective_all_day {
+            ex_event.append_property(Property::new(
+                "RECURRENCE-ID",
+                exception.exception_start.format("%Y%m%d").to_string(),
+            ));
+            // all_day(date) sets both DTSTART and DTEND to the same date, which
+            // collapses multi-day events. Set DTSTART as a DATE value and append
+            // DTEND separately so multi-day ranges are preserved.
+            ex_event.starts(effective_start.naive_utc().date());
+            let end_date = effective_end.naive_utc().date();
+            if end_date != effective_start.naive_utc().date() {
+                ex_event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()));
+            }
+        } else if let Some(tzid) = &item.timezone
     } else if let Some(tzid) = &item.timezone
     && let Ok(tz) = tzid.parse::<Tz>()
     {
