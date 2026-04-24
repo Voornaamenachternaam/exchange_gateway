@@ -32,8 +32,8 @@ pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> Strin
     let mut event = Event::new();
     event.uid(&ctx.uid);
     event.timestamp(Utc::now());
-    event.starts(item.start);
     event.ends(item.end);
+    event.starts(item.start);
     if !item.subject.is_empty() {
         event.summary(&item.subject);
     }
