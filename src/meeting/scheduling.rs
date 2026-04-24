@@ -2,8 +2,10 @@
 
 use crate::calendar::CalendarItem;
 use crate::ical_parser;
-use crate::util::{escape_ical_text, normalize_email};
+use crate::meeting::attendee::{AttendeeRole, AttendeeStatus};
+use crate::util::normalize_email;
 use chrono::{DateTime, Utc};
+use icalendar::{Calendar, Component, Event, EventLike, EventStatus, Property};
 
 pub struct SchedulingContext {
     pub organizer_email: String,
@@ -20,102 +22,58 @@ pub struct AttendeeInfo {
     pub status: AttendeeStatus,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttendeeRole {
-    Chair = 0,
-    Required = 1,
-    Optional = 2,
-    NonParticipant = 3,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttendeeStatus {
-    NeedsAction = 0,
-    Accepted = 1,
-    Declined = 2,
-    Tentative = 3,
-    Delegated = 4,
-    Completed = 5,
-    InProcess = 6,
-}
-
+/// Build an iTIP REQUEST using the `icalendar` crate (handles escaping + folding).
 pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("BEGIN:VCALENDAR".to_string());
-    lines.push("VERSION:2.0".to_string());
-    lines.push("PRODID:-//Exchange Gateway//EN".to_string());
-    lines.push("METHOD:REQUEST".to_string());
-    lines.push(format!("SEQUENCE:{}", ctx.sequence));
-    lines.push(build_vevent(ctx, item));
-    lines.push("END:VCALENDAR".to_string());
-    lines.join("\r\n")
-}
+    let mut calendar = Calendar::new();
+    calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
+    calendar.append_property(Property::new("METHOD", "REQUEST"));
 
-fn build_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("BEGIN:VEVENT".to_string());
-    lines.push(format!("UID:{}", ctx.uid));
-    lines.push(format!("DTSTAMP:{}", format_ical_datetime(Utc::now())));
+    let mut event = Event::new();
+    event.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
+    event.uid(&ctx.uid);
+    event.timestamp(Utc::now());
+    event.ends(item.end);
+    event.starts(item.start);
     if !item.subject.is_empty() {
-        lines.push(format!("SUMMARY:{}", escape_ical_text(&item.subject)));
+        event.summary(&item.subject);
     }
     if !item.location.is_empty() {
-        lines.push(format!("LOCATION:{}", escape_ical_text(&item.location)));
+        event.location(&item.location);
     }
-    lines.push(format!("DTSTART:{}", format_ical_datetime(item.start)));
-    lines.push(format!("DTEND:{}", format_ical_datetime(item.end)));
-    lines.push(format!(
-        "ORGANIZER;CN={}:mailto:{}",
-        escape_ical_param(ctx.organizer_name.as_deref().unwrap_or("")),
-        ctx.organizer_email
-    ));
+
+    let mut org_prop = Property::new("ORGANIZER", format!("mailto:{}", ctx.organizer_email));
+    if let Some(name) = &ctx.organizer_name {
+        org_prop.add_parameter("CN", name);
+    }
+    event.append_property(org_prop.done());
+
     for attendee in &ctx.attendees {
-        let role = match attendee.role {
-            AttendeeRole::Chair => "CHAIR",
-            AttendeeRole::Required => "REQ-PARTICIPANT",
-            AttendeeRole::Optional => "OPT-PARTICIPANT",
-            AttendeeRole::NonParticipant => "NON-PARTICIPANT",
+        let ical_role = match attendee.role {
+            AttendeeRole::Required => icalendar::Role::ReqParticipant,
+            AttendeeRole::Optional => icalendar::Role::OptParticipant,
+            AttendeeRole::Resource => icalendar::Role::NonParticipant,
         };
-        let status = match attendee.status {
-            AttendeeStatus::NeedsAction => "NEEDS-ACTION",
-            AttendeeStatus::Accepted => "ACCEPTED",
-            AttendeeStatus::Declined => "DECLINED",
-            AttendeeStatus::Tentative => "TENTATIVE",
-            AttendeeStatus::Delegated => "DELEGATED",
-            AttendeeStatus::Completed => "COMPLETED",
-            AttendeeStatus::InProcess => "IN-PROCESS",
+        let ical_partstat = match attendee.status {
+            AttendeeStatus::Accepted => icalendar::PartStat::Accepted,
+            AttendeeStatus::Declined => icalendar::PartStat::Declined,
+            AttendeeStatus::Tentative => icalendar::PartStat::Tentative,
+            AttendeeStatus::NotResponded | AttendeeStatus::NeedsAction => {
+                icalendar::PartStat::NeedsAction
+            }
         };
-        lines.push(format!(
-            "ATTENDEE;CN={};ROLE={};PARTSTAT={}:mailto:{}",
-            escape_ical_param(attendee.name.as_deref().unwrap_or("")),
-            role,
-            status,
-            attendee.email
-        ));
+        let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", attendee.email))
+            .cn(attendee.name.as_deref().unwrap_or(&attendee.email).to_string())
+            .role(ical_role)
+            .partstat(ical_partstat);
+        event.attendee(cal_attendee);
     }
-    lines.push("END:VEVENT".to_string());
-    lines.join("\r\n")
+
+    calendar.push(event.done());
+    calendar.to_string()
 }
 
 pub fn format_ical_datetime(dt: DateTime<Utc>) -> String {
     dt.format("%Y%m%dT%H%M%SZ").to_string()
-}
-
-pub fn escape_ical_param(s: &str) -> String {
-    let escaped = s
-        .replace('\\', "\\\\")
-        .replace(';', "\\;")
-        .replace(':', "\\:")
-        .replace(',', "\\,")
-        .replace('"', "\\'");
-    if escaped
-        .chars()
-        .any(|c| c == ';' || c == ':' || c == ',' || c == ' ' || c == '"' || c == '\\' || c == '\n')
-    {
-        format!("\"{}\"", escaped)
-    } else {
-        escaped
-    }
 }
 
 pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
@@ -175,13 +133,9 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
     let attendee_email = responding_attendee_email?;
 
-    let attendee_status = match responding_partstat.as_deref() {
-        Some("ACCEPTED") => AttendeeStatus::Accepted,
-        Some("DECLINED") => AttendeeStatus::Declined,
-        Some("TENTATIVE") => AttendeeStatus::Tentative,
-        Some("DELEGATED") => AttendeeStatus::Delegated,
-        _ => AttendeeStatus::NeedsAction,
-    };
+    let attendee_status = AttendeeStatus::from_partstat(
+        responding_partstat.as_deref().unwrap_or("NEEDS-ACTION"),
+    );
 
     Some(ItipResponse {
         uid,
@@ -190,6 +144,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         attendee_status,
     })
 }
+
 pub struct ItipResponse {
     pub uid: String,
     pub sequence: u32,
@@ -197,29 +152,23 @@ pub struct ItipResponse {
     pub attendee_status: AttendeeStatus,
 }
 
+/// Build an iTIP CANCEL using the `icalendar` crate.
 pub fn build_cancel_request(ctx: &SchedulingContext, item: &CalendarItem) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("BEGIN:VCALENDAR".to_string());
-    lines.push("VERSION:2.0".to_string());
-    lines.push("PRODID:-//Exchange Gateway//EN".to_string());
-    lines.push("METHOD:CANCEL".to_string());
-    lines.push(format!("SEQUENCE:{}", ctx.sequence));
-    lines.push(build_cancel_vevent(ctx, item));
-    lines.push("END:VCALENDAR".to_string());
-    lines.join("\r\n")
-}
+    let mut calendar = Calendar::new();
+    calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
+    calendar.append_property(Property::new("METHOD", "CANCEL"));
 
-fn build_cancel_vevent(ctx: &SchedulingContext, item: &CalendarItem) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("BEGIN:VEVENT".to_string());
-    lines.push(format!("UID:{}", ctx.uid));
-    lines.push(format!("DTSTAMP:{}", format_ical_datetime(Utc::now())));
-    lines.push("STATUS:CANCELLED".to_string());
+    let mut event = Event::new();
+    event.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
+    event.uid(&ctx.uid);
+    event.timestamp(Utc::now());
+    event.status(EventStatus::Cancelled);
     if !item.subject.is_empty() {
-        lines.push(format!("SUMMARY:{}", escape_ical_text(&item.subject)));
+        event.summary(&item.subject);
     }
-    lines.push("END:VEVENT".to_string());
-    lines.join("\r\n")
+
+    calendar.push(event.done());
+    calendar.to_string()
 }
 
 #[cfg(test)]
@@ -232,11 +181,5 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(format_ical_datetime(dt), "20240115T103000Z");
-    }
-
-    #[test]
-    fn test_escape_ical_text() {
-        assert_eq!(escape_ical_text("hello;world"), "hello\\;world");
-        assert_eq!(escape_ical_text("a,b\\c"), "a\\,b\\\\c");
     }
 }

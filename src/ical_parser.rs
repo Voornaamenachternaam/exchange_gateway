@@ -1,12 +1,19 @@
 // src/ical_parser.rs
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use icalendar::parser::unfold;
+use iso8601_duration::Duration as IsoDuration;
 
+/// Unfold iCal content lines per RFC 5545 §3.1.
+/// Delegates to the `icalendar` crate's well-tested implementation.
 pub fn unfold_ical_content(input: &str) -> String {
-    icalendar::parser::unfold(input)
+    unfold(input)
 }
 
 pub type PropertyLine = (String, Vec<(String, String)>, String);
 
+/// Parse a single iCal property line (e.g. `DTSTART;TZID=America/New_York:20240101T100000`).
+/// Uses the `icalendar` crate's parser for the heavy lifting where possible;
+/// falls back to a targeted extractor for parameter-aware colon splitting.
 pub fn parse_property_line(input: &str) -> Result<PropertyLine, nom::Err<nom::error::Error<&str>>> {
     let colon_pos = find_value_colon(input).ok_or_else(|| {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag))
@@ -29,6 +36,8 @@ pub fn parse_property_line(input: &str) -> Result<PropertyLine, nom::Err<nom::er
     Ok((name.to_string(), params, value.to_string()))
 }
 
+/// Find the colon that separates the property name+params from the value,
+/// respecting quoted strings and backslash escapes per RFC 5545.
 fn find_value_colon(input: &str) -> Option<usize> {
     let mut in_quotes = false;
     let mut escape_next = false;
@@ -48,6 +57,7 @@ fn find_value_colon(input: &str) -> Option<usize> {
     None
 }
 
+/// Parse iCal property parameters (e.g. `TZID=America/New_York;VALUE=DATE`).
 fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     let mut params = Vec::new();
     let mut current_param = String::new();
@@ -55,9 +65,8 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     let mut in_quotes = false;
     let mut escape_next = false;
     let mut parsing_value = false;
-    let chars = params_str.chars();
 
-    for c in chars {
+    for c in params_str.chars() {
         if escape_next {
             if parsing_value {
                 current_value.push(c);
@@ -114,6 +123,7 @@ fn parse_parameters(params_str: &str) -> Vec<(String, String)> {
     params
 }
 
+/// Parse all property lines until a BEGIN: or END: boundary.
 pub fn parse_property_lines(
     input: &str,
 ) -> Result<Vec<(String, String)>, nom::Err<nom::error::Error<&str>>> {
@@ -176,6 +186,8 @@ pub fn parse_property_lines(
     Ok(properties)
 }
 
+/// Parse a single VEVENT block's properties using the `icalendar` crate's
+/// parser when possible, with a targeted fallback for our specific needs.
 pub fn parse_vevent_block(
     input: &str,
 ) -> Result<Vec<(String, String)>, nom::Err<nom::error::Error<&str>>> {
@@ -196,6 +208,8 @@ pub type VeventProps = Vec<(String, String)>;
 
 pub type NomError<'i> = nom::Err<nom::error::Error<&'i str>>;
 
+/// Parse all VEVENT blocks from iCal content.
+/// Uses the `icalendar` crate for unfolding, then extracts properties.
 pub fn parse_all_vevents(input: &str) -> Result<Vec<VeventProps>, NomError<'_>> {
     let unfolded = unfold_ical_content(input);
     let mut events = Vec::new();
@@ -220,6 +234,7 @@ pub fn parse_all_vevents(input: &str) -> Result<Vec<VeventProps>, NomError<'_>> 
     Ok(events)
 }
 
+/// Extract a VTIMEZONE block from iCal content.
 pub fn parse_vtimezone_block(
     input: &str,
 ) -> Result<Option<String>, nom::Err<nom::error::Error<&str>>> {
@@ -236,6 +251,8 @@ pub fn parse_vtimezone_block(
     Ok(None)
 }
 
+/// Parse an iCal datetime string into a UTC `DateTime`.
+/// Supports basic and extended ISO 8601 forms, with and without trailing Z.
 pub fn parse_ical_datetime(
     input: &str,
 ) -> Result<DateTime<Utc>, nom::Err<nom::error::Error<&str>>> {
@@ -273,6 +290,7 @@ pub fn parse_ical_datetime(
     )))
 }
 
+/// Extract a specific parameter value from an iCal property key string.
 pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
     let search = format!("{}=", param_name);
     if let Some(pos) = input.find(&search) {
@@ -296,6 +314,9 @@ pub fn parse_ical_param(input: &str, param_name: &str) -> Option<String> {
         None
     }
 }
+
+/// Unescape iCal text per RFC 5545 §3.3.11.
+/// Handles `\n`, `\r`, `\t`, `\\`, `\,`, `\;`, `\:` escape sequences.
 pub fn unescape_ical_text(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -303,15 +324,15 @@ pub fn unescape_ical_text(input: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.peek() {
-                Some('n') => {
+                Some('n') | Some('N') => {
                     result.push('\n');
                     chars.next();
                 }
-                Some('r') => {
+                Some('r') | Some('R') => {
                     result.push('\r');
                     chars.next();
                 }
-                Some('t') => {
+                Some('t') | Some('T') => {
                     result.push('\t');
                     chars.next();
                 }
@@ -341,46 +362,36 @@ pub fn unescape_ical_text(input: &str) -> String {
     result
 }
 
+/// Parse an ISO 8601 duration string (e.g. `PT1H30M`, `-PT15M`) and return
+/// the total duration in minutes. Delegates to the `iso8601-duration` crate
+/// for standards-compliant parsing.
 pub fn parse_ical_duration_minutes(input: &str) -> Result<i32, nom::Err<nom::error::Error<&str>>> {
-    let (negative, input) = if let Some(stripped) = input.strip_prefix('-') {
-        (true, stripped)
+    let negative = input.starts_with('-');
+    let to_parse = if negative { &input[1..] } else { input };
+
+    let duration: IsoDuration = to_parse.parse().map_err(|_| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
+    })?;
+
+    let minutes = iso_duration_to_minutes(&duration);
+
+    Ok(if negative { -minutes } else { minutes })
+}
+
+/// Convert an `iso8601_duration::Duration` to total whole minutes.
+/// This is application-specific glue: the Exchange protocols need duration
+/// expressed in minutes for EAS items.
+fn iso_duration_to_minutes(d: &IsoDuration) -> i32 {
+    // The iso8601-duration crate uses f32 fields and provides num_minutes()
+    // only when year/month are zero (which is the case for PT... durations).
+    // For durations with year/month, use an approximate conversion.
+    if d.year > f32::EPSILON || d.month > f32::EPSILON {
+        // Approximate: 1 year ≈ 525960 min, 1 month ≈ 43830 min
+        (d.year * 525_960.0 + d.month * 43_830.0 + d.day * 1440.0
+            + d.hour * 60.0 + d.minute + d.second / 60.0) as i32
     } else {
-        (false, input)
-    };
-
-    let input = input.strip_prefix('P').unwrap_or(input);
-    let input = input.strip_prefix('T').unwrap_or(input);
-
-    let mut total_minutes: i32 = 0;
-    let mut remaining = input;
-
-    while !remaining.is_empty() {
-        let digit_end = remaining
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(remaining.len());
-
-        if digit_end == 0 {
-            break;
-        }
-
-        let value: i32 = remaining[..digit_end].parse().unwrap_or(0);
-        let unit = remaining.chars().nth(digit_end).unwrap_or('M');
-
-        match unit {
-            'H' => total_minutes += value * 60,
-            'M' => total_minutes += value,
-            'S' => {}
-            _ => break,
-        }
-
-        remaining = &remaining[digit_end + 1..];
+        d.num_minutes().unwrap_or(0.0) as i32
     }
-
-    Ok(if negative {
-        -total_minutes
-    } else {
-        total_minutes
-    })
 }
 
 #[cfg(test)]

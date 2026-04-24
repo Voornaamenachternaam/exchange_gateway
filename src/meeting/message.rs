@@ -1,7 +1,7 @@
 // src/meeting/message.rs
 use crate::calendar::{Attendee, CalendarItem};
 use crate::meeting::attendee::{AttendeeRole, AttendeeStatus};
-use crate::util::{escape_ical_text, xml_escape};
+use crate::util::xml_escape;
 use chrono::{DateTime, Utc};
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -204,110 +204,118 @@ impl MeetingMessageGenerator {
         }
     }
 
+    /// Generate an iCal representation using the `icalendar` crate,
+    /// which handles RFC 5545 escaping and line folding automatically.
     pub fn generate_ical(&self, msg: &MeetingMessage) -> String {
-        let mut ics = String::with_capacity(4096);
+        use icalendar::{Calendar, Component, Event, EventLike, EventStatus, Property};
 
-        ics.push_str("BEGIN:VCALENDAR\r\n");
-        ics.push_str(&format!("PRODID:{}\r\n", self.ical_product_id));
-        ics.push_str("VERSION:2.0\r\n");
-        ics.push_str(&format!("METHOD:{}\r\n", msg.message_type.to_ical_method()));
+        let mut calendar = Calendar::empty();
+        calendar.append_property(Property::new("VERSION", "2.0"));
+        calendar.append_property(Property::new("PRODID", &self.ical_product_id));
+        calendar.append_property(Property::new("METHOD", msg.message_type.to_ical_method()));
 
-        ics.push_str("BEGIN:VEVENT\r\n");
-        ics.push_str(&format!("UID:{}\r\n", msg.uid));
-        ics.push_str(&format!(
-            "DTSTAMP:{}\r\n",
-            msg.dtstamp.format("%Y%m%dT%H%M%SZ")
-        ));
-        ics.push_str(&format!(
-            "DTSTART:{}\r\n",
-            msg.start.format("%Y%m%dT%H%M%SZ")
-        ));
-        ics.push_str(&format!("DTEND:{}\r\n", msg.end.format("%Y%m%dT%H%M%SZ")));
-        ics.push_str(&format!("SEQUENCE:{}\r\n", msg.sequence));
+        let mut event = Event::new();
+        event.uid(&msg.uid);
+        event.timestamp(msg.dtstamp);
+        event.sequence(msg.sequence);
+
+        // For Counter messages with proposed times, the DTSTART/DTEND carry
+        // the proposed times with X-MS-OLK-ORIGINAL parameters for the originals.
+        // Do NOT call event.starts()/event.ends() for Counter, as they would
+        // emit duplicate DTSTART/DTEND properties alongside append_property.
+        let is_counter_with_props = msg.message_type == MeetingMessageType::Counter
+            && msg.proposed_start.is_some()
+            && msg.proposed_end.is_some();
+
+        if is_counter_with_props {
+            if let (Some(start), Some(end)) = (msg.proposed_start, msg.proposed_end) {
+                event.append_property(Property::new(
+                    "DTSTART",
+                    format!("{}Z", start.format("%Y%m%dT%H%M%S")),
+                ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.start.format("%Y%m%dT%H%M%S"))).done());
+                event.append_property(Property::new(
+                    "DTEND",
+                    format!("{}Z", end.format("%Y%m%dT%H%M%S")),
+                ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.end.format("%Y%m%dT%H%M%S"))).done());
+            }
+        } else {
+            event.ends(msg.end);
+            event.starts(msg.start);
+        }
 
         if !msg.subject.is_empty() {
-            ics.push_str(&format!("SUMMARY:{}\r\n", escape_ical_text(&msg.subject)));
+            event.summary(&msg.subject);
         }
-
         if let Some(ref desc) = msg.description {
-            ics.push_str(&format!("DESCRIPTION:{}\r\n", escape_ical_text(desc)));
+            event.description(desc);
         }
-
         if let Some(ref loc) = msg.location {
-            ics.push_str(&format!("LOCATION:{}\r\n", escape_ical_text(loc)));
+            event.location(loc);
         }
 
         if msg.message_type == MeetingMessageType::Request
             || msg.message_type == MeetingMessageType::Update
         {
-            ics.push_str(&format!(
-                "ORGANIZER;CN={}:mailto:{}\r\n",
-                escape_ical_text(
-                    msg.organizer_name
-                        .as_deref()
-                        .unwrap_or(&msg.organizer_email)
-                ),
-                msg.organizer_email
-            ));
+            let mut org_prop = Property::new(
+                "ORGANIZER",
+                format!("mailto:{}", msg.organizer_email),
+            );
+            org_prop.add_parameter(
+                "CN",
+                msg.organizer_name.as_deref().unwrap_or(&msg.organizer_email),
+            );
+            event.append_property(org_prop.done());
 
             for attendee in &msg.attendees {
                 let role = AttendeeRole::from(attendee.attendee_type.unwrap_or(1));
-                let status = AttendeeStatus::NeedsAction;
-                ics.push_str(&format!(
-                    "ATTENDEE;CN={};ROLE={};PARTSTAT={}:mailto:{}\r\n",
-                    escape_ical_text(attendee.name.as_deref().unwrap_or(&attendee.email)),
-                    role.to_ical_role(),
-                    status.to_partstat(),
-                    attendee.email
-                ));
+                let ical_role = match role {
+                    AttendeeRole::Optional => icalendar::Role::OptParticipant,
+                    AttendeeRole::Resource => icalendar::Role::NonParticipant,
+                    _ => icalendar::Role::ReqParticipant,
+                };
+                let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", attendee.email))
+                    .cn(attendee.name.as_deref().unwrap_or(&attendee.email).to_string())
+                    .role(ical_role)
+                    .partstat(icalendar::PartStat::NeedsAction);
+                event.attendee(cal_attendee);
             }
-        } else if msg.message_type == MeetingMessageType::Response {
-            if let Some(ref status) = msg.response_status {
-                ics.push_str(&format!(
-                    "ORGANIZER;CN={}:mailto:{}\r\n",
-                    escape_ical_text(
-                        msg.organizer_name
-                            .as_deref()
-                            .unwrap_or(&msg.organizer_email)
-                    ),
-                    msg.organizer_email
-                ));
-                ics.push_str(&format!(
-                    "ATTENDEE;PARTSTAT={}:mailto:{}\r\n",
-                    status.to_partstat(),
-                    msg.organizer_email
-                ));
+        } else if msg.message_type == MeetingMessageType::Response
+            && let Some(ref status) = msg.response_status {
+                let mut org_prop = Property::new(
+                    "ORGANIZER",
+                    format!("mailto:{}", msg.organizer_email),
+                );
+                org_prop.add_parameter(
+                    "CN",
+                    msg.organizer_name.as_deref().unwrap_or(&msg.organizer_email),
+                );
+                event.append_property(org_prop.done());
+
+                let partstat = match status {
+                    AttendeeStatus::Accepted => icalendar::PartStat::Accepted,
+                    AttendeeStatus::Declined => icalendar::PartStat::Declined,
+                    AttendeeStatus::Tentative => icalendar::PartStat::Tentative,
+                    _ => icalendar::PartStat::NeedsAction,
+                };
+                let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", msg.organizer_email))
+                    .partstat(partstat);
+                event.attendee(cal_attendee);
             }
-        } else if msg.message_type == MeetingMessageType::Counter
-            && let (Some(start), Some(end)) = (msg.proposed_start, msg.proposed_end)
-        {
-            ics.push_str(&format!(
-                "DTSTART;X-MS-OLK-ORIGINAL={}Z:{}Z\r\n",
-                msg.start.format("%Y%m%dT%H%M%S"),
-                start.format("%Y%m%dT%H%M%S")
-            ));
-            ics.push_str(&format!(
-                "DTEND;X-MS-OLK-ORIGINAL={}Z:{}Z\r\n",
-                msg.end.format("%Y%m%dT%H%M%S"),
-                end.format("%Y%m%dT%H%M%S")
-            ));
-        }
 
         if msg.message_type == MeetingMessageType::Request
             || msg.message_type == MeetingMessageType::Update
         {
-            ics.push_str("X-MICROSOFT-CDO-BUSYSTATUS:BUSY\r\n");
+            event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", "BUSY"));
         }
 
         if msg.message_type == MeetingMessageType::Cancellation {
-            ics.push_str("STATUS:CANCELLED\r\n");
+            event.status(EventStatus::Cancelled);
         }
 
-        ics.push_str("END:VEVENT\r\n");
-        ics.push_str("END:VCALENDAR\r\n");
-
-        ics
+        calendar.push(event.done());
+        calendar.to_string()
     }
+
 
     pub fn generate_ews_create_response(
         &self,
@@ -483,42 +491,6 @@ impl MeetingMessageGenerator {
     }
 }
 
-pub fn fold_ical_line(line: &str, max_len: usize) -> String {
-    if line.len() <= max_len {
-        return line.to_string();
-    }
-
-    let mut result = String::with_capacity(line.len() + (line.len() / max_len) * 3);
-    let mut remaining = line;
-
-    while remaining.len() > max_len {
-        let split_point = remaining
-            .char_indices()
-            .take_while(|(idx, _)| *idx <= max_len)
-            .map(|(idx, c)| idx + c.len_utf8())
-            .last()
-            .unwrap_or(0);
-
-        let split_point = if split_point == 0 {
-            remaining
-                .char_indices()
-                .nth(1)
-                .map(|(idx, _)| idx)
-                .unwrap_or(remaining.len())
-        } else {
-            split_point
-        };
-
-        let (chunk, rest) = remaining.split_at(split_point);
-        result.push_str(chunk);
-        result.push_str("\r\n ");
-        remaining = rest;
-    }
-    result.push_str(remaining);
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,8 +569,10 @@ mod tests {
 
     #[test]
     fn test_escape_ical_text() {
-        assert_eq!(escape_ical_text("a,b;c\\d"), "a\\,b\\;c\\\\d");
-        assert_eq!(escape_ical_text("line1\nline2"), "line1\\nline2");
+        // The icalendar crate now handles escaping internally
+        // but we can verify the util function still works correctly for backward compat
+        assert_eq!(crate::util::escape_ical_text("a,b;c\\d"), "a\\,b\\;c\\\\d");
+        assert_eq!(crate::util::escape_ical_text("line1\nline2"), "line1\\nline2");
     }
 
     #[test]

@@ -209,18 +209,29 @@ impl From<PermissionRights> for u32 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, strum::Display, strum::FromRepr)]
+#[repr(usize)]
 pub enum PermissionLevel {
     #[default]
+    #[strum(serialize = "None")]
     None = 0,
+    #[strum(serialize = "FreeBusyTimeOnly")]
     FreeBusy = 1,
+    #[strum(serialize = "Reviewer")]
     Reviewer = 2,
+    #[strum(serialize = "Contributor")]
     Contributor = 3,
+    #[strum(serialize = "NonEditingAuthor")]
     NonEditingAuthor = 4,
+    #[strum(serialize = "Author")]
     Author = 5,
+    #[strum(serialize = "PublishingAuthor")]
     PublishingAuthor = 6,
+    #[strum(serialize = "Editor")]
     Editor = 7,
+    #[strum(serialize = "PublishingEditor")]
     PublishingEditor = 8,
+    #[strum(serialize = "Owner")]
     Owner = 9,
 }
 
@@ -271,7 +282,10 @@ impl PermissionLevel {
         Self::None
     }
 
+    /// Returns the EWS protocol string for this permission level.
+    /// Uses `strum::Display` for the standard representation.
     pub fn as_str(&self) -> &'static str {
+        // strum generates the Display impl; this method provides a &str reference
         match self {
             Self::None => "None",
             Self::FreeBusy => "FreeBusyTimeOnly",
@@ -284,12 +298,6 @@ impl PermissionLevel {
             Self::PublishingEditor => "PublishingEditor",
             Self::Owner => "Owner",
         }
-    }
-}
-
-impl fmt::Display for PermissionLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
     }
 }
 
@@ -315,18 +323,7 @@ impl FromStr for PermissionLevel {
 
 impl From<u8> for PermissionLevel {
     fn from(value: u8) -> Self {
-        match value {
-            1 => Self::FreeBusy,
-            2 => Self::Reviewer,
-            3 => Self::Contributor,
-            4 => Self::NonEditingAuthor,
-            5 => Self::Author,
-            6 => Self::PublishingAuthor,
-            7 => Self::Editor,
-            8 => Self::PublishingEditor,
-            9 => Self::Owner,
-            _ => Self::None,
-        }
+        Self::from_repr(value as usize).unwrap_or(Self::None)
     }
 }
 
@@ -481,7 +478,7 @@ impl DelegateInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, strum::Display)]
 pub enum DelegatePermission {
     #[default]
     None = 0,
@@ -504,12 +501,6 @@ impl DelegatePermission {
             Self::Author => "Author",
             Self::Editor => "Editor",
         }
-    }
-}
-
-impl fmt::Display for DelegatePermission {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
     }
 }
 
