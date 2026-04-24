@@ -238,8 +238,8 @@ impl MeetingMessageGenerator {
                 ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.end.format("%Y%m%dT%H%M%S"))).done());
             }
         } else {
-            event.starts(msg.start);
             event.ends(msg.end);
+            event.starts(msg.start);
         }
 
         if !msg.subject.is_empty() {
