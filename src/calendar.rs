@@ -2,10 +2,18 @@
 use crate::ical_parser;
 use crate::util::nfc;
 use anyhow::{Result, anyhow};
+use bstr::ByteSlice;
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
+use derive_more::Debug;
+use itertools::Itertools;
+use once_cell::sync::Lazy;
+use phf::phf_map;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use roxmltree::Document;
+use rrule::{Frequency, NWeekday, RRule, Weekday, Tz as RruleTz};
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use uuid::Uuid;
 
@@ -178,6 +186,68 @@ pub(crate) struct EasRecurrence {
     is_empty: bool,
 }
 
+static DAY_BITS: [(u32, &'static str); 7] = [
+    (1, "SU"),
+    (2, "MO"),
+    (4, "TU"),
+    (8, "WE"),
+    (16, "TH"),
+    (32, "FR"),
+    (64, "SA"),
+];
+
+static WEEKDAY_CODES: phf::Map<u32, &'static str> = phf_map! {
+    1u32 => "SU",
+    2u32 => "MO",
+    3u32 => "TU",
+    4u32 => "WE",
+    5u32 => "TH",
+    6u32 => "FR",
+    7u32 => "SA",
+};
+
+fn mask_to_byday(value: u32) -> Vec<&'static str> {
+    DAY_BITS
+        .iter()
+        .filter_map(|&(bit, code)| if value & bit != 0 { Some(code) } else { None })
+        .collect()
+}
+
+fn weekday_code_from_eas(value: u32) -> &'static str {
+    WEEKDAY_CODES.get(&value).copied().unwrap_or("MO")
+}
+
+fn day_code_to_weekday(code: &str) -> Option<Weekday> {
+    match code {
+        "SU" => Some(Weekday::Sun),
+        "MO" => Some(Weekday::Mon),
+        "TU" => Some(Weekday::Tue),
+        "WE" => Some(Weekday::Wed),
+        "TH" => Some(Weekday::Thu),
+        "FR" => Some(Weekday::Fri),
+        "SA" => Some(Weekday::Sat),
+        _ => None,
+    }
+}
+
+fn month_num_to_chrono(m: u32) -> Option<chrono::Month> {
+    match m {
+        1 => Some(chrono::Month::January),
+        2 => Some(chrono::Month::February),
+        3 => Some(chrono::Month::March),
+        4 => Some(chrono::Month::April),
+        5 => Some(chrono::Month::May),
+        6 => Some(chrono::Month::June),
+        7 => Some(chrono::Month::July),
+        8 => Some(chrono::Month::August),
+        9 => Some(chrono::Month::September),
+        10 => Some(chrono::Month::October),
+        11 => Some(chrono::Month::November),
+        12 => Some(chrono::Month::December),
+        _ => None,
+    }
+}
+
 impl EasBuilder {
     fn into_item(self) -> Result<CalendarItem> {
         let start = self.start.ok_or_else(|| anyhow!("missing StartTime"))?;
@@ -265,72 +335,83 @@ impl EasRecurrence {
         }
         let kind = self.kind?;
         let freq = match kind {
-            0 => "DAILY",
-            1 => "WEEKLY",
-            2 | 3 => "MONTHLY",
-            5 | 6 => "YEARLY",
+            0 => Frequency::Daily,
+            1 => Frequency::Weekly,
+            2 | 3 => Frequency::Monthly,
+            5 | 6 => Frequency::Yearly,
             _ => return None,
         };
 
-        let mut parts = vec![format!("FREQ={freq}")];
+        let mut rule = RRule::new(freq);
+
         if let Some(interval) = self.interval
             && interval > 1
         {
-            parts.push(format!("INTERVAL={interval}"));
+            rule = rule.interval(interval as u16);
         }
+
         if let Some(mask) = &self.day_of_week {
-            let mut byday = Vec::new();
             let value = mask.parse::<u32>().unwrap_or(0);
-            let mapping = [
-                (1, "SU"),
-                (2, "MO"),
-                (4, "TU"),
-                (8, "WE"),
-                (16, "TH"),
-                (32, "FR"),
-                (64, "SA"),
-            ];
-            for (bit, code) in mapping {
-                if value & bit != 0 {
-                    byday.push(code.to_string());
-                }
-            }
+            let byday = mask_to_byday(value);
             if !byday.is_empty() {
-                if let Some(week) = self.week_of_month
+                let nweekdays: Vec<NWeekday> = if let Some(week) = self.week_of_month
                     && (kind == 3 || kind == 6)
                     && week > 0
                 {
                     let ordinal = match week {
-                        5 => -1,
-                        n => n as i32,
+                        5 => -1i16,
+                        n => n as i16,
                     };
-                    parts.push(format!("BYDAY={}{}", ordinal, byday[0]));
+                    byday
+                        .iter()
+                        .take(1)
+                        .filter_map(|&code| {
+                            day_code_to_weekday(code).map(|wd| NWeekday::Nth(ordinal, wd))
+                        })
+                        .collect()
                 } else {
-                    parts.push(format!("BYDAY={}", byday.join(",")));
+                    byday
+                        .into_iter()
+                        .filter_map(|code| day_code_to_weekday(code).map(|wd| NWeekday::Every(wd)))
+                        .collect()
+                };
+                if !nweekdays.is_empty() {
+                    rule = rule.by_weekday(nweekdays);
                 }
             }
         }
+
         if let Some(day) = self.day_of_month
             && matches!(kind, 2 | 5)
         {
-            parts.push(format!("BYMONTHDAY={day}"));
+            rule = rule.by_month_day(vec![day as i8]);
         }
+
         if let Some(month) = self.month_of_year
             && matches!(kind, 5 | 6)
         {
-            parts.push(format!("BYMONTH={month}"));
+            if let Some(m) = month_num_to_chrono(month) {
+                rule = rule.by_month(&[m]);
+            }
         }
+
         if let Some(count) = self.occurrences {
-            parts.push(format!("COUNT={count}"));
+            rule = rule.count(count);
         } else if let Some(until) = &self.until
             && let Some(dt) = parse_datetime(until)
         {
-            parts.push(format!("UNTIL={}", dt.format("%Y%m%dT%H%M%SZ")));
+            let until_dt: chrono::DateTime<RruleTz> = dt.with_timezone(&RruleTz::UTC);
+            rule = rule.until(until_dt);
         }
+
         if let Some(first_day) = self.first_day_of_week {
-            parts.push(format!("WKST={}", weekday_code_from_eas(first_day)));
+            let wkst_code = weekday_code_from_eas(first_day);
+            if let Some(wd) = day_code_to_weekday(wkst_code) {
+                rule = rule.week_start(wd);
+            }
         }
-        Some(parts.join(";"))
+
+        Some(rule.to_string())
     }
 }
 
@@ -762,8 +843,6 @@ pub fn render_ics(item: &CalendarItem) -> String {
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//exchange_gateway//EN"));
 
-    // Embed timezone blob if present — parse via icalendar so sub-components
-    // (STANDARD/DAYLIGHT) and property escaping are handled correctly.
     if let Some(blob) = &item.timezone_blob {
         let wrapped = format!("BEGIN:VCALENDAR\r\n{blob}\r\nEND:VCALENDAR\r\n");
         if let Ok(parsed) = Calendar::from_str(&icalendar::parser::unfold(&wrapped)) {
@@ -775,26 +854,20 @@ pub fn render_ics(item: &CalendarItem) -> String {
         }
     }
 
-    // Build the main event using the icalendar crate (handles escaping + folding)
     let mut event = Event::new();
     event.uid(&uid);
     event.timestamp(dtstamp);
     event.summary(&item.subject);
 
     if item.all_day {
-        // all_day(date) sets both DTSTART and DTEND to the same date, which
-        // collapses multi-day events. Instead, set DTSTART as a DATE value
-        // and append DTEND separately so multi-day ranges are preserved.
         event.starts(item.start.naive_utc().date());
         let end_date = item.end.naive_utc().date();
         if end_date != item.start.naive_utc().date() {
             event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()).add_parameter("VALUE", "DATE").done());
         }
     } else if let Some(tzid) = &item.timezone
-    && let Ok(tz) = tzid.parse::<Tz>()
+        && let Ok(tz) = tzid.parse::<Tz>()
     {
-        // Convert UTC instant to local wall time for the WithTimezone variant,
-        // which interprets the naive datetime as local time in the given tz.
         event.ends((item.end.with_timezone(&tz).naive_local(), tz));
         event.starts((item.start.with_timezone(&tz).naive_local(), tz));
     } else {
@@ -815,11 +888,8 @@ pub fn render_ics(item: &CalendarItem) -> String {
         event.add_property("RRULE", rrule);
     }
 
-    // EXDATE
-    // When TZID is present, EXDATE values must be local time (no 'Z' suffix).
-    // Per RFC 5545 §3.3.5, the 'Z' suffix means UTC, which contradicts TZID.
     let has_tzid = item.timezone.as_ref().is_some_and(|t| t.parse::<Tz>().is_ok());
-    let mut all_exdates: Vec<String> = item
+    let all_exdates: Vec<String> = item
         .exdates
         .iter()
         .map(|v| {
@@ -831,24 +901,24 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 v.format("%Y%m%dT%H%M%SZ").to_string()
             }
         })
+        .chain(
+            item.exceptions
+                .iter()
+                .filter(|v| v.deleted)
+                .map(|v| {
+                    if item.all_day {
+                        v.exception_start.format("%Y%m%d").to_string()
+                    } else if has_tzid {
+                        v.exception_start.format("%Y%m%dT%H%M%S").to_string()
+                    } else {
+                        v.exception_start.format("%Y%m%dT%H%M%SZ").to_string()
+                    }
+                }),
+        )
+        .sorted()
+        .dedup()
         .collect();
-    let deleted_exdates: Vec<String> = item
-        .exceptions
-        .iter()
-        .filter(|v| v.deleted)
-        .map(|v| {
-            if item.all_day {
-                v.exception_start.format("%Y%m%d").to_string()
-            } else if has_tzid {
-                v.exception_start.format("%Y%m%dT%H%M%S").to_string()
-            } else {
-                v.exception_start.format("%Y%m%dT%H%M%SZ").to_string()
-            }
-        })
-        .collect();
-    all_exdates.extend(deleted_exdates);
-    all_exdates.sort();
-    all_exdates.dedup();
+
     if !all_exdates.is_empty() {
         let exdate_str = all_exdates.join(",");
         if !item.all_day {
@@ -868,7 +938,6 @@ pub fn render_ics(item: &CalendarItem) -> String {
         }
     }
 
-    // ORGANIZER
     if let Some(email) = &item.organizer_email {
         let mut org_prop = Property::new("ORGANIZER", normalize_mailto(email));
         if let Some(name) = &item.organizer_name {
@@ -877,7 +946,6 @@ pub fn render_ics(item: &CalendarItem) -> String {
         event.append_property(org_prop.done());
     }
 
-    // ATTENDEES — use the icalendar crate's Attendee builder
     for attendee in &item.attendees {
         if attendee.email.is_empty() {
             continue;
@@ -907,14 +975,12 @@ pub fn render_ics(item: &CalendarItem) -> String {
         event.attendee(cal_attendee);
     }
 
-    // CATEGORIES
     if !item.categories.is_empty() {
         for category in &item.categories {
             event.add_property("CATEGORIES", category);
         }
     }
 
-    // Microsoft-specific and custom X- properties
     if let Some(busy) = item.busy_status {
         event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", busy.to_string()));
         event.add_property("TRANSP", if busy == 0 { "TRANSPARENT" } else { "OPAQUE" });
@@ -927,8 +993,6 @@ pub fn render_ics(item: &CalendarItem) -> String {
         });
     }
     if let Some(reminder) = item.reminder {
-        // Reminder is "minutes before start" (always positive), so the
-        // iCal TRIGGER duration must be negative (before the event).
         let abs = reminder.abs();
         let trigger = if abs % 60 == 0 {
             -chrono::Duration::hours(abs as i64 / 60)
@@ -978,7 +1042,6 @@ pub fn render_ics(item: &CalendarItem) -> String {
 
     calendar.push(event.done());
 
-    // Exception instances (non-deleted)
     for exception in item.exceptions.iter().filter(|v| !v.deleted) {
         let base_duration = item.end - item.start;
         let effective_all_day = exception.all_day.unwrap_or(item.all_day);
@@ -1006,9 +1069,6 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 .add_parameter("VALUE", "DATE")
                 .done(),
             );
-            // all_day(date) sets both DTSTART and DTEND to the same date, which
-            // collapses multi-day events. Set DTSTART as a DATE value and append
-            // DTEND separately so multi-day ranges are preserved.
             ex_event.starts(effective_start.naive_utc().date());
             let end_date = effective_end.naive_utc().date();
             if end_date != effective_start.naive_utc().date() {
@@ -1019,24 +1079,23 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 );
             }
         } else if let Some(tzid) = &item.timezone
-    && let Ok(tz) = tzid.parse::<Tz>()
-    {
-        ex_event.append_property(
-            Property::new(
-                "RECURRENCE-ID",
-                exception
-                    .exception_start
-                    .with_timezone(&tz)
-                    .format("%Y%m%dT%H%M%S")
-                    .to_string(),
-            )
-            .add_parameter("TZID", tzid)
-            .done(),
-        );
-        // Convert UTC instant to local wall time for the WithTimezone variant
-        ex_event.starts((effective_start.with_timezone(&tz).naive_local(), tz));
-        ex_event.ends((effective_end.with_timezone(&tz).naive_local(), tz));
-    } else {
+            && let Ok(tz) = tzid.parse::<Tz>()
+        {
+            ex_event.append_property(
+                Property::new(
+                    "RECURRENCE-ID",
+                    exception
+                        .exception_start
+                        .with_timezone(&tz)
+                        .format("%Y%m%dT%H%M%S")
+                        .to_string(),
+                )
+                .add_parameter("TZID", tzid)
+                .done(),
+            );
+            ex_event.starts((effective_start.with_timezone(&tz).naive_local(), tz));
+            ex_event.ends((effective_end.with_timezone(&tz).naive_local(), tz));
+        } else {
             ex_event.append_property(Property::new(
                 "RECURRENCE-ID",
                 exception
@@ -1128,7 +1187,6 @@ pub fn render_ics(item: &CalendarItem) -> String {
         calendar.push(ex_event.done());
     }
 
-    // The icalendar crate's Display impl handles RFC 5545 line folding and CRLF
     calendar.to_string()
 }
 
@@ -1188,24 +1246,11 @@ fn class_to_sensitivity(value: &str) -> Option<u8> {
     }
 }
 
-fn weekday_code_from_eas(value: u32) -> &'static str {
-    match value {
-        1 => "SU",
-        2 => "MO",
-        3 => "TU",
-        4 => "WE",
-        5 => "TH",
-        6 => "FR",
-        7 => "SA",
-        _ => "MO",
-    }
-}
-
 pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
-    let mut stack: Vec<Vec<u8>> = Vec::new();
+    let mut stack: Vec<SmallVec<[u8; 16]>> = Vec::new();
     let mut current_kind: Option<EasOpKind> = None;
     let mut current = EasBuilder::default();
     let mut out = Vec::new();
@@ -1213,27 +1258,29 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name = e.name().local_name().as_ref().to_vec();
-                if matches!(name.as_slice(), b"Add" | b"Change" | b"Delete") {
-                    current_kind = Some(match name.as_slice() {
+                let name = e.name().local_name().as_ref();
+                let tag: SmallVec<[u8; 16]> = SmallVec::from_slice(name);
+                if matches!(name, b"Add" | b"Change" | b"Delete") {
+                    current_kind = Some(match name {
                         b"Add" => EasOpKind::Add,
                         b"Change" => EasOpKind::Change,
                         _ => EasOpKind::Delete,
                     });
                     current = EasBuilder::default();
-                } else if name.as_slice() == b"Exception" {
+                } else if name == b"Exception" {
                     current.current_exception = Some(CalendarException::default());
-                } else if name.as_slice() == b"Recurrence" {
+                } else if name == b"Recurrence" {
                     current.recurrence.is_empty = false;
                 }
-                stack.push(name);
+                stack.push(tag);
             }
             Ok(Event::Empty(e)) => {
-                let name = e.name().local_name().as_ref().to_vec();
-                if name.as_slice() == b"Recurrence" {
+                let name = e.name().local_name().as_ref();
+                let tag: SmallVec<[u8; 16]> = SmallVec::from_slice(name);
+                if name == b"Recurrence" {
                     current.recurrence.is_empty = true;
                 }
-                stack.push(name);
+                stack.push(tag);
                 stack.pop();
             }
             Ok(Event::Text(t)) => {
@@ -1242,7 +1289,8 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         Ok(v) => v.into_owned(),
                         Err(_) => String::new(),
                     };
-                    match stack.last().map(|v| v.as_slice()) {
+                    let last_tag = stack.last().map(|v| v.as_slice());
+                    match last_tag {
                         Some(b"ClientId") => current.client_id = Some(value),
                         Some(b"ServerId")
                             if !stack.iter().any(|v| v.as_slice() == b"Exception") =>
@@ -1464,8 +1512,8 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                 }
             }
             Ok(Event::End(e)) => {
-                let name = e.name().local_name().as_ref().to_vec();
-                if name.as_slice() == b"Attendee"
+                let name = e.name().local_name().as_ref();
+                if name == b"Attendee"
                     && let Some(attendee) = current.current_attendee.take()
                     && !attendee.email.is_empty()
                 {
@@ -1475,12 +1523,12 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         current.attendees.push(attendee);
                     }
                 }
-                if name.as_slice() == b"Exception"
+                if name == b"Exception"
                     && let Some(exception) = current.current_exception.take()
                 {
                     current.exceptions.push(exception);
                 }
-                if matches!(name.as_slice(), b"Add" | b"Change" | b"Delete") {
+                if matches!(name, b"Add" | b"Change" | b"Delete") {
                     match current_kind.take() {
                         Some(EasOpKind::Add) => {
                             let client_id = current.client_id.clone();
@@ -1524,48 +1572,45 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
     Ok(out)
 }
 
+fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
+    let tag_str = std::str::from_utf8(tag).ok()?;
+    doc.descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
+        .filter_map(|n| {
+            n.descendants()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .next()
+                .map(|s| s.to_string())
+        })
+        .next()
+}
+
+fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
+    let tag_str = std::str::from_utf8(tag).ok().unwrap_or_default();
+    doc.descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
+        .filter_map(|n| {
+            n.descendants()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .next()
+                .map(|s| s.to_string())
+        })
+        .collect()
+}
+
 pub fn extract_ews_field(xml: &str, tag: &[u8]) -> Option<String> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut inside = false;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => {
-                let decoded: std::result::Result<Cow<'_, str>, _> =
-                    t.decode().map_err(|e| anyhow!(e));
-                return decoded.ok().map(|v| v.into_owned());
-            }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
-            Ok(Event::Eof) | Err(_) => return None,
-            _ => {}
-        }
-        buf.clear();
-    }
+    let doc = Document::parse(xml).ok()?;
+    extract_ews_field_doc(&doc, tag)
 }
 
 pub fn extract_ews_fields(xml: &str, tag: &[u8]) -> Vec<String> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut inside = false;
-    let mut out = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => {
-                if let Ok(v) = t.decode() {
-                    out.push(v.into_owned());
-                }
-            }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    out
+    let doc = match Document::parse(xml) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    extract_ews_fields_doc(&doc, tag)
 }
 
 fn parse_ews_month(value: &str) -> Option<u32> {
@@ -1613,223 +1658,209 @@ pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
     if !xml.contains("Recurrence") {
         return None;
     }
-    let interval = extract_ews_field(xml, b"Interval")
+
+    let doc = Document::parse(xml).ok()?;
+
+    let interval = extract_ews_field_doc(&doc, b"Interval")
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(1);
-    let mut parts = Vec::new();
-    if xml.contains("DailyRecurrence") {
-        parts.push("FREQ=DAILY".to_string());
+
+    let freq = if xml.contains("DailyRecurrence") {
+        Frequency::Daily
     } else if xml.contains("WeeklyRecurrence") {
-        parts.push("FREQ=WEEKLY".to_string());
-        if let Some(days) = extract_ews_field(xml, b"DaysOfWeek") {
-            let (mask, _) = parse_ews_days_mask(&days);
-            if mask != "0" {
-                let value = mask.parse::<u32>().ok()?;
-                let mapping = [
-                    (1, "SU"),
-                    (2, "MO"),
-                    (4, "TU"),
-                    (8, "WE"),
-                    (16, "TH"),
-                    (32, "FR"),
-                    (64, "SA"),
-                ];
-                let byday: Vec<&str> = mapping
-                    .iter()
-                    .filter_map(
-                        |(bit, code)| {
-                            if value & bit != 0 { Some(*code) } else { None }
-                        },
-                    )
-                    .collect();
-                if !byday.is_empty() {
-                    parts.push(format!("BYDAY={}", byday.join(",")));
+        Frequency::Weekly
+    } else if xml.contains("AbsoluteMonthlyRecurrence") || xml.contains("RelativeMonthlyRecurrence") {
+        Frequency::Monthly
+    } else if xml.contains("AbsoluteYearlyRecurrence") || xml.contains("RelativeYearlyRecurrence") {
+        Frequency::Yearly
+    } else {
+        return None;
+    };
+
+    let mut rule = RRule::new(freq);
+
+    if interval > 1 {
+        rule = rule.interval(interval as u16);
+    }
+
+    if let Some(days) = extract_ews_field_doc(&doc, b"DaysOfWeek") {
+        let (mask_str, ordinal_opt) = parse_ews_days_mask(&days);
+        if let Ok(value) = mask_str.parse::<u32>() {
+            let byday = mask_to_byday(value);
+            if !byday.is_empty() {
+                let nweekdays: Vec<NWeekday> = if let Some(ordinal) = ordinal_opt {
+                    let ord = match ordinal {
+                        -1 => -1i16,
+                        n => n as i16,
+                    };
+                    byday
+                        .into_iter()
+                        .filter_map(|code| day_code_to_weekday(code).map(|wd| NWeekday::Nth(ord, wd)))
+                        .collect()
+                } else if xml.contains("RelativeMonthlyRecurrence") || xml.contains("RelativeYearlyRecurrence") {
+                    let ord = extract_ews_field_doc(&doc, b"DayOfWeekIndex")
+                        .and_then(|v| match v.as_str() {
+                            "First" => Some(1i16),
+                            "Second" => Some(2),
+                            "Third" => Some(3),
+                            "Fourth" => Some(4),
+                            "Last" => Some(-1),
+                            _ => None,
+                        })
+                        .unwrap_or(1);
+                    byday
+                        .into_iter()
+                        .filter_map(|code| day_code_to_weekday(code).map(|wd| NWeekday::Nth(ord, wd)))
+                        .collect()
+                } else {
+                    byday
+                        .into_iter()
+                        .filter_map(|code| day_code_to_weekday(code).map(|wd| NWeekday::Every(wd)))
+                        .collect()
+                };
+                if !nweekdays.is_empty() {
+                    rule = rule.by_weekday(nweekdays);
                 }
             }
         }
-    } else if xml.contains("AbsoluteMonthlyRecurrence") {
-        parts.push("FREQ=MONTHLY".to_string());
-        if let Some(day) = extract_ews_field(xml, b"DayOfMonth") {
-            parts.push(format!("BYMONTHDAY={day}"));
-        }
-    } else if xml.contains("RelativeMonthlyRecurrence") {
-        parts.push("FREQ=MONTHLY".to_string());
-        if let Some(days) = extract_ews_field(xml, b"DaysOfWeek") {
-            let (mask, ordinal) = parse_ews_days_mask(&days);
-            let value = mask.parse::<u32>().ok()?;
-            let mapping = [
-                (1, "SU"),
-                (2, "MO"),
-                (4, "TU"),
-                (8, "WE"),
-                (16, "TH"),
-                (32, "FR"),
-                (64, "SA"),
-            ];
-            let code = mapping
-                .iter()
-                .find_map(|(bit, code)| (value & bit != 0).then_some(*code))?;
-            let ord = ordinal.unwrap_or_else(|| {
-                extract_ews_field(xml, b"DayOfWeekIndex")
-                    .as_deref()
-                    .and_then(|v| match v {
-                        "First" => Some(1),
-                        "Second" => Some(2),
-                        "Third" => Some(3),
-                        "Fourth" => Some(4),
-                        "Last" => Some(-1),
-                        _ => None,
-                    })
-                    .unwrap_or(1)
-            });
-            parts.push(format!("BYDAY={}{}", ord, code));
-        }
-    } else if xml.contains("AbsoluteYearlyRecurrence") {
-        parts.push("FREQ=YEARLY".to_string());
-        if let Some(month) = extract_ews_field(xml, b"Month").and_then(|v| parse_ews_month(&v)) {
-            parts.push(format!("BYMONTH={month}"));
-        }
-        if let Some(day) = extract_ews_field(xml, b"DayOfMonth") {
-            parts.push(format!("BYMONTHDAY={day}"));
-        }
-    } else if xml.contains("RelativeYearlyRecurrence") {
-        parts.push("FREQ=YEARLY".to_string());
-        if let Some(month) = extract_ews_field(xml, b"Month").and_then(|v| parse_ews_month(&v)) {
-            parts.push(format!("BYMONTH={month}"));
-        }
-        if let Some(days) = extract_ews_field(xml, b"DaysOfWeek") {
-            let (mask, ordinal) = parse_ews_days_mask(&days);
-            let value = mask.parse::<u32>().ok()?;
-            let mapping = [
-                (1, "SU"),
-                (2, "MO"),
-                (4, "TU"),
-                (8, "WE"),
-                (16, "TH"),
-                (32, "FR"),
-                (64, "SA"),
-            ];
-            let code = mapping
-                .iter()
-                .find_map(|(bit, code)| (value & bit != 0).then_some(*code))?;
-            parts.push(format!("BYDAY={}{}", ordinal.unwrap_or(1), code));
-        }
-    } else {
-        return None;
     }
 
-    if interval > 1 {
-        parts.push(format!("INTERVAL={interval}"));
+    if let Some(day_str) = extract_ews_field_doc(&doc, b"DayOfMonth") {
+        if let Ok(d) = day_str.parse::<i8>() {
+            rule = rule.by_month_day(vec![d]);
+        }
     }
-    if let Some(count) = extract_ews_field(xml, b"NumberOfOccurrences") {
-        parts.push(format!("COUNT={count}"));
-    } else if let Some(until) = extract_ews_field(xml, b"EndDate").and_then(|v| parse_datetime(&v))
-    {
-        parts.push(format!("UNTIL={}", until.format("%Y%m%dT%H%M%SZ")));
+
+    if let Some(month_str) = extract_ews_field_doc(&doc, b"Month") {
+        if let Some(m) = parse_ews_month(&month_str) {
+            if let Some(mo) = month_num_to_chrono(m) {
+                rule = rule.by_month(&[mo]);
+            }
+        }
     }
-    Some(parts.join(";"))
+
+    if let Some(count_str) = extract_ews_field_doc(&doc, b"NumberOfOccurrences") {
+        if let Ok(c) = count_str.parse::<u32>() {
+            rule = rule.count(c);
+        }
+    } else if let Some(until) = extract_ews_field_doc(&doc, b"EndDate").and_then(|v| parse_datetime(&v)) {
+        let until_dt: chrono::DateTime<RruleTz> = until.with_timezone(&RruleTz::UTC);
+        rule = rule.until(until_dt);
+    }
+
+    Some(rule.to_string())
 }
 
 pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut stack: Vec<Vec<u8>> = Vec::new();
+    let doc = match Document::parse(xml) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
     let mut attendees = Vec::new();
-    let mut current: Option<Attendee> = None;
-    let mut attendee_type = None;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let name = e.name().local_name().as_ref().to_vec();
-                if name.as_slice() == b"RequiredAttendees" {
-                    attendee_type = Some(1u8);
-                } else if name.as_slice() == b"OptionalAttendees" {
-                    attendee_type = Some(2u8);
-                } else if name.as_slice() == b"Attendee" {
-                    current = Some(Attendee {
-                        attendee_type,
-                        ..Default::default()
-                    });
-                }
-                stack.push(name);
+    let required = doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "RequiredAttendees")
+        .count() > 0;
+    let optional = doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "OptionalAttendees")
+        .count() > 0;
+
+    let attendee_type = if required {
+        Some(1u8)
+    } else if optional {
+        Some(2u8)
+    } else {
+        None
+    };
+
+    for attendee_node in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "Attendee") {
+        let mut attendee = Attendee {
+            attendee_type,
+            ..Default::default()
+        };
+
+        for child in attendee_node.descendants() {
+            if !child.is_element() {
+                continue;
             }
-            Ok(Event::Text(t)) => {
-                if let Some(attendee) = current.as_mut() {
-                    let value = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
-                    match stack.last().map(|v| v.as_slice()) {
-                        Some(b"Name") => attendee.name = Some(value),
-                        Some(b"EmailAddress") => attendee.email = nfc(&value),
-                        Some(b"ResponseType") => {
-                            let (status, partstat) = match value.as_str() {
-                                "Accept" => (Some(3), Some("ACCEPTED".to_string())),
-                                "Tentative" => (Some(2), Some("TENTATIVE".to_string())),
-                                "Decline" => (Some(4), Some("DECLINED".to_string())),
-                                _ => (Some(5), Some("NEEDS-ACTION".to_string())),
-                            };
-                            attendee.attendee_status = status;
-                            attendee.partstat = partstat;
-                        }
-                        _ => {}
+            let name = child.tag_name().name();
+            let text = child
+                .descendants()
+                .filter(|c| c.is_text())
+                .filter_map(|c| c.text())
+                .next()
+                .map(|s| s.to_string());
+
+            match name {
+                "Name" => attendee.name = text,
+                "EmailAddress" => {
+                    if let Some(t) = text {
+                        attendee.email = nfc(&t);
                     }
                 }
-            }
-            Ok(Event::End(e)) => {
-                let name = e.name().local_name().as_ref().to_vec();
-                if name.as_slice() == b"Attendee"
-                    && let Some(attendee) = current.take()
-                    && !attendee.email.is_empty()
-                {
-                    attendees.push(attendee);
-                } else if matches!(name.as_slice(), b"RequiredAttendees" | b"OptionalAttendees") {
-                    attendee_type = None;
+                "ResponseType" => {
+                    if let Some(t) = text {
+                        let (status, partstat) = match t.as_str() {
+                            "Accept" => (Some(3), Some("ACCEPTED".to_string())),
+                            "Tentative" => (Some(2), Some("TENTATIVE".to_string())),
+                            "Decline" => (Some(4), Some("DECLINED".to_string())),
+                            _ => (Some(5), Some("NEEDS-ACTION".to_string())),
+                        };
+                        attendee.attendee_status = status;
+                        attendee.partstat = partstat;
+                    }
                 }
-                stack.pop();
+                _ => {}
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
         }
-        buf.clear();
+
+        if !attendee.email.is_empty() {
+            attendees.push(attendee);
+        }
     }
+
     attendees
 }
 
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
-    let subject = extract_ews_field(xml, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
-    let start = extract_ews_field(xml, b"Start")
-        .or_else(|| extract_ews_field(xml, b"StartTime"))
+    let doc = Document::parse(xml).map_err(|e| anyhow!("failed to parse EWS XML: {e}"))?;
+
+    let subject = extract_ews_field_doc(&doc, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
+    let start = extract_ews_field_doc(&doc, b"Start")
+        .or_else(|| extract_ews_field_doc(&doc, b"StartTime"))
         .and_then(|v| parse_datetime(&v))
         .ok_or_else(|| anyhow!("missing Start/StartTime"))?;
-    let end = extract_ews_field(xml, b"End")
-        .or_else(|| extract_ews_field(xml, b"EndTime"))
+    let end = extract_ews_field_doc(&doc, b"End")
+        .or_else(|| extract_ews_field_doc(&doc, b"EndTime"))
         .and_then(|v| parse_datetime(&v))
         .ok_or_else(|| anyhow!("missing End/EndTime"))?;
-    let uid = extract_ews_field(xml, b"UID")
-        .or_else(|| extract_ews_field(xml, b"ClientUid"))
+    let uid = extract_ews_field_doc(&doc, b"UID")
+        .or_else(|| extract_ews_field_doc(&doc, b"ClientUid"))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let description = extract_ews_field(xml, b"Body")
-        .or_else(|| extract_ews_field(xml, b"TextBody"))
+    let description = extract_ews_field_doc(&doc, b"Body")
+        .or_else(|| extract_ews_field_doc(&doc, b"TextBody"))
         .unwrap_or_default();
-    let location = extract_ews_field(xml, b"Location").unwrap_or_default();
-    let all_day = extract_ews_field(xml, b"IsAllDayEvent")
+    let location = extract_ews_field_doc(&doc, b"Location").unwrap_or_default();
+    let all_day = extract_ews_field_doc(&doc, b"IsAllDayEvent")
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let organizer_name = extract_ews_field(xml, b"OrganizerName");
-    let organizer_email = extract_ews_field(xml, b"OrganizerEmail");
-    let categories = extract_ews_fields(xml, b"String");
-    let attendees = parse_ews_attendees(xml);
+    let organizer_name = extract_ews_field_doc(&doc, b"OrganizerName");
+    let organizer_email = extract_ews_field_doc(&doc, b"OrganizerEmail");
+    let categories = extract_ews_fields_doc(&doc, b"String");
+    let attendees = parse_ews_attendees(xml); // still uses its own parse for compatibility
     let reminder =
-        extract_ews_field(xml, b"ReminderMinutesBeforeStart").and_then(|v| v.parse().ok());
+        extract_ews_field_doc(&doc, b"ReminderMinutesBeforeStart").and_then(|v| v.parse().ok());
     let busy_status =
-        extract_ews_field(xml, b"LegacyFreeBusyStatus").and_then(|v| match v.as_str() {
+        extract_ews_field_doc(&doc, b"LegacyFreeBusyStatus").and_then(|v| match v.as_str() {
             "Free" => Some(0),
             "Tentative" => Some(1),
             "Busy" => Some(2),
             "OOF" => Some(3),
             _ => None,
         });
-    let sensitivity = extract_ews_field(xml, b"Sensitivity").and_then(|v| match v.as_str() {
+    let sensitivity = extract_ews_field_doc(&doc, b"Sensitivity").and_then(|v| match v.as_str() {
         "Normal" => Some(0),
         "Personal" => Some(1),
         "Private" => Some(2),
@@ -1837,12 +1868,12 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         _ => None,
     });
     let response_requested =
-        extract_ews_field(xml, b"ResponseRequested").map(|v| v.eq_ignore_ascii_case("true"));
+        extract_ews_field_doc(&doc, b"ResponseRequested").map(|v| v.eq_ignore_ascii_case("true"));
     let disallow_new_time_proposal =
-        extract_ews_field(xml, b"DisallowNewTimeProposal").map(|v| v.eq_ignore_ascii_case("true"));
-    let online_meeting_conf_link = extract_ews_field(xml, b"OnlineMeetingConfLink");
-    let online_meeting_external_link = extract_ews_field(xml, b"OnlineMeetingExternalLink");
-    let client_uid = extract_ews_field(xml, b"ClientUid");
+        extract_ews_field_doc(&doc, b"DisallowNewTimeProposal").map(|v| v.eq_ignore_ascii_case("true"));
+    let online_meeting_conf_link = extract_ews_field_doc(&doc, b"OnlineMeetingConfLink");
+    let online_meeting_external_link = extract_ews_field_doc(&doc, b"OnlineMeetingExternalLink");
+    let client_uid = extract_ews_field_doc(&doc, b"ClientUid");
     let rrule = parse_ews_recurrence(xml);
 
     Ok(CalendarItem {
@@ -1854,8 +1885,8 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         end,
         all_day,
         dtstamp: Some(Utc::now()),
-        timezone: extract_ews_field(xml, b"StartTimeZone"),
-        timezone_blob: extract_ews_field(xml, b"MeetingTimeZone"),
+        timezone: extract_ews_field_doc(&doc, b"StartTimeZone"),
+        timezone_blob: extract_ews_field_doc(&doc, b"MeetingTimeZone"),
         rrule,
         exdates: Vec::new(),
         organizer_name,
