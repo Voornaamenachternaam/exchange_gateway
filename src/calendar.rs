@@ -909,10 +909,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
 
     // CATEGORIES
     if !item.categories.is_empty() {
-        event.append_property(Property::new(
-            "CATEGORIES",
-            item.categories.join(","),
-        ));
+        for category in &item.categories {
+            event.add_property("CATEGORIES", category);
+        }
     }
 
     // Microsoft-specific and custom X- properties
