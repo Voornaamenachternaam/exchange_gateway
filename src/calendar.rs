@@ -798,8 +798,8 @@ pub fn render_ics(item: &CalendarItem) -> String {
         event.starts((item.start.with_timezone(&tz).naive_local(), tz));
         event.ends((item.end.with_timezone(&tz).naive_local(), tz));
     } else {
-        event.starts(item.start);
         event.ends(item.end);
+        event.starts(item.start);
     }
 
     if !item.location.is_empty() {
