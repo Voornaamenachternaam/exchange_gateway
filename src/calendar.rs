@@ -1025,7 +1025,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
             ex_event.starts(effective_start.naive_utc().date());
             let end_date = effective_end.naive_utc().date();
             if end_date != effective_start.naive_utc().date() {
-                ex_event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()));
+                ex_event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()).add_parameter("VALUE", "DATE").done());
             }
         } else if let Some(tzid) = &item.timezone
     } else if let Some(tzid) = &item.timezone
