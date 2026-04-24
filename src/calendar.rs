@@ -1150,7 +1150,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
         if let Some(categories) = &exception.categories
             && !categories.is_empty()
         {
-            ex_event.append_property(Property::new("CATEGORIES", categories.join(",")));
+            for category in categories {
+                ex_event.add_property("CATEGORIES", category);
+            }
         }
         if let Some(busy) = exception.busy_status {
             ex_event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", busy.to_string()));
