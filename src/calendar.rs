@@ -998,10 +998,14 @@ pub fn render_ics(item: &CalendarItem) -> String {
         );
 
         if effective_all_day {
-            ex_event.append_property(Property::new(
-                "RECURRENCE-ID",
-                exception.exception_start.format("%Y%m%d").to_string(),
-            ));
+            ex_event.append_property(
+                Property::new(
+                    "RECURRENCE-ID",
+                    exception.exception_start.format("%Y%m%d").to_string(),
+                )
+                .add_parameter("VALUE", "DATE")
+                .done(),
+            );
             // all_day(date) sets both DTSTART and DTEND to the same date, which
             // collapses multi-day events. Set DTSTART as a DATE value and append
             // DTEND separately so multi-day ranges are preserved.
