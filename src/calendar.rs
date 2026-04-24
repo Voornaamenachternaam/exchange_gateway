@@ -864,7 +864,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 event.append_property(Property::new("EXDATE", &exdate_str));
             }
         } else {
-            event.append_property(Property::new("EXDATE", &exdate_str));
+            event.append_property(Property::new("EXDATE", &exdate_str).add_parameter("VALUE", "DATE").done());
         }
     }
 
