@@ -1758,22 +1758,7 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
     };
 
     let mut attendees = Vec::new();
-    let required = doc
-        .descendants()
-        .filter(|n| n.is_element() && n.tag_name().name() == "RequiredAttendees")
-        .count() > 0;
-    let optional = doc
-        .descendants()
-        .filter(|n| n.is_element() && n.tag_name().name() == "OptionalAttendees")
-        .count() > 0;
-
-    let attendee_type = if required {
-        Some(1u8)
-    } else if optional {
-        Some(2u8)
-    } else {
-        None
-    };
+    let item: CalendarItem = quick_xml::de::from_str(xml_content)?;
 
     for attendee_node in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "Attendee") {
         let mut attendee = Attendee {
