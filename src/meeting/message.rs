@@ -209,7 +209,8 @@ impl MeetingMessageGenerator {
     pub fn generate_ical(&self, msg: &MeetingMessage) -> String {
         use icalendar::{Calendar, Component, Event, EventLike, EventStatus, Property};
 
-        let mut calendar = Calendar::new();
+        let mut calendar = Calendar::empty();
+        calendar.append_property(Property::new("VERSION", "2.0"));
         calendar.append_property(Property::new("PRODID", &self.ical_product_id));
         calendar.append_property(Property::new("METHOD", msg.message_type.to_ical_method()));
 
