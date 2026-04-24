@@ -795,8 +795,8 @@ pub fn render_ics(item: &CalendarItem) -> String {
     {
         // Convert UTC instant to local wall time for the WithTimezone variant,
         // which interprets the naive datetime as local time in the given tz.
-        event.starts((item.start.with_timezone(&tz).naive_local(), tz));
         event.ends((item.end.with_timezone(&tz).naive_local(), tz));
+        event.starts((item.start.with_timezone(&tz).naive_local(), tz));
     } else {
         event.ends(item.end);
         event.starts(item.start);
