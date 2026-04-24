@@ -749,7 +749,8 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
 
 #[must_use]
 pub fn render_ics(item: &CalendarItem) -> String {
-    use icalendar::{Calendar, Class, Component, Event, EventLike, Property};
+    use icalendar::{Calendar, CalendarComponent, Class, Component, Event, EventLike, Property};
+    use std::str::FromStr;
 
     let dtstamp = item.dtstamp.unwrap_or_else(Utc::now);
     let uid = if item.uid.is_empty() {
@@ -761,15 +762,14 @@ pub fn render_ics(item: &CalendarItem) -> String {
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//exchange_gateway//EN"));
 
-    // Embed timezone blob if present
+    // Embed timezone blob if present — parse via icalendar so sub-components
+    // (STANDARD/DAYLIGHT) and property escaping are handled correctly.
     if let Some(blob) = &item.timezone_blob {
-        for line in blob.lines() {
-            let trimmed = line.trim_end();
-            if !trimmed.is_empty() {
-                if let Some(colon_pos) = trimmed.find(':') {
-                    calendar.append_property(
-                        Property::new(&trimmed[..colon_pos], &trimmed[colon_pos + 1..]),
-                    );
+        let wrapped = format!("BEGIN:VCALENDAR\r\n{blob}\r\nEND:VCALENDAR\r\n");
+        if let Ok(parsed) = Calendar::from_str(&icalendar::parser::unfold(&wrapped)) {
+            for component in parsed.iter() {
+                if matches!(component, CalendarComponent::Other(_)) {
+                    calendar.push(component.clone());
                 }
             }
         }
@@ -782,12 +782,21 @@ pub fn render_ics(item: &CalendarItem) -> String {
     event.summary(&item.subject);
 
     if item.all_day {
-        event.all_day(item.start.naive_utc().date());
+        // all_day(date) sets both DTSTART and DTEND to the same date, which
+        // collapses multi-day events. Instead, set DTSTART as a DATE value
+        // and append DTEND separately so multi-day ranges are preserved.
+        event.starts(item.start.naive_utc().date());
+        let end_date = item.end.naive_utc().date();
+        if end_date != item.start.naive_utc().date() {
+            event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()));
+        }
     } else if let Some(tzid) = &item.timezone
-        && let Ok(tz) = tzid.parse::<Tz>()
+    && let Ok(tz) = tzid.parse::<Tz>()
     {
-        event.starts((item.start.naive_utc(), tz));
-        event.ends((item.end.naive_utc(), tz));
+        // Convert UTC instant to local wall time for the WithTimezone variant,
+        // which interprets the naive datetime as local time in the given tz.
+        event.starts((item.start.with_timezone(&tz).naive_local(), tz));
+        event.ends((item.end.with_timezone(&tz).naive_local(), tz));
     } else {
         event.starts(item.start);
         event.ends(item.end);
@@ -807,12 +816,17 @@ pub fn render_ics(item: &CalendarItem) -> String {
     }
 
     // EXDATE
+    // When TZID is present, EXDATE values must be local time (no 'Z' suffix).
+    // Per RFC 5545 §3.3.5, the 'Z' suffix means UTC, which contradicts TZID.
+    let has_tzid = item.timezone.as_ref().is_some_and(|t| t.parse::<Tz>().is_ok());
     let mut all_exdates: Vec<String> = item
         .exdates
         .iter()
         .map(|v| {
             if item.all_day {
                 v.format("%Y%m%d").to_string()
+            } else if has_tzid {
+                v.format("%Y%m%dT%H%M%S").to_string()
             } else {
                 v.format("%Y%m%dT%H%M%SZ").to_string()
             }
@@ -825,6 +839,8 @@ pub fn render_ics(item: &CalendarItem) -> String {
         .map(|v| {
             if item.all_day {
                 v.exception_start.format("%Y%m%d").to_string()
+            } else if has_tzid {
+                v.exception_start.format("%Y%m%dT%H%M%S").to_string()
             } else {
                 v.exception_start.format("%Y%m%dT%H%M%SZ").to_string()
             }
@@ -854,7 +870,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
 
     // ORGANIZER
     if let Some(email) = &item.organizer_email {
-        let mut org_prop = Property::new("ORGANIZER", &normalize_mailto(email));
+        let mut org_prop = Property::new("ORGANIZER", normalize_mailto(email));
         if let Some(name) = &item.organizer_name {
             org_prop.add_parameter("CN", name);
         }
@@ -895,13 +911,13 @@ pub fn render_ics(item: &CalendarItem) -> String {
     if !item.categories.is_empty() {
         event.append_property(Property::new(
             "CATEGORIES",
-            &item.categories.join(","),
+            item.categories.join(","),
         ));
     }
 
     // Microsoft-specific and custom X- properties
     if let Some(busy) = item.busy_status {
-        event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", &busy.to_string()));
+        event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", busy.to_string()));
         event.add_property("TRANSP", if busy == 0 { "TRANSPARENT" } else { "OPAQUE" });
     }
     if let Some(sensitivity) = item.sensitivity {
@@ -912,9 +928,11 @@ pub fn render_ics(item: &CalendarItem) -> String {
         });
     }
     if let Some(reminder) = item.reminder {
+        // Reminder is "minutes before start" (always positive), so the
+        // iCal TRIGGER duration must be negative (before the event).
         let abs = reminder.abs();
         let trigger = if abs % 60 == 0 {
-            chrono::Duration::hours(abs as i64 / 60)
+            -chrono::Duration::hours(abs as i64 / 60)
         } else {
             -chrono::Duration::minutes(abs as i64)
         };
@@ -935,14 +953,14 @@ pub fn render_ics(item: &CalendarItem) -> String {
     if let Some(v) = item.appointment_reply_time {
         event.append_property(Property::new(
             "X-MS-APPOINTMENT-REPLY-TIME",
-            &v.format("%Y%m%dT%H%M%SZ").to_string(),
+            v.format("%Y%m%dT%H%M%SZ").to_string(),
         ));
     }
     if let Some(v) = item.meeting_status {
-        event.append_property(Property::new("X-MS-MEETING-STATUS", &v.to_string()));
+        event.append_property(Property::new("X-MS-MEETING-STATUS", v.to_string()));
     }
     if let Some(v) = item.response_type {
-        event.append_property(Property::new("X-MS-RESPONSE-TYPE", &v.to_string()));
+        event.append_property(Property::new("X-MS-RESPONSE-TYPE", v.to_string()));
     }
     if let Some(v) = &item.online_meeting_conf_link {
         event.append_property(Property::new("X-MS-OLK-CONFLINK", v));
@@ -981,32 +999,40 @@ pub fn render_ics(item: &CalendarItem) -> String {
         );
 
         if effective_all_day {
+        ex_event.append_property(Property::new(
+            "RECURRENCE-ID",
+            exception.exception_start.format("%Y%m%d").to_string(),
+        ));
+        // all_day(date) sets both DTSTART and DTEND to the same date, which
+        // collapses multi-day events. Set DTSTART as a DATE value and append
+        // DTEND separately so multi-day ranges are preserved.
+        ex_event.starts(effective_start.naive_utc().date());
+        let end_date = effective_end.naive_utc().date();
+        if end_date != effective_start.naive_utc().date() {
+            ex_event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()));
+        }
+    } else if let Some(tzid) = &item.timezone
+    && let Ok(tz) = tzid.parse::<Tz>()
+    {
+        ex_event.append_property(
+            Property::new(
+                "RECURRENCE-ID",
+                exception
+                    .exception_start
+                    .with_timezone(&tz)
+                    .format("%Y%m%dT%H%M%S")
+                    .to_string(),
+            )
+            .add_parameter("TZID", tzid)
+            .done(),
+        );
+        // Convert UTC instant to local wall time for the WithTimezone variant
+        ex_event.starts((effective_start.with_timezone(&tz).naive_local(), tz));
+        ex_event.ends((effective_end.with_timezone(&tz).naive_local(), tz));
+    } else {
             ex_event.append_property(Property::new(
                 "RECURRENCE-ID",
-                &exception.exception_start.format("%Y%m%d").to_string(),
-            ));
-            ex_event.all_day(effective_start.naive_utc().date());
-        } else if let Some(tzid) = &item.timezone
-            && let Ok(tz) = tzid.parse::<Tz>()
-        {
-            ex_event.append_property(
-                Property::new(
-                    "RECURRENCE-ID",
-                    &exception
-                        .exception_start
-                        .with_timezone(&tz)
-                        .format("%Y%m%dT%H%M%S")
-                        .to_string(),
-                )
-                .add_parameter("TZID", tzid)
-                .done(),
-            );
-            ex_event.starts((effective_start.naive_utc(), tz));
-            ex_event.ends((effective_end.naive_utc(), tz));
-        } else {
-            ex_event.append_property(Property::new(
-                "RECURRENCE-ID",
-                &exception
+                exception
                     .exception_start
                     .format("%Y%m%dT%H%M%SZ")
                     .to_string(),
@@ -1058,10 +1084,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
         if let Some(categories) = &exception.categories
             && !categories.is_empty()
         {
-            ex_event.append_property(Property::new("CATEGORIES", &categories.join(",")));
+            ex_event.append_property(Property::new("CATEGORIES", categories.join(",")));
         }
         if let Some(busy) = exception.busy_status {
-            ex_event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", &busy.to_string()));
+            ex_event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", busy.to_string()));
         }
         if let Some(sensitivity) = exception.sensitivity {
             ex_event.class(match sensitivity {
@@ -1082,14 +1108,14 @@ pub fn render_ics(item: &CalendarItem) -> String {
         if let Some(v) = exception.appointment_reply_time {
             ex_event.append_property(Property::new(
                 "X-MS-APPOINTMENT-REPLY-TIME",
-                &v.format("%Y%m%dT%H%M%SZ").to_string(),
+                v.format("%Y%m%dT%H%M%SZ").to_string(),
             ));
         }
         if let Some(v) = exception.meeting_status {
-            ex_event.append_property(Property::new("X-MS-MEETING-STATUS", &v.to_string()));
+            ex_event.append_property(Property::new("X-MS-MEETING-STATUS", v.to_string()));
         }
         if let Some(v) = exception.response_type {
-            ex_event.append_property(Property::new("X-MS-RESPONSE-TYPE", &v.to_string()));
+            ex_event.append_property(Property::new("X-MS-RESPONSE-TYPE", v.to_string()));
         }
 
         calendar.push(ex_event.done());

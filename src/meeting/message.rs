@@ -216,9 +216,31 @@ impl MeetingMessageGenerator {
         let mut event = Event::new();
         event.uid(&msg.uid);
         event.timestamp(msg.dtstamp);
-        event.starts(msg.start);
-        event.ends(msg.end);
         event.sequence(msg.sequence);
+
+        // For Counter messages with proposed times, the DTSTART/DTEND carry
+        // the proposed times with X-MS-OLK-ORIGINAL parameters for the originals.
+        // Do NOT call event.starts()/event.ends() for Counter, as they would
+        // emit duplicate DTSTART/DTEND properties alongside append_property.
+        let is_counter_with_props = msg.message_type == MeetingMessageType::Counter
+            && msg.proposed_start.is_some()
+            && msg.proposed_end.is_some();
+
+        if is_counter_with_props {
+            if let (Some(start), Some(end)) = (msg.proposed_start, msg.proposed_end) {
+                event.append_property(Property::new(
+                    "DTSTART",
+                    format!("{}Z", start.format("%Y%m%dT%H%M%S")),
+                ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.start.format("%Y%m%dT%H%M%S"))).done());
+                event.append_property(Property::new(
+                    "DTEND",
+                    format!("{}Z", end.format("%Y%m%dT%H%M%S")),
+                ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.end.format("%Y%m%dT%H%M%S"))).done());
+            }
+        } else {
+            event.starts(msg.start);
+            event.ends(msg.end);
+        }
 
         if !msg.subject.is_empty() {
             event.summary(&msg.subject);
@@ -235,7 +257,7 @@ impl MeetingMessageGenerator {
         {
             let mut org_prop = Property::new(
                 "ORGANIZER",
-                &format!("mailto:{}", msg.organizer_email),
+                format!("mailto:{}", msg.organizer_email),
             );
             org_prop.add_parameter(
                 "CN",
@@ -256,11 +278,11 @@ impl MeetingMessageGenerator {
                     .partstat(icalendar::PartStat::NeedsAction);
                 event.attendee(cal_attendee);
             }
-        } else if msg.message_type == MeetingMessageType::Response {
-            if let Some(ref status) = msg.response_status {
+        } else if msg.message_type == MeetingMessageType::Response
+            && let Some(ref status) = msg.response_status {
                 let mut org_prop = Property::new(
                     "ORGANIZER",
-                    &format!("mailto:{}", msg.organizer_email),
+                    format!("mailto:{}", msg.organizer_email),
                 );
                 org_prop.add_parameter(
                     "CN",
@@ -278,18 +300,6 @@ impl MeetingMessageGenerator {
                     .partstat(partstat);
                 event.attendee(cal_attendee);
             }
-        } else if msg.message_type == MeetingMessageType::Counter
-            && let (Some(start), Some(end)) = (msg.proposed_start, msg.proposed_end)
-        {
-            event.append_property(Property::new(
-                "DTSTART",
-                &format!("{}Z", start.format("%Y%m%dT%H%M%S")),
-            ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.start.format("%Y%m%dT%H%M%S"))).done());
-            event.append_property(Property::new(
-                "DTEND",
-                &format!("{}Z", end.format("%Y%m%dT%H%M%S")),
-            ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.end.format("%Y%m%dT%H%M%S"))).done());
-        }
 
         if msg.message_type == MeetingMessageType::Request
             || msg.message_type == MeetingMessageType::Update
@@ -304,6 +314,7 @@ impl MeetingMessageGenerator {
         calendar.push(event.done());
         calendar.to_string()
     }
+
 
     pub fn generate_ews_create_response(
         &self,

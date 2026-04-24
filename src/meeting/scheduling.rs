@@ -27,7 +27,7 @@ pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> Strin
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
     calendar.append_property(Property::new("METHOD", "REQUEST"));
-    calendar.append_property(Property::new("SEQUENCE", &ctx.sequence.to_string()));
+    calendar.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
 
     let mut event = Event::new();
     event.uid(&ctx.uid);
@@ -41,7 +41,7 @@ pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> Strin
         event.location(&item.location);
     }
 
-    let mut org_prop = Property::new("ORGANIZER", &format!("mailto:{}", ctx.organizer_email));
+    let mut org_prop = Property::new("ORGANIZER", format!("mailto:{}", ctx.organizer_email));
     if let Some(name) = &ctx.organizer_name {
         org_prop.add_parameter("CN", name);
     }
@@ -157,7 +157,7 @@ pub fn build_cancel_request(ctx: &SchedulingContext, item: &CalendarItem) -> Str
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
     calendar.append_property(Property::new("METHOD", "CANCEL"));
-    calendar.append_property(Property::new("SEQUENCE", &ctx.sequence.to_string()));
+    calendar.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
 
     let mut event = Event::new();
     event.uid(&ctx.uid);

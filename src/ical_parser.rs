@@ -385,7 +385,7 @@ fn iso_duration_to_minutes(d: &IsoDuration) -> i32 {
     // The iso8601-duration crate uses f32 fields and provides num_minutes()
     // only when year/month are zero (which is the case for PT... durations).
     // For durations with year/month, use an approximate conversion.
-    if d.year > 0.0 || d.month > 0.0 {
+    if d.year > f32::EPSILON || d.month > f32::EPSILON {
         // Approximate: 1 year ≈ 525960 min, 1 month ≈ 43830 min
         (d.year * 525_960.0 + d.month * 43_830.0 + d.day * 1440.0
             + d.hour * 60.0 + d.minute + d.second / 60.0) as i32
