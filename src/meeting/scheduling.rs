@@ -27,9 +27,9 @@ pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> Strin
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
     calendar.append_property(Property::new("METHOD", "REQUEST"));
-    calendar.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
 
     let mut event = Event::new();
+    event.append_property(Property::new("SEQUENCE", ctx.sequence.to_string()));
     event.uid(&ctx.uid);
     event.timestamp(Utc::now());
     event.ends(item.end);
