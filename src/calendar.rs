@@ -1550,7 +1550,11 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         if current.in_att_display_name && current.current_att.is_some() =>
                     {
                         if let Some(att) = current.current_att.as_mut() {
-                            att.display_name = value.clone();
+                    Some(b"DisplayName")
+                        if current.in_att_display_name && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.display_name = value;
                         }
                     }
                     Some(b"Method")
@@ -1571,21 +1575,23 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         if current.in_att_content_type && current.current_att.is_some() =>
                     {
                         if let Some(att) = current.current_att.as_mut() {
-                            att.content_type = value.clone();
+                            att.content_type = value;
                         }
                     }
                     Some(b"ContentId")
                         if current.in_att_content_id && current.current_att.is_some() =>
                     {
                         if let Some(att) = current.current_att.as_mut() {
-                            att.content_id = Some(value.clone());
+                            att.content_id = Some(value);
                         }
                     }
                     Some(b"ContentLocation")
                         if current.in_att_content_location && current.current_att.is_some() =>
                     {
                         if let Some(att) = current.current_att.as_mut() {
-                            att.content_location = Some(value.clone());
+                            att.content_location = Some(value);
+                        }
+                    }
                         }
                     }
                     Some(b"IsInline")
