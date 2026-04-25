@@ -1918,29 +1918,31 @@ async fn handle_sync_folder_items(
             continue;
         }
             if let Some(item) = current_map.get(&row.server_id) {
-                    let ck = changekey_for_item(&item.row);
-                    let att_list = state
-                        .attachment_manager
-                        .get_attachments_for_item(owner, &row.server_id)
-                        .await
-                        .unwrap_or_default();
-                    let has_atts = !att_list.is_empty();
-                    let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
-                    let att_ref = if att_summaries.is_empty() { None } else { Some(att_summaries.as_slice()) };
-                    let change_tag = if since == 0 { "Create" } else { "Update" };
-                    changes_xml.push_str(&format!(
-                        r#"<t:{ct}>{}</t:{ct}>"#,
-                        render_ews_calendar_item_xml_with_shape(
-                            &item.row.server_id,
-                            &ck,
-                            &item.item,
-                            shape,
-                            has_atts,
-                            att_ref
-                        ),
-                        ct = change_tag
-                    ));
-                }
+                let ck = changekey_for_item(&item.row);
+                let att_list = state
+                    .attachment_manager
+                    .get_attachments_for_item(owner, &row.server_id)
+                    .await
+                    .unwrap_or_default();
+                let has_atts = !att_list.is_empty();
+                let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+                let att_ref = if att_summaries.is_empty() { None } else { Some(att_summaries.as_slice()) };
+                let change_tag = if since == 0 { "Create" } else { "Update" };
+                changes_xml.push_str(&format!(
+                    r#"<t:{ct}>{}</t:{ct}>"#,
+                    render_ews_calendar_item_xml_with_shape(
+                        &item.row.server_id,
+                        &ck,
+                        &item.item,
+                        shape,
+                        has_atts,
+                        att_ref
+                    ),
+                    ct = change_tag
+                ));
+            } else {
+                tracing::warn!(server_id = %row.server_id, "Journal item missing from current_map; skipping sync");
+            }
     }
     let includes_last = if has_more { "false" } else { "true" };
     let next_seen_seq = if visible_rows.is_empty() {
