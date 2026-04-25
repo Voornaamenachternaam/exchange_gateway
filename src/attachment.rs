@@ -362,42 +362,14 @@ pub struct CreateAttachmentParams<'a> {
     pub content_base64: &'a str,
     pub is_inline: bool,
     pub content_id: Option<&'a str>,
-    pub content_location: Option<&'a str>,
-}
-
-pub struct AttachmentManager {
-    storage: Arc<Storage>,
-    max_attachment_bytes: usize,
-}
-
-impl AttachmentManager {
-    pub fn new(storage: Arc<Storage>, max_attachment_bytes: usize) -> Self {
-        Self {
-            storage,
-            max_attachment_bytes,
-        }
+    let decoded_len_estimate = base64::decoded_len_estimate(params.content_base64.len());
+    if decoded_len_estimate > self.max_attachment_bytes {
+        return Err(anyhow!("Attachment size exceeds maximum allowed size"));
     }
-
-pub async fn create_file_attachment(&self, params: &CreateAttachmentParams<'_>) -> Result<FileAttachment> {
-    let name = validate_attachment_name(params.name)?;
-
-    let content_type = normalize_content_type(params.content_type, &name)?;
 
     let decoded = STANDARD
         .decode(params.content_base64)
         .map_err(|_| anyhow!("invalid base64 content in attachment"))?;
-
-    if decoded.is_empty() {
-        return Err(anyhow!("attachment content is empty"));
-    }
-
-    if decoded.len() > self.max_attachment_bytes {
-        return Err(anyhow!(
-            "Attachment size {} exceeds maximum allowed size {}",
-            decoded.len(),
-            self.max_attachment_bytes
-        ));
-    }
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
