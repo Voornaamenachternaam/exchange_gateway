@@ -70,6 +70,7 @@ struct ItemOperationsFetch {
     collection_id: Option<String>,
     server_id: Option<String>,
     long_id: Option<String>,
+    file_reference: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1245,6 +1246,7 @@ async fn handle_item_operations(
             return bad_request_response(request_id, &format!("CalDAV client init failed: {e}"));
         }
     };
+    let owner_lower = crate::util::normalize_email(username);
     let mut responses = String::new();
     for fetch in fetches {
         let store = if fetch.store.is_empty() {
@@ -1253,6 +1255,74 @@ async fn handle_item_operations(
             fetch.store
         };
         let collection_id = fetch.collection_id.unwrap_or_else(|| "1".to_string());
+
+        if let Some(file_ref) = fetch.file_reference.as_deref() {
+            match state
+                .attachment_manager
+                .get_attachment(&owner_lower, file_ref)
+                .await
+            {
+                Ok(Some(attachment)) => {
+                    let parent_id = &attachment.parent_item_server_id;
+                    let item_owner = match state.storage.get_ews_item_owner(parent_id).await {
+                        Ok(Some(o)) => o,
+                        _ => owner_lower.clone(),
+                    };
+                    let calendar_folder_id = crate::ews_folders::folder_id_for(
+                        &item_owner,
+                        crate::ews_folders::DistinguishedFolder::Calendar,
+                    );
+                    let enforcement = PermissionEnforcement::new(&state.storage);
+                    let perm_ctx = PermissionContext::new(
+                        username.to_string(),
+                        item_owner.clone(),
+                        calendar_folder_id,
+                    );
+                    match enforcement.can_read_item(&perm_ctx).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            responses.push_str(&format!(
+                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>4</Status></Fetch>",
+                                xml_escape(&store),
+                                xml_escape(file_ref)
+                            ));
+                            continue;
+                        }
+                        Err(_) => {
+                            responses.push_str(&format!(
+                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                                xml_escape(&store),
+                                xml_escape(file_ref)
+                            ));
+                            continue;
+                        }
+                    }
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(file_ref),
+                        crate::attachment::render_eas_attachment_content_xml(&attachment)
+                    ));
+                }
+                Ok(None) => {
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(file_ref)
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!("ItemOperations attachment fetch error for {}: {}", file_ref, e);
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(file_ref)
+                    ));
+                }
+            }
+            continue;
+        }
+
         let Some(server_id) = fetch.server_id.or(fetch.long_id) else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><Status>6</Status></Fetch>",
@@ -1333,6 +1403,7 @@ async fn handle_item_operations(
                 continue;
             }
         };
+
         let get_future = caldav.get_event(&lookup.resource_href, &owner, password.expose_secret());
         let Ok(Ok((ics, _etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
             responses.push_str(&format!(
@@ -1352,12 +1423,21 @@ async fn handle_item_operations(
             ));
             continue;
         };
+        let mut app_data = sync::render_calendar_app_data(&item);
+        if let Ok(att_list) = state
+            .attachment_manager
+            .get_attachments_for_item(&owner, &server_id)
+            .await
+            && !att_list.is_empty() {
+                let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
+                app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
+            }
         responses.push_str(&format!(
             "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
             xml_escape(&store),
             xml_escape(&collection_id),
             xml_escape(&server_id),
-            sync::render_calendar_app_data(&item)
+            app_data
         ));
     }
     let response = format!(
