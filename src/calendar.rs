@@ -1715,7 +1715,20 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
 fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
     let tag_str = std::str::from_utf8(tag).ok()?;
     doc.descendants()
+fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
+    let tag_str = std::str::from_utf8(tag).ok()?;
+    doc.descendants()
         .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
+        .find_map(|n| n.text().map(|s| s.to_string()))
+}
+
+fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
+    let tag_str = std::str::from_utf8(tag).ok().unwrap_or_default();
+    doc.descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
+        .filter_map(|n| n.text().map(|s| s.to_string()))
+        .collect()
+}
         .filter_map(|n| {
             n.descendants()
                 .filter(|child| child.is_text())
