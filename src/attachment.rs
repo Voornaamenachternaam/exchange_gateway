@@ -920,65 +920,70 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
 
     loop {
         match reader.read_event_into(&mut buf) {
+pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut results = Vec::new();
+    let mut current_att: Option<ParsedEasAttachmentAdd> = None;
+    let mut current_field: Option<&str> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
-                    if in_attachment {
-                        let _ = std::mem::take(&mut display_name);
-                        let _ = std::mem::take(&mut content_type);
-                        let _ = std::mem::take(&mut data);
-                        method = 1;
-                        estimated_data_size = 0;
-                        content_id = None;
-                        content_location = None;
-                        is_inline = false;
-                    }
-                    in_attachment = true;
+                    current_att = Some(ParsedEasAttachmentAdd {
+                        display_name: String::new(),
+                        method: 1,
+                        estimated_data_size: 0,
+                        content_type: String::new(),
+                        content_id: None,
+                        content_location: None,
+                        is_inline: false,
+                        content_base64: String::new(),
+                    });
                 }
-                    in_attachment = true;
-                }
-                b"DisplayName" => in_display_name = true,
-                b"Method" => in_method = true,
-                b"EstimatedDataSize" => in_estimated_data_size = true,
-                b"ContentType" => in_content_type = true,
-                b"ContentId" => in_content_id = true,
-                b"ContentLocation" => in_content_location = true,
-                b"IsInline" => in_is_inline = true,
-                b"Data" => in_data = true,
-                _ => {}
+                b"DisplayName" => current_field = Some("DisplayName"),
+                b"Method" => current_field = Some("Method"),
+                b"EstimatedDataSize" => current_field = Some("EstimatedDataSize"),
+                b"ContentType" => current_field = Some("ContentType"),
+                b"ContentId" => current_field = Some("ContentId"),
+                b"ContentLocation" => current_field = Some("ContentLocation"),
+                b"IsInline" => current_field = Some("IsInline"),
+                b"Data" => current_field = Some("Data"),
+                _ => current_field = None,
             },
             Ok(Event::End(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
-                    if in_attachment {
-                        let _ = std::mem::take(&mut display_name);
-                        let _ = std::mem::take(&mut content_type);
-                        let _ = std::mem::take(&mut data);
-                        method = 1;
-                        estimated_data_size = 0;
-                        content_id = None;
-                        content_location = None;
-                        is_inline = false;
+                    if let Some(att) = current_att.take() {
+                        results.push(att);
                     }
-                    in_attachment = true;
                 }
-                b"DisplayName" => in_display_name = true,
-                b"Method" => in_method = true,
-                b"EstimatedDataSize" => in_estimated_data_size = true,
-                b"ContentType" => in_content_type = true,
-                b"ContentId" => in_content_id = true,
-                b"ContentLocation" => in_content_location = true,
-                b"IsInline" => in_is_inline = true,
-                b"Data" => in_data = true,
-                _ => {}
-                b"DisplayName" => in_display_name = false,
-                b"Method" => in_method = false,
-                b"EstimatedDataSize" => in_estimated_data_size = false,
-                b"ContentType" => in_content_type = false,
-                b"ContentId" => in_content_id = false,
-                b"ContentLocation" => in_content_location = false,
-                b"IsInline" => in_is_inline = false,
-                b"Data" => in_data = false,
-                _ => {}
+                _ => current_field = None,
             },
+            Ok(Event::Text(t)) => {
+                if let (Some(att), Some(field)) = (current_att.as_mut(), current_field) {
+                    let text = t.decode().unwrap_or_default();
+                    match field {
+                        "DisplayName" => att.display_name = text.into_owned(),
+                        "Method" => att.method = text.parse().unwrap_or(1),
+                        "EstimatedDataSize" => att.estimated_data_size = text.parse().unwrap_or(0),
+                        "ContentType" => att.content_type = text.into_owned(),
+                        "ContentId" => att.content_id = Some(text.into_owned()),
+                        "ContentLocation" => att.content_location = Some(text.into_owned()),
+                        "IsInline" => att.is_inline = text == "1" || text.eq_ignore_ascii_case("true"),
+                        "Data" => att.content_base64 = text.into_owned(),
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    results
+}
             Ok(Event::Text(t)) => {
                 if let Ok(v) = t.decode() {
                     let text = v.as_ref();
