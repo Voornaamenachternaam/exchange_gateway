@@ -948,37 +948,27 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
             },
             Ok(Event::End(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
-                if in_attachment && !data.is_empty() {
-                    let dn = std::mem::take(&mut display_name);
-                    let ct = std::mem::take(&mut content_type);
-                    let d = std::mem::take(&mut data);
-                    let ct_resolved = if ct.is_empty() {
-                        mime_type_for_filename(&dn).to_string()
-                    } else {
-                        ct
-                    };
-                    results.push(ParsedEasAttachmentAdd {
-                        display_name: if dn.is_empty() {
-                            "attachment.dat".to_string()
-                        } else {
-                            dn
-                        },
-                        method,
-                        estimated_data_size,
-                        content_type: ct_resolved,
-                        content_id: content_id.take(),
-                        content_location: content_location.take(),
-                        is_inline,
-                        content_base64: d,
-                    });
+                    if in_attachment {
+                        let _ = std::mem::take(&mut display_name);
+                        let _ = std::mem::take(&mut content_type);
+                        let _ = std::mem::take(&mut data);
+                        method = 1;
+                        estimated_data_size = 0;
+                        content_id = None;
+                        content_location = None;
+                        is_inline = false;
+                    }
+                    in_attachment = true;
                 }
-                in_attachment = false;
-                method = 1;
-                estimated_data_size = 0;
-                content_id = None;
-                content_location = None;
-                is_inline = false;
-                }
+                b"DisplayName" => in_display_name = true,
+                b"Method" => in_method = true,
+                b"EstimatedDataSize" => in_estimated_data_size = true,
+                b"ContentType" => in_content_type = true,
+                b"ContentId" => in_content_id = true,
+                b"ContentLocation" => in_content_location = true,
+                b"IsInline" => in_is_inline = true,
+                b"Data" => in_data = true,
+                _ => {}
                 b"DisplayName" => in_display_name = false,
                 b"Method" => in_method = false,
                 b"EstimatedDataSize" => in_estimated_data_size = false,
