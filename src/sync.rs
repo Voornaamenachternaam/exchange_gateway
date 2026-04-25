@@ -1422,6 +1422,7 @@ if pi.is_add {
                     pi.server_id, app_data
                 ));
             }
+            items_included += 1;
     }
 
     if !more_available {
