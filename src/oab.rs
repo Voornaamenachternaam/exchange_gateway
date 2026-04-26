@@ -35,7 +35,7 @@ pub async fn handle_oab_list(State(state): State<Arc<AppState>>) -> Response {
 }
 
 pub async fn handle_oab_file(State(_state): State<Arc<AppState>>) -> Response {
-    let body = build_empty_oab_lzx();
+    let body = build_empty_oab_gzip();
 
     (
         StatusCode::OK,
