@@ -443,6 +443,11 @@ impl AttachmentManager {
 
         let content_type = normalize_content_type(params.content_type, &name)?;
 
+        let decoded_len_estimate = base64::decoded_len_estimate(params.content_base64.len());
+        if decoded_len_estimate > self.max_attachment_bytes {
+            return Err(anyhow!("Attachment size exceeds maximum allowed size"));
+        }
+
         let decoded = STANDARD
             .decode(params.content_base64)
             .map_err(|_| anyhow!("invalid base64 content in attachment"))?;
