@@ -16,22 +16,57 @@ const MAX_ATTACHMENT_NAME_LEN: usize = 255;
 const MAX_CONTENT_TYPE_LEN: usize = 256;
 
 const DANGEROUS_EXTENSIONS: &[&str] = &[
-    "exe", "dll", "bat", "cmd", "com", "cpl", "gadget", "hta", "inf", "ins",
-    "iso", "isp", "js", "jse", "lnk", "msc", "msi", "msp", "mst", "pif",
-    "ps1", "ps2", "psm1", "psd1", "py", "pyc", "pyz", "pyzw", "scr", "sct",
-    "shb", "shs", "vb", "vbe", "vbs", "vxd", "wsh", "ws", "wsc", "wsf",
-    "application", "appx", "msix",
+    "exe",
+    "dll",
+    "bat",
+    "cmd",
+    "com",
+    "cpl",
+    "gadget",
+    "hta",
+    "inf",
+    "ins",
+    "iso",
+    "isp",
+    "js",
+    "jse",
+    "lnk",
+    "msc",
+    "msi",
+    "msp",
+    "mst",
+    "pif",
+    "ps1",
+    "ps2",
+    "psm1",
+    "psd1",
+    "py",
+    "pyc",
+    "pyz",
+    "pyzw",
+    "scr",
+    "sct",
+    "shb",
+    "shs",
+    "vb",
+    "vbe",
+    "vbs",
+    "vxd",
+    "wsh",
+    "ws",
+    "wsc",
+    "wsf",
+    "application",
+    "appx",
+    "msix",
 ];
 
 const RESERVED_WINDOWS_NAMES: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
-    "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
-    "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-const ALLOWED_MIME_TOP_LEVEL: &[&str] = &[
-    "text", "image", "audio", "video", "application",
-];
+const ALLOWED_MIME_TOP_LEVEL: &[&str] = &["text", "image", "audio", "video", "application"];
 
 // FIX #4: Block MIME types that execute scripts when served to a browser,
 // regardless of which top-level type they fall under.
@@ -45,16 +80,28 @@ const DANGEROUS_MIME_TYPES: &[&str] = &[
 ];
 
 const ALLOWED_APPLICATION_SUBTYPES: &[&str] = &[
-    "pdf", "json", "xml", "zip", "gzip", "x-gzip", "x-tar",
+    "pdf",
+    "json",
+    "xml",
+    "zip",
+    "gzip",
+    "x-gzip",
+    "x-tar",
     "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "vnd.openxmlformats-officedocument.wordprocessingml.document",
     "vnd.openxmlformats-officedocument.presentationml.presentation",
-    "vnd.ms-excel", "vnd.ms-word", "vnd.ms-powerpoint",
+    "vnd.ms-excel",
+    "vnd.ms-word",
+    "vnd.ms-powerpoint",
     // FIX #10: "vnd.ms-outlook" was missing; .msg files map to this subtype.
     "vnd.ms-outlook",
-    "msword", "vnd.oasis.opendocument.text",
-    "vnd.oasis.opendocument.spreadsheet", "vnd.oasis.opendocument.presentation",
-    "rtf", "x-rtf", "octet-stream",
+    "msword",
+    "vnd.oasis.opendocument.text",
+    "vnd.oasis.opendocument.spreadsheet",
+    "vnd.oasis.opendocument.presentation",
+    "rtf",
+    "x-rtf",
+    "octet-stream",
 ];
 
 const MIME_EXTENSION_MAP: &[(&str, &str)] = &[
@@ -71,16 +118,31 @@ const MIME_EXTENSION_MAP: &[(&str, &str)] = &[
     ("zip", "application/zip"),
     ("gz", "application/gzip"),
     ("tar", "application/x-tar"),
-    ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
     ("xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"),
-    ("xlsb", "application/vnd.ms-excel.sheet.binary.macroEnabled.12"),
+    (
+        "xlsb",
+        "application/vnd.ms-excel.sheet.binary.macroEnabled.12",
+    ),
     ("xls", "application/vnd.ms-excel"),
-    ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    (
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
     ("doc", "application/msword"),
     ("docm", "application/vnd.ms-word.document.macroEnabled.12"),
-    ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    (
+        "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ),
     ("ppt", "application/vnd.ms-powerpoint"),
-    ("pptm", "application/vnd.ms-powerpoint.presentation.macroEnabled.12"),
+    (
+        "pptm",
+        "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+    ),
     ("odt", "application/vnd.oasis.opendocument.text"),
     ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
     ("odp", "application/vnd.oasis.opendocument.presentation"),
@@ -163,7 +225,9 @@ pub fn sanitize_filename(name: &str) -> String {
 
     // FIX #2: Windows rejects filenames that end with '.' or ' '.
     // Trim any trailing dots and spaces from the final result.
-    let result = result.trim_end_matches(|c| c == '.' || c == ' ').to_string();
+    let result = result
+        .trim_end_matches(|c| c == '.' || c == ' ')
+        .to_string();
 
     if result.is_empty() {
         "attachment".to_string()
@@ -204,10 +268,7 @@ pub fn validate_mime_type(content_type: &str) -> Result<Mime> {
     if top == "application" {
         let sub = mime.subtype().as_str();
         if !ALLOWED_APPLICATION_SUBTYPES.contains(&sub) {
-            return Err(anyhow!(
-                "application/{} MIME subtype is not allowed",
-                sub
-            ));
+            return Err(anyhow!("application/{} MIME subtype is not allowed", sub));
         }
     }
     Ok(mime)
@@ -738,9 +799,7 @@ pub fn parse_get_attachment_request(xml: &str) -> Vec<String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"AttachmentId"
-                    || local.as_ref() == b"RequestAttachmentId"
-                {
+                if local.as_ref() == b"AttachmentId" || local.as_ref() == b"RequestAttachmentId" {
                     for attr in e.attributes().flatten() {
                         if attr.key.local_name().as_ref() == b"Id"
                             && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
@@ -822,7 +881,11 @@ pub fn render_file_attachment_xml(attachment: &FileAttachment, include_content: 
     let _ = write!(
         xml,
         "<t:IsInline>{}</t:IsInline>",
-        if attachment.is_inline { "true" } else { "false" }
+        if attachment.is_inline {
+            "true"
+        } else {
+            "false"
+        }
     );
     if let Some(cid) = &attachment.content_id {
         let _ = write!(xml, "<t:ContentId>{}</t:ContentId>", xml_escape(cid));
@@ -923,11 +986,7 @@ fn is_safe_xml_element_name(s: &str) -> bool {
 // The `operation` value is validated against `is_safe_xml_element_name` before
 // interpolation; an invalid name falls back to "AttachmentResponseMessage" so
 // that a programming error never produces exploitable or malformed XML output.
-pub fn render_attachment_error_response(
-    operation: &str,
-    code: &str,
-    message: &str,
-) -> String {
+pub fn render_attachment_error_response(operation: &str, code: &str, message: &str) -> String {
     let safe_operation = if is_safe_xml_element_name(operation) {
         operation
     } else {
@@ -967,7 +1026,11 @@ pub fn render_eas_attachments_xml(attachments: &[EasAttachmentSummary]) -> Strin
             "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>",
             xml_escape(&att.file_reference)
         );
-        let _ = write!(xml, "<AirSyncBase:Method>{}</AirSyncBase:Method>", att.method);
+        let _ = write!(
+            xml,
+            "<AirSyncBase:Method>{}</AirSyncBase:Method>",
+            att.method
+        );
         let _ = write!(
             xml,
             "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
@@ -1046,10 +1109,7 @@ pub fn render_ews_attachments_xml(attachments: &[EwsAttachmentSummary]) -> Strin
     xml
 }
 
-pub fn render_eas_attachment_fetch_response(
-    attachment: &FileAttachment,
-    status: u32,
-) -> String {
+pub fn render_eas_attachment_fetch_response(attachment: &FileAttachment, status: u32) -> String {
     let mut xml = String::with_capacity(512);
     xml.push_str("<ItemOperations:Fetch>");
     let _ = write!(
@@ -1167,12 +1227,21 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                     in_attachment = true;
                 }
                 b"DisplayName" => in_display_name = true,
-                b"Method" => { in_method = true; method_buf.clear(); }
-                b"EstimatedDataSize" => { in_estimated_data_size = true; estimated_data_size_buf.clear(); }
+                b"Method" => {
+                    in_method = true;
+                    method_buf.clear();
+                }
+                b"EstimatedDataSize" => {
+                    in_estimated_data_size = true;
+                    estimated_data_size_buf.clear();
+                }
                 b"ContentType" => in_content_type = true,
                 b"ContentId" => in_content_id = true,
                 b"ContentLocation" => in_content_location = true,
-                b"IsInline" => { in_is_inline = true; is_inline_buf.clear(); }
+                b"IsInline" => {
+                    in_is_inline = true;
+                    is_inline_buf.clear();
+                }
                 b"Data" => in_data = true,
                 _ => {}
             },
@@ -1289,20 +1358,14 @@ pub fn parse_eas_attachment_deletes(xml: &str) -> Vec<String> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e))
-                if e.name().local_name().as_ref() == b"FileReference" =>
-            {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"FileReference" => {
                 in_file_reference = true;
             }
-            Ok(Event::End(e))
-                if e.name().local_name().as_ref() == b"FileReference" =>
-            {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"FileReference" => {
                 in_file_reference = false;
             }
             Ok(Event::Text(t)) => {
-                if in_file_reference
-                    && let Ok(v) = t.decode()
-                {
+                if in_file_reference && let Ok(v) = t.decode() {
                     ids.push(v.into_owned());
                 }
             }
@@ -1312,4 +1375,4 @@ pub fn parse_eas_attachment_deletes(xml: &str) -> Vec<String> {
         buf.clear();
     }
     ids
-            }
+}

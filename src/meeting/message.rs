@@ -223,14 +223,22 @@ impl MeetingMessageGenerator {
 
         if is_counter_with_props {
             if let (Some(start), Some(end)) = (msg.proposed_start, msg.proposed_end) {
-                event.append_property(Property::new(
-                    "DTSTART",
-                    format!("{}Z", start.format("%Y%m%dT%H%M%S")),
-                ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.start.format("%Y%m%dT%H%M%S"))).done());
-                event.append_property(Property::new(
-                    "DTEND",
-                    format!("{}Z", end.format("%Y%m%dT%H%M%S")),
-                ).add_parameter("X-MS-OLK-ORIGINAL", &format!("{}Z", msg.end.format("%Y%m%dT%H%M%S"))).done());
+                event.append_property(
+                    Property::new("DTSTART", format!("{}Z", start.format("%Y%m%dT%H%M%S")))
+                        .add_parameter(
+                            "X-MS-OLK-ORIGINAL",
+                            &format!("{}Z", msg.start.format("%Y%m%dT%H%M%S")),
+                        )
+                        .done(),
+                );
+                event.append_property(
+                    Property::new("DTEND", format!("{}Z", end.format("%Y%m%dT%H%M%S")))
+                        .add_parameter(
+                            "X-MS-OLK-ORIGINAL",
+                            &format!("{}Z", msg.end.format("%Y%m%dT%H%M%S")),
+                        )
+                        .done(),
+                );
             }
         } else {
             event.ends(msg.end);
@@ -250,13 +258,13 @@ impl MeetingMessageGenerator {
         if msg.message_type == MeetingMessageType::Request
             || msg.message_type == MeetingMessageType::Update
         {
-            let mut org_prop = Property::new(
-                "ORGANIZER",
-                format!("mailto:{}", msg.organizer_email),
-            );
+            let mut org_prop =
+                Property::new("ORGANIZER", format!("mailto:{}", msg.organizer_email));
             org_prop.add_parameter(
                 "CN",
-                msg.organizer_name.as_deref().unwrap_or(&msg.organizer_email),
+                msg.organizer_name
+                    .as_deref()
+                    .unwrap_or(&msg.organizer_email),
             );
             event.append_property(org_prop.done());
 
@@ -268,33 +276,38 @@ impl MeetingMessageGenerator {
                     _ => icalendar::Role::ReqParticipant,
                 };
                 let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", attendee.email))
-                    .cn(attendee.name.as_deref().unwrap_or(&attendee.email).to_string())
+                    .cn(attendee
+                        .name
+                        .as_deref()
+                        .unwrap_or(&attendee.email)
+                        .to_string())
                     .role(ical_role)
                     .partstat(icalendar::PartStat::NeedsAction);
                 event.attendee(cal_attendee);
             }
         } else if msg.message_type == MeetingMessageType::Response
-            && let Some(ref status) = msg.response_status {
-                let mut org_prop = Property::new(
-                    "ORGANIZER",
-                    format!("mailto:{}", msg.organizer_email),
-                );
-                org_prop.add_parameter(
-                    "CN",
-                    msg.organizer_name.as_deref().unwrap_or(&msg.organizer_email),
-                );
-                event.append_property(org_prop.done());
+            && let Some(ref status) = msg.response_status
+        {
+            let mut org_prop =
+                Property::new("ORGANIZER", format!("mailto:{}", msg.organizer_email));
+            org_prop.add_parameter(
+                "CN",
+                msg.organizer_name
+                    .as_deref()
+                    .unwrap_or(&msg.organizer_email),
+            );
+            event.append_property(org_prop.done());
 
-                let partstat = match status {
-                    AttendeeStatus::Accepted => icalendar::PartStat::Accepted,
-                    AttendeeStatus::Declined => icalendar::PartStat::Declined,
-                    AttendeeStatus::Tentative => icalendar::PartStat::Tentative,
-                    _ => icalendar::PartStat::NeedsAction,
-                };
-                let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", msg.organizer_email))
-                    .partstat(partstat);
-                event.attendee(cal_attendee);
-            }
+            let partstat = match status {
+                AttendeeStatus::Accepted => icalendar::PartStat::Accepted,
+                AttendeeStatus::Declined => icalendar::PartStat::Declined,
+                AttendeeStatus::Tentative => icalendar::PartStat::Tentative,
+                _ => icalendar::PartStat::NeedsAction,
+            };
+            let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", msg.organizer_email))
+                .partstat(partstat);
+            event.attendee(cal_attendee);
+        }
 
         if msg.message_type == MeetingMessageType::Request
             || msg.message_type == MeetingMessageType::Update
@@ -309,7 +322,6 @@ impl MeetingMessageGenerator {
         calendar.push(event.done());
         calendar.to_string()
     }
-
 
     pub fn generate_ews_create_response(
         &self,
@@ -564,7 +576,10 @@ mod tests {
     #[test]
     fn test_escape_ical_text() {
         assert_eq!(crate::util::escape_ical_text("a,b;c\\d"), "a\\,b\\;c\\\\d");
-        assert_eq!(crate::util::escape_ical_text("line1\nline2"), "line1\\nline2");
+        assert_eq!(
+            crate::util::escape_ical_text("line1\nline2"),
+            "line1\\nline2"
+        );
     }
 
     #[test]

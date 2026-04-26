@@ -358,8 +358,12 @@ pub fn parse_ical_duration_minutes(input: &str) -> Result<i32, nom::Err<nom::err
 
 fn iso_duration_to_minutes(d: &IsoDuration) -> i32 {
     if d.year > f32::EPSILON || d.month > f32::EPSILON {
-        (d.year * 525_960.0 + d.month * 43_830.0 + d.day * 1440.0
-            + d.hour * 60.0 + d.minute + d.second / 60.0) as i32
+        (d.year * 525_960.0
+            + d.month * 43_830.0
+            + d.day * 1440.0
+            + d.hour * 60.0
+            + d.minute
+            + d.second / 60.0) as i32
     } else {
         d.num_minutes().unwrap_or(0.0) as i32
     }
