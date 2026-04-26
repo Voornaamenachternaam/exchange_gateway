@@ -214,9 +214,7 @@ pub fn sanitize_filename(name: &str) -> String {
         format!("{stem_safe}.{extension}")
     };
 
-    let result = result
-        .trim_end_matches(|c| c == '.' || c == ' ')
-        .to_string();
+    let result = result.trim_end_matches(['.', ' ']).to_string();
 
     if result.is_empty() {
         "attachment".to_string()

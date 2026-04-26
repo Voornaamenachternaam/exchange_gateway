@@ -47,6 +47,8 @@ pub async fn handle_oab_file(State(_state): State<Arc<AppState>>) -> Response {
 
 fn build_empty_oab_gzip() -> Vec<u8> {
     let mut data = Vec::new();
-    data.extend_from_slice(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+    data.extend_from_slice(
+        b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+    );
     data
 }
