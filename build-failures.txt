@@ -1,0 +1,29 @@
+FAILED: .
+       Compiling exchange_gateway v1.3.0 (/home/runner/work/exchange_gateway/exchange_gateway)
+       Compiling tokio-test v0.4.5
+    error: expected identifier, found keyword `let`
+       --> src/attachment.rs:365:5
+        |
+    357 | pub struct CreateAttachmentParams<'a> {
+        |            ---------------------- while parsing this struct
+    ...
+    365 |     let decoded_len_estimate = base64::decoded_len_estimate(params.content_base64.len());
+        |     ^^^ expected identifier, found keyword
+    
+    error: this file contains an unclosed delimiter
+        --> src/calendar.rs:2006:3
+         |
+    1259 | pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
+         |                                                                            - unclosed delimiter
+    ...
+    1332 |                     match last_tag {
+         |                                    - this delimiter might not be properly closed...
+    ...
+    1592 |                 }
+         |                 - ...as it matches this but it has different indentation
+    ...
+    2006 | }
+         |  ^
+    
+    error: could not compile `exchange_gateway` (lib) due to 2 previous errors
+    warning: build failed, waiting for other jobs to finish...
