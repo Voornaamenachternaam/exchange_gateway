@@ -50,10 +50,10 @@ static DEVICE_WINDOW: LazyLock<TokioMutex<DeviceWindowCache>> = LazyLock::new(||
     ))
 });
 static PING_CACHE: LazyLock<TokioMutex<PingCache>> = LazyLock::new(|| {
-        TokioMutex::new(LruCache::new(
-            NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).expect("MAX_PING_CACHE_ENTRIES > 0"),
-        ))
-    });
+     TokioMutex::new(LruCache::new(
+        NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).expect("MAX_PING_CACHE_ENTRIES > 0"),
+    ))
+});
 
 #[derive(Clone, Debug)]
 struct PingFolder {
