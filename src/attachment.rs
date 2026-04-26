@@ -226,7 +226,7 @@ pub fn sanitize_filename(name: &str) -> String {
     // FIX #2: Windows rejects filenames that end with '.' or ' '.
     // Trim any trailing dots and spaces from the final result.
     let result = result
-        .trim_end_matches(|c| c == '.' || c == ' ')
+        .trim_end_matches(['.', ' '])
         .to_string();
 
     if result.is_empty() {
