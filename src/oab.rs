@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::models::AppState;
 
 pub async fn handle_oab_list(State(state): State<Arc<AppState>>) -> Response {
-    let host = &state.cfg.gateway_host;
-    let oab_url = format!("https://{}/OAB/oab.xml", host);
+    let host_escaped = crate::util::xml_escape(&state.cfg.gateway_host);
+    let oab_url = format!("https://{}/OAB/oab.xml", host_escaped);
     let name = "Default Offline Address Book";
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
