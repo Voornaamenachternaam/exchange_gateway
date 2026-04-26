@@ -362,14 +362,42 @@ pub struct CreateAttachmentParams<'a> {
     pub content_base64: &'a str,
     pub is_inline: bool,
     pub content_id: Option<&'a str>,
-    let decoded_len_estimate = base64::decoded_len_estimate(params.content_base64.len());
-    if decoded_len_estimate > self.max_attachment_bytes {
-        return Err(anyhow!("Attachment size exceeds maximum allowed size"));
+    pub content_location: Option<&'a str>,
+}
+
+pub struct AttachmentManager {
+    storage: Arc<Storage>,
+    max_attachment_bytes: usize,
+}
+
+impl AttachmentManager {
+    pub fn new(storage: Arc<Storage>, max_attachment_bytes: usize) -> Self {
+        Self {
+            storage,
+            max_attachment_bytes,
+        }
     }
+
+pub async fn create_file_attachment(&self, params: &CreateAttachmentParams<'_>) -> Result<FileAttachment> {
+    let name = validate_attachment_name(params.name)?;
+
+    let content_type = normalize_content_type(params.content_type, &name)?;
 
     let decoded = STANDARD
         .decode(params.content_base64)
         .map_err(|_| anyhow!("invalid base64 content in attachment"))?;
+
+    if decoded.is_empty() {
+        return Err(anyhow!("attachment content is empty"));
+    }
+
+    if decoded.len() > self.max_attachment_bytes {
+        return Err(anyhow!(
+            "Attachment size {} exceeds maximum allowed size {}",
+            decoded.len(),
+            self.max_attachment_bytes
+        ));
+    }
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -454,6 +482,7 @@ pub struct CreateAttachmentParams<'a> {
         }
         Ok(())
     }
+}
 
 pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachment> {
     let mut reader = Reader::from_str(xml);
@@ -691,22 +720,22 @@ pub struct ParsedDeleteAttachment {
 pub fn render_file_attachment_xml(attachment: &FileAttachment, include_content: bool) -> String {
     let mut xml = String::with_capacity(512);
     xml.push_str("<t:FileAttachment>");
-    write!(xml, r#"<t:AttachmentId Id="{}"/>"#, xml_escape(&attachment.id)).unwrap();
-    write!(xml, "<t:Name>{}</t:Name>", xml_escape(&attachment.name)).unwrap();
-    write!(xml, "<t:ContentType>{}</t:ContentType>", xml_escape(&attachment.content_type)).unwrap();
+    let _ = write!(xml, r#"<t:AttachmentId Id="{}"/>"#, xml_escape(&attachment.id));
+    let _ = write!(xml, "<t:Name>{}</t:Name>", xml_escape(&attachment.name));
+    let _ = write!(xml, "<t:ContentType>{}</t:ContentType>", xml_escape(&attachment.content_type));
     if include_content {
-        write!(xml, "<t:Content>{}</t:Content>", xml_escape(&attachment.content_base64)).unwrap();
+        let _ = write!(xml, "<t:Content>{}</t:Content>", xml_escape(&attachment.content_base64));
     }
-    write!(xml, "<t:Size>{}</t:Size>", attachment.content_size).unwrap();
-    write!(xml, "<t:IsInline>{}</t:IsInline>", if attachment.is_inline { "true" } else { "false" }).unwrap();
+    let _ = write!(xml, "<t:Size>{}</t:Size>", attachment.content_size);
+    let _ = write!(xml, "<t:IsInline>{}</t:IsInline>", if attachment.is_inline { "true" } else { "false" });
     if let Some(cid) = &attachment.content_id {
-        write!(xml, "<t:ContentId>{}</t:ContentId>", xml_escape(cid)).unwrap();
+        let _ = write!(xml, "<t:ContentId>{}</t:ContentId>", xml_escape(cid));
     }
     if let Some(cl) = &attachment.content_location {
-        write!(xml, "<t:ContentLocation>{}</t:ContentLocation>", xml_escape(cl)).unwrap();
+        let _ = write!(xml, "<t:ContentLocation>{}</t:ContentLocation>", xml_escape(cl));
     }
     if let Some(t) = &attachment.last_modified_time {
-        write!(xml, "<t:LastModifiedTime>{}</t:LastModifiedTime>", xml_escape(t)).unwrap();
+        let _ = write!(xml, "<t:LastModifiedTime>{}</t:LastModifiedTime>", xml_escape(t));
     }
     xml.push_str("</t:FileAttachment>");
     xml
@@ -788,16 +817,16 @@ pub fn render_eas_attachments_xml(attachments: &[EasAttachmentSummary]) -> Strin
     xml.push_str("<AirSyncBase:Attachments>");
     for att in attachments {
         xml.push_str("<AirSyncBase:Attachment>");
-        write!(xml, "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>", xml_escape(&att.display_name)).unwrap();
-        write!(xml, "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>", xml_escape(&att.file_reference)).unwrap();
-        write!(xml, "<AirSyncBase:Method>{}</AirSyncBase:Method>", att.method).unwrap();
-        write!(xml, "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>", att.estimated_data_size.max(0)).unwrap();
-        write!(xml, "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>", if att.is_inline { "1" } else { "0" }).unwrap();
+        let _ = write!(xml, "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>", xml_escape(&att.display_name));
+        let _ = write!(xml, "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>", xml_escape(&att.file_reference));
+        let _ = write!(xml, "<AirSyncBase:Method>{}</AirSyncBase:Method>", att.method);
+        let _ = write!(xml, "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>", att.estimated_data_size.max(0));
+        let _ = write!(xml, "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>", if att.is_inline { "1" } else { "0" });
         if let Some(cid) = &att.content_id {
-            write!(xml, "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>", xml_escape(cid)).unwrap();
+            let _ = write!(xml, "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>", xml_escape(cid));
         }
         if let Some(cl) = &att.content_location {
-            write!(xml, "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>", xml_escape(cl)).unwrap();
+            let _ = write!(xml, "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>", xml_escape(cl));
         }
         xml.push_str("</AirSyncBase:Attachment>");
     }
@@ -813,19 +842,19 @@ pub fn render_ews_attachments_xml(attachments: &[EwsAttachmentSummary]) -> Strin
     xml.push_str("<t:Attachments>");
     for att in attachments {
         xml.push_str("<t:FileAttachment>");
-        write!(xml, r#"<t:AttachmentId Id="{}"/>"#, xml_escape(&att.attachment_id)).unwrap();
-        write!(xml, "<t:Name>{}</t:Name>", xml_escape(&att.name)).unwrap();
-        write!(xml, "<t:ContentType>{}</t:ContentType>", xml_escape(&att.content_type)).unwrap();
-        write!(xml, "<t:Size>{}</t:Size>", att.content_size.max(0)).unwrap();
-        write!(xml, "<t:IsInline>{}</t:IsInline>", if att.is_inline { "true" } else { "false" }).unwrap();
+        let _ = write!(xml, r#"<t:AttachmentId Id="{}"/>"#, xml_escape(&att.attachment_id));
+        let _ = write!(xml, "<t:Name>{}</t:Name>", xml_escape(&att.name));
+        let _ = write!(xml, "<t:ContentType>{}</t:ContentType>", xml_escape(&att.content_type));
+        let _ = write!(xml, "<t:Size>{}</t:Size>", att.content_size.max(0));
+        let _ = write!(xml, "<t:IsInline>{}</t:IsInline>", if att.is_inline { "true" } else { "false" });
         if let Some(cid) = &att.content_id {
-            write!(xml, "<t:ContentId>{}</t:ContentId>", xml_escape(cid)).unwrap();
+            let _ = write!(xml, "<t:ContentId>{}</t:ContentId>", xml_escape(cid));
         }
         if let Some(cl) = &att.content_location {
-            write!(xml, "<t:ContentLocation>{}</t:ContentLocation>", xml_escape(cl)).unwrap();
+            let _ = write!(xml, "<t:ContentLocation>{}</t:ContentLocation>", xml_escape(cl));
         }
         if let Some(lmt) = &att.last_modified_time {
-            write!(xml, "<t:LastModifiedTime>{}</t:LastModifiedTime>", lmt.to_rfc3339()).unwrap();
+            let _ = write!(xml, "<t:LastModifiedTime>{}</t:LastModifiedTime>", lmt.to_rfc3339());
         }
         xml.push_str("</t:FileAttachment>");
     }
@@ -839,7 +868,7 @@ pub fn render_eas_attachment_fetch_response(
 ) -> String {
     let mut xml = String::with_capacity(512);
     xml.push_str("<ItemOperations:Fetch>");
-    write!(xml, "<ItemOperations:Status>{}</ItemOperations:Status>", status).unwrap();
+    let _ = write!(xml, "<ItemOperations:Status>{}</ItemOperations:Status>", status);
     if status == 1 {
         xml.push_str(&render_eas_attachment_content_xml(attachment));
     }
@@ -850,17 +879,17 @@ pub fn render_eas_attachment_fetch_response(
 pub fn render_eas_attachment_content_xml(attachment: &FileAttachment) -> String {
     let mut xml = String::with_capacity(512);
     xml.push_str("<Properties>");
-    write!(xml, "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>", xml_escape(&attachment.name)).unwrap();
-    write!(xml, "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>", xml_escape(&attachment.id)).unwrap();
-    write!(xml, "<AirSyncBase:ContentType>{}</AirSyncBase:ContentType>", xml_escape(&attachment.content_type)).unwrap();
-    write!(xml, "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>", attachment.content_size.max(0)).unwrap();
-    write!(xml, "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>", if attachment.is_inline { "1" } else { "0" }).unwrap();
-    write!(xml, "<AirSyncBase:Data>{}</AirSyncBase:Data>", xml_escape(&attachment.content_base64)).unwrap();
+    let _ = write!(xml, "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>", xml_escape(&attachment.name));
+    let _ = write!(xml, "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>", xml_escape(&attachment.id));
+    let _ = write!(xml, "<AirSyncBase:ContentType>{}</AirSyncBase:ContentType>", xml_escape(&attachment.content_type));
+    let _ = write!(xml, "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>", attachment.content_size.max(0));
+    let _ = write!(xml, "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>", if attachment.is_inline { "1" } else { "0" });
+    let _ = write!(xml, "<AirSyncBase:Data>{}</AirSyncBase:Data>", xml_escape(&attachment.content_base64));
     if let Some(cid) = &attachment.content_id {
-        write!(xml, "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>", xml_escape(cid)).unwrap();
+        let _ = write!(xml, "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>", xml_escape(cid));
     }
     if let Some(cl) = &attachment.content_location {
-        write!(xml, "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>", xml_escape(cl)).unwrap();
+        let _ = write!(xml, "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>", xml_escape(cl));
     }
     xml.push_str("</Properties>");
     xml
@@ -871,55 +900,105 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut results = Vec::new();
-    let mut current_att: Option<ParsedEasAttachmentAdd> = None;
-    let mut current_field: Option<&str> = None;
+    let mut in_attachment = false;
+    let mut in_display_name = false;
+    let mut in_method = false;
+    let mut in_estimated_data_size = false;
+    let mut in_content_type = false;
+    let mut in_content_id = false;
+    let mut in_content_location = false;
+    let mut in_is_inline = false;
+    let mut in_data = false;
+    let mut display_name = String::new();
+    let mut method: u8 = 1;
+    let mut estimated_data_size: i64 = 0;
+    let mut content_type = String::new();
+    let mut content_id: Option<String> = None;
+    let mut content_location: Option<String> = None;
+    let mut is_inline = false;
+    let mut data = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
-                    current_att = Some(ParsedEasAttachmentAdd {
-                        display_name: String::new(),
-                        method: 1,
-                        estimated_data_size: 0,
-                        content_type: String::new(),
-                        content_id: None,
-                        content_location: None,
-                        is_inline: false,
-                        content_base64: String::new(),
-                    });
+                    if in_attachment {
+                        let _ = std::mem::take(&mut display_name);
+                    }
+                    in_attachment = true;
                 }
-                b"DisplayName" => current_field = Some("DisplayName"),
-                b"Method" => current_field = Some("Method"),
-                b"EstimatedDataSize" => current_field = Some("EstimatedDataSize"),
-                b"ContentType" => current_field = Some("ContentType"),
-                b"ContentId" => current_field = Some("ContentId"),
-                b"ContentLocation" => current_field = Some("ContentLocation"),
-                b"IsInline" => current_field = Some("IsInline"),
-                b"Data" => current_field = Some("Data"),
-                _ => current_field = None,
+                b"DisplayName" => in_display_name = true,
+                b"Method" => in_method = true,
+                b"EstimatedDataSize" => in_estimated_data_size = true,
+                b"ContentType" => in_content_type = true,
+                b"ContentId" => in_content_id = true,
+                b"ContentLocation" => in_content_location = true,
+                b"IsInline" => in_is_inline = true,
+                b"Data" => in_data = true,
+                _ => {}
             },
             Ok(Event::End(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
-                    if let Some(att) = current_att.take() {
-                        results.push(att);
-                    }
+                if in_attachment && !data.is_empty() {
+                    let dn = std::mem::take(&mut display_name);
+                    let ct = std::mem::take(&mut content_type);
+                    let d = std::mem::take(&mut data);
+                    let ct_resolved = if ct.is_empty() {
+                        mime_type_for_filename(&dn).to_string()
+                    } else {
+                        ct
+                    };
+                    results.push(ParsedEasAttachmentAdd {
+                        display_name: if dn.is_empty() {
+                            "attachment.dat".to_string()
+                        } else {
+                            dn
+                        },
+                        method,
+                        estimated_data_size,
+                        content_type: ct_resolved,
+                        content_id: content_id.take(),
+                        content_location: content_location.take(),
+                        is_inline,
+                        content_base64: d,
+                    });
                 }
-                _ => current_field = None,
+                in_attachment = false;
+                method = 1;
+                estimated_data_size = 0;
+                content_id = None;
+                content_location = None;
+                is_inline = false;
+                }
+                b"DisplayName" => in_display_name = false,
+                b"Method" => in_method = false,
+                b"EstimatedDataSize" => in_estimated_data_size = false,
+                b"ContentType" => in_content_type = false,
+                b"ContentId" => in_content_id = false,
+                b"ContentLocation" => in_content_location = false,
+                b"IsInline" => in_is_inline = false,
+                b"Data" => in_data = false,
+                _ => {}
             },
             Ok(Event::Text(t)) => {
-                if let (Some(att), Some(field)) = (current_att.as_mut(), current_field) {
-                    let text = t.decode().unwrap_or_default();
-                    match field {
-                        "DisplayName" => att.display_name = text.into_owned(),
-                        "Method" => att.method = text.parse().unwrap_or(1),
-                        "EstimatedDataSize" => att.estimated_data_size = text.parse().unwrap_or(0),
-                        "ContentType" => att.content_type = text.into_owned(),
-                        "ContentId" => att.content_id = Some(text.into_owned()),
-                        "ContentLocation" => att.content_location = Some(text.into_owned()),
-                        "IsInline" => att.is_inline = text == "1" || text.eq_ignore_ascii_case("true"),
-                        "Data" => att.content_base64 = text.into_owned(),
-                        _ => {}
+                if let Ok(v) = t.decode() {
+                    let text = v.as_ref();
+                    if in_display_name {
+                        display_name = text.to_string();
+                    } else if in_method {
+                        method = text.parse().unwrap_or(1);
+                    } else if in_estimated_data_size {
+                        estimated_data_size = text.parse().unwrap_or(0);
+                    } else if in_content_type {
+                        content_type = text.to_string();
+                    } else if in_content_id {
+                        content_id = Some(text.to_string());
+                    } else if in_content_location {
+                        content_location = Some(text.to_string());
+                    } else if in_is_inline {
+                        is_inline = text == "1" || text.eq_ignore_ascii_case("true");
+                    } else if in_data {
+                        data = text.to_string();
                     }
                 }
             }

@@ -866,7 +866,6 @@ dependencies = [
  "mime",
  "moka",
  "nom 8.0.0",
- "once_cell",
  "opentelemetry 0.29.1",
  "opentelemetry-otlp",
  "opentelemetry_sdk 0.29.0",

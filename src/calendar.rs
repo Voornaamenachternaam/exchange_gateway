@@ -855,7 +855,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let wrapped = format!("BEGIN:VCALENDAR\r\n{blob}\r\nEND:VCALENDAR\r\n");
         if let Ok(parsed) = Calendar::from_str(&icalendar::parser::unfold(&wrapped)) {
             for component in parsed.iter() {
-                if matches!(component, CalendarComponent::TimeZone(_) | CalendarComponent::Other(_)) {
+                if matches!(component, CalendarComponent::Other(_)) {
                     calendar.push(component.clone());
                 }
             }
@@ -1589,8 +1589,10 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     Some(b"FileReference") if current.in_att_file_reference => {
                         current.attachment_deletes.push(value);
                     }
+            _ => {}
                 }
             }
+        }
             Ok(Event::End(e)) => {
                 let local = e.name().local_name();
                     let name: &[u8] = local.as_ref();
@@ -1613,11 +1615,11 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
             current.in_attachments = false;
         } else if name == b"Attachment" && current.in_attachment {
             current.in_attachment = false;
-            if let Some(att) = current.current_att.take() {
-                if !att.content_base64.is_empty() || !att.display_name.is_empty() {
-                    current.attachment_adds.push(att);
-                }
-            }
+ if let Some(att) = current.current_att.take()
+ && (!att.content_base64.is_empty() || !att.display_name.is_empty())
+ {
+ current.attachment_adds.push(att);
+ }
             current.in_att_display_name = false;
             current.in_att_method = false;
             current.in_att_estimated_data_size = false;
@@ -1681,9 +1683,6 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
 fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
     let tag_str = std::str::from_utf8(tag).ok()?;
     doc.descendants()
-fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
-    let tag_str = std::str::from_utf8(tag).ok()?;
-    doc.descendants()
         .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
         .find_map(|n| n.text().map(|s| s.to_string()))
 }
@@ -1695,30 +1694,6 @@ fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
         .filter_map(|n| n.text().map(|s| s.to_string()))
         .collect()
 }
-        .filter_map(|n| {
-            n.descendants()
-                .filter(|child| child.is_text())
-                .filter_map(|child| child.text())
-                .next()
-                .map(|s| s.to_string())
-        })
-        .next()
-}
-
-fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
-    let tag_str = std::str::from_utf8(tag).ok().unwrap_or_default();
-    doc.descendants()
-        .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
-        .filter_map(|n| {
-            n.descendants()
-                .filter(|child| child.is_text())
-                .filter_map(|child| child.text())
-                .next()
-                .map(|s| s.to_string())
-        })
-        .collect()
-}
-
 pub fn extract_ews_field(xml: &str, tag: &[u8]) -> Option<String> {
     let doc = Document::parse(xml).ok()?;
     extract_ews_field_doc(&doc, tag)
@@ -1946,7 +1921,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let organizer_name = extract_ews_field_doc(&doc, b"OrganizerName");
     let organizer_email = extract_ews_field_doc(&doc, b"OrganizerEmail");
     let categories = extract_ews_fields_doc(&doc, b"String");
-    let attendees = parse_ews_attendees(xml); // still uses its own parse for compatibility
+    let attendees = parse_ews_attendees(xml);
     let reminder =
         extract_ews_field_doc(&doc, b"ReminderMinutesBeforeStart").and_then(|v| v.parse().ok());
     let busy_status =

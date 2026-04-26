@@ -204,8 +204,6 @@ impl MeetingMessageGenerator {
         }
     }
 
-    /// Generate an iCal representation using the `icalendar` crate,
-    /// which handles RFC 5545 escaping and line folding automatically.
     pub fn generate_ical(&self, msg: &MeetingMessage) -> String {
         use icalendar::{Calendar, Component, Event, EventLike, EventStatus, Property};
 
@@ -219,10 +217,6 @@ impl MeetingMessageGenerator {
         event.timestamp(msg.dtstamp);
         event.sequence(msg.sequence);
 
-        // For Counter messages with proposed times, the DTSTART/DTEND carry
-        // the proposed times with X-MS-OLK-ORIGINAL parameters for the originals.
-        // Do NOT call event.starts()/event.ends() for Counter, as they would
-        // emit duplicate DTSTART/DTEND properties alongside append_property.
         let is_counter_with_props = msg.message_type == MeetingMessageType::Counter
             && msg.proposed_start.is_some()
             && msg.proposed_end.is_some();
@@ -569,8 +563,6 @@ mod tests {
 
     #[test]
     fn test_escape_ical_text() {
-        // The icalendar crate now handles escaping internally
-        // but we can verify the util function still works correctly for backward compat
         assert_eq!(crate::util::escape_ical_text("a,b;c\\d"), "a\\,b\\;c\\\\d");
         assert_eq!(crate::util::escape_ical_text("line1\nline2"), "line1\\nline2");
     }

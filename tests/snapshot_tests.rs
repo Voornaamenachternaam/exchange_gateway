@@ -4,7 +4,6 @@ use insta::assert_snapshot;
 
 #[test]
 fn test_ews_getfolder_calendar_response() {
-    // Simulate a typical GetFolder response for calendar
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
     <s:Header>
@@ -164,7 +163,6 @@ fn test_eas_provision_response() {
 
 #[test]
 fn test_eas_ping_response() {
-    // Ping response with changes detected
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
 <Ping xmlns="Ping:">
     <Status>2</Status>

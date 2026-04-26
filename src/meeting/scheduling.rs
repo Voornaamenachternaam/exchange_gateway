@@ -22,7 +22,6 @@ pub struct AttendeeInfo {
     pub status: AttendeeStatus,
 }
 
-/// Build an iTIP REQUEST using the `icalendar` crate (handles escaping + folding).
 pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> String {
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
@@ -152,7 +151,6 @@ pub struct ItipResponse {
     pub attendee_status: AttendeeStatus,
 }
 
-/// Build an iTIP CANCEL using the `icalendar` crate.
 pub fn build_cancel_request(ctx: &SchedulingContext, item: &CalendarItem) -> String {
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//Exchange Gateway//EN"));
