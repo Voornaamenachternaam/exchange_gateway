@@ -1249,7 +1249,7 @@ fn merge_merged_freebusy(a: &str, b: &str) -> String {
     a.bytes()
         .zip_longest(b.bytes())
         .map(|pair| {
-            let (l, r) = pair.or_default();
+            let (l, r) = pair.or(b'0', b'0');
             char::from(l.max(r))
         })
         .collect()
