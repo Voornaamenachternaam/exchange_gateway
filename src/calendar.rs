@@ -1549,13 +1549,66 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                     Some(b"DisplayName")
                         if current.in_att_display_name && current.current_att.is_some() =>
                     {
-                        if let Some(att) = current.current_att.as_mut() {
                     Some(b"DisplayName")
                         if current.in_att_display_name && current.current_att.is_some() =>
                     {
                         if let Some(att) = current.current_att.as_mut() {
                             att.display_name = value;
                         }
+                    }
+                    Some(b"Method")
+                        if current.in_att_method && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.method = value.parse().unwrap_or(1);
+                        }
+                    }
+                    Some(b"EstimatedDataSize")
+                        if current.in_att_estimated_data_size && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.estimated_data_size = value.parse().unwrap_or(0);
+                        }
+                    }
+                    Some(b"ContentType")
+                        if current.in_att_content_type && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.content_type = value;
+                        }
+                    }
+                    Some(b"ContentId")
+                        if current.in_att_content_id && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.content_id = Some(value);
+                        }
+                    }
+                    Some(b"ContentLocation")
+                        if current.in_att_content_location && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.content_location = Some(value);
+                        }
+                    }
+                    Some(b"IsInline")
+                        if current.in_att_is_inline && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.is_inline = value == "1" || value.eq_ignore_ascii_case("true");
+                        }
+                    }
+                    Some(b"Data")
+                        if current.in_att_data && current.current_att.is_some() =>
+                    {
+                        if let Some(att) = current.current_att.as_mut() {
+                            att.content_base64 = value;
+                        }
+                    }
+                    Some(b"FileReference")
+                        if current.in_att_file_reference =>
+                    {
+                        current.attachment_deletes.push(value);
                     }
                     Some(b"Method")
                         if current.in_att_method && current.current_att.is_some() =>
