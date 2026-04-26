@@ -872,31 +872,6 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut results = Vec::new();
-    let mut in_attachment = false;
-    let mut in_display_name = false;
-    let mut in_method = false;
-    let mut in_estimated_data_size = false;
-    let mut in_content_type = false;
-    let mut in_content_id = false;
-    let mut in_content_location = false;
-    let mut in_is_inline = false;
-    let mut in_data = false;
-    let mut display_name = String::new();
-    let mut method: u8 = 1;
-    let mut estimated_data_size: i64 = 0;
-    let mut content_type = String::new();
-    let mut content_id: Option<String> = None;
-    let mut content_location: Option<String> = None;
-    let mut is_inline = false;
-    let mut data = String::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut buf = Vec::new();
-    let mut results = Vec::new();
     let mut current_att: Option<ParsedEasAttachmentAdd> = None;
     let mut current_field: Option<&str> = None;
 
@@ -946,35 +921,6 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                         "IsInline" => att.is_inline = text == "1" || text.eq_ignore_ascii_case("true"),
                         "Data" => att.content_base64 = text.into_owned(),
                         _ => {}
-                    }
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    results
-}
-            Ok(Event::Text(t)) => {
-                if let Ok(v) = t.decode() {
-                    let text = v.as_ref();
-                    if in_display_name {
-                        display_name = text.to_string();
-                    } else if in_method {
-                        method = text.parse().unwrap_or(1);
-                    } else if in_estimated_data_size {
-                        estimated_data_size = text.parse().unwrap_or(0);
-                    } else if in_content_type {
-                        content_type = text.to_string();
-                    } else if in_content_id {
-                        content_id = Some(text.to_string());
-                    } else if in_content_location {
-                        content_location = Some(text.to_string());
-                    } else if in_is_inline {
-                        is_inline = text == "1" || text.eq_ignore_ascii_case("true");
-                    } else if in_data {
-                        data = text.to_string();
                     }
                 }
             }
