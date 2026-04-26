@@ -119,7 +119,7 @@ pub fn sanitize_filename(name: &str) -> String {
         .chars()
         .map(|c| {
             if (u32::from(c) <= 0x1f)  // All C0 controls including tab (0x09)
-                || c == '\0'
+                || c == '/'
                 || c == '/'
                 || c == '\\'
                 || c == ':'
