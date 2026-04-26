@@ -180,17 +180,34 @@ For a single-user or small-team calendar setup, these limits are sufficient. Mon
 
 ## Stalwart Configuration Additions
 
-Add the following to your Stalwart `config.toml` to enable calendar integration:
+Add the following to your Stalwart `config.toml` to enable JMAP and CalDAV access for the Exchange Gateway:
 
 ```toml
-[calendar]
-enabled = true
-
-[server.socket."0.0.0.0:8134"]
+[server.socket."0.0.0.0:8080"]
 protocol = "http"
 
-[server.socket."[::]:8134"]
+[server.socket."[::]:8080"]
 protocol = "http"
+
+[authentication.fallback-admin]
+enable = true
+
+[storage]
+backend = "rocksdb"
+
+[certificate.acme]
+enable = true
+
+[lookup.default]
+domain = "example.com"
+
+[jmap]
+enable = true
+
+[dav]
+enable = true
 ```
+
+The Exchange Gateway connects to Stalwart's CalDAV endpoint at `http://stalwart:8080/dav/` (configured via `caldav_base` in `exchange-gateway.config.toml`). Stalwart v0.15.5 serves CalDAV natively on its HTTP listener when `[dav]` is enabled. Replace `example.com` with your actual mail domain.
 
 See `stalwart-additions.toml` for the complete set of additions.

@@ -155,7 +155,7 @@ const US_DST: [u8; 16] = [0, 0, 3, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0];
 const US_STD: [u8; 16] = [0, 0, 11, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0];
 const NO_DST: [u8; 16] = [0u8; 16];
 
-type TzParams = (i32, String, String, [u8; 16], [u8; 16], i32, i32);
+pub type TzParams = (i32, String, String, [u8; 16], [u8; 16], i32, i32);
 
 fn dst_rules_for(iana: &str) -> ([u8; 16], [u8; 16], i32) {
     let no_dst_zones = [
@@ -207,7 +207,7 @@ fn dst_rules_for(iana: &str) -> ([u8; 16], [u8; 16], i32) {
     (EU_STD, EU_DST, -60)
 }
 
-fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
+pub fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
     let tz: Tz = iana.parse().ok()?;
 
     let win_name = match iana {
