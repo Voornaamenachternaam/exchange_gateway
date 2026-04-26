@@ -454,7 +454,6 @@ pub struct CreateAttachmentParams<'a> {
         }
         Ok(())
     }
-}
 
 pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachment> {
     let mut reader = Reader::from_str(xml);
