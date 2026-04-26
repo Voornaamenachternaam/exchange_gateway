@@ -924,7 +924,15 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                 b"Attachment" => {
                     if in_attachment {
                         let _ = std::mem::take(&mut display_name);
+                        let _ = std::mem::take(&mut content_type);
+                        let _ = std::mem::take(&mut data);
+                        method = 1;
+                        estimated_data_size = 0;
+                        content_id = None;
+                        content_location = None;
+                        is_inline = false;
                     }
+                    in_attachment = true;
                     in_attachment = true;
                 }
                 b"DisplayName" => in_display_name = true,
