@@ -677,9 +677,7 @@ fn options_response(request_id: &str) -> Response {
 
 fn throttled_response(request_id: &str) -> Response {
     let mut r = (StatusCode::SERVICE_UNAVAILABLE, "Throttled").into_response();
-    if let Ok(val) = HeaderValue::from_str(&RETRY_AFTER_SECONDS.to_string()) {
-        r.headers_mut().insert(header::RETRY_AFTER, val);
-    }
+    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
     inject_common_headers(&mut r, request_id);
     r
 }
