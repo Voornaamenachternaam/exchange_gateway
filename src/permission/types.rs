@@ -282,10 +282,7 @@ impl PermissionLevel {
         Self::None
     }
 
-    /// Returns the EWS protocol string for this permission level.
-    /// Uses `strum::Display` for the standard representation.
     pub fn as_str(&self) -> &'static str {
-        // strum generates the Display impl; this method provides a &str reference
         match self {
             Self::None => "None",
             Self::FreeBusy => "FreeBusyTimeOnly",

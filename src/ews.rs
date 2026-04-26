@@ -33,6 +33,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Datelike;
 use const_hex;
+use itertools::Itertools;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use secrecy::{ExposeSecret, SecretString};
@@ -1245,16 +1246,13 @@ fn suggestions_xml_for_window(
 }
 
 fn merge_merged_freebusy(a: &str, b: &str) -> String {
-    let len = a.len().max(b.len());
-    let mut merged = String::with_capacity(len);
-    let ab = a.as_bytes();
-    let bb = b.as_bytes();
-    for i in 0..len {
-        let l = *ab.get(i).unwrap_or(&b'0');
-        let r = *bb.get(i).unwrap_or(&b'0');
-        merged.push(char::from(l.max(r)));
-    }
-    merged
+    a.bytes()
+        .zip_longest(b.bytes())
+        .map(|pair| {
+            let (l, r) = pair.or(b'0', b'0');
+            char::from(l.max(r))
+        })
+        .collect()
 }
 
 fn unauthorized() -> Response {

@@ -170,18 +170,27 @@ async fn main() -> anyhow::Result<()> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C handler");
+        match signal::ctrl_c().await {
+            Ok(()) => {},
+            Err(err) => {
+                tracing::error!("Failed to listen for Ctrl+C: {err}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("Failed to install signal handler")
-            .recv()
-            .await;
-    };
+ #[cfg(unix)]
+ let terminate = async {
+ match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+ Ok(mut sig) => {
+ sig.recv().await;
+ }
+ Err(e) => {
+ tracing::error!("Failed to install signal handler: {e}");
+ std::future::pending::<()>().await;
+ }
+ }
+ };
 
     #[cfg(not(unix))]
     let terminate = async { std::future::pending::<()>() };

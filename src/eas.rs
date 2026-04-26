@@ -7,7 +7,7 @@ use crate::sync::{self, SyncOptions, filter_type_to_start};
 use crate::util::{nfc, xml_escape};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::{
     body::Bytes,
     http::{Method, StatusCode, header},
@@ -41,14 +41,17 @@ const MAX_DEVICE_WINDOW_ENTRIES: usize = 100_000;
 type DeviceWindowCache = LruCache<String, Vec<Instant>>;
 type PingCache = LruCache<String, PingCacheEntry>;
 
+const _: () = assert!(MAX_DEVICE_WINDOW_ENTRIES > 0);
+const _: () = assert!(MAX_PING_CACHE_ENTRIES > 0);
+
 static DEVICE_WINDOW: LazyLock<TokioMutex<DeviceWindowCache>> = LazyLock::new(|| {
     TokioMutex::new(LruCache::new(
-        NonZeroUsize::new(MAX_DEVICE_WINDOW_ENTRIES).unwrap(),
+        NonZeroUsize::new(MAX_DEVICE_WINDOW_ENTRIES).expect("MAX_DEVICE_WINDOW_ENTRIES > 0"),
     ))
 });
 static PING_CACHE: LazyLock<TokioMutex<PingCache>> = LazyLock::new(|| {
-    TokioMutex::new(LruCache::new(
-        NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).unwrap(),
+     TokioMutex::new(LruCache::new(
+        NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).expect("MAX_PING_CACHE_ENTRIES > 0"),
     ))
 });
 
@@ -626,15 +629,15 @@ async fn maybe_throttle(owner: &str, device_id: &str) -> bool {
 
 fn inject_common_headers(resp: &mut Response, request_id: &str) {
     let h = resp.headers_mut();
-    h.insert("MS-Server-ActiveSync", "16.1".parse().unwrap());
-    h.insert("X-MS-ProtocolVersion", "16.1".parse().unwrap());
-    h.insert("Cache-Control", "private, no-store".parse().unwrap());
-    h.insert("Pragma", "no-cache".parse().unwrap());
+    h.insert("MS-Server-ActiveSync", HeaderValue::from_static("16.1"));
+    h.insert("X-MS-ProtocolVersion", HeaderValue::from_static("16.1"));
+    h.insert("Cache-Control", HeaderValue::from_static("private, no-store"));
+    h.insert("Pragma", HeaderValue::from_static("no-cache"));
     h.insert(
         "Strict-Transport-Security",
-        "max-age=63072000; includeSubDomains".parse().unwrap(),
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
     );
-    h.insert("X-Request-Id", request_id.parse().unwrap());
+    h.insert("X-Request-Id", HeaderValue::from_str(request_id).unwrap_or_else(|e| { tracing::warn!("Invalid X-Request-Id value '{}': {}", request_id, e); HeaderValue::from_static("unknown") }));
 }
 
 fn unauth_response(request_id: &str) -> Response {
@@ -674,10 +677,7 @@ fn options_response(request_id: &str) -> Response {
 
 fn throttled_response(request_id: &str) -> Response {
     let mut r = (StatusCode::SERVICE_UNAVAILABLE, "Throttled").into_response();
-    r.headers_mut().insert(
-        header::RETRY_AFTER,
-        RETRY_AFTER_SECONDS.to_string().parse().unwrap(),
-    );
+    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_str(&RETRY_AFTER_SECONDS.to_string()).expect("RETRY_AFTER_SECONDS must be a valid Retry-After value"));
     inject_common_headers(&mut r, request_id);
     r
 }
@@ -958,7 +958,7 @@ async fn handle_folder_sync(
     );
     let mut r = xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id);
     if incoming == "0" {
-        r.headers_mut().insert("X-MS-RP", "1".parse().unwrap());
+        r.headers_mut().insert("X-MS-RP", HeaderValue::from_static("1"));
     }
     r
 }

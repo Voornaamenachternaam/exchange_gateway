@@ -54,7 +54,8 @@ pub enum ClientMutationResult {
 }
 
 pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC init");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .expect("HMAC-SHA256 key must be non-empty: check hmac_secret configuration");
     mac.update(resource_href.as_bytes());
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
