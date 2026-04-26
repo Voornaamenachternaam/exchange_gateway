@@ -677,7 +677,7 @@ fn options_response(request_id: &str) -> Response {
 
 fn throttled_response(request_id: &str) -> Response {
     let mut r = (StatusCode::SERVICE_UNAVAILABLE, "Throttled").into_response();
-    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_str(&RETRY_AFTER_SECONDS.to_string()).expect("RETRY_AFTER_SECONDS must be a valid Retry-After value"));
     inject_common_headers(&mut r, request_id);
     r
 }
