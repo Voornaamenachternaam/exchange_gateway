@@ -172,6 +172,7 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
+    let ctrl_c = async {
         match signal::ctrl_c().await {
             Ok(()) => {}
             Err(e) => {
@@ -179,6 +180,7 @@ async fn shutdown_signal() {
                 std::future::pending::<()>().await;
             }
         }
+    };
     };
 
  #[cfg(unix)]
