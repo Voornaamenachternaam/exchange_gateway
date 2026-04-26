@@ -44,11 +44,7 @@ type PingCache = LruCache<String, PingCacheEntry>;
 const _: () = assert!(MAX_DEVICE_WINDOW_ENTRIES > 0);
 const _: () = assert!(MAX_PING_CACHE_ENTRIES > 0);
 
-static DEVICE_WINDOW: LazyLock<TokioMutex<DeviceWindowCache>> = LazyLock::new(|| {
-    TokioMutex::new(LruCache::new(
-        unsafe { NonZeroUsize::new_unchecked(MAX_DEVICE_WINDOW_ENTRIES) },
-    ))
-});
+NonZeroUsize::new(MAX_DEVICE_WINDOW_ENTRIES).expect("MAX_DEVICE_WINDOW_ENTRIES > 0"),
 static PING_CACHE: LazyLock<TokioMutex<PingCache>> = LazyLock::new(|| {
     TokioMutex::new(LruCache::new(
         unsafe { NonZeroUsize::new_unchecked(MAX_PING_CACHE_ENTRIES) },
