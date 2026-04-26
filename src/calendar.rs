@@ -1617,13 +1617,13 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                 }
         if name == b"Attachments" {
             current.in_attachments = false;
-        }
-        if name == b"Attachment" && current.in_attachment {
+        } else if name == b"Attachment" && current.in_attachment {
             current.in_attachment = false;
-            if let Some(att) = current.current_att.take()
-                && (!att.content_base64.is_empty() || !att.display_name.is_empty()) {
+            if let Some(att) = current.current_att.take() {
+                if !att.content_base64.is_empty() || !att.display_name.is_empty() {
                     current.attachment_adds.push(att);
                 }
+            }
             current.in_att_display_name = false;
             current.in_att_method = false;
             current.in_att_estimated_data_size = false;
@@ -1633,20 +1633,6 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
             current.in_att_is_inline = false;
             current.in_att_data = false;
             current.in_att_file_reference = false;
-        }
-        if current.in_attachment {
-            match name {
-                b"DisplayName" => current.in_att_display_name = false,
-                b"Method" => current.in_att_method = false,
-                b"EstimatedDataSize" => current.in_att_estimated_data_size = false,
-                b"ContentType" => current.in_att_content_type = false,
-                b"ContentId" => current.in_att_content_id = false,
-                b"ContentLocation" => current.in_att_content_location = false,
-                b"IsInline" => current.in_att_is_inline = false,
-                b"Data" => current.in_att_data = false,
-                b"FileReference" => current.in_att_file_reference = false,
-                _ => {}
-            }
         }
                 if matches!(name, b"Add" | b"Change" | b"Delete") {
                     match current_kind.take() {
