@@ -1,8 +1,7 @@
 // src/ews.rs
 use crate::attachment::{
     parse_create_attachment_request, parse_delete_attachment_request, parse_get_attachment_request,
-    render_create_attachment_response,
-    render_file_attachment_xml, render_get_attachment_response,
+    render_create_attachment_response, render_file_attachment_xml, render_get_attachment_response,
 };
 use crate::caldav::CaldavClient;
 use crate::calendar::{
@@ -960,9 +959,10 @@ fn render_ews_calendar_item_xml_with_shape(
         if has_attachments { "true" } else { "false" }
     ));
     if let Some(summaries) = attachment_summaries
-        && !summaries.is_empty() {
-            xml.push_str(&crate::attachment::render_ews_attachments_xml(summaries));
-        }
+        && !summaries.is_empty()
+    {
+        xml.push_str(&crate::attachment::render_ews_attachments_xml(summaries));
+    }
     xml.push_str(&format!(
         "<t:MeetingRequestWasSent>{}</t:MeetingRequestWasSent>",
         if is_meeting { "true" } else { "false" }
@@ -1087,7 +1087,14 @@ fn render_ews_calendar_item_xml(
     change_key: &str,
     item: &crate::calendar::CalendarItem,
 ) -> String {
-    render_ews_calendar_item_xml_with_shape(item_id, change_key, item, ItemShape::AllProperties, false, None)
+    render_ews_calendar_item_xml_with_shape(
+        item_id,
+        change_key,
+        item,
+        ItemShape::AllProperties,
+        false,
+        None,
+    )
 }
 
 async fn merged_freebusy_for_mailbox(
@@ -1616,7 +1623,11 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             .unwrap_or_default();
         let has_atts = !att_list.is_empty();
         let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
-        let att_ref = if att_summaries.is_empty() { None } else { Some(att_summaries.as_slice()) };
+        let att_ref = if att_summaries.is_empty() {
+            None
+        } else {
+            Some(att_summaries.as_slice())
+        };
         item_xml.push_str(&render_ews_calendar_item_xml_with_shape(
             &current.row.server_id,
             &ck,
@@ -1754,8 +1765,19 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                     .unwrap_or_default();
                 let has_atts = !att_list.is_empty();
                 let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
-                let att_ref = if att_summaries.is_empty() { None } else { Some(att_summaries.as_slice()) };
-                render_ews_calendar_item_xml_with_shape(&item.server_id, &ck, &ci, shape, has_atts, att_ref)
+                let att_ref = if att_summaries.is_empty() {
+                    None
+                } else {
+                    Some(att_summaries.as_slice())
+                };
+                render_ews_calendar_item_xml_with_shape(
+                    &item.server_id,
+                    &ck,
+                    &ci,
+                    shape,
+                    has_atts,
+                    att_ref,
+                )
             }
             None => format!(
                 r#"<t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:UID>{}</t:UID></t:CalendarItem>"#,
@@ -1915,32 +1937,36 @@ async fn handle_sync_folder_items(
             ));
             continue;
         }
-            if let Some(item) = current_map.get(&row.server_id) {
-                let ck = changekey_for_item(&item.row);
-                let att_list = state
-                    .attachment_manager
-                    .get_attachments_for_item(owner, &row.server_id)
-                    .await
-                    .unwrap_or_default();
-                let has_atts = !att_list.is_empty();
-                let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
-                let att_ref = if att_summaries.is_empty() { None } else { Some(att_summaries.as_slice()) };
-                let change_tag = if since == 0 { "Create" } else { "Update" };
-                changes_xml.push_str(&format!(
-                    r#"<t:{ct}>{}</t:{ct}>"#,
-                    render_ews_calendar_item_xml_with_shape(
-                        &item.row.server_id,
-                        &ck,
-                        &item.item,
-                        shape,
-                        has_atts,
-                        att_ref
-                    ),
-                    ct = change_tag
-                ));
+        if let Some(item) = current_map.get(&row.server_id) {
+            let ck = changekey_for_item(&item.row);
+            let att_list = state
+                .attachment_manager
+                .get_attachments_for_item(owner, &row.server_id)
+                .await
+                .unwrap_or_default();
+            let has_atts = !att_list.is_empty();
+            let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+            let att_ref = if att_summaries.is_empty() {
+                None
             } else {
-                tracing::warn!(server_id = %row.server_id, "Journal item missing from current_map; skipping sync");
-            }
+                Some(att_summaries.as_slice())
+            };
+            let change_tag = if since == 0 { "Create" } else { "Update" };
+            changes_xml.push_str(&format!(
+                r#"<t:{ct}>{}</t:{ct}>"#,
+                render_ews_calendar_item_xml_with_shape(
+                    &item.row.server_id,
+                    &ck,
+                    &item.item,
+                    shape,
+                    has_atts,
+                    att_ref
+                ),
+                ct = change_tag
+            ));
+        } else {
+            tracing::warn!(server_id = %row.server_id, "Journal item missing from current_map; skipping sync");
+        }
     }
     let includes_last = if has_more { "false" } else { "true" };
     let next_seen_seq = if visible_rows.is_empty() {
@@ -2810,7 +2836,9 @@ async fn handle_get_rooms(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     let room_manager = &state.room_manager;
     let owner = crate::util::normalize_email(&auth.username);
     let rooms = if let Some(room_list_email) = parse_get_rooms_request(body) {
-        room_manager.get_rooms_for_list(&owner, &room_list_email).await
+        room_manager
+            .get_rooms_for_list(&owner, &room_list_email)
+            .await
     } else {
         room_manager.get_all_rooms(&owner).await
     };

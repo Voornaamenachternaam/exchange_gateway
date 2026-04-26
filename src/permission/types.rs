@@ -209,7 +209,18 @@ impl From<PermissionRights> for u32 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, strum::Display, strum::FromRepr)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Default,
+    strum::Display,
+    strum::FromRepr,
+)]
 #[repr(usize)]
 pub enum PermissionLevel {
     #[default]

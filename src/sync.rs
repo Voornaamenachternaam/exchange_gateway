@@ -128,7 +128,11 @@ pub async fn apply_client_sync_mutations(
 
     for mutation in mutations {
         match mutation {
-            EasSyncMutation::Add { client_id, item, attachment_adds } => {
+            EasSyncMutation::Add {
+                client_id,
+                item,
+                attachment_adds,
+            } => {
                 if let Some(client_id) = client_id.as_deref()
                     && let Some((server_id, status)) = state
                         .storage
@@ -542,7 +546,9 @@ pub async fn apply_meeting_response(args: &MeetingResponseArgs<'_>) -> Result<()
         return Err(anyhow!("unknown meeting request id: {}", args.request_id));
     };
     let caldav = CaldavClient::new(&args.state.cfg)?;
-    let calendars = caldav.find_user_calendars(args.username, args.password).await?;
+    let calendars = caldav
+        .find_user_calendars(args.username, args.password)
+        .await?;
     let collection_href = calendars
         .first()
         .ok_or_else(|| anyhow!("no calendars found"))?
@@ -1158,9 +1164,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         };
         let new_sync_key = Uuid::new_v4().to_string();
         storage
-            .set_sync_key(params.owner, params.state_collection_id, &new_sync_key, Some("token"))
+            .set_sync_key(
+                params.owner,
+                params.state_collection_id,
+                &new_sync_key,
+                Some("token"),
+            )
             .await?;
-        let pseudo_resource = format!("class://{}/{}", params.owner, normalized.to_ascii_lowercase());
+        let pseudo_resource = format!(
+            "class://{}/{}",
+            params.owner,
+            normalized.to_ascii_lowercase()
+        );
         let server_id = generate_server_id(params.state.cfg.hmac_secret(), &pseudo_resource);
         let app_data = class_placeholder_app_data(normalized, params.owner);
         let commands = if app_data.is_empty() {
@@ -1191,7 +1206,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         ));
     }
 
-    let previous_state = storage.get_sync_key(params.owner, params.state_collection_id).await?;
+    let previous_state = storage
+        .get_sync_key(params.owner, params.state_collection_id)
+        .await?;
     if params.incoming_sync_key != "0" {
         match previous_state.as_ref() {
             Some((expected_sync_key, _)) if expected_sync_key == params.incoming_sync_key => {}
@@ -1237,17 +1254,29 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
 
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
     let caldav = CaldavClient::new(&params.state.cfg)?;
-    let calendars = caldav.find_user_calendars(params.username, params.password).await?;
+    let calendars = caldav
+        .find_user_calendars(params.username, params.password)
+        .await?;
     let collection_href = calendars
         .first()
         .ok_or_else(|| anyhow!("no calendars found"))?
         .clone();
-    let start = params.opts.filter_start.format("%Y%m%dT%H%M%SZ").to_string();
+    let start = params
+        .opts
+        .filter_start
+        .format("%Y%m%dT%H%M%SZ")
+        .to_string();
     let end = (Utc::now() + Duration::weeks(104))
         .format("%Y%m%dT%H%M%SZ")
         .to_string();
     let events_xml = caldav
-        .query_events(&collection_href, &start, &end, params.username, params.password)
+        .query_events(
+            &collection_href,
+            &start,
+            &end,
+            params.username,
+            params.password,
+        )
         .await?;
 
     use quick_xml::Reader;
@@ -1358,7 +1387,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     for server_id in existing_map.keys() {
         if !seen_ids.contains(server_id) {
             let _ = storage.add_delete_tombstone(params.owner, server_id).await;
-            let _ = storage.delete_item_by_server_id(params.owner, server_id).await;
+            let _ = storage
+                .delete_item_by_server_id(params.owner, server_id)
+                .await;
         }
     }
 
@@ -1392,38 +1423,40 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 &pi.etag,
             )
             .await?;
-if pi.is_add {
-                let mut app_data = render_calendar_app_data(&pi.item);
-                if let Ok(att_list) = params
-                    .state
-                    .attachment_manager
-                    .get_attachments_for_item(params.owner, &pi.server_id)
-                    .await
-                    && !att_list.is_empty() {
-                        let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
-                        app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
-                    }
-                commands.push_str(&format!(
-                    "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
-                    pi.server_id, app_data
-                ));
-            } else {
-                let mut app_data = render_calendar_app_data(&pi.item);
-                if let Ok(att_list) = params
-                    .state
-                    .attachment_manager
-                    .get_attachments_for_item(params.owner, &pi.server_id)
-                    .await
-                    && !att_list.is_empty() {
-                        let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
-                        app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
-                    }
-                commands.push_str(&format!(
-                    "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
-                    pi.server_id, app_data
-                ));
+        if pi.is_add {
+            let mut app_data = render_calendar_app_data(&pi.item);
+            if let Ok(att_list) = params
+                .state
+                .attachment_manager
+                .get_attachments_for_item(params.owner, &pi.server_id)
+                .await
+                && !att_list.is_empty()
+            {
+                let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
+                app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
             }
-            items_included += 1;
+            commands.push_str(&format!(
+                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                pi.server_id, app_data
+            ));
+        } else {
+            let mut app_data = render_calendar_app_data(&pi.item);
+            if let Ok(att_list) = params
+                .state
+                .attachment_manager
+                .get_attachments_for_item(params.owner, &pi.server_id)
+                .await
+                && !att_list.is_empty()
+            {
+                let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
+                app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
+            }
+            commands.push_str(&format!(
+                "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
+                pi.server_id, app_data
+            ));
+        }
+        items_included += 1;
     }
 
     if !more_available {
@@ -1449,7 +1482,11 @@ if pi.is_add {
             Some(&sync_seq_to_token(latest_seq)),
         )
         .await?;
-    let more_available_tag = if more_available { "<MoreAvailable/>" } else { "" };
+    let more_available_tag = if more_available {
+        "<MoreAvailable/>"
+    } else {
+        ""
+    };
     let collection_id_escaped = xml_escape(params.collection_id);
 
     Ok(format!(

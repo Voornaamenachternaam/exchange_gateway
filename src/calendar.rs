@@ -11,7 +11,7 @@ use phf::phf_map;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use roxmltree::Document;
-use rrule::{Frequency, NWeekday, RRule, Weekday, Tz as RruleTz};
+use rrule::{Frequency, NWeekday, RRule, Tz as RruleTz, Weekday};
 use smallvec::SmallVec;
 use uuid::Uuid;
 
@@ -404,9 +404,10 @@ impl EasRecurrence {
 
         if let Some(month) = self.month_of_year
             && matches!(kind, 5 | 6)
-            && let Some(m) = month_num_to_chrono(month) {
-                rule = rule.by_month(&[m]);
-            }
+            && let Some(m) = month_num_to_chrono(month)
+        {
+            rule = rule.by_month(&[m]);
+        }
 
         if let Some(count) = self.occurrences {
             rule = rule.count(count);
@@ -855,7 +856,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let wrapped = format!("BEGIN:VCALENDAR\r\n{blob}\r\nEND:VCALENDAR\r\n");
         if let Ok(parsed) = Calendar::from_str(&icalendar::parser::unfold(&wrapped)) {
             for component in parsed.iter() {
-                if matches!(component, CalendarComponent::TimeZone(_) | CalendarComponent::Other(_)) {
+                if matches!(
+                    component,
+                    CalendarComponent::TimeZone(_) | CalendarComponent::Other(_)
+                ) {
                     calendar.push(component.clone());
                 }
             }
@@ -871,7 +875,11 @@ pub fn render_ics(item: &CalendarItem) -> String {
         event.starts(item.start.naive_utc().date());
         let end_date = item.end.naive_utc().date();
         if end_date != item.start.naive_utc().date() {
-            event.append_property(Property::new("DTEND", end_date.format("%Y%m%d").to_string()).add_parameter("VALUE", "DATE").done());
+            event.append_property(
+                Property::new("DTEND", end_date.format("%Y%m%d").to_string())
+                    .add_parameter("VALUE", "DATE")
+                    .done(),
+            );
         }
     } else if let Some(tzid) = &item.timezone
         && let Ok(tz) = tzid.parse::<Tz>()
@@ -896,7 +904,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
         event.add_property("RRULE", rrule);
     }
 
-    let has_tzid = item.timezone.as_ref().is_some_and(|t| t.parse::<Tz>().is_ok());
+    let has_tzid = item
+        .timezone
+        .as_ref()
+        .is_some_and(|t| t.parse::<Tz>().is_ok());
     let all_exdates: Vec<String> = item
         .exdates
         .iter()
@@ -909,20 +920,15 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 v.format("%Y%m%dT%H%M%SZ").to_string()
             }
         })
-        .chain(
-            item.exceptions
-                .iter()
-                .filter(|v| v.deleted)
-                .map(|v| {
-                    if item.all_day {
-                        v.exception_start.format("%Y%m%d").to_string()
-                    } else if has_tzid {
-                        v.exception_start.format("%Y%m%dT%H%M%S").to_string()
-                    } else {
-                        v.exception_start.format("%Y%m%dT%H%M%SZ").to_string()
-                    }
-                }),
-        )
+        .chain(item.exceptions.iter().filter(|v| v.deleted).map(|v| {
+            if item.all_day {
+                v.exception_start.format("%Y%m%d").to_string()
+            } else if has_tzid {
+                v.exception_start.format("%Y%m%dT%H%M%S").to_string()
+            } else {
+                v.exception_start.format("%Y%m%dT%H%M%SZ").to_string()
+            }
+        }))
         .sorted()
         .dedup()
         .collect();
@@ -942,7 +948,11 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 event.append_property(Property::new("EXDATE", &exdate_str));
             }
         } else {
-            event.append_property(Property::new("EXDATE", &exdate_str).add_parameter("VALUE", "DATE").done());
+            event.append_property(
+                Property::new("EXDATE", &exdate_str)
+                    .add_parameter("VALUE", "DATE")
+                    .done(),
+            );
         }
     }
 
@@ -990,7 +1000,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
     }
 
     if let Some(busy) = item.busy_status {
-        event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", busy.to_string()));
+        event.append_property(Property::new(
+            "X-MICROSOFT-CDO-BUSYSTATUS",
+            busy.to_string(),
+        ));
         event.add_property("TRANSP", if busy == 0 { "TRANSPARENT" } else { "OPAQUE" });
     }
     if let Some(sensitivity) = item.sensitivity {
@@ -1061,12 +1074,7 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let mut ex_event = Event::new();
         ex_event.uid(&uid);
         ex_event.timestamp(dtstamp);
-        ex_event.summary(
-            exception
-                .subject
-                .as_deref()
-                .unwrap_or(&item.subject),
-        );
+        ex_event.summary(exception.subject.as_deref().unwrap_or(&item.subject));
 
         if effective_all_day {
             ex_event.append_property(
@@ -1163,7 +1171,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
             }
         }
         if let Some(busy) = exception.busy_status {
-            ex_event.append_property(Property::new("X-MICROSOFT-CDO-BUSYSTATUS", busy.to_string()));
+            ex_event.append_property(Property::new(
+                "X-MICROSOFT-CDO-BUSYSTATUS",
+                busy.to_string(),
+            ));
         }
         if let Some(sensitivity) = exception.sensitivity {
             ex_event.class(match sensitivity {
@@ -1269,7 +1280,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let local = e.name().local_name();
-                    let name: &[u8] = local.as_ref();
+                let name: &[u8] = local.as_ref();
                 let tag: SmallVec<[u8; 16]> = SmallVec::from_slice(name);
                 if matches!(name, b"Add" | b"Change" | b"Delete") {
                     current_kind = Some(match name {
@@ -1314,7 +1325,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
             }
             Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                    let name: &[u8] = local.as_ref();
+                let name: &[u8] = local.as_ref();
                 let tag: SmallVec<[u8; 16]> = SmallVec::from_slice(name);
                 if name == b"Recurrence" {
                     current.recurrence.is_empty = true;
@@ -1546,56 +1557,71 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         {
                             current.recurrence.calendar_type = value.parse().ok()
                         }
-                    Some(b"DisplayName") if current.in_att_display_name && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.display_name = value;
+                        Some(b"DisplayName")
+                            if current.in_att_display_name && current.current_att.is_some() =>
+                        {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.display_name = value;
+                            }
                         }
-                    }
-                    Some(b"Method") if current.in_att_method && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.method = value.parse().unwrap_or(1);
+                        Some(b"Method")
+                            if current.in_att_method && current.current_att.is_some() =>
+                        {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.method = value.parse().unwrap_or(1);
+                            }
                         }
-                    }
-                    Some(b"EstimatedDataSize") if current.in_att_estimated_data_size && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.estimated_data_size = value.parse().unwrap_or(0);
+                        Some(b"EstimatedDataSize")
+                            if current.in_att_estimated_data_size
+                                && current.current_att.is_some() =>
+                        {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.estimated_data_size = value.parse().unwrap_or(0);
+                            }
                         }
-                    }
-                    Some(b"ContentType") if current.in_att_content_type && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.content_type = value;
+                        Some(b"ContentType")
+                            if current.in_att_content_type && current.current_att.is_some() =>
+                        {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.content_type = value;
+                            }
                         }
-                    }
-                    Some(b"ContentId") if current.in_att_content_id && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.content_id = Some(value);
+                        Some(b"ContentId")
+                            if current.in_att_content_id && current.current_att.is_some() =>
+                        {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.content_id = Some(value);
+                            }
                         }
-                    }
-                    Some(b"ContentLocation") if current.in_att_content_location && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.content_location = Some(value);
+                        Some(b"ContentLocation")
+                            if current.in_att_content_location && current.current_att.is_some() =>
+                        {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.content_location = Some(value);
+                            }
                         }
-                    }
-                    Some(b"IsInline") if current.in_att_is_inline && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.is_inline = value == "1" || value.eq_ignore_ascii_case("true");
+                        Some(b"IsInline")
+                            if current.in_att_is_inline && current.current_att.is_some() =>
+                        {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.is_inline = value == "1" || value.eq_ignore_ascii_case("true");
+                            }
                         }
-                    }
-                    Some(b"Data") if current.in_att_data && current.current_att.is_some() => {
-                        if let Some(att) = current.current_att.as_mut() {
-                            att.content_base64 = value;
+                        Some(b"Data") if current.in_att_data && current.current_att.is_some() => {
+                            if let Some(att) = current.current_att.as_mut() {
+                                att.content_base64 = value;
+                            }
                         }
+                        Some(b"FileReference") if current.in_att_file_reference => {
+                            current.attachment_deletes.push(value);
+                        }
+                        _ => {}
                     }
-                    Some(b"FileReference") if current.in_att_file_reference => {
-                        current.attachment_deletes.push(value);
-                    }
-            _ => {}
                 }
             }
-        }
             Ok(Event::End(e)) => {
                 let local = e.name().local_name();
-                    let name: &[u8] = local.as_ref();
+                let name: &[u8] = local.as_ref();
                 if name == b"Attendee"
                     && let Some(attendee) = current.current_attendee.take()
                     && !attendee.email.is_empty()
@@ -1611,61 +1637,62 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                 {
                     current.exceptions.push(exception);
                 }
-        if name == b"Attachments" {
-            current.in_attachments = false;
-        } else if name == b"Attachment" && current.in_attachment {
-            current.in_attachment = false;
- if let Some(att) = current.current_att.take()
- && (!att.content_base64.is_empty() || !att.display_name.is_empty())
- {
- current.attachment_adds.push(att);
- }
-            current.in_att_display_name = false;
-            current.in_att_method = false;
-            current.in_att_estimated_data_size = false;
-            current.in_att_content_type = false;
-            current.in_att_content_id = false;
-            current.in_att_content_location = false;
-            current.in_att_is_inline = false;
-            current.in_att_data = false;
-            current.in_att_file_reference = false;
-        }
+                if name == b"Attachments" {
+                    current.in_attachments = false;
+                } else if name == b"Attachment" && current.in_attachment {
+                    current.in_attachment = false;
+                    if let Some(att) = current.current_att.take()
+                        && (!att.content_base64.is_empty() || !att.display_name.is_empty())
+                    {
+                        current.attachment_adds.push(att);
+                    }
+                    current.in_att_display_name = false;
+                    current.in_att_method = false;
+                    current.in_att_estimated_data_size = false;
+                    current.in_att_content_type = false;
+                    current.in_att_content_id = false;
+                    current.in_att_content_location = false;
+                    current.in_att_is_inline = false;
+                    current.in_att_data = false;
+                    current.in_att_file_reference = false;
+                }
                 if matches!(name, b"Add" | b"Change" | b"Delete") {
                     match current_kind.take() {
-                Some(EasOpKind::Add) => {
-                    let client_id = current.client_id.clone();
-                    let attachment_adds = std::mem::take(&mut current.attachment_adds);
-                    let builder = std::mem::take(&mut current);
-                    out.push(EasSyncMutation::Add {
-                        client_id,
-                        item: builder.into_item()?,
-                        attachment_adds,
-                    });
-                }
-                Some(EasOpKind::Change) => {
-                    let server_id = current.server_id.clone().unwrap_or_default();
-                    let instance_id = current.instance_id;
-                    let attachment_adds = std::mem::take(&mut current.attachment_adds);
-                    let attachment_deletes = std::mem::take(&mut current.attachment_deletes);
-                    let builder = std::mem::take(&mut current);
-                    out.push(EasSyncMutation::Change {
-                        server_id,
-                        instance_id,
-                        patch: builder.into_patch(),
-                        attachment_adds,
-                        attachment_deletes,
-                    });
-                }
-                Some(EasOpKind::Delete) => {
-                    let server_id = current.server_id.clone().unwrap_or_default();
-                    let instance_id = current.instance_id;
-                    let _builder = std::mem::take(&mut current);
-                    out.push(EasSyncMutation::Delete {
-                        server_id,
-                        instance_id,
-                    });
-                }
-                None => {}
+                        Some(EasOpKind::Add) => {
+                            let client_id = current.client_id.clone();
+                            let attachment_adds = std::mem::take(&mut current.attachment_adds);
+                            let builder = std::mem::take(&mut current);
+                            out.push(EasSyncMutation::Add {
+                                client_id,
+                                item: builder.into_item()?,
+                                attachment_adds,
+                            });
+                        }
+                        Some(EasOpKind::Change) => {
+                            let server_id = current.server_id.clone().unwrap_or_default();
+                            let instance_id = current.instance_id;
+                            let attachment_adds = std::mem::take(&mut current.attachment_adds);
+                            let attachment_deletes =
+                                std::mem::take(&mut current.attachment_deletes);
+                            let builder = std::mem::take(&mut current);
+                            out.push(EasSyncMutation::Change {
+                                server_id,
+                                instance_id,
+                                patch: builder.into_patch(),
+                                attachment_adds,
+                                attachment_deletes,
+                            });
+                        }
+                        Some(EasOpKind::Delete) => {
+                            let server_id = current.server_id.clone().unwrap_or_default();
+                            let instance_id = current.instance_id;
+                            let _builder = std::mem::take(&mut current);
+                            out.push(EasSyncMutation::Delete {
+                                server_id,
+                                instance_id,
+                            });
+                        }
+                        None => {}
                     }
                 }
                 stack.pop();
@@ -1763,7 +1790,8 @@ pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
         Frequency::Daily
     } else if xml.contains("WeeklyRecurrence") {
         Frequency::Weekly
-    } else if xml.contains("AbsoluteMonthlyRecurrence") || xml.contains("RelativeMonthlyRecurrence") {
+    } else if xml.contains("AbsoluteMonthlyRecurrence") || xml.contains("RelativeMonthlyRecurrence")
+    {
         Frequency::Monthly
     } else if xml.contains("AbsoluteYearlyRecurrence") || xml.contains("RelativeYearlyRecurrence") {
         Frequency::Yearly
@@ -1789,9 +1817,13 @@ pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
                     };
                     byday
                         .into_iter()
-                        .filter_map(|code| day_code_to_weekday(code).map(|wd| NWeekday::Nth(ord, wd)))
+                        .filter_map(|code| {
+                            day_code_to_weekday(code).map(|wd| NWeekday::Nth(ord, wd))
+                        })
                         .collect()
-                } else if xml.contains("RelativeMonthlyRecurrence") || xml.contains("RelativeYearlyRecurrence") {
+                } else if xml.contains("RelativeMonthlyRecurrence")
+                    || xml.contains("RelativeYearlyRecurrence")
+                {
                     let ord = extract_ews_field_doc(&doc, b"DayOfWeekIndex")
                         .and_then(|v| match v.as_str() {
                             "First" => Some(1i16),
@@ -1804,7 +1836,9 @@ pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
                         .unwrap_or(1);
                     byday
                         .into_iter()
-                        .filter_map(|code| day_code_to_weekday(code).map(|wd| NWeekday::Nth(ord, wd)))
+                        .filter_map(|code| {
+                            day_code_to_weekday(code).map(|wd| NWeekday::Nth(ord, wd))
+                        })
                         .collect()
                 } else {
                     byday
@@ -1820,21 +1854,25 @@ pub fn parse_ews_recurrence(xml: &str) -> Option<String> {
     }
 
     if let Some(day_str) = extract_ews_field_doc(&doc, b"DayOfMonth")
-        && let Ok(d) = day_str.parse::<i8>() {
-            rule = rule.by_month_day(vec![d]);
-        }
+        && let Ok(d) = day_str.parse::<i8>()
+    {
+        rule = rule.by_month_day(vec![d]);
+    }
 
     if let Some(month_str) = extract_ews_field_doc(&doc, b"Month")
         && let Some(m) = parse_ews_month(&month_str)
-            && let Some(mo) = month_num_to_chrono(m) {
-                rule = rule.by_month(&[mo]);
-            }
+        && let Some(mo) = month_num_to_chrono(m)
+    {
+        rule = rule.by_month(&[mo]);
+    }
 
     if let Some(count_str) = extract_ews_field_doc(&doc, b"NumberOfOccurrences") {
         if let Ok(c) = count_str.parse::<u32>() {
             rule = rule.count(c);
         }
-    } else if let Some(until) = extract_ews_field_doc(&doc, b"EndDate").and_then(|v| parse_datetime(&v)) {
+    } else if let Some(until) =
+        extract_ews_field_doc(&doc, b"EndDate").and_then(|v| parse_datetime(&v))
+    {
         let until_dt: chrono::DateTime<RruleTz> = until.with_timezone(&RruleTz::UTC);
         rule = rule.until(until_dt);
     }
@@ -1850,7 +1888,10 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
 
     let mut attendees = Vec::new();
 
-    for attendee_node in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "Attendee") {
+    for attendee_node in doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "Attendee")
+    {
         let mut attendee = Attendee::default();
 
         for child in attendee_node.descendants() {
@@ -1899,7 +1940,8 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let doc = Document::parse(xml).map_err(|e| anyhow!("failed to parse EWS XML: {e}"))?;
 
-    let subject = extract_ews_field_doc(&doc, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
+    let subject =
+        extract_ews_field_doc(&doc, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
     let start = extract_ews_field_doc(&doc, b"Start")
         .or_else(|| extract_ews_field_doc(&doc, b"StartTime"))
         .and_then(|v| parse_datetime(&v))
@@ -1941,8 +1983,8 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     });
     let response_requested =
         extract_ews_field_doc(&doc, b"ResponseRequested").map(|v| v.eq_ignore_ascii_case("true"));
-    let disallow_new_time_proposal =
-        extract_ews_field_doc(&doc, b"DisallowNewTimeProposal").map(|v| v.eq_ignore_ascii_case("true"));
+    let disallow_new_time_proposal = extract_ews_field_doc(&doc, b"DisallowNewTimeProposal")
+        .map(|v| v.eq_ignore_ascii_case("true"));
     let online_meeting_conf_link = extract_ews_field_doc(&doc, b"OnlineMeetingConfLink");
     let online_meeting_external_link = extract_ews_field_doc(&doc, b"OnlineMeetingExternalLink");
     let client_uid = extract_ews_field_doc(&doc, b"ClientUid");

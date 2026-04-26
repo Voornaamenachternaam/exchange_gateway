@@ -436,32 +436,32 @@ impl Storage {
     }
 
     pub async fn upsert_device_info(&self, params: &DeviceInfoParams<'_>) -> Result<()> {
-    #[derive(Serialize)]
-    struct Req<'a> {
-        owner: &'a str,
-        device_id: &'a str,
-        friendly_name: &'a str,
-        model: &'a str,
-        os: &'a str,
-        phone_number: &'a str,
-        imei: &'a str,
-        user_agent: &'a str,
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            device_id: &'a str,
+            friendly_name: &'a str,
+            model: &'a str,
+            os: &'a str,
+            phone_number: &'a str,
+            imei: &'a str,
+            user_agent: &'a str,
+        }
+        self.post_json(
+            "upsert_device_info",
+            &Req {
+                owner: params.owner,
+                device_id: params.device_id,
+                friendly_name: params.friendly_name,
+                model: params.model,
+                os: params.os,
+                phone_number: params.phone_number,
+                imei: params.imei,
+                user_agent: params.user_agent,
+            },
+        )
+        .await
     }
-    self.post_json(
-        "upsert_device_info",
-        &Req {
-            owner: params.owner,
-            device_id: params.device_id,
-            friendly_name: params.friendly_name,
-            model: params.model,
-            os: params.os,
-            phone_number: params.phone_number,
-            imei: params.imei,
-            user_agent: params.user_agent,
-        },
-    )
-    .await
-}
 
     pub async fn list_ews_items(
         &self,
@@ -644,42 +644,42 @@ impl Storage {
     }
 
     pub async fn upsert_meeting_state(&self, params: &MeetingStateParams<'_>) -> Result<()> {
-    #[derive(Serialize)]
-    struct Req<'a> {
-        owner: &'a str,
-        uid: &'a str,
-        sequence: u32,
-        state: &'a str,
-        state_flags: u8,
-        is_organizer: i32,
-        organizer_email: Option<&'a str>,
-        organizer_name: Option<&'a str>,
-        subject: Option<&'a str>,
-        location: Option<&'a str>,
-        start_time: &'a str,
-        end_time: &'a str,
-        timezone: Option<&'a str>,
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            uid: &'a str,
+            sequence: u32,
+            state: &'a str,
+            state_flags: u8,
+            is_organizer: i32,
+            organizer_email: Option<&'a str>,
+            organizer_name: Option<&'a str>,
+            subject: Option<&'a str>,
+            location: Option<&'a str>,
+            start_time: &'a str,
+            end_time: &'a str,
+            timezone: Option<&'a str>,
+        }
+        self.post_json(
+            "upsert_meeting_state",
+            &Req {
+                owner: params.owner,
+                uid: params.uid,
+                sequence: params.sequence,
+                state: params.state,
+                state_flags: params.state_flags,
+                is_organizer: if params.is_organizer { 1 } else { 0 },
+                organizer_email: params.organizer_email,
+                organizer_name: params.organizer_name,
+                subject: params.subject,
+                location: params.location,
+                start_time: params.start_time,
+                end_time: params.end_time,
+                timezone: params.timezone,
+            },
+        )
+        .await
     }
-    self.post_json(
-        "upsert_meeting_state",
-        &Req {
-            owner: params.owner,
-            uid: params.uid,
-            sequence: params.sequence,
-            state: params.state,
-            state_flags: params.state_flags,
-            is_organizer: if params.is_organizer { 1 } else { 0 },
-            organizer_email: params.organizer_email,
-            organizer_name: params.organizer_name,
-            subject: params.subject,
-            location: params.location,
-            start_time: params.start_time,
-            end_time: params.end_time,
-            timezone: params.timezone,
-        },
-    )
-    .await
-}
 
     pub async fn get_meeting_state(
         &self,
@@ -705,36 +705,36 @@ impl Storage {
     }
 
     pub async fn upsert_meeting_attendee(&self, params: &MeetingAttendeeParams<'_>) -> Result<()> {
-    #[derive(Serialize)]
-    struct Req<'a> {
-        owner: &'a str,
-        meeting_uid: &'a str,
-        email: &'a str,
-        name: Option<&'a str>,
-        status: u8,
-        role: u8,
-        response_time: Option<&'a str>,
-        proposed_start: Option<&'a str>,
-        proposed_end: Option<&'a str>,
-        sequence: u32,
+        #[derive(Serialize)]
+        struct Req<'a> {
+            owner: &'a str,
+            meeting_uid: &'a str,
+            email: &'a str,
+            name: Option<&'a str>,
+            status: u8,
+            role: u8,
+            response_time: Option<&'a str>,
+            proposed_start: Option<&'a str>,
+            proposed_end: Option<&'a str>,
+            sequence: u32,
+        }
+        self.post_json(
+            "upsert_meeting_attendee",
+            &Req {
+                owner: params.owner,
+                meeting_uid: params.meeting_uid,
+                email: params.email,
+                name: params.name,
+                status: params.status,
+                role: params.role,
+                response_time: params.response_time,
+                proposed_start: params.proposed_start,
+                proposed_end: params.proposed_end,
+                sequence: params.sequence,
+            },
+        )
+        .await
     }
-    self.post_json(
-        "upsert_meeting_attendee",
-        &Req {
-            owner: params.owner,
-            meeting_uid: params.meeting_uid,
-            email: params.email,
-            name: params.name,
-            status: params.status,
-            role: params.role,
-            response_time: params.response_time,
-            proposed_start: params.proposed_start,
-            proposed_end: params.proposed_end,
-            sequence: params.sequence,
-        },
-    )
-    .await
-}
 
     pub async fn get_meeting_attendees(
         &self,
@@ -985,7 +985,8 @@ impl Storage {
             owner: &'a str,
             email: &'a str,
         }
-        self.post_json("delete_room_list", &Req { owner, email }).await
+        self.post_json("delete_room_list", &Req { owner, email })
+            .await
     }
 
     pub async fn get_all_rooms(&self, owner: &str) -> Result<Vec<crate::room::RoomRecord>> {

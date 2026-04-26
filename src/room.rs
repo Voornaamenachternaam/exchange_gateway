@@ -105,8 +105,15 @@ impl RoomManager {
         Ok(recs.iter().map(RoomList::from_record).collect())
     }
 
-    pub async fn get_rooms_for_list(&self, owner: &str, room_list_email: &str) -> Result<Vec<Room>> {
-        let recs = self.storage.get_rooms_for_list(owner, room_list_email).await?;
+    pub async fn get_rooms_for_list(
+        &self,
+        owner: &str,
+        room_list_email: &str,
+    ) -> Result<Vec<Room>> {
+        let recs = self
+            .storage
+            .get_rooms_for_list(owner, room_list_email)
+            .await?;
         Ok(recs.iter().map(Room::from_record).collect())
     }
 

@@ -61,7 +61,11 @@ pub fn build_itip_request(ctx: &SchedulingContext, item: &CalendarItem) -> Strin
             }
         };
         let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", attendee.email))
-            .cn(attendee.name.as_deref().unwrap_or(&attendee.email).to_string())
+            .cn(attendee
+                .name
+                .as_deref()
+                .unwrap_or(&attendee.email)
+                .to_string())
             .role(ical_role)
             .partstat(ical_partstat);
         event.attendee(cal_attendee);
@@ -132,9 +136,8 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
     let attendee_email = responding_attendee_email?;
 
-    let attendee_status = AttendeeStatus::from_partstat(
-        responding_partstat.as_deref().unwrap_or("NEEDS-ACTION"),
-    );
+    let attendee_status =
+        AttendeeStatus::from_partstat(responding_partstat.as_deref().unwrap_or("NEEDS-ACTION"));
 
     Some(ItipResponse {
         uid,

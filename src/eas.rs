@@ -50,7 +50,7 @@ static DEVICE_WINDOW: LazyLock<TokioMutex<DeviceWindowCache>> = LazyLock::new(||
     ))
 });
 static PING_CACHE: LazyLock<TokioMutex<PingCache>> = LazyLock::new(|| {
-     TokioMutex::new(LruCache::new(
+    TokioMutex::new(LruCache::new(
         NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).expect("MAX_PING_CACHE_ENTRIES > 0"),
     ))
 });
@@ -631,13 +631,22 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
     let h = resp.headers_mut();
     h.insert("MS-Server-ActiveSync", HeaderValue::from_static("16.1"));
     h.insert("X-MS-ProtocolVersion", HeaderValue::from_static("16.1"));
-    h.insert("Cache-Control", HeaderValue::from_static("private, no-store"));
+    h.insert(
+        "Cache-Control",
+        HeaderValue::from_static("private, no-store"),
+    );
     h.insert("Pragma", HeaderValue::from_static("no-cache"));
     h.insert(
         "Strict-Transport-Security",
         HeaderValue::from_static("max-age=63072000; includeSubDomains"),
     );
-    h.insert("X-Request-Id", HeaderValue::from_str(request_id).unwrap_or_else(|e| { tracing::warn!("Invalid X-Request-Id value '{}': {}", request_id, e); HeaderValue::from_static("unknown") }));
+    h.insert(
+        "X-Request-Id",
+        HeaderValue::from_str(request_id).unwrap_or_else(|e| {
+            tracing::warn!("Invalid X-Request-Id value '{}': {}", request_id, e);
+            HeaderValue::from_static("unknown")
+        }),
+    );
 }
 
 fn unauth_response(request_id: &str) -> Response {
@@ -677,7 +686,11 @@ fn options_response(request_id: &str) -> Response {
 
 fn throttled_response(request_id: &str) -> Response {
     let mut r = (StatusCode::SERVICE_UNAVAILABLE, "Throttled").into_response();
-    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_str(&RETRY_AFTER_SECONDS.to_string()).expect("RETRY_AFTER_SECONDS must be a valid Retry-After value"));
+    r.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&RETRY_AFTER_SECONDS.to_string())
+            .expect("RETRY_AFTER_SECONDS must be a valid Retry-After value"),
+    );
     inject_common_headers(&mut r, request_id);
     r
 }
@@ -832,20 +845,20 @@ async fn handle_provision(
     .iter()
     .any(|v| v.is_some())
     {
-                let _ = state
-                .storage
-                .upsert_device_info(&crate::storage::DeviceInfoParams {
-                    owner,
-                    device_id: &device_id,
-                    friendly_name: friendly_name.as_deref().unwrap_or(""),
-                    model: model.as_deref().unwrap_or(""),
-                    os: os.as_deref().unwrap_or(""),
-                    phone_number: phone_number.as_deref().unwrap_or(""),
-                    imei: imei.as_deref().unwrap_or(""),
-                    user_agent: user_agent.as_deref().unwrap_or(""),
-                })
-                .await;
-        }
+        let _ = state
+            .storage
+            .upsert_device_info(&crate::storage::DeviceInfoParams {
+                owner,
+                device_id: &device_id,
+                friendly_name: friendly_name.as_deref().unwrap_or(""),
+                model: model.as_deref().unwrap_or(""),
+                os: os.as_deref().unwrap_or(""),
+                phone_number: phone_number.as_deref().unwrap_or(""),
+                imei: imei.as_deref().unwrap_or(""),
+                user_agent: user_agent.as_deref().unwrap_or(""),
+            })
+            .await;
+    }
     if incoming_key.as_bytes().ct_eq(b"0").into() {
         let server_policy_key = Uuid::new_v4().simple().to_string();
         let _ = state
@@ -958,7 +971,8 @@ async fn handle_folder_sync(
     );
     let mut r = xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id);
     if incoming == "0" {
-        r.headers_mut().insert("X-MS-RP", HeaderValue::from_static("1"));
+        r.headers_mut()
+            .insert("X-MS-RP", HeaderValue::from_static("1"));
     }
     r
 }
@@ -1312,7 +1326,11 @@ async fn handle_item_operations(
                     ));
                 }
                 Err(e) => {
-                    tracing::error!("ItemOperations attachment fetch error for {}: {}", file_ref, e);
+                    tracing::error!(
+                        "ItemOperations attachment fetch error for {}: {}",
+                        file_ref,
+                        e
+                    );
                     responses.push_str(&format!(
                         "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
                         xml_escape(&store),
@@ -1428,10 +1446,11 @@ async fn handle_item_operations(
             .attachment_manager
             .get_attachments_for_item(&owner, &server_id)
             .await
-            && !att_list.is_empty() {
-                let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
-                app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
-            }
+            && !att_list.is_empty()
+        {
+            let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
+            app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
+        }
         responses.push_str(&format!(
             "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
             xml_escape(&store),
@@ -1960,7 +1979,7 @@ pub async fn handle(
                 client_mutation_responses: &mutation_responses,
             })
             .await
-        {
+            {
                 Ok(resp_xml) => xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id),
                 Err(e) => {
                     tracing::error!("request_id={} Sync Error: {}", request_id, e);
@@ -2015,17 +2034,17 @@ pub async fn handle(
                     .as_deref()
                     .and_then(parse_datetime);
                 let send_response = xml.contains("<SendResponse") || xml.contains(":SendResponse");
-            if let Err(e) = sync::apply_meeting_response(&sync::MeetingResponseArgs {
-                state: state.clone(),
-                owner: &username,
-                username: &username,
-                password: password.expose_secret(),
-                request_id: &req_id,
-                user_response,
-                instance_id,
-                send_response,
-            })
-            .await
+                if let Err(e) = sync::apply_meeting_response(&sync::MeetingResponseArgs {
+                    state: state.clone(),
+                    owner: &username,
+                    username: &username,
+                    password: password.expose_secret(),
+                    request_id: &req_id,
+                    user_response,
+                    instance_id,
+                    send_response,
+                })
+                .await
                 {
                     tracing::error!(
                         "request_id={} failed applying MeetingResponse: {}",
