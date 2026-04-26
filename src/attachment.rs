@@ -560,6 +560,8 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
     let mut content_type = String::new();
     let mut content_base64 = String::new();
     let mut is_inline = false;
+    // Accumulator for the raw text of <IsInline>; parsed once the element ends.
+    let mut is_inline_buf = String::new();
     let mut content_id = None::<String>;
     let mut content_location = None::<String>;
     let mut attachment_type = AttachmentType::File;
@@ -606,6 +608,7 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                     }
                     b"IsInline" if in_file_attachment || in_item_attachment => {
                         in_is_inline = true;
+                        is_inline_buf.clear();
                     }
                     b"ContentId" if in_file_attachment || in_item_attachment => {
                         in_content_id = true;
@@ -642,7 +645,8 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                     } else if in_content {
                         content_base64.push_str(&text);
                     } else if in_is_inline {
-                        is_inline = text.eq_ignore_ascii_case("true");
+                        // Accumulate; the boolean is resolved at Event::End.
+                        is_inline_buf.push_str(&text);
                     } else if in_content_id {
                         content_id.get_or_insert_with(String::new).push_str(&text);
                     } else if in_content_location {
@@ -671,6 +675,8 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                         in_content = false;
                     }
                     b"IsInline" => {
+                        // Parse the fully-assembled text now that the element is closed.
+                        is_inline = is_inline_buf.trim().eq_ignore_ascii_case("true");
                         in_is_inline = false;
                     }
                     b"ContentId" => {
@@ -886,28 +892,54 @@ pub fn render_delete_attachment_response(root_item_id: &str) -> String {
     )
 }
 
+/// Validate that `s` is a safe XML element-name fragment: it must be non-empty
+/// and consist solely of ASCII letters, digits, hyphens, underscores, dots, and
+/// colons (the characters legal in XML NCNames and namespace-prefixed names).
+/// This guards against XML-injection when a caller-supplied string is
+/// interpolated directly into an element tag, as in `render_attachment_error_response`.
+fn is_safe_xml_element_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| {
+            c.is_ascii_alphabetic()
+                || c.is_ascii_digit()
+                || c == '-'
+                || c == '_'
+                || c == '.'
+                || c == ':'
+        })
+}
+
 // FIX #11: Accept the operation name so callers can emit the correct response
 // element (e.g. "CreateAttachmentResponseMessage", "DeleteAttachmentResponseMessage").
 // Previously this was hard-coded to "CreateAttachmentResponseMessage" for all
 // error types, producing malformed XML for delete and get error responses.
+//
+// The `operation` value is validated against `is_safe_xml_element_name` before
+// interpolation; an invalid name falls back to "AttachmentResponseMessage" so
+// that a programming error never produces exploitable or malformed XML output.
 pub fn render_attachment_error_response(
     operation: &str,
     code: &str,
     message: &str,
 ) -> String {
+    let safe_operation = if is_safe_xml_element_name(operation) {
+        operation
+    } else {
+        "AttachmentResponseMessage"
+    };
     format!(
         r#"<m:ResponseMessages xmlns:m="{}" xmlns:t="{}">
-            <m:{operation} ResponseClass="Error">
+            <m:{safe_op} ResponseClass="Error">
                 <m:MessageText>{}</m:MessageText>
                 <m:ResponseCode>{}</m:ResponseCode>
                 <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
-            </m:{operation}>
+            </m:{safe_op}>
         </m:ResponseMessages>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
         xml_escape(message),
         xml_escape(code),
-        operation = operation,
+        safe_op = safe_operation,
     )
 }
 
@@ -1092,6 +1124,11 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
     let mut in_is_inline = false;
     let mut in_data = false;
     let mut display_name = String::new();
+    // Raw-text accumulators for scalar fields; values are parsed once the
+    // element closes so that fragmented text events assemble correctly.
+    let mut method_buf = String::new();
+    let mut estimated_data_size_buf = String::new();
+    let mut is_inline_buf = String::new();
     let mut method: u8 = 1;
     let mut estimated_data_size: i64 = 0;
     let mut content_type = String::new();
@@ -1111,6 +1148,9 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                         display_name.clear();
                         content_type.clear();
                         data.clear();
+                        method_buf.clear();
+                        estimated_data_size_buf.clear();
+                        is_inline_buf.clear();
                         method = 1;
                         estimated_data_size = 0;
                         content_id = None;
@@ -1121,12 +1161,12 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                     in_attachment = true;
                 }
                 b"DisplayName" => in_display_name = true,
-                b"Method" => in_method = true,
-                b"EstimatedDataSize" => in_estimated_data_size = true,
+                b"Method" => { in_method = true; method_buf.clear(); }
+                b"EstimatedDataSize" => { in_estimated_data_size = true; estimated_data_size_buf.clear(); }
                 b"ContentType" => in_content_type = true,
                 b"ContentId" => in_content_id = true,
                 b"ContentLocation" => in_content_location = true,
-                b"IsInline" => in_is_inline = true,
+                b"IsInline" => { in_is_inline = true; is_inline_buf.clear(); }
                 b"Data" => in_data = true,
                 _ => {}
             },
@@ -1159,17 +1199,31 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                     in_attachment = false;
                     method = 1;
                     estimated_data_size = 0;
+                    method_buf.clear();
+                    estimated_data_size_buf.clear();
+                    is_inline_buf.clear();
                     content_id = None;
                     content_location = None;
                     is_inline = false;
                 }
                 b"DisplayName" => in_display_name = false,
-                b"Method" => in_method = false,
-                b"EstimatedDataSize" => in_estimated_data_size = false,
+                b"Method" => {
+                    // Parse the fully-assembled text now that the element is closed.
+                    method = method_buf.trim().parse().unwrap_or(1);
+                    in_method = false;
+                }
+                b"EstimatedDataSize" => {
+                    estimated_data_size = estimated_data_size_buf.trim().parse().unwrap_or(0);
+                    in_estimated_data_size = false;
+                }
                 b"ContentType" => in_content_type = false,
                 b"ContentId" => in_content_id = false,
                 b"ContentLocation" => in_content_location = false,
-                b"IsInline" => in_is_inline = false,
+                b"IsInline" => {
+                    let v = is_inline_buf.trim();
+                    is_inline = v == "1" || v.eq_ignore_ascii_case("true");
+                    in_is_inline = false;
+                }
                 b"Data" => in_data = false,
                 _ => {}
             },
@@ -1182,9 +1236,9 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                     if in_display_name {
                         display_name.push_str(text);
                     } else if in_method {
-                        method = text.parse().unwrap_or(1);
+                        method_buf.push_str(text);
                     } else if in_estimated_data_size {
-                        estimated_data_size = text.parse().unwrap_or(0);
+                        estimated_data_size_buf.push_str(text);
                     } else if in_content_type {
                         content_type.push_str(text);
                     } else if in_content_id {
@@ -1194,7 +1248,7 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                             .get_or_insert_with(String::new)
                             .push_str(text);
                     } else if in_is_inline {
-                        is_inline = text == "1" || text.eq_ignore_ascii_case("true");
+                        is_inline_buf.push_str(text);
                     } else if in_data {
                         data.push_str(text);
                     }
@@ -1252,4 +1306,4 @@ pub fn parse_eas_attachment_deletes(xml: &str) -> Vec<String> {
         buf.clear();
     }
     ids
-}
+            }
