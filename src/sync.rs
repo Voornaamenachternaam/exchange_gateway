@@ -127,7 +127,7 @@ pub async fn apply_client_sync_mutations(
 
     for mutation in mutations {
         match mutation {
-            EasSyncMutation::Add { client_id, item } => {
+            EasSyncMutation::Add { client_id, item, attachment_adds } => {
                 if let Some(client_id) = client_id.as_deref()
                     && let Some((server_id, status)) = state
                         .storage
@@ -177,6 +177,40 @@ pub async fn apply_client_sync_mutations(
                                 )
                                 .await?;
                         }
+                        for att in &attachment_adds {
+                            let name = if att.display_name.is_empty() {
+                                "attachment.dat"
+                            } else {
+                                &att.display_name
+                            };
+                            let content_type = if att.content_type.is_empty() {
+                                crate::attachment::mime_type_for_filename(name).to_string()
+                            } else {
+                                att.content_type.clone()
+                            };
+                            if let Ok(created) = state
+                                .attachment_manager
+                                .create_file_attachment(
+                                    &crate::attachment::CreateAttachmentParams {
+                                        owner,
+                                        parent_item_server_id: &server_id,
+                                        name,
+                                        content_type: &content_type,
+                                        content_base64: &att.content_base64,
+                                        is_inline: att.is_inline,
+                                        content_id: att.content_id.as_deref(),
+                                        content_location: att.content_location.as_deref(),
+                                    },
+                                )
+                                .await
+                            {
+                                tracing::debug!(
+                                    attachment_id = %created.id,
+                                    parent = %server_id,
+                                    "Created attachment from EAS sync Add"
+                                );
+                            }
+                        }
                         results.push(ClientMutationResult::Add {
                             client_id,
                             server_id: Some(server_id),
@@ -199,7 +233,11 @@ pub async fn apply_client_sync_mutations(
                 }
             }
             EasSyncMutation::Change {
-                server_id, patch, ..
+                server_id,
+                patch,
+                attachment_adds,
+                attachment_deletes,
+                ..
             } => {
                 let Some(existing) = state
                     .storage
@@ -325,6 +363,53 @@ pub async fn apply_client_sync_mutations(
                                 &etag,
                             )
                             .await?;
+                        for att_id in &attachment_deletes {
+                            if let Err(e) = state
+                                .attachment_manager
+                                .delete_attachment(owner, att_id)
+                                .await
+                            {
+                                tracing::warn!(
+                                    attachment_id = %att_id,
+                                    error = %e,
+                                    "Failed to delete attachment during EAS sync Change"
+                                );
+                            }
+                        }
+                        for att in &attachment_adds {
+                            let name = if att.display_name.is_empty() {
+                                "attachment.dat"
+                            } else {
+                                &att.display_name
+                            };
+                            let content_type = if att.content_type.is_empty() {
+                                crate::attachment::mime_type_for_filename(name).to_string()
+                            } else {
+                                att.content_type.clone()
+                            };
+                            if let Ok(created) = state
+                                .attachment_manager
+                                .create_file_attachment(
+                                    &crate::attachment::CreateAttachmentParams {
+                                        owner,
+                                        parent_item_server_id: &server_id,
+                                        name,
+                                        content_type: &content_type,
+                                        content_base64: &att.content_base64,
+                                        is_inline: att.is_inline,
+                                        content_id: att.content_id.as_deref(),
+                                        content_location: att.content_location.as_deref(),
+                                    },
+                                )
+                                .await
+                            {
+                                tracing::debug!(
+                                    attachment_id = %created.id,
+                                    parent = %server_id,
+                                    "Created attachment from EAS sync Change"
+                                );
+                            }
+                        }
                         results.push(ClientMutationResult::Change {
                             server_id,
                             status: "1",
@@ -366,6 +451,17 @@ pub async fn apply_client_sync_mutations(
                             .storage
                             .delete_item_by_server_id(owner, &server_id)
                             .await?;
+                        if let Err(e) = state
+                            .attachment_manager
+                            .delete_attachments_for_item(owner, &server_id)
+                            .await
+                        {
+                            tracing::warn!(
+                                server_id = %server_id,
+                                error = %e,
+                                "Failed to clean up attachments during EAS sync Delete"
+                            );
+                        }
                         results.push(ClientMutationResult::Delete {
                             server_id,
                             status: "1",
@@ -1295,20 +1391,38 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 &pi.etag,
             )
             .await?;
-        if pi.is_add {
-            commands.push_str(&format!(
-                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
-                pi.server_id,
-                render_calendar_app_data(&pi.item)
-            ));
-        } else {
-            commands.push_str(&format!(
-                "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
-                pi.server_id,
-                render_calendar_app_data(&pi.item)
-            ));
-        }
-        items_included += 1;
+if pi.is_add {
+                let mut app_data = render_calendar_app_data(&pi.item);
+                if let Ok(att_list) = params
+                    .state
+                    .attachment_manager
+                    .get_attachments_for_item(params.owner, &pi.server_id)
+                    .await
+                    && !att_list.is_empty() {
+                        let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
+                        app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
+                    }
+                commands.push_str(&format!(
+                    "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                    pi.server_id, app_data
+                ));
+            } else {
+                let mut app_data = render_calendar_app_data(&pi.item);
+                if let Ok(att_list) = params
+                    .state
+                    .attachment_manager
+                    .get_attachments_for_item(params.owner, &pi.server_id)
+                    .await
+                    && !att_list.is_empty() {
+                        let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
+                        app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
+                    }
+                commands.push_str(&format!(
+                    "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
+                    pi.server_id, app_data
+                ));
+            }
+            items_included += 1;
     }
 
     if !more_available {

@@ -907,7 +907,7 @@ impl Storage {
                 is_inline: if attachment.is_inline { 1 } else { 0 },
                 content_id: attachment.content_id.as_deref(),
                 content_location: attachment.content_location.as_deref(),
-                attachment_type: &attachment.attachment_type,
+                attachment_type: attachment.attachment_type.as_str(),
                 last_modified_time: attachment.last_modified_time.as_deref(),
             },
         )

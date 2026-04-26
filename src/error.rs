@@ -1,7 +1,6 @@
 // src/error.rs
 use thiserror::Error;
 
-#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum GatewayError {
     #[error("CalDAV request failed: {0}")]
