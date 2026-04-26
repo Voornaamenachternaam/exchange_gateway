@@ -23,7 +23,7 @@ use tower_http::{
 use tracing_subscriber::EnvFilter;
 
 use exchange_gateway::{
-    autodiscover, config::Config, eas, ews, models::AppState, storage::Storage,
+    autodiscover, config::Config, eas, ews, models::AppState, oab, storage::Storage,
 };
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -110,6 +110,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .route("/EWS/Exchange.asmx", post(ews::handle))
         .route("/EWS/*path", post(ews::handle))
+        .route("/OAB/oab.xml", get(oab::handle_oab_list))
+        .route("/OAB/*path", get(oab::handle_oab_file))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
         .route("/autodiscover/autodiscover.xml", post(autodiscover_xml))
         .route("/Autodiscover/Autodiscover.xml", post(autodiscover_xml))

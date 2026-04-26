@@ -19,6 +19,30 @@ SQL_API_ENABLED = "false"
 MAX_FORWARD_BODY_BYTES = "4194304"
 MAX_API_BODY_BYTES = "262144"
 
+[[routes]]
+pattern = "exchange.example.com/EWS/*"
+zone_name = "example.com"
+
+[[routes]]
+pattern = "exchange.example.com/OAB/*"
+zone_name = "example.com"
+
+[[routes]]
+pattern = "exchange.example.com/Microsoft-Server-ActiveSync"
+zone_name = "example.com"
+
+[[routes]]
+pattern = "exchange.example.com/autodiscover/*"
+zone_name = "example.com"
+
+[[routes]]
+pattern = "exchange.example.com/Autodiscover/*"
+zone_name = "example.com"
+
+[[routes]]
+pattern = "exchange.example.com/health"
+zone_name = "example.com"
+
 # Secrets (set via: wrangler secret put <NAME>)
 # GATEWAY_SECRET - shared secret between the worker and the Rust gateway
 

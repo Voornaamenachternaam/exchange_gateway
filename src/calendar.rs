@@ -856,10 +856,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
         let wrapped = format!("BEGIN:VCALENDAR\r\n{blob}\r\nEND:VCALENDAR\r\n");
         if let Ok(parsed) = Calendar::from_str(&icalendar::parser::unfold(&wrapped)) {
             for component in parsed.iter() {
-                if matches!(
-                    component,
-                    CalendarComponent::TimeZone(_) | CalendarComponent::Other(_)
-                ) {
+                if let CalendarComponent::Other(other) = component
+                    && other.component_kind() == "VTIMEZONE"
+                {
                     calendar.push(component.clone());
                 }
             }

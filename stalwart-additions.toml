@@ -1,0 +1,29 @@
+# stalwart-additions.toml
+
+[calendar]
+enabled = true
+listen = "0.0.0.0:8134"
+path_prefix = "/calendar"
+
+[calendar.auth]
+method = "basic"
+backend = "imap"
+imap_host = "127.0.0.1"
+imap_port = 143
+
+[calendar.storage]
+backend = "rocksdb"
+
+[calendar.sync]
+interval_secs = 300
+
+[calendar.caldav]
+internal_url = "http://127.0.0.1:8134/calendar"
+external_url = "https://exchange.example.com/calendar"
+
+[server.socket]
+listen = ["0.0.0.0:8134", "[::]:8134"]
+protocol = "http"
+
+[server.tls]
+provider = "acme"

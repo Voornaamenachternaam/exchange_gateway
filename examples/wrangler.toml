@@ -19,6 +19,30 @@ SQL_API_ENABLED = "false"
 MAX_FORWARD_BODY_BYTES = "4194304"
 MAX_API_BODY_BYTES = "262144"
 
+[[routes]]
+pattern = "exchange.mail.example.com/EWS/*"
+zone_name = "mail.example.com"
+
+[[routes]]
+pattern = "exchange.mail.example.com/OAB/*"
+zone_name = "mail.example.com"
+
+[[routes]]
+pattern = "exchange.mail.example.com/Microsoft-Server-ActiveSync"
+zone_name = "mail.example.com"
+
+[[routes]]
+pattern = "exchange.mail.example.com/autodiscover/*"
+zone_name = "mail.example.com"
+
+[[routes]]
+pattern = "exchange.mail.example.com/Autodiscover/*"
+zone_name = "mail.example.com"
+
+[[routes]]
+pattern = "exchange.mail.example.com/health"
+zone_name = "mail.example.com"
+
 [[d1_databases]]
 binding = "EXCHANGE_DB"
 database_name = "exchange-gateway"

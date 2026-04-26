@@ -68,8 +68,6 @@ const RESERVED_WINDOWS_NAMES: &[&str] = &[
 
 const ALLOWED_MIME_TOP_LEVEL: &[&str] = &["text", "image", "audio", "video", "application"];
 
-// FIX #4: Block MIME types that execute scripts when served to a browser,
-// regardless of which top-level type they fall under.
 const DANGEROUS_MIME_TYPES: &[&str] = &[
     "text/html",
     "text/javascript",
@@ -93,7 +91,6 @@ const ALLOWED_APPLICATION_SUBTYPES: &[&str] = &[
     "vnd.ms-excel",
     "vnd.ms-word",
     "vnd.ms-powerpoint",
-    // FIX #10: "vnd.ms-outlook" was missing; .msg files map to this subtype.
     "vnd.ms-outlook",
     "msword",
     "vnd.oasis.opendocument.text",
@@ -167,20 +164,16 @@ const MIME_EXTENSION_MAP: &[(&str, &str)] = &[
     ("vcf", "text/vcard"),
     ("dat", "application/octet-stream"),
     ("bin", "application/octet-stream"),
-    // NOTE: svg and html are intentionally omitted — they are XSS-dangerous.
 ];
 
 pub fn sanitize_filename(name: &str) -> String {
     let trimmed = name.trim();
-    // Strip a single leading dot to avoid hidden-file names.
     let trimmed = trimmed.strip_prefix('.').unwrap_or(trimmed);
 
-    // FIX #1: Tabs are no longer excluded from the dangerous-char replacement.
-    // Previously `c != '\t'` allowed raw tab characters into filenames.
     let sanitized: String = trimmed
         .chars()
         .map(|c| {
-            if (u32::from(c) <= 0x1f)  // All C0 controls including tab (0x09)
+            if (u32::from(c) <= 0x1f)
                 || c == '/'
                 || c == '\\'
                 || c == ':'
@@ -203,8 +196,6 @@ pub fn sanitize_filename(name: &str) -> String {
         None => (sanitized, String::new()),
     };
 
-    // FIX #3: A stem that is just "." (e.g. from input "...") would pass the
-    // reserved-name check unchanged and produce a problematic filename.
     let stem = match base_name.as_str() {
         "" | "." | ".." => "attachment",
         s => s,
@@ -223,11 +214,7 @@ pub fn sanitize_filename(name: &str) -> String {
         format!("{stem_safe}.{extension}")
     };
 
-    // FIX #2: Windows rejects filenames that end with '.' or ' '.
-    // Trim any trailing dots and spaces from the final result.
-    let result = result
-        .trim_end_matches(|c| c == '.' || c == ' ')
-        .to_string();
+    let result = result.trim_end_matches(['.', ' ']).to_string();
 
     if result.is_empty() {
         "attachment".to_string()
@@ -249,10 +236,6 @@ pub fn validate_mime_type(content_type: &str) -> Result<Mime> {
         .parse()
         .map_err(|_| anyhow!("invalid MIME type: {}", content_type))?;
 
-    // FIX #4: Reject MIME types known to execute scripts in browsers before
-    // any other check, so the allowlist below cannot accidentally re-admit them.
-    let top = mime.type_().as_str();
-    let sub = mime.subtype().as_str();
     let normalised = format!("{}/{}", mime.type_().as_str(), mime.subtype().as_str());
     if DANGEROUS_MIME_TYPES.contains(&normalised.as_str()) {
         return Err(anyhow!(
@@ -541,7 +524,6 @@ impl AttachmentManager {
             content_location: params.content_location.map(String::from),
             attachment_type: AttachmentType::File,
             last_modified_time: Some(now.clone()),
-            // FIX #5: Both timestamp fields were previously left as empty strings.
             created_at: now.clone(),
             updated_at: now,
         };
@@ -627,7 +609,6 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
     let mut content_type = String::new();
     let mut content_base64 = String::new();
     let mut is_inline = false;
-    // Accumulator for the raw text of <IsInline>; parsed once the element ends.
     let mut is_inline_buf = String::new();
     let mut content_id = None::<String>;
     let mut content_location = None::<String>;
@@ -702,9 +683,6 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
             }
             Ok(Event::Text(e)) => {
                 if let Ok(text) = e.decode() {
-                    // FIX #6: Use push_str instead of assignment so that
-                    // large text nodes split across multiple quick_xml events
-                    // (common for base64 content) are assembled correctly.
                     if in_name {
                         name.push_str(&text);
                     } else if in_content_type {
@@ -712,7 +690,6 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                     } else if in_content {
                         content_base64.push_str(&text);
                     } else if in_is_inline {
-                        // Accumulate; the boolean is resolved at Event::End.
                         is_inline_buf.push_str(&text);
                     } else if in_content_id {
                         content_id.get_or_insert_with(String::new).push_str(&text);
@@ -742,7 +719,6 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                         in_content = false;
                     }
                     b"IsInline" => {
-                        // Parse the fully-assembled text now that the element is closed.
                         is_inline = is_inline_buf.trim().eq_ignore_ascii_case("true");
                         in_is_inline = false;
                     }
@@ -869,8 +845,6 @@ pub fn render_file_attachment_xml(attachment: &FileAttachment, include_content: 
         xml_escape(&attachment.content_type)
     );
     if include_content {
-        // Base64 data does not contain XML-special characters, but we still
-        // delegate to xml_escape for consistency and defence in depth.
         let _ = write!(
             xml,
             "<t:Content>{}</t:Content>",
@@ -961,11 +935,6 @@ pub fn render_delete_attachment_response(root_item_id: &str) -> String {
     )
 }
 
-/// Validate that `s` is a safe XML element-name fragment: it must be non-empty
-/// and consist solely of ASCII letters, digits, hyphens, underscores, dots, and
-/// colons (the characters legal in XML NCNames and namespace-prefixed names).
-/// This guards against XML-injection when a caller-supplied string is
-/// interpolated directly into an element tag, as in `render_attachment_error_response`.
 fn is_safe_xml_element_name(s: &str) -> bool {
     !s.is_empty()
         && s.chars().all(|c| {
@@ -978,14 +947,6 @@ fn is_safe_xml_element_name(s: &str) -> bool {
         })
 }
 
-// FIX #11: Accept the operation name so callers can emit the correct response
-// element (e.g. "CreateAttachmentResponseMessage", "DeleteAttachmentResponseMessage").
-// Previously this was hard-coded to "CreateAttachmentResponseMessage" for all
-// error types, producing malformed XML for delete and get error responses.
-//
-// The `operation` value is validated against `is_safe_xml_element_name` before
-// interpolation; an invalid name falls back to "AttachmentResponseMessage" so
-// that a programming error never produces exploitable or malformed XML output.
 pub fn render_attachment_error_response(operation: &str, code: &str, message: &str) -> String {
     let safe_operation = if is_safe_xml_element_name(operation) {
         operation
@@ -1190,8 +1151,6 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
     let mut in_is_inline = false;
     let mut in_data = false;
     let mut display_name = String::new();
-    // Raw-text accumulators for scalar fields; values are parsed once the
-    // element closes so that fragmented text events assemble correctly.
     let mut method_buf = String::new();
     let mut estimated_data_size_buf = String::new();
     let mut is_inline_buf = String::new();
@@ -1207,9 +1166,6 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
-                    // FIX #9: A nested <Attachment> while already inside one means the
-                    // outer element was never closed — discard the incomplete state
-                    // and start fresh rather than silently dropping it.
                     if in_attachment {
                         display_name.clear();
                         content_type.clear();
@@ -1223,7 +1179,6 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                         content_location = None;
                         is_inline = false;
                     }
-                    // FIX #8: Removed the duplicate `in_attachment = true` assignment.
                     in_attachment = true;
                 }
                 b"DisplayName" => in_display_name = true,
@@ -1283,7 +1238,6 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                 }
                 b"DisplayName" => in_display_name = false,
                 b"Method" => {
-                    // Parse the fully-assembled text now that the element is closed.
                     method = method_buf.trim().parse().unwrap_or(1);
                     in_method = false;
                 }
@@ -1305,9 +1259,6 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
             Ok(Event::Text(t)) => {
                 if let Ok(v) = t.decode() {
                     let text = v.as_ref();
-                    // FIX #7: Append rather than overwrite so that large text
-                    // nodes (e.g. base64 bodies) split across multiple quick_xml
-                    // Text events are assembled correctly.
                     if in_display_name {
                         display_name.push_str(text);
                     } else if in_method {
