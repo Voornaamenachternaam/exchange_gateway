@@ -115,14 +115,14 @@ pub fn handle_autodiscover_xml(host: &str, _body: &str, email: &str) -> AdRespon
         <ServerDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}</ServerDN>
         <ServerVersion>15.20.0.0</ServerVersion>
         <MdbDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}/cn=Microsoft Private MDB</MdbDN>
-        <ASUrl>https:
-        <EwsUrl>https:
-        <EmwsUrl>https:
-        <EcpUrl>https:
-        <OABUrl>https:
-        <OOFUrl>https:
-        <UMUrl>https:
-        <EwsPartnerUrl>https:
+        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+        <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
+        <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
+        <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+        <OABUrl>https://{host}/OAB/oab.xml</OABUrl>
+        <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
+        <UMUrl>https://{host}/EWS/Exchange.asmx</UMUrl>
+        <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
         <LoginName>{email}</LoginName>
         <DomainRequired>off</DomainRequired>
         <SPA>off</SPA>
@@ -141,24 +141,24 @@ pub fn handle_autodiscover_xml(host: &str, _body: &str, email: &str) -> AdRespon
         <LoginName>{email}</LoginName>
         <ServerExclusiveConnect>off</ServerExclusiveConnect>
         <TTL>1</TTL>
-        <ASUrl>https:
-        <EwsUrl>https:
-        <EmwsUrl>https:
-        <EcpUrl>https:
-        <OABUrl>https:
-        <OOFUrl>https:
-        <EwsPartnerUrl>https:
+        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+        <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
+        <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
+        <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+        <OABUrl>https://{host}/OAB/oab.xml</OABUrl>
+        <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
+        <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
       </Protocol>
       <Protocol>
         <Type>MobileSync</Type>
         <Server>{host}</Server>
         <DisplayName>Exchange Gateway</DisplayName>
-        <Url>https:
+        <Url>https://{host}/Microsoft-Server-ActiveSync</Url>
         <LoginName>{email}</LoginName>
         <DomainRequired>off</DomainRequired>
         <SSL>on</SSL>
         <AuthPackage>Basic</AuthPackage>
-        <ASUrl>https:
+        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
       </Protocol>
     </Account>
   </Response>
@@ -179,17 +179,17 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>UserDN</a:Name><a:Value>{email}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>AutoDiscoverSMTPAddress</a:Name><a:Value>{email}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalRpcClientServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>ExternalEwsUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>InternalEwsUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>ExternalEmwsUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>InternalEmwsUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>ExternalEcpUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>InternalEcpUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>ExternalOABUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>InternalOABUrl</a:Name><a:Value>https:
+              <a:UserSetting><a:Name>ExternalEwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalEwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>ExternalEmwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalEmwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>ExternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>ExternalOABUrl</a:Name><a:Value>https://{host}/OAB/oab.xml</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalOABUrl</a:Name><a:Value>https://{host}/OAB/oab.xml</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>MobileSyncServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>ExternalMobileSyncUrl</a:Name><a:Value>https:
-              <a:UserSetting><a:Name>InternalMobileSyncUrl</a:Name><a:Value>https:
+              <a:UserSetting><a:Name>ExternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalEwsVersion</a:Name><a:Value>Exchange2016</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalEwsVersion</a:Name><a:Value>Exchange2016</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>EwsSupportedSchemas</a:Name><a:Value>Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016</a:Value></a:UserSetting>
