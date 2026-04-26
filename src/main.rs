@@ -170,17 +170,13 @@ async fn main() -> anyhow::Result<()> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-    let ctrl_c = async {
         match signal::ctrl_c().await {
-            Ok(()) => {}
-            Err(e) => {
-                tracing::error!("Failed to install Ctrl+C handler: {e}");
+            Ok(()) => {},
+            Err(err) => {
+                tracing::error!("Failed to listen for Ctrl+C: {err}");
                 std::future::pending::<()>().await;
             }
         }
-    };
     };
 
  #[cfg(unix)]
