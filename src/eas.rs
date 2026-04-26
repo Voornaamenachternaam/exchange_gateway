@@ -637,7 +637,7 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
         "Strict-Transport-Security",
         HeaderValue::from_static("max-age=63072000; includeSubDomains"),
     );
-    h.insert("X-Request-Id", HeaderValue::from_str(request_id).unwrap_or_else(|_| HeaderValue::from_static("unknown")));
+    h.insert("X-Request-Id", HeaderValue::from_str(request_id).unwrap_or_else(|e| { tracing::warn!("Invalid X-Request-Id value: {}", e); HeaderValue::from_static("unknown") }));
 }
 
 fn unauth_response(request_id: &str) -> Response {
