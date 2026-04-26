@@ -33,12 +33,25 @@ const ALLOWED_MIME_TOP_LEVEL: &[&str] = &[
     "text", "image", "audio", "video", "application",
 ];
 
+// FIX #4: Block MIME types that execute scripts when served to a browser,
+// regardless of which top-level type they fall under.
+const DANGEROUS_MIME_TYPES: &[&str] = &[
+    "text/html",
+    "text/javascript",
+    "text/x-javascript",
+    "application/javascript",
+    "application/x-javascript",
+    "image/svg+xml",
+];
+
 const ALLOWED_APPLICATION_SUBTYPES: &[&str] = &[
     "pdf", "json", "xml", "zip", "gzip", "x-gzip", "x-tar",
     "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "vnd.openxmlformats-officedocument.wordprocessingml.document",
     "vnd.openxmlformats-officedocument.presentationml.presentation",
     "vnd.ms-excel", "vnd.ms-word", "vnd.ms-powerpoint",
+    // FIX #10: "vnd.ms-outlook" was missing; .msg files map to this subtype.
+    "vnd.ms-outlook",
     "msword", "vnd.oasis.opendocument.text",
     "vnd.oasis.opendocument.spreadsheet", "vnd.oasis.opendocument.presentation",
     "rtf", "x-rtf", "octet-stream",
@@ -76,7 +89,6 @@ const MIME_EXTENSION_MAP: &[(&str, &str)] = &[
     ("jpeg", "image/jpeg"),
     ("gif", "image/gif"),
     ("bmp", "image/bmp"),
-    ("svg", "image/svg+xml"),
     ("webp", "image/webp"),
     ("ico", "image/x-icon"),
     ("tiff", "image/tiff"),
@@ -93,16 +105,21 @@ const MIME_EXTENSION_MAP: &[(&str, &str)] = &[
     ("vcf", "text/vcard"),
     ("dat", "application/octet-stream"),
     ("bin", "application/octet-stream"),
+    // NOTE: svg and html are intentionally omitted — they are XSS-dangerous.
 ];
 
 pub fn sanitize_filename(name: &str) -> String {
     let trimmed = name.trim();
+    // Strip a single leading dot to avoid hidden-file names.
     let trimmed = trimmed.strip_prefix('.').unwrap_or(trimmed);
+
+    // FIX #1: Tabs are no longer excluded from the dangerous-char replacement.
+    // Previously `c != '\t'` allowed raw tab characters into filenames.
     let sanitized: String = trimmed
         .chars()
         .map(|c| {
-            if c == '\0'
-                || (u32::from(c) <= 0x1f && c != '\t')
+            if (u32::from(c) <= 0x1f)  // All C0 controls including tab (0x09)
+                || c == '\0'
                 || c == '/'
                 || c == '\\'
                 || c == ':'
@@ -119,18 +136,41 @@ pub fn sanitize_filename(name: &str) -> String {
             }
         })
         .collect();
+
     let (base_name, extension) = match sanitized.rsplit_once('.') {
         Some((b, e)) => (b.to_string(), e.to_string()),
         None => (sanitized, String::new()),
     };
-    let stem = if base_name.is_empty() { "attachment" } else { &base_name };
+
+    // FIX #3: A stem that is just "." (e.g. from input "...") would pass the
+    // reserved-name check unchanged and produce a problematic filename.
+    let stem = match base_name.as_str() {
+        "" | "." | ".." => "attachment",
+        s => s,
+    };
+
     let stem_upper = stem.to_ascii_uppercase();
     let stem_safe = if RESERVED_WINDOWS_NAMES.contains(&stem_upper.as_str()) {
         format!("{stem}_file")
     } else {
         stem.to_string()
     };
-    if extension.is_empty() { stem_safe } else { format!("{stem_safe}.{extension}") }
+
+    let result = if extension.is_empty() {
+        stem_safe
+    } else {
+        format!("{stem_safe}.{extension}")
+    };
+
+    // FIX #2: Windows rejects filenames that end with '.' or ' '.
+    // Trim any trailing dots and spaces from the final result.
+    let result = result.trim_end_matches(|c| c == '.' || c == ' ').to_string();
+
+    if result.is_empty() {
+        "attachment".to_string()
+    } else {
+        result
+    }
 }
 
 pub fn is_dangerous_extension(name: &str) -> bool {
@@ -145,6 +185,17 @@ pub fn validate_mime_type(content_type: &str) -> Result<Mime> {
     let mime: Mime = content_type
         .parse()
         .map_err(|_| anyhow!("invalid MIME type: {}", content_type))?;
+
+    // FIX #4: Reject MIME types known to execute scripts in browsers before
+    // any other check, so the allowlist below cannot accidentally re-admit them.
+    let normalised = format!("{}/{}", mime.type_(), mime.subtype());
+    if DANGEROUS_MIME_TYPES.contains(&normalised.as_str()) {
+        return Err(anyhow!(
+            "MIME type '{}' is not allowed for security reasons",
+            normalised
+        ));
+    }
+
     let top = mime.type_().as_str();
     if !ALLOWED_MIME_TOP_LEVEL.contains(&top) {
         return Err(anyhow!("MIME top-level type '{}' is not allowed", top));
@@ -326,7 +377,11 @@ impl FileAttachment {
             is_inline: self.is_inline,
             content_id: self.content_id.clone(),
             content_location: self.content_location.clone(),
-            last_modified_time: self.last_modified_time.as_deref().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.to_utc())),
+            last_modified_time: self.last_modified_time.as_deref().and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .ok()
+                    .map(|dt| dt.to_utc())
+            }),
         }
     }
 }
@@ -378,54 +433,56 @@ impl AttachmentManager {
         }
     }
 
-pub async fn create_file_attachment(&self, params: &CreateAttachmentParams<'_>) -> Result<FileAttachment> {
-    let name = validate_attachment_name(params.name)?;
+    pub async fn create_file_attachment(
+        &self,
+        params: &CreateAttachmentParams<'_>,
+    ) -> Result<FileAttachment> {
+        let name = validate_attachment_name(params.name)?;
 
-    let content_type = normalize_content_type(params.content_type, &name)?;
+        let content_type = normalize_content_type(params.content_type, &name)?;
 
-    let decoded = STANDARD
-        .decode(params.content_base64)
-        .map_err(|_| anyhow!("invalid base64 content in attachment"))?;
+        let decoded = STANDARD
+            .decode(params.content_base64)
+            .map_err(|_| anyhow!("invalid base64 content in attachment"))?;
 
-    if decoded.is_empty() {
-        return Err(anyhow!("attachment content is empty"));
+        if decoded.is_empty() {
+            return Err(anyhow!("attachment content is empty"));
+        }
+
+        if decoded.len() > self.max_attachment_bytes {
+            return Err(anyhow!(
+                "Attachment size {} exceeds maximum allowed size {}",
+                decoded.len(),
+                self.max_attachment_bytes
+            ));
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let content_size = i64::try_from(decoded.len()).unwrap_or(i64::MAX);
+
+        let record = AttachmentRecord {
+            id,
+            parent_item_server_id: params.parent_item_server_id.to_string(),
+            owner: params.owner.to_string(),
+            name,
+            content_type,
+            content_size,
+            content_base64: params.content_base64.to_string(),
+            is_inline: params.is_inline,
+            content_id: params.content_id.map(String::from),
+            content_location: params.content_location.map(String::from),
+            attachment_type: AttachmentType::File,
+            last_modified_time: Some(now.clone()),
+            // FIX #5: Both timestamp fields were previously left as empty strings.
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        self.storage.upsert_calendar_attachment(&record).await?;
+
+        Ok(FileAttachment::from_record(record))
     }
-
-    if decoded.len() > self.max_attachment_bytes {
-        return Err(anyhow!(
-            "Attachment size {} exceeds maximum allowed size {}",
-            decoded.len(),
-            self.max_attachment_bytes
-        ));
-    }
-
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let content_size = i64::try_from(decoded.len()).unwrap_or(i64::MAX);
-
-    let record = AttachmentRecord {
-        id,
-        parent_item_server_id: params.parent_item_server_id.to_string(),
-        owner: params.owner.to_string(),
-        name,
-        content_type,
-        content_size,
-        content_base64: params.content_base64.to_string(),
-        is_inline: params.is_inline,
-        content_id: params.content_id.map(String::from),
-        content_location: params.content_location.map(String::from),
-        attachment_type: AttachmentType::File,
-        last_modified_time: Some(now),
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
-
-    self.storage
-        .upsert_calendar_attachment(&record)
-        .await?;
-
-    Ok(FileAttachment::from_record(record))
-}
 
     pub async fn get_attachment(
         &self,
@@ -466,6 +523,7 @@ pub async fn create_file_attachment(&self, params: &CreateAttachmentParams<'_>) 
             .await?;
         Ok(parent_id)
     }
+
     pub async fn delete_attachments_for_item(
         &self,
         owner: &str,
@@ -502,8 +560,8 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
     let mut content_type = String::new();
     let mut content_base64 = String::new();
     let mut is_inline = false;
-    let mut content_id = None;
-    let mut content_location = None;
+    let mut content_id = None::<String>;
+    let mut content_location = None::<String>;
     let mut attachment_type = AttachmentType::File;
 
     loop {
@@ -574,18 +632,23 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
             }
             Ok(Event::Text(e)) => {
                 if let Ok(text) = e.decode() {
+                    // FIX #6: Use push_str instead of assignment so that
+                    // large text nodes split across multiple quick_xml events
+                    // (common for base64 content) are assembled correctly.
                     if in_name {
-                        name = text.into_owned();
+                        name.push_str(&text);
                     } else if in_content_type {
-                        content_type = text.into_owned();
+                        content_type.push_str(&text);
                     } else if in_content {
-                        content_base64 = text.into_owned();
+                        content_base64.push_str(&text);
                     } else if in_is_inline {
                         is_inline = text.eq_ignore_ascii_case("true");
                     } else if in_content_id {
-                        content_id = Some(text.into_owned());
+                        content_id.get_or_insert_with(String::new).push_str(&text);
                     } else if in_content_location {
-                        content_location = Some(text.into_owned());
+                        content_location
+                            .get_or_insert_with(String::new)
+                            .push_str(&text);
                     }
                 }
             }
@@ -663,7 +726,9 @@ pub fn parse_get_attachment_request(xml: &str) -> Vec<String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"AttachmentId" || local.as_ref() == b"RequestAttachmentId" {
+                if local.as_ref() == b"AttachmentId"
+                    || local.as_ref() == b"RequestAttachmentId"
+                {
                     for attr in e.attributes().flatten() {
                         if attr.key.local_name().as_ref() == b"Id"
                             && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
@@ -708,9 +773,10 @@ pub fn parse_delete_attachment_request(xml: &str) -> Option<ParsedDeleteAttachme
         buf.clear();
     }
 
-    attachment_ids.first().cloned().map(|id| ParsedDeleteAttachment {
-        attachment_id: id,
-    })
+    attachment_ids
+        .into_iter()
+        .next()
+        .map(|id| ParsedDeleteAttachment { attachment_id: id })
 }
 
 pub struct ParsedDeleteAttachment {
@@ -720,22 +786,48 @@ pub struct ParsedDeleteAttachment {
 pub fn render_file_attachment_xml(attachment: &FileAttachment, include_content: bool) -> String {
     let mut xml = String::with_capacity(512);
     xml.push_str("<t:FileAttachment>");
-    let _ = write!(xml, r#"<t:AttachmentId Id="{}"/>"#, xml_escape(&attachment.id));
+    let _ = write!(
+        xml,
+        r#"<t:AttachmentId Id="{}"/>"#,
+        xml_escape(&attachment.id)
+    );
     let _ = write!(xml, "<t:Name>{}</t:Name>", xml_escape(&attachment.name));
-    let _ = write!(xml, "<t:ContentType>{}</t:ContentType>", xml_escape(&attachment.content_type));
+    let _ = write!(
+        xml,
+        "<t:ContentType>{}</t:ContentType>",
+        xml_escape(&attachment.content_type)
+    );
     if include_content {
-        let _ = write!(xml, "<t:Content>{}</t:Content>", xml_escape(&attachment.content_base64));
+        // Base64 data does not contain XML-special characters, but we still
+        // delegate to xml_escape for consistency and defence in depth.
+        let _ = write!(
+            xml,
+            "<t:Content>{}</t:Content>",
+            xml_escape(&attachment.content_base64)
+        );
     }
     let _ = write!(xml, "<t:Size>{}</t:Size>", attachment.content_size);
-    let _ = write!(xml, "<t:IsInline>{}</t:IsInline>", if attachment.is_inline { "true" } else { "false" });
+    let _ = write!(
+        xml,
+        "<t:IsInline>{}</t:IsInline>",
+        if attachment.is_inline { "true" } else { "false" }
+    );
     if let Some(cid) = &attachment.content_id {
         let _ = write!(xml, "<t:ContentId>{}</t:ContentId>", xml_escape(cid));
     }
     if let Some(cl) = &attachment.content_location {
-        let _ = write!(xml, "<t:ContentLocation>{}</t:ContentLocation>", xml_escape(cl));
+        let _ = write!(
+            xml,
+            "<t:ContentLocation>{}</t:ContentLocation>",
+            xml_escape(cl)
+        );
     }
     if let Some(t) = &attachment.last_modified_time {
-        let _ = write!(xml, "<t:LastModifiedTime>{}</t:LastModifiedTime>", xml_escape(t));
+        let _ = write!(
+            xml,
+            "<t:LastModifiedTime>{}</t:LastModifiedTime>",
+            xml_escape(t)
+        );
     }
     xml.push_str("</t:FileAttachment>");
     xml
@@ -794,21 +886,31 @@ pub fn render_delete_attachment_response(root_item_id: &str) -> String {
     )
 }
 
-pub fn render_attachment_error_response(code: &str, message: &str) -> String {
+// FIX #11: Accept the operation name so callers can emit the correct response
+// element (e.g. "CreateAttachmentResponseMessage", "DeleteAttachmentResponseMessage").
+// Previously this was hard-coded to "CreateAttachmentResponseMessage" for all
+// error types, producing malformed XML for delete and get error responses.
+pub fn render_attachment_error_response(
+    operation: &str,
+    code: &str,
+    message: &str,
+) -> String {
     format!(
         r#"<m:ResponseMessages xmlns:m="{}" xmlns:t="{}">
-            <m:CreateAttachmentResponseMessage ResponseClass="Error">
+            <m:{operation} ResponseClass="Error">
                 <m:MessageText>{}</m:MessageText>
                 <m:ResponseCode>{}</m:ResponseCode>
                 <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
-            </m:CreateAttachmentResponseMessage>
+            </m:{operation}>
         </m:ResponseMessages>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
         xml_escape(message),
         xml_escape(code),
+        operation = operation,
     )
 }
+
 pub fn render_eas_attachments_xml(attachments: &[EasAttachmentSummary]) -> String {
     if attachments.is_empty() {
         return String::new();
@@ -817,16 +919,40 @@ pub fn render_eas_attachments_xml(attachments: &[EasAttachmentSummary]) -> Strin
     xml.push_str("<AirSyncBase:Attachments>");
     for att in attachments {
         xml.push_str("<AirSyncBase:Attachment>");
-        let _ = write!(xml, "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>", xml_escape(&att.display_name));
-        let _ = write!(xml, "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>", xml_escape(&att.file_reference));
+        let _ = write!(
+            xml,
+            "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>",
+            xml_escape(&att.display_name)
+        );
+        let _ = write!(
+            xml,
+            "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>",
+            xml_escape(&att.file_reference)
+        );
         let _ = write!(xml, "<AirSyncBase:Method>{}</AirSyncBase:Method>", att.method);
-        let _ = write!(xml, "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>", att.estimated_data_size.max(0));
-        let _ = write!(xml, "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>", if att.is_inline { "1" } else { "0" });
+        let _ = write!(
+            xml,
+            "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
+            att.estimated_data_size.max(0)
+        );
+        let _ = write!(
+            xml,
+            "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>",
+            if att.is_inline { "1" } else { "0" }
+        );
         if let Some(cid) = &att.content_id {
-            let _ = write!(xml, "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>", xml_escape(cid));
+            let _ = write!(
+                xml,
+                "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>",
+                xml_escape(cid)
+            );
         }
         if let Some(cl) = &att.content_location {
-            let _ = write!(xml, "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>", xml_escape(cl));
+            let _ = write!(
+                xml,
+                "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>",
+                xml_escape(cl)
+            );
         }
         xml.push_str("</AirSyncBase:Attachment>");
     }
@@ -842,19 +968,39 @@ pub fn render_ews_attachments_xml(attachments: &[EwsAttachmentSummary]) -> Strin
     xml.push_str("<t:Attachments>");
     for att in attachments {
         xml.push_str("<t:FileAttachment>");
-        let _ = write!(xml, r#"<t:AttachmentId Id="{}"/>"#, xml_escape(&att.attachment_id));
+        let _ = write!(
+            xml,
+            r#"<t:AttachmentId Id="{}"/>"#,
+            xml_escape(&att.attachment_id)
+        );
         let _ = write!(xml, "<t:Name>{}</t:Name>", xml_escape(&att.name));
-        let _ = write!(xml, "<t:ContentType>{}</t:ContentType>", xml_escape(&att.content_type));
+        let _ = write!(
+            xml,
+            "<t:ContentType>{}</t:ContentType>",
+            xml_escape(&att.content_type)
+        );
         let _ = write!(xml, "<t:Size>{}</t:Size>", att.content_size.max(0));
-        let _ = write!(xml, "<t:IsInline>{}</t:IsInline>", if att.is_inline { "true" } else { "false" });
+        let _ = write!(
+            xml,
+            "<t:IsInline>{}</t:IsInline>",
+            if att.is_inline { "true" } else { "false" }
+        );
         if let Some(cid) = &att.content_id {
             let _ = write!(xml, "<t:ContentId>{}</t:ContentId>", xml_escape(cid));
         }
         if let Some(cl) = &att.content_location {
-            let _ = write!(xml, "<t:ContentLocation>{}</t:ContentLocation>", xml_escape(cl));
+            let _ = write!(
+                xml,
+                "<t:ContentLocation>{}</t:ContentLocation>",
+                xml_escape(cl)
+            );
         }
         if let Some(lmt) = &att.last_modified_time {
-            let _ = write!(xml, "<t:LastModifiedTime>{}</t:LastModifiedTime>", lmt.to_rfc3339());
+            let _ = write!(
+                xml,
+                "<t:LastModifiedTime>{}</t:LastModifiedTime>",
+                lmt.to_rfc3339()
+            );
         }
         xml.push_str("</t:FileAttachment>");
     }
@@ -868,7 +1014,11 @@ pub fn render_eas_attachment_fetch_response(
 ) -> String {
     let mut xml = String::with_capacity(512);
     xml.push_str("<ItemOperations:Fetch>");
-    let _ = write!(xml, "<ItemOperations:Status>{}</ItemOperations:Status>", status);
+    let _ = write!(
+        xml,
+        "<ItemOperations:Status>{}</ItemOperations:Status>",
+        status
+    );
     if status == 1 {
         xml.push_str(&render_eas_attachment_content_xml(attachment));
     }
@@ -879,17 +1029,49 @@ pub fn render_eas_attachment_fetch_response(
 pub fn render_eas_attachment_content_xml(attachment: &FileAttachment) -> String {
     let mut xml = String::with_capacity(512);
     xml.push_str("<Properties>");
-    let _ = write!(xml, "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>", xml_escape(&attachment.name));
-    let _ = write!(xml, "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>", xml_escape(&attachment.id));
-    let _ = write!(xml, "<AirSyncBase:ContentType>{}</AirSyncBase:ContentType>", xml_escape(&attachment.content_type));
-    let _ = write!(xml, "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>", attachment.content_size.max(0));
-    let _ = write!(xml, "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>", if attachment.is_inline { "1" } else { "0" });
-    let _ = write!(xml, "<AirSyncBase:Data>{}</AirSyncBase:Data>", xml_escape(&attachment.content_base64));
+    let _ = write!(
+        xml,
+        "<AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName>",
+        xml_escape(&attachment.name)
+    );
+    let _ = write!(
+        xml,
+        "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>",
+        xml_escape(&attachment.id)
+    );
+    let _ = write!(
+        xml,
+        "<AirSyncBase:ContentType>{}</AirSyncBase:ContentType>",
+        xml_escape(&attachment.content_type)
+    );
+    let _ = write!(
+        xml,
+        "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
+        attachment.content_size.max(0)
+    );
+    let _ = write!(
+        xml,
+        "<AirSyncBase:IsInline>{}</AirSyncBase:IsInline>",
+        if attachment.is_inline { "1" } else { "0" }
+    );
+    let _ = write!(
+        xml,
+        "<AirSyncBase:Data>{}</AirSyncBase:Data>",
+        xml_escape(&attachment.content_base64)
+    );
     if let Some(cid) = &attachment.content_id {
-        let _ = write!(xml, "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>", xml_escape(cid));
+        let _ = write!(
+            xml,
+            "<AirSyncBase:ContentId>{}</AirSyncBase:ContentId>",
+            xml_escape(cid)
+        );
     }
     if let Some(cl) = &attachment.content_location {
-        let _ = write!(xml, "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>", xml_escape(cl));
+        let _ = write!(
+            xml,
+            "<AirSyncBase:ContentLocation>{}</AirSyncBase:ContentLocation>",
+            xml_escape(cl)
+        );
     }
     xml.push_str("</Properties>");
     xml
@@ -922,17 +1104,20 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
+                    // FIX #9: A nested <Attachment> while already inside one means the
+                    // outer element was never closed — discard the incomplete state
+                    // and start fresh rather than silently dropping it.
                     if in_attachment {
-                        let _ = std::mem::take(&mut display_name);
-                        let _ = std::mem::take(&mut content_type);
-                        let _ = std::mem::take(&mut data);
+                        display_name.clear();
+                        content_type.clear();
+                        data.clear();
                         method = 1;
                         estimated_data_size = 0;
                         content_id = None;
                         content_location = None;
                         is_inline = false;
                     }
-                    in_attachment = true;
+                    // FIX #8: Removed the duplicate `in_attachment = true` assignment.
                     in_attachment = true;
                 }
                 b"DisplayName" => in_display_name = true,
@@ -947,36 +1132,36 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
             },
             Ok(Event::End(e)) => match e.name().local_name().as_ref() {
                 b"Attachment" => {
-                if in_attachment && !data.is_empty() {
-                    let dn = std::mem::take(&mut display_name);
-                    let ct = std::mem::take(&mut content_type);
-                    let d = std::mem::take(&mut data);
-                    let ct_resolved = if ct.is_empty() {
-                        mime_type_for_filename(&dn).to_string()
-                    } else {
-                        ct
-                    };
-                    results.push(ParsedEasAttachmentAdd {
-                        display_name: if dn.is_empty() {
-                            "attachment.dat".to_string()
+                    if in_attachment && !data.is_empty() {
+                        let dn = std::mem::take(&mut display_name);
+                        let ct = std::mem::take(&mut content_type);
+                        let d = std::mem::take(&mut data);
+                        let ct_resolved = if ct.is_empty() {
+                            mime_type_for_filename(&dn).to_string()
                         } else {
-                            dn
-                        },
-                        method,
-                        estimated_data_size,
-                        content_type: ct_resolved,
-                        content_id: content_id.take(),
-                        content_location: content_location.take(),
-                        is_inline,
-                        content_base64: d,
-                    });
-                }
-                in_attachment = false;
-                method = 1;
-                estimated_data_size = 0;
-                content_id = None;
-                content_location = None;
-                is_inline = false;
+                            ct
+                        };
+                        results.push(ParsedEasAttachmentAdd {
+                            display_name: if dn.is_empty() {
+                                "attachment.dat".to_string()
+                            } else {
+                                dn
+                            },
+                            method,
+                            estimated_data_size,
+                            content_type: ct_resolved,
+                            content_id: content_id.take(),
+                            content_location: content_location.take(),
+                            is_inline,
+                            content_base64: d,
+                        });
+                    }
+                    in_attachment = false;
+                    method = 1;
+                    estimated_data_size = 0;
+                    content_id = None;
+                    content_location = None;
+                    is_inline = false;
                 }
                 b"DisplayName" => in_display_name = false,
                 b"Method" => in_method = false,
@@ -991,22 +1176,27 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
             Ok(Event::Text(t)) => {
                 if let Ok(v) = t.decode() {
                     let text = v.as_ref();
+                    // FIX #7: Append rather than overwrite so that large text
+                    // nodes (e.g. base64 bodies) split across multiple quick_xml
+                    // Text events are assembled correctly.
                     if in_display_name {
-                        display_name = text.to_string();
+                        display_name.push_str(text);
                     } else if in_method {
                         method = text.parse().unwrap_or(1);
                     } else if in_estimated_data_size {
                         estimated_data_size = text.parse().unwrap_or(0);
                     } else if in_content_type {
-                        content_type = text.to_string();
+                        content_type.push_str(text);
                     } else if in_content_id {
-                        content_id = Some(text.to_string());
+                        content_id.get_or_insert_with(String::new).push_str(text);
                     } else if in_content_location {
-                        content_location = Some(text.to_string());
+                        content_location
+                            .get_or_insert_with(String::new)
+                            .push_str(text);
                     } else if in_is_inline {
                         is_inline = text == "1" || text.eq_ignore_ascii_case("true");
                     } else if in_data {
-                        data = text.to_string();
+                        data.push_str(text);
                     }
                 }
             }
@@ -1040,18 +1230,21 @@ pub fn parse_eas_attachment_deletes(xml: &str) -> Vec<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e))
-                if e.name().local_name().as_ref() == b"FileReference" => {
-                    in_file_reference = true;
-                }
+                if e.name().local_name().as_ref() == b"FileReference" =>
+            {
+                in_file_reference = true;
+            }
             Ok(Event::End(e))
-                if e.name().local_name().as_ref() == b"FileReference" => {
-                    in_file_reference = false;
-                }
+                if e.name().local_name().as_ref() == b"FileReference" =>
+            {
+                in_file_reference = false;
+            }
             Ok(Event::Text(t)) => {
                 if in_file_reference
-                    && let Ok(v) = t.decode() {
-                        ids.push(v.into_owned());
-                    }
+                    && let Ok(v) = t.decode()
+                {
+                    ids.push(v.into_owned());
+                }
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
