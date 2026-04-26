@@ -190,10 +190,7 @@ pub fn validate_mime_type(content_type: &str) -> Result<Mime> {
     // any other check, so the allowlist below cannot accidentally re-admit them.
     let top = mime.type_().as_str();
     let sub = mime.subtype().as_str();
-    if DANGEROUS_MIME_TYPES.iter().any(|&dm| {
-        let mut parts = dm.splitn(2, '/');
-        parts.next() == Some(top) && parts.next() == Some(sub)
-    }) {
+    let normalised = format!("{}/{}", mime.type_().as_str(), mime.subtype().as_str());
     if DANGEROUS_MIME_TYPES.contains(&normalised.as_str()) {
         return Err(anyhow!(
             "MIME type '{}' is not allowed for security reasons",
