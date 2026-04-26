@@ -12,7 +12,6 @@ services:
     volumes:
       - ./config.toml:/etc/exchange-gateway/config.toml:ro
     ports:
-      - "8134:8134"
       - "[::]:8134:8134"
     networks:
       my-bridge-network:
