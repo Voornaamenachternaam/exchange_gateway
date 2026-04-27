@@ -9,6 +9,8 @@ const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    pub gateway_host: String,
+    pub mail_domain: String,
     pub bind: String,
     pub caldav_base: String,
     pub worker_url: String,
