@@ -109,6 +109,5 @@ mod tests {
     }
 
     #[test]
-    fn test_traits_compile() {
-    }
+    fn test_traits_compile() {}
 }

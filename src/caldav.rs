@@ -53,7 +53,10 @@ impl CaldavClient {
 </D:propfind>"#;
         match self
             .client
-            .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap_or(reqwest::Method::GET), &home_url)
+            .request(
+                reqwest::Method::from_bytes(b"PROPFIND").unwrap_or(reqwest::Method::GET),
+                &home_url,
+            )
             .basic_auth(username, Some(password))
             .header("Depth", "0")
             .header("Content-Type", "application/xml; charset=utf-8")
@@ -100,7 +103,10 @@ impl CaldavClient {
             .send()
             .await?;
         if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow::anyhow!("failed to query freebusy: {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "failed to query freebusy: {}",
+                resp.status()
+            ));
         }
         Ok(resp.text().await?)
     }
