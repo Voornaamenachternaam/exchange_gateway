@@ -72,9 +72,7 @@ impl Config {
             ));
         }
         if self.mail_domain.trim().is_empty() {
-            return Err(anyhow::anyhow!(
-                "Config: 'mail_domain' is required"
-            ));
+            return Err(anyhow::anyhow!("Config: 'mail_domain' is required"));
         }
         validate_url(&self.caldav_base, "caldav_base")?;
         validate_url(&self.worker_url, "worker_url")?;
