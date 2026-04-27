@@ -2801,7 +2801,7 @@ fn tz_blob_to_std_time_xml(blob: &[u8; 16]) -> String {
     let month = blob[2] as u32;
     let day_order = blob[6] as u32;
     let hour = blob[8] as u32;
-    let day_of_week = match blob[10] {
+    let day_of_week = match blob[4] {
         0 => "Sunday",
         1 => "Monday",
         2 => "Tuesday",
