@@ -2692,16 +2692,11 @@ async fn handle_set_user_oof_settings(_auth: &AuthContext, _body: &str) -> Respo
 }
 
 async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
-async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
     let domain = &state.cfg.mail_domain;
     if domain.is_empty() {
         return soap_fault("ErrorInternalServerError", "Mail domain not configured", StatusCode::INTERNAL_SERVER_ERROR);
     };
     let domain_escaped = xml_escape(domain);
-    if domain.is_empty() {
-        return soap_fault("ErrorInternalServerError", "Gateway host not configured", StatusCode::INTERNAL_SERVER_ERROR);
-    };
-    let domain_escaped = xml_escape(&domain);
     let inner = format!(
         r#"<m:GetServiceConfigurationResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
