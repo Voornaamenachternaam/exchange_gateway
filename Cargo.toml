@@ -9,7 +9,7 @@ rust-version = "1.95.0"
 tokio = { version = "^1.52.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
-axum-server = { version = "^0.7.2", features = ["tls-rustls"] }
+axum-server = { version = "^0.8.0", features = ["tls-rustls"] }
 hyper = "^1.9.0"
 hyper-util = "^0.1.20"
 reqwest = { version = "^0.13.2", features = ["rustls", "json", "gzip", "brotli", "deflate", "stream"] }
