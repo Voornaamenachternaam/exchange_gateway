@@ -2694,7 +2694,11 @@ async fn handle_set_user_oof_settings(_auth: &AuthContext, _body: &str) -> Respo
 async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
     let domain = &state.cfg.mail_domain;
     if domain.is_empty() {
-        return soap_fault("ErrorInternalServerError", "Mail domain not configured", StatusCode::INTERNAL_SERVER_ERROR);
+        return soap_fault(
+            "ErrorInternalServerError",
+            "Mail domain not configured",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
     };
     let domain_escaped = xml_escape(domain);
     let inner = format!(
@@ -2745,22 +2749,54 @@ fn render_timezone_definitions() -> String {
     use windows_timezones::WindowsTimezone;
 
     let zones: Vec<&'static str> = vec![
-        "UTC","GMT Standard Time","Central Europe Standard Time","W. Europe Standard Time",
-        "E. Europe Standard Time","Pacific Standard Time","Mountain Standard Time",
-        "Central Standard Time","Eastern Standard Time","US Eastern Standard Time",
-        "US Mountain Standard Time","Pacific SA Standard Time","Atlantic Standard Time",
-        "SA Pacific Standard Time","Greenland Standard Time","Azores Standard Time",
-        "Cape Verde Standard Time","Morocco Standard Time","W. Central Africa Standard Time",
-        "Jordan Standard Time","Middle East Standard Time","Egypt Standard Time",
-        "Syria Standard Time","E. Africa Standard Time","Arabic Standard Time",
-        "Arab Standard Time","Russian Standard Time","Kaliningrad Standard Time",
-        "Turkey Standard Time","Israel Standard Time","Iran Standard Time",
-        "Afghanistan Standard Time","Pakistan Standard Time","India Standard Time",
-        "Sri Lanka Standard Time","Nepal Standard Time","Central Asia Standard Time",
-        "North Asia Standard Time","SE Asia Standard Time","North Asia East Standard Time",
-        "China Standard Time","Korea Standard Time","Tokyo Standard Time",
-        "West Pacific Standard Time","AUS Central Standard Time",
-        "AUS Eastern Standard Time","Tasmania Standard Time","New Zealand Standard Time",
+        "UTC",
+        "GMT Standard Time",
+        "Central Europe Standard Time",
+        "W. Europe Standard Time",
+        "E. Europe Standard Time",
+        "Pacific Standard Time",
+        "Mountain Standard Time",
+        "Central Standard Time",
+        "Eastern Standard Time",
+        "US Eastern Standard Time",
+        "US Mountain Standard Time",
+        "Pacific SA Standard Time",
+        "Atlantic Standard Time",
+        "SA Pacific Standard Time",
+        "Greenland Standard Time",
+        "Azores Standard Time",
+        "Cape Verde Standard Time",
+        "Morocco Standard Time",
+        "W. Central Africa Standard Time",
+        "Jordan Standard Time",
+        "Middle East Standard Time",
+        "Egypt Standard Time",
+        "Syria Standard Time",
+        "E. Africa Standard Time",
+        "Arabic Standard Time",
+        "Arab Standard Time",
+        "Russian Standard Time",
+        "Kaliningrad Standard Time",
+        "Turkey Standard Time",
+        "Israel Standard Time",
+        "Iran Standard Time",
+        "Afghanistan Standard Time",
+        "Pakistan Standard Time",
+        "India Standard Time",
+        "Sri Lanka Standard Time",
+        "Nepal Standard Time",
+        "Central Asia Standard Time",
+        "North Asia Standard Time",
+        "SE Asia Standard Time",
+        "North Asia East Standard Time",
+        "China Standard Time",
+        "Korea Standard Time",
+        "Tokyo Standard Time",
+        "West Pacific Standard Time",
+        "AUS Central Standard Time",
+        "AUS Eastern Standard Time",
+        "Tasmania Standard Time",
+        "New Zealand Standard Time",
     ];
 
     let mut result = String::with_capacity(zones.len() * 400);
@@ -2772,7 +2808,15 @@ fn render_timezone_definitions() -> String {
         let (bias, std_date_xml, dst_date_xml) = if let Some(tz) = iana {
             let iana_str = tz.name();
             match crate::timezone::iana_to_windows_params(iana_str) {
-                Some((bias, _std_name, _dst_name, std_blob, dst_blob, _std_bias_val, dst_bias_val)) => {
+                Some((
+                    bias,
+                    _std_name,
+                    _dst_name,
+                    std_blob,
+                    dst_blob,
+                    _std_bias_val,
+                    dst_bias_val,
+                )) => {
                     let std_xml = tz_blob_to_std_time_xml(&std_blob);
                     let dst_xml = tz_blob_to_daylight_time_xml(&dst_blob, dst_bias_val);
                     (bias, std_xml, dst_xml)
