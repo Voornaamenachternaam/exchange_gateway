@@ -2750,6 +2750,12 @@ static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
     render_timezone_definitions()
 });
 
+use once_cell::sync::Lazy;
+
+static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
+    render_timezone_definitions()
+});
+
 async fn handle_get_server_time_zones() -> Response {
     let inner = format!(
         r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
