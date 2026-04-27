@@ -1,3 +1,4 @@
+# .github/workflows/gemini-invoke.yml
 name: '▶️ Gemini Invoke'
 
 on:

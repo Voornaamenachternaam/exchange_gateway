@@ -56,6 +56,8 @@ The `exchange` subdomain must be proxied (orange cloud) to route through Cloudfl
 
 The `exchange-origin` subdomain is the direct origin that Cloudflare Tunnel connects to and must not be proxied.
 
+The `_autodiscover._tcp` SRV record enables Outlook auto-discovery for the domain.
+
 ## Step 5: Configure Cloudflare Tunnel
 
 Create a tunnel in the Cloudflare Zero Trust dashboard:
@@ -164,7 +166,7 @@ For a single-user or small-team calendar setup, these limits are sufficient. Mon
 
 1. **Authentication**: All EWS and ActiveSync requests require Basic authentication. The Worker validates credentials against the Stalwart IMAP backend via the Rust gateway.
 
-2. **TLS**: Cloudflare provides automatic TLS termination. The tunnel between Cloudflare and the origin uses `https` with the ACME-provisioned certificate.
+2. **TLS**: Cloudflare provides automatic TLS termination for all client-facing endpoints. The Cloudflare Tunnel between Cloudflare and the origin container uses HTTP over the private Docker network (`http://exchange_gateway:8134`). The gateway container itself runs plain HTTP; no TLS certificates or key files are needed on the container because Cloudflare handles all TLS.
 
 3. **Rate Limiting**: Per-IP rate limiting prevents abuse. Adjust limits in `wrangler.toml` as needed.
 

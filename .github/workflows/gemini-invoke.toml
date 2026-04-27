@@ -1,3 +1,4 @@
+# .github/workflows/gemini-invoke.toml
 description = "Runs the Gemini CLI"
 prompt = """
 ## Persona and Guiding Principles

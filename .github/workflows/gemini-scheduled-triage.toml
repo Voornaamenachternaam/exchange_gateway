@@ -1,3 +1,4 @@
+# .github/workflows/gemini-scheduled-triage.toml
 description = "Triages issues on a schedule with Gemini CLI"
 prompt = """
 ## Role

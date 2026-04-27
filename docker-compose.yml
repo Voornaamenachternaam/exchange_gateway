@@ -10,7 +10,6 @@ services:
       - RUST_LOG=${RUST_LOG:-info}
     volumes:
       - ./exchange-gateway.config.toml:/etc/exchange-gateway/config.toml:ro
-      - ./tls:/etc/exchange-gateway/tls:ro
     ports:
       - "[::]:8134:8134"
     networks:
