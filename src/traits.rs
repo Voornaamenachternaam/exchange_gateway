@@ -82,10 +82,35 @@ pub trait EventProcessor {
 mod tests {
     use super::*;
 
-    fn _assert_calendar_store_send_sync<T: CalendarStore>() {}
-    fn _assert_sync_state_send_sync<T: SyncStateStore>() {}
-    fn _assert_rate_limiter_send_sync<T: RateLimiter>() {}
+    fn _assert_future_send<F: Future + Send>(_f: F) {}
+
+    fn _assert_calendar_store_futures_send<T: CalendarStore>(store: &T) {
+        _assert_future_send(store.get_item("test"));
+        _assert_future_send(async {
+            let item = CalendarItem::default();
+            store.put_item(&item).await
+        });
+        _assert_future_send(store.delete_item("test"));
+        _assert_future_send(store.list_changes_since(Utc::now(), 10));
+    }
+
+    fn _assert_sync_state_store_futures_send<T: SyncStateStore>(store: &T) {
+        _assert_future_send(store.get_sync_key("owner", "collection"));
+        _assert_future_send(store.set_sync_key("owner", "collection", "key", None));
+    }
+
+    fn _assert_rate_limiter_futures_send<T: RateLimiter>(limiter: &T) {
+        _assert_future_send(limiter.check_rate_limit("key"));
+        _assert_future_send(limiter.record_request("key"));
+    }
+
+    fn _assert_authenticator_futures_send<T: Authenticator>(auth: &T) {
+        _assert_future_send(auth.authenticate("user", "pass"));
+    }
 
     #[test]
-    fn test_traits_compile() {}
+    fn test_traits_compile() {
+        // Test ensures that all trait methods return Send futures.
+        // The functions above will fail to compile if any future is not Send.
+    }
 }

@@ -39,7 +39,7 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 #[derive(Clone)]
 struct AuthContext {
@@ -2738,11 +2738,7 @@ async fn handle_get_server_time_zones() -> Response {
     soap_ok(inner)
 }
 
-use std::sync::LazyLock;
-
-static TIMEZONE_DEFINITIONS: LazyLock<String> = LazyLock::new(|| {
-    render_timezone_definitions()
-});
+static TIMEZONE_DEFINITIONS: LazyLock<String> = LazyLock::new(render_timezone_definitions);
 
 fn render_timezone_definitions() -> String {
     use strum::IntoEnumIterator;
