@@ -39,7 +39,7 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 #[derive(Clone)]
 struct AuthContext {
@@ -2694,7 +2694,11 @@ async fn handle_set_user_oof_settings(_auth: &AuthContext, _body: &str) -> Respo
 async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
     let domain = &state.cfg.mail_domain;
     if domain.is_empty() {
-        return soap_fault("ErrorInternalServerError", "Mail domain not configured", StatusCode::INTERNAL_SERVER_ERROR);
+        return soap_fault(
+            "ErrorInternalServerError",
+            "Mail domain not configured",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
     };
     let domain_escaped = xml_escape(domain);
     let inner = format!(
@@ -2724,34 +2728,6 @@ async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
 }
 
 async fn handle_get_server_time_zones() -> Response {
-    let tz_defs = render_timezone_definitions();
-    let inner = format!(
-        r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:GetServerTimeZonesResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:TimeZoneDefinitions>{}</m:TimeZoneDefinitions>
-</m:GetServerTimeZonesResponseMessage>
-</m:ResponseMessages>
-</m:GetServerTimeZonesResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, tz_defs
-    );
-    soap_ok(inner)
-}
-
-use once_cell::sync::Lazy;
-
-static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
-    render_timezone_definitions()
-});
-
-use once_cell::sync::Lazy;
-
-static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
-    render_timezone_definitions()
-});
-
-async fn handle_get_server_time_zones() -> Response {
     let inner = format!(
         r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
@@ -2765,26 +2741,62 @@ async fn handle_get_server_time_zones() -> Response {
     );
     soap_ok(inner)
 }
+
+static TIMEZONE_DEFINITIONS: LazyLock<String> = LazyLock::new(render_timezone_definitions);
+
+fn render_timezone_definitions() -> String {
     use strum::IntoEnumIterator;
     use windows_timezones::WindowsTimezone;
 
     let zones: Vec<&'static str> = vec![
-        "UTC","GMT Standard Time","Central Europe Standard Time","W. Europe Standard Time",
-        "E. Europe Standard Time","Pacific Standard Time","Mountain Standard Time",
-        "Central Standard Time","Eastern Standard Time","US Eastern Standard Time",
-        "US Mountain Standard Time","Pacific SA Standard Time","Atlantic Standard Time",
-        "SA Pacific Standard Time","Greenland Standard Time","Azores Standard Time",
-        "Cape Verde Standard Time","Morocco Standard Time","W. Central Africa Standard Time",
-        "Jordan Standard Time","Middle East Standard Time","Egypt Standard Time",
-        "Syria Standard Time","E. Africa Standard Time","Arabic Standard Time",
-        "Arab Standard Time","Russian Standard Time","Kaliningrad Standard Time",
-        "Turkey Standard Time","Israel Standard Time","Iran Standard Time",
-        "Afghanistan Standard Time","Pakistan Standard Time","India Standard Time",
-        "Sri Lanka Standard Time","Nepal Standard Time","Central Asia Standard Time",
-        "North Asia Standard Time","SE Asia Standard Time","North Asia East Standard Time",
-        "China Standard Time","Korea Standard Time","Tokyo Standard Time",
-        "West Pacific Standard Time","AUS Central Standard Time",
-        "AUS Eastern Standard Time","Tasmania Standard Time","New Zealand Standard Time",
+        "UTC",
+        "GMT Standard Time",
+        "Central Europe Standard Time",
+        "W. Europe Standard Time",
+        "E. Europe Standard Time",
+        "Pacific Standard Time",
+        "Mountain Standard Time",
+        "Central Standard Time",
+        "Eastern Standard Time",
+        "US Eastern Standard Time",
+        "US Mountain Standard Time",
+        "Pacific SA Standard Time",
+        "Atlantic Standard Time",
+        "SA Pacific Standard Time",
+        "Greenland Standard Time",
+        "Azores Standard Time",
+        "Cape Verde Standard Time",
+        "Morocco Standard Time",
+        "W. Central Africa Standard Time",
+        "Jordan Standard Time",
+        "Middle East Standard Time",
+        "Egypt Standard Time",
+        "Syria Standard Time",
+        "E. Africa Standard Time",
+        "Arabic Standard Time",
+        "Arab Standard Time",
+        "Russian Standard Time",
+        "Kaliningrad Standard Time",
+        "Turkey Standard Time",
+        "Israel Standard Time",
+        "Iran Standard Time",
+        "Afghanistan Standard Time",
+        "Pakistan Standard Time",
+        "India Standard Time",
+        "Sri Lanka Standard Time",
+        "Nepal Standard Time",
+        "Central Asia Standard Time",
+        "North Asia Standard Time",
+        "SE Asia Standard Time",
+        "North Asia East Standard Time",
+        "China Standard Time",
+        "Korea Standard Time",
+        "Tokyo Standard Time",
+        "West Pacific Standard Time",
+        "AUS Central Standard Time",
+        "AUS Eastern Standard Time",
+        "Tasmania Standard Time",
+        "New Zealand Standard Time",
     ];
 
     let mut result = String::with_capacity(zones.len() * 400);
@@ -2796,7 +2808,15 @@ async fn handle_get_server_time_zones() -> Response {
         let (bias, std_date_xml, dst_date_xml) = if let Some(tz) = iana {
             let iana_str = tz.name();
             match crate::timezone::iana_to_windows_params(iana_str) {
-                Some((bias, _std_name, _dst_name, std_blob, dst_blob, _std_bias_val, dst_bias_val)) => {
+                Some((
+                    bias,
+                    _std_name,
+                    _dst_name,
+                    std_blob,
+                    dst_blob,
+                    _std_bias_val,
+                    dst_bias_val,
+                )) => {
                     let std_xml = tz_blob_to_std_time_xml(&std_blob);
                     let dst_xml = tz_blob_to_daylight_time_xml(&dst_blob, dst_bias_val);
                     (bias, std_xml, dst_xml)
@@ -2818,7 +2838,6 @@ async fn handle_get_server_time_zones() -> Response {
     }
     result
 }
-
 fn tz_blob_to_std_time_xml(blob: &[u8; 16]) -> String {
     if blob.iter().all(|&b| b == 0) {
         return r#"<t:StandardTime><t:Bias>0</t:Bias></t:StandardTime>"#.to_string();
