@@ -110,7 +110,5 @@ mod tests {
 
     #[test]
     fn test_traits_compile() {
-        // Test ensures that all trait methods return Send futures.
-        // The functions above will fail to compile if any future is not Send.
     }
 }

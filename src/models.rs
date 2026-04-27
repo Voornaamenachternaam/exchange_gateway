@@ -1,5 +1,6 @@
 // src/models.rs
 use crate::attachment::AttachmentManager;
+use crate::auth::AuthVerifier;
 use crate::config::Config;
 use crate::room::RoomManager;
 use crate::storage::Storage;
@@ -11,6 +12,7 @@ pub struct AppState {
     pub storage: Arc<Storage>,
     pub attachment_manager: Arc<AttachmentManager>,
     pub room_manager: Arc<RoomManager>,
+    pub auth_verifier: Arc<AuthVerifier>,
 }
 
 impl AppState {
@@ -21,11 +23,13 @@ impl AppState {
             max_attachment_bytes,
         ));
         let room_manager = Arc::new(RoomManager::new(storage.clone()));
+        let auth_verifier = Arc::new(AuthVerifier::new(&cfg));
         Self {
             cfg,
             storage,
             attachment_manager,
             room_manager,
+            auth_verifier,
         }
     }
 

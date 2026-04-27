@@ -1,5 +1,6 @@
 // src/lib.rs
 pub mod attachment;
+pub mod auth;
 pub mod autodiscover;
 pub mod caldav;
 pub mod calendar;

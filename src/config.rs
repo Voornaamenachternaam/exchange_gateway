@@ -6,6 +6,8 @@ use url::Url;
 use zeroize::Zeroizing;
 
 const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
+const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
+const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -24,10 +26,32 @@ pub struct Config {
     pub max_attachment_bytes: usize,
     #[serde(default)]
     pub room_booking_enabled: bool,
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
+    #[serde(default = "default_auth_cache_ttl_secs")]
+    pub auth_cache_ttl_secs: u64,
+    #[serde(default = "default_auth_cache_max_entries")]
+    pub auth_cache_max_entries: usize,
+}
+
+impl Config {
+    pub fn tls_enabled(&self) -> bool {
+        self.tls_cert_path.is_some() && self.tls_key_path.is_some()
+    }
 }
 
 fn default_max_attachment_bytes() -> usize {
     DEFAULT_MAX_ATTACHMENT_BYTES
+}
+
+fn default_auth_cache_ttl_secs() -> u64 {
+    DEFAULT_AUTH_CACHE_TTL_SECS
+}
+
+fn default_auth_cache_max_entries() -> usize {
+    DEFAULT_AUTH_CACHE_MAX_ENTRIES
 }
 
 impl Config {
@@ -88,12 +112,12 @@ impl Config {
         }
         if self.worker_secret.expose_secret().starts_with("REPLACE_") {
             return Err(anyhow::anyhow!(
-                "Config: 'worker_secret' still contains a placeholder — generate a real secret with: openssl rand -hex 32"
+                "Config: 'worker_secret' still contains a placeholder"
             ));
         }
         if self.hmac_secret.expose_secret().starts_with("REPLACE_") {
             return Err(anyhow::anyhow!(
-                "Config: 'hmac_secret' still contains a placeholder — generate a real secret with: openssl rand -hex 32"
+                "Config: 'hmac_secret' still contains a placeholder"
             ));
         }
         if !self.gateway_host.is_empty() && self.gateway_host.contains("://") {
@@ -104,6 +128,27 @@ impl Config {
         if self.max_attachment_bytes > 50 * 1024 * 1024 {
             return Err(anyhow::anyhow!(
                 "Config: 'max_attachment_bytes' must not exceed 50MB"
+            ));
+        }
+        if self.tls_cert_path.is_some() != self.tls_key_path.is_some() {
+            return Err(anyhow::anyhow!(
+                "Config: 'tls_cert_path' and 'tls_key_path' must both be set or both be unset"
+            ));
+        }
+        if let Some(ref cert_path) = self.tls_cert_path
+            && !std::path::Path::new(cert_path).exists()
+        {
+            return Err(anyhow::anyhow!(
+                "Config: 'tls_cert_path' file does not exist: {}",
+                cert_path
+            ));
+        }
+        if let Some(ref key_path) = self.tls_key_path
+            && !std::path::Path::new(key_path).exists()
+        {
+            return Err(anyhow::anyhow!(
+                "Config: 'tls_key_path' file does not exist: {}",
+                key_path
             ));
         }
         Ok(())
