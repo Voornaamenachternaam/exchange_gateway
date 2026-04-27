@@ -9,7 +9,9 @@ const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    #[serde(default)]
     pub gateway_host: String,
+    #[serde(default)]
     pub mail_domain: String,
     pub bind: String,
     pub caldav_base: String,
@@ -18,8 +20,6 @@ pub struct Config {
     pub worker_secret: SecretString,
     #[serde(skip_serializing)]
     pub hmac_secret: SecretString,
-    #[serde(default)]
-    pub gateway_host: String,
     #[serde(default = "default_max_attachment_bytes")]
     pub max_attachment_bytes: usize,
     #[serde(default)]

@@ -2724,34 +2724,6 @@ async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
 }
 
 async fn handle_get_server_time_zones() -> Response {
-    let tz_defs = render_timezone_definitions();
-    let inner = format!(
-        r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:GetServerTimeZonesResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:TimeZoneDefinitions>{}</m:TimeZoneDefinitions>
-</m:GetServerTimeZonesResponseMessage>
-</m:ResponseMessages>
-</m:GetServerTimeZonesResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, tz_defs
-    );
-    soap_ok(inner)
-}
-
-use once_cell::sync::Lazy;
-
-static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
-    render_timezone_definitions()
-});
-
-use once_cell::sync::Lazy;
-
-static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
-    render_timezone_definitions()
-});
-
-async fn handle_get_server_time_zones() -> Response {
     let inner = format!(
         r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
@@ -2765,6 +2737,14 @@ async fn handle_get_server_time_zones() -> Response {
     );
     soap_ok(inner)
 }
+
+use std::sync::LazyLock;
+
+static TIMEZONE_DEFINITIONS: LazyLock<String> = LazyLock::new(|| {
+    render_timezone_definitions()
+});
+
+fn render_timezone_definitions() -> String {
     use strum::IntoEnumIterator;
     use windows_timezones::WindowsTimezone;
 
@@ -2818,7 +2798,6 @@ async fn handle_get_server_time_zones() -> Response {
     }
     result
 }
-
 fn tz_blob_to_std_time_xml(blob: &[u8; 16]) -> String {
     if blob.iter().all(|&b| b == 0) {
         return r#"<t:StandardTime><t:Bias>0</t:Bias></t:StandardTime>"#.to_string();
