@@ -1,3 +1,4 @@
+# .github/workflows/gemini-review.toml
 description = "Reviews a pull request with Gemini CLI"
 prompt = """
 ## Role

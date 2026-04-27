@@ -111,9 +111,9 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/EWS/Exchange.asmx", post(ews::handle))
-        .route("/EWS/*path", post(ews::handle))
+        .route("/EWS/{*path}", post(ews::handle))
         .route("/OAB/oab.xml", get(oab::handle_oab_list))
-        .route("/OAB/*path", get(oab::handle_oab_file))
+        .route("/OAB/{*path}", get(oab::handle_oab_file))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
         .route("/autodiscover/autodiscover.xml", post(autodiscover_xml))
         .route("/Autodiscover/Autodiscover.xml", post(autodiscover_xml))
@@ -239,12 +239,7 @@ async fn shutdown_signal() {
 fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>> {
     let endpoint = match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
         Ok(e) => e,
-        Err(_) => {
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
-            return Ok(None);
-        }
+        Err(_) => return Ok(None),
     };
 
     let service_name =

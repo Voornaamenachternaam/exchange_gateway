@@ -1,3 +1,4 @@
+# .github/workflows/opencode.yml
 name: opencode
 
 permissions:

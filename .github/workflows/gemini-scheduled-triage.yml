@@ -1,3 +1,4 @@
+# .github/workflows/gemini-scheduled-triage.yml
 name: '📋 Gemini Scheduled Issue Triage'
 
 on:
