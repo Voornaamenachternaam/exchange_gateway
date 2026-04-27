@@ -1,0 +1,1291 @@
+﻿[MS-STANOPOP3]:  
+
+Outlook Post Office Protocol Version 3 (POP3) Standards 
+Support 
+
+ 
+
+This document provides a statement of standards support. It is intended for use in conjunction with 
+the Microsoft technical specifications, publicly available standards specifications, network programming 
+art, and Microsoft distributed systems concepts. It assumes that the reader is either familiar with the 
+aforementioned material or has immediate access to it. 
+
+A Standards Support document does not require the use of Microsoft programming tools or 
+programming environments in order to implement the standard. Developers who have access to 
+Microsoft programming tools and environments are free to take advantage of them. 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+
+1 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+This document describes the choices made when implementing the Post Office Protocol Version 3 
+(POP3) Standard. It identifies ambiguities and implementer choices and indicates the approach taken 
+in the implementation. The details of the implementation itself are described in the specifications for 
+the relevant protocols or data structures, not in this document. 
+
+2 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0.0 Major Initial Availability. 
+
+10/1/2008 1.1.0 Minor Updated IP notice. 
+
+4/10/2009 2.0.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0.0 Major Revised and edited technical content. 
+
+11/4/2009 3.0.1 Editorial Revised and edited the technical content. 
+
+2/10/2010 3.0.1 None Version 3.0.1 release 
+
+8/4/2010 3.1 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 3.2 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 3.3 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 3.3 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 3.3 None 
+
+technical content. 
+
+1/20/2012 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/8/2012 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 4.0 None 
+
+technical content. 
+
+5/26/2015 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 5.0 None 
+
+technical content. 
+
+3 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/24/2017 5.0 None 
+
+technical content. 
+
+4/27/2018 6.0 Major Significantly changed the technical content. 
+
+8/28/2018 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/18/2019 7.0 None 
+
+technical content. 
+
+4/22/2021 8.0 Major Significantly changed the technical content. 
+
+8/17/2021 9.0 Major Significantly changed the technical content. 
+
+7/17/2024 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/20/2024 10.0 None 
+
+technical content. 
+
+4 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 6 
+1.2.2 Informative References ................................................................................. 6 
+
+1.3 Microsoft Implementations .................................................................................. 6 
+1.4 Standards Support Requirements ......................................................................... 7 
+1.5 Notation ............................................................................................................ 7 
+
+2 Standards Support Statements ................................................................................ 8 
+2.1 Normative Variations .......................................................................................... 8 
+2.2 Clarifications ..................................................................................................... 8 
+
+2.2.1 [RFC1939] Section 3, Basic Operation ............................................................. 8 
+2.2.2 [RFC1939] Section 4, The AUTHORIZATION State .......................................... 10 
+2.2.3 [RFC1939] Section 4, QUIT Command ........................................................... 10 
+2.2.4 [RFC1939] Section 5, The TRANSACTION State .............................................. 11 
+2.2.5 [RFC1939] Section 5, STAT Command........................................................... 11 
+2.2.6 [RFC1939] Section 5, LIST Command ........................................................... 11 
+2.2.7 [RFC1939] Section 5, RETR Command .......................................................... 12 
+2.2.8 [RFC1939] Section 5, DELE Command........................................................... 13 
+2.2.9 [RFC1939] Section 5, NOOP Command .......................................................... 14 
+2.2.10 [RFC1939] Section 5, RSET Command .......................................................... 14 
+2.2.11 [RFC1939] Section 6, QUIT Command ........................................................... 14 
+2.2.12 [RFC1939] Section 7, Optional POP3 Commands ............................................ 15 
+2.2.13 [RFC1939] Section 7, TOP Command ............................................................ 15 
+2.2.14 [RFC1939] Section 7, UIDL Command ........................................................... 15 
+2.2.15 [RFC1939] Section 7, USER Command .......................................................... 17 
+2.2.16 [RFC1939] Section 7, PASS Command .......................................................... 18 
+2.2.17 [RFC1939] Section 7, APOP Command .......................................................... 18 
+2.2.18 [RFC1939] Section 8, Scaling and Operational Considerations .......................... 18 
+
+2.3 Error Handling ................................................................................................. 19 
+2.4 Security .......................................................................................................... 19 
+
+3 Change Tracking .................................................................................................... 20 
+
+4 Index ..................................................................................................................... 21 
+
+ 
+
+5 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+1 Introduction 
+
+This document specifies the level of support provided by Outlook for the Post Office Protocol - 
+Version 3 (POP3), as specified in [RFC1939]. Outlook uses the POP3 protocol to retrieve messages 
+from the server. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Post Office Protocol - Version 3 (POP3): A protocol that is used for accessing email from mail 
+servers, as described in [RFC1939]. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXPOP3] Microsoft Corporation, "Post Office Protocol Version 3 (POP3) Extensions". 
+
+[RFC1939] Myers, J., and Rose, M., "Post Office Protocol - Version 3", STD 53, RFC 1939, May 1996, 
+https://www.rfc-editor.org/info/rfc1939 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2449] Gellens, R., Newman, C., and Lundblade, L., "POP3 Extension Mechanism", RFC 2449, 
+November 1998, http://www.rfc-editor.org/rfc/rfc2449.txt 
+
+1.2.2 Informative References 
+
+None. 
+
+1.3 Microsoft Implementations 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+6 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+ Microsoft Outlook LTSC 2024  
+
+ Microsoft Outlook for Windows (new)     
+
+1.4 Standards Support Requirements 
+
+The conformance requirements for [RFC1939] are that all required portions of the specifications are 
+implemented according to the specification, and any optional portions that are implemented are 
+implemented according to the specification. 
+
+The following table lists the sections of [RFC1939] that are considered normative and the sections that 
+are considered informative. 
+
+Section(s) Normative/Informative 
+
+1 – 2 Informative 
+
+3 – 7 Normative 
+
+8 – 11 Informative 
+
+12 Normative 
+
+13 – 15 Informative 
+
+ 
+
+1.5 Notation 
+
+The following notations are used in this specification. 
+
+Notation Explanation 
+
+C#### This identifies a clarification of ambiguity in the target specification. This includes imprecise 
+statements, omitted information, discrepancies, and errata. This does not include data formatting 
+clarifications. 
+
+V#### This identifies an intended point of variability in the target specification such as the use of MAY, 
+SHOULD, or RECOMMENDED. This does not include extensibility points. 
+
+E#### Because the use of extensibility points (such as optional implementation-specific data) may impair 
+interoperability, this profile identifies such points in the target specification. 
+
+ 
+
+7 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+2 Standards Support Statements 
+
+2.1 Normative Variations 
+
+There are no normative variations from [RFC1939]. 
+
+2.2 Clarifications 
+
+The following sub-sections identify clarifications relative to [RFC1939]. 
+
+Additional Outlook POP3 extensions to [RFC1939] are as specified in [MS-OXPOP3]. 
+
+2.2.1 [RFC1939] Section 3, Basic Operation 
+
+C0001: 
+
+The specification states: "When a client host wishes to make use of the service, it establishes a TCP 
+connection with the server host." 
+
+Microsoft Office Outlook 2007, Microsoft Outlook 2010, Microsoft Outlook 2013, Microsoft Outlook 
+2016, Microsoft Outlook 2019, Microsoft Outlook 2021, Microsoft Outlook LTSC 2024, Microsoft 
+Outlook for Windows (new)  
+
+When a client host wishes to make use of the service, it MUST establish a TCP connection with the 
+server host. 
+
+C0002: 
+
+The specification states: "When the connection is established, the POP3 server sends a greeting." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new)  
+
+When the connection is established, the POP3 server MUST send a greeting. If Outlook does not 
+receive a greeting, then the POP synchronization will stop responding. 
+
+C0003: 
+
+The specification states: "All commands are terminated by a CRLF pair. Keywords and arguments 
+consist of printable ASCII characters." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new)  
+
+All commands sent by the client to the server MUST be terminated by a CRLF pair and MUST consist 
+only of printable ASCII characters. 
+
+C0004: 
+
+The specification states: "Keywords and arguments are each separated by a single SPACE character." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+When the client sends a command, keywords and arguments MUST be separated by a single SPACE 
+character. When the client receives a response to a command, the client MUST accept multiple SPACE 
+characters and tab characters between keywords and arguments. 
+
+C0005: 
+
+8 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+The specification states: "All responses are terminated by a CRLF pair." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new)  
+
+The server response MUST be terminated by a CRLF pair. If Outlook does not receive the terminating 
+CRLF pair, then the POP synchronization stops responding. 
+
+V0001: 
+
+The specification states: "Servers MUST send the '+OK' and '-ERR' in upper case." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+Outlook treats any response that begins with "+" as positive and any other response as negative. The 
+casing of the status indicators has no effect on how Outlook interprets the responses. 
+
+C0006: 
+
+The specification states: "In these cases, which are clearly indicated below, after sending the first line 
+of the response and a CRLF, any additional lines are sent, each terminated by a CRLF pair. When all 
+lines of the response have been sent, a final line is sent, consisting of a termination octet (decimal 
+code 046, '.') and a CRLF pair." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+Each line MUST be terminated with a CRLF. The final line MUST consist of a termination octet and a 
+CRLF pair. If Outlook does not receive the terminating CRLF, then the POP synchronization stops 
+responding. 
+
+V0002: 
+
+The specification states: "When examining a multi-line response, the client checks to see if the line 
+begins with the termination octet. If so and if octets other than CRLF follow, the first octet of the line 
+(the termination octet) is stripped away. If so and if CRLF immediately follows the termination 
+character, then the response from the POP server is ended and the line containing '.CRLF' is not 
+considered part of the multi-line response." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST examine the octets after the termination octet and, if anything other than the CRLF 
+pair follows the termination octet, then the client MUST remove the termination octet to process the 
+rest of the line normally. Outlook only looks for the termination octet at the beginning of the line and 
+does not check past the termination octet for the LIST, UIDL, and CAPA commands. The CAPA 
+command is specified in [RFC2449] section 5. 
+
+C0007: 
+
+The specification states: "Once the TCP connection has been opened and the POP3 server has sent the 
+greeting, the session enters the AUTHORIZATION state. In this state, the client must identify itself to 
+the POP3 server." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST identify itself to the server after it has received the greeting. 
+
+9 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+2.2.2 [RFC1939] Section 4, The AUTHORIZATION State 
+
+C0008: 
+
+The specification states: "The client must now identify and authenticate itself to the POP3 server." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST now identify and authenticate itself to the POP3 server. 
+
+C0009: 
+
+The specification states: "While there is no single authentication mechanism that is required of all 
+POP3 servers, a POP3 server must of course support at least one authentication mechanism." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+While there is no single authentication mechanism that is required of all POP3 servers, a POP3 server 
+MUST support at least one authentication mechanism. 
+
+Without an authentication method that Outlook supports, Outlook is not able to authenticate to the 
+server. 
+
+C0010: 
+
+The specification states: "If the server does not close the connection, the client may either issue a 
+new authentication command and start again, or the client may issue the QUIT command." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC 
+
+If the server does not close the connection, the client can either issue a new authentication command 
+and start again, or the client can issue the QUIT command. 
+
+"May" is not interpreted as "MAY" by Outlook. The server has the option to perform either action, and 
+Outlook does not suggest or require either. 
+
+C0011: 
+
+The specification states: "The first message in the maildrop is assigned a message-number of '1', the 
+second is assigned '2', and so on, so that the nth message in a maildrop is assigned a message-
+number of 'n'." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The server MUST assign the first message in the maildrop a message-number of "1", and so on, so 
+that the nth message in a maildrop is assigned a message-number of "n". 
+
+2.2.3 [RFC1939] Section 4, QUIT Command 
+
+C0012: 
+
+The specification states that the QUIT command has no arguments. 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST NOT send arguments with the QUIT command. 
+
+10 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+2.2.4 [RFC1939] Section 5, The TRANSACTION State 
+
+C0013: 
+
+The specification states: "The client may now issue any of the following POP3 commands repeatedly." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+"May" is not interpreted as "MAY" by Outlook. 
+
+The client can now issue any of the following POP3 commands repeatedly. 
+
+C0014: 
+
+The specification states: "After each command, the POP3 server issues a response." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The server MUST issue a response for each command. If Outlook does not receive a response, then 
+the POP synchronization stops responding. 
+
+2.2.5 [RFC1939] Section 5, STAT Command 
+
+C0015: 
+
+The specification states that the STAT command has no arguments. 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST NOT send arguments with the STAT command. 
+
+C0016: 
+
+The specification states: "Restrictions: may only be given in the TRANSACTION state." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the STAT command when in the TRANSACTION state. 
+
+C0017: 
+
+The specification states: "In order to simplify parsing, all POP3 servers are required to use a certain 
+format for drop listings. The positive response consists of '+OK' followed by a single space, the 
+number of messages in the maildrop, a single space, and the size of the maildrop in octets. This 
+memo makes no requirement on what follows the maildrop size." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The positive response from the server MUST consist of "+OK" followed by one or more space or tab 
+characters, the number of messages in the maildrop followed by one or more space or tab characters, 
+and the size of the maildrop in octets. The server MAY follow this with additional information. 
+
+2.2.6 [RFC1939] Section 5, LIST Command 
+
+V0003: 
+
+11 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+The specification states: "Arguments: a message-number (optional), which, if present, may NOT refer 
+to a message marked as deleted." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MAY send the message-number argument with the LIST command. 
+
+Outlook never sends an argument to the LIST command. 
+
+C0018: 
+
+The specification states: "Restrictions: may only be given in the TRANSACTION state." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the LIST command when in the TRANSACTION state. 
+
+C0019: 
+
+The specification states: "Discussion: If an argument was given and the POP3 server issues a positive 
+response with a line containing information for that message. This line is called a "scan listing" for that 
+message." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the LIST command includes an argument and the server returns success, then the server MUST 
+issue a positive response line (a "scan listing"). Outlook does not send an argument with the LIST 
+command, so no server response is issued. 
+
+C0020: 
+
+The specification states: "If no argument was given and the POP3 server issues a positive response, 
+then the response given is multi-line. After the initial '+OK' for each message in the maildrop, the 
+POP3 server responds with a line containing information for that message." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the LIST command does not include an argument and the server issues a positive response, then 
+the response given MUST be multi-line. The initial line MUST be the positive response "+OK". Then the 
+server MUST send a "scan list" for each message in the maildrop on its own line. 
+
+C0021: 
+
+The specification states: "All POP3 servers are required to use a certain format for scan listings. A scan 
+listing consists of the message-number of the message, followed by a single space and the exact size 
+of the message in octets." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The "scan listing" MUST consist of the number of the message followed by one or more space or tab 
+characters and then the exact size of the message in octets. The server MAY follow this with additional 
+information. 
+
+2.2.7 [RFC1939] Section 5, RETR Command 
+
+V0004: 
+
+12 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+The specification states: "Arguments: a message-number (required) which may NOT refer to a 
+message marked as deleted." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST send the message-number argument with the RETR command. 
+
+V0005: 
+
+The specification states: "Restrictions: may only be given in the TRANSACTION state." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the RETR command when in the TRANSACTION state. 
+
+C0022: 
+
+The specification states: "If the POP3 server issues a positive response, then the response given is 
+multi-line." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the server is returning success, then it MUST issue a multi-line response. 
+
+C0023: 
+
+The specification states: "After the initial +OK, the POP3 server sends the message corresponding to 
+the given message-number." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the server is issuing a positive response, then it MUST return the message corresponding to the 
+given message-number in the multi-line response. 
+
+2.2.8 [RFC1939] Section 5, DELE Command 
+
+C0024: 
+
+The specification states: "Arguments: a message-number (required) which may NOT refer to a 
+message marked as deleted." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST send the message-number argument with the DELE command. 
+
+C0025: 
+
+The specification states: "Restrictions: may only be given in the TRANSACTION state." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the DELE command when in the TRANSACTION state. 
+
+C0026: 
+
+13 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+The specification states: "Any future reference to the message-number associated with the message in 
+a POP3 command generates an error." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+Any future reference to this message-number in a POP3 command MUST generate an error. 
+
+2.2.9 [RFC1939] Section 5, NOOP Command 
+
+C0027: 
+
+The specification states that the NOOP command has no arguments. 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST NOT send arguments with the NOOP command. 
+
+C0028: 
+
+The specification states: "Restrictions: may only be given in the TRANSACTION state." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the NOOP command when in the TRANSACTION state. 
+
+C0029: 
+
+The specification states: "Discussion: The POP3 server does nothing, it merely replies with a positive 
+response." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The server MUST return a positive response. 
+
+2.2.10 [RFC1939] Section 5, RSET Command 
+
+V0006: 
+
+The specification states that the RSET command is a required command. 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+Outlook never sends the RSET command. 
+
+2.2.11 [RFC1939] Section 6, QUIT Command 
+
+C0030: 
+
+The specification states that the QUIT command has no arguments. 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST NOT send arguments with the QUIT command. 
+
+14 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+2.2.12 [RFC1939] Section 7, Optional POP3 Commands 
+
+C0031: 
+
+The specification states: "The POP3 commands discussed above must be supported by all minimal 
+implementations of POP3 servers." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The server MUST support all the commands discussed above. 
+
+2.2.13 [RFC1939] Section 7, TOP Command 
+
+C0032: 
+
+The specification states: "Arguments: a message-number (required) which may NOT refer to a 
+message marked as deleted, and a non-negative number of lines (required)." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST send two arguments. The first argument is the message-number and the second is a 
+non-negative number of lines. 
+
+C0033: 
+
+The specification states: "Restrictions: may only be given in the TRANSACTION state." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the TOP command when in the TRANSACTION state. 
+
+C0034: 
+
+The specification states: "If the POP3 server issues a positive response, then the response given is 
+multi-line. After the initial +OK, the POP3 server sends the headers of the message, the blank line 
+separating the headers from the body, and then the number of lines of the indicated message's body." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the POP3 server issues a positive response, then the response given MUST be multi-line. The first 
+line MUST be the positive response "+OK". The following line MUST be the headers of the message, 
+the blank line separating headers from body, and then the number of lines on the body indicated in 
+the arguments. 
+
+2.2.14 [RFC1939] Section 7, UIDL Command 
+
+V0007: 
+
+The specification states: "Arguments: a message-number (optional), which, if present, may NOT refer 
+to a message marked as deleted." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MAY send an argument. 
+
+15 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+Outlook never sends the UIDL command with an argument. 
+
+C0035: 
+
+The specification states: "Restrictions: may only be given in the TRANSACTION state." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the UIDL command when in the TRANSACTION state. 
+
+C0036: 
+
+The specification states: "Discussion: If an argument was given and the POP3 server issues a positive 
+response with a line containing information for that message." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the UIDL command includes an argument and the server is returning success, then it MUST issue a 
+positive response line (a "unique-id listing"). 
+
+This statement has no impact as Outlook never sends the UIDL command with an argument. 
+
+C0037: 
+
+The specification states: "If no argument was given and the POP3 server issues a positive response, 
+then the response given is multi-line. After the initial +OK, for each message in the maildrop, the 
+POP3 server responds with a line containing information for that message." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the UIDL command does not include an argument and the server is returning a positive response, 
+then the server MUST issue a multi-line response. The initial line MUST be the positive response 
+"+OK". Then the server MUST send a "unique-id list" for each message in the maildrop on its own line. 
+
+C0038: 
+
+The specification states: "In order to simplify parsing, all POP3 servers are required to use a certain 
+format for unique-id listings. A unique-id listing consists of the message-number of the message, 
+followed by a single space and the unique-id of the message in octets." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC 
+
+The unique-id listing MUST consist of the number of the message followed by one or more space or 
+tab characters, and then the unique-id of the message in octets. The server MAY follow this with 
+additional information. 
+
+C0039: 
+
+The specification states: "The unique-id of a message is an arbitrary server-determined string, 
+consisting of one to 70 characters in the range 0x21 to 0x7E, which uniquely identifies a message 
+within a maildrop and which persists across sessions." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC 
+
+The unique-id MUST consist of one to 70 characters in the range 0x2e to 0x7E. The server MUST 
+persist the unique-id that identifies the message across sessions. 
+
+16 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+C0040: 
+
+The specification states: "The server should never reuse a unique-id in a given maildrop, for as long as 
+the entity using the unique-id exists." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC 
+
+The server SHOULD NOT reuse a unique-id for as long as the entity using the unique-id exists. If the 
+server violates this statement, then the action expected on one message could be performed 
+unexpectedly on another message with the same unique-id. 
+
+C0041: 
+
+The specification states: "Clients should be able to handle a situation where two identical copies of a 
+message in a maildrop have the same unique-id." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC 
+
+The client SHOULD be able to handle two identical copies of a message having the same unique-id. 
+
+Outlook does not fully comply with the use of SHOULD in the statement. Using Outlook, an action 
+specified by the user on one message can happen on either message with the identical unique-id 
+during synchronization. But, since the messages are identical, this has little impact. For example, if a 
+user marks one message header for download, then Outlook can download the other message header 
+instead. 
+
+2.2.15 [RFC1939] Section 7, USER Command 
+
+C0042: 
+
+The specification states: "Arguments: a string identifying a mailbox (required), which is of significance 
+ONLY to the server." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST send one argument. 
+
+C0043: 
+
+The specification states: "Restrictions: may only be given in the AUTHORIZATION state after the POP3 
+greeting or after an unsuccessful USER or PASS command." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the USER command when in the AUTHORIZATION state or when a 
+greeting has not been received. 
+
+C0044: 
+
+The specification states: "To authenticate using the USER and PASS command combination, the client 
+must first issue the USER command." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+To authenticate using the USER and PASS command combination, the client MUST issue the USER 
+command first. 
+
+17 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+C0045: 
+
+The specification states: "If the POP3 server responds with a positive status indicator ("+OK"), then 
+the client may issue either the PASS command to complete the authentication, or the QUIT command 
+to terminate the POP3 session. If the POP3 server responds with a negative status indicator ("-ERR") 
+to the USER command, then the client may either issue a new authentication command or may issue 
+the QUIT command." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+If the POP3 server responds with a positive status indicator ("+OK"), then the client SHOULD issue 
+either the PASS command to complete the authentication or the QUIT command to terminate the 
+POP3 session. If the POP3 server responds with a negative status indicator ("-ERR") to the USER 
+command, then the client SHOULD either issue a new authentication command or the QUIT command. 
+
+2.2.16 [RFC1939] Section 7, PASS Command 
+
+C0046: 
+
+The specification states: "Arguments: a server/mailbox-specific password (required)." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client MUST send one argument. 
+
+C0047: 
+
+The specification states: "Restrictions: may only be given in the AUTHORIZATION state immediately 
+after a successful USER command." 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+The client SHOULD only send the PASS command in the AUTHORIZATION state and immediately 
+following a successful USER command. 
+
+2.2.17 [RFC1939] Section 7, APOP Command 
+
+V0008: 
+
+The specification states that the APOP command is an optional POP3 command. 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, Outlook 2019, Outlook 2021, 
+Outlook 2024 LTSC, Outlook for Windows (new) 
+
+Outlook does not support the APOP command. 
+
+2.2.18 [RFC1939] Section 8, Scaling and Operational Considerations 
+
+C0048: 
+
+The specification states: “Enforce a site policy regarding mail retention on the server.” 
+
+Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016  
+
+The client deletes the mails on the server after syncing by default. 
+
+Outlook 2019, Outlook 2021, Outlook 2024 LTSC, Outlook for Windows (new) 
+
+18 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+The client keeps the mail on the server after syncing by default. 
+
+2.3 Error Handling 
+
+There are no additional error handling considerations beyond what are discussed in section 2.2.8. 
+
+2.4 Security 
+
+None. 
+
+19 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+3 Change Tracking 
+
+No table of changes is available. The document is either new or has had no changes since its last 
+release. 
+
+20 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024 
+
+
+
+4 Index
+A The AUTHORIZATION State 10 
+ The TRANSACTION State 11 
+APOP Command 18 TOP Command 15 
+ Tracking changes 20 
+
+B  
+
+ U 
+Basic Operation 8  
+ UIDL Command 15 
+
+C USER Command 17 
+
+ 
+Change tracking 20  
+
+ 
+D 
+ 
+DELE Command 13 
+ 
+G 
+ 
+Glossary 6 
+ 
+I 
+ 
+Informative references 6 
+Introduction 6 
+ 
+L 
+ 
+LIST Command 11 
+ 
+N 
+ 
+NOOP Command 14 
+Normative references 6 
+ 
+O 
+ 
+Optional POP3 Commands 15 
+ 
+P 
+ 
+PASS Command 18 
+ 
+Q 
+ 
+QUIT Command (section 2.2.3 10, section 2.2.11 14) 
+ 
+R 
+ 
+References 
+   informative 6 
+   normative 6 
+RETR Command 12 
+RSET Command 14 
+ 
+S 
+ 
+Scaling and Operational Considerations 18 
+STAT Command 11 
+ 
+T 
+ 
+
+21 / 21 
+
+[MS-STANOPOP3] - v20240820 
+Outlook Post Office Protocol Version 3 (POP3) Standards Support 
+Copyright © 2024 Microsoft Corporation 
+Release: August 20, 2024
