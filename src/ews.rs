@@ -2739,7 +2739,26 @@ async fn handle_get_server_time_zones() -> Response {
     soap_ok(inner)
 }
 
-fn render_timezone_definitions() -> String {
+use once_cell::sync::Lazy;
+
+static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
+    render_timezone_definitions()
+});
+
+async fn handle_get_server_time_zones() -> Response {
+    let inner = format!(
+        r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetServerTimeZonesResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:TimeZoneDefinitions>{}</m:TimeZoneDefinitions>
+</m:GetServerTimeZonesResponseMessage>
+</m:ResponseMessages>
+</m:GetServerTimeZonesResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, *TIMEZONE_DEFINITIONS
+    );
+    soap_ok(inner)
+}
     use strum::IntoEnumIterator;
     use windows_timezones::WindowsTimezone;
 
