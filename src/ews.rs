@@ -249,7 +249,7 @@ pub async fn handle(
         EwsAction::ResolveNames => handle_resolve_names(&auth, &body).await,
         EwsAction::GetUserOofSettings => handle_get_user_oof_settings(&auth, &body).await,
         EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&auth, &body).await,
-        EwsAction::GetServiceConfiguration => handle_get_service_configuration().await,
+        EwsAction::GetServiceConfiguration => handle_get_service_configuration(&state).await,
         EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
         EwsAction::GetMailTips => handle_get_mail_tips(&auth, &body).await,
@@ -2691,14 +2691,32 @@ async fn handle_set_user_oof_settings(_auth: &AuthContext, _body: &str) -> Respo
     soap_ok(inner)
 }
 
-async fn handle_get_service_configuration() -> Response {
+async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
+    let domain = &state.cfg.mail_domain;
+    if domain.is_empty() {
+        return soap_fault("ErrorInternalServerError", "Mail domain not configured", StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let domain_escaped = xml_escape(domain);
     let inner = format!(
         r#"<m:GetServiceConfigurationResponse xmlns:m="{}" xmlns:t="{}">
-  <m:ResponseMessages>
-    <m:GetServiceConfigurationResponseMessage ResponseClass="Success">
-      <m:ResponseCode>NoError</m:ResponseCode>
-    </m:GetServiceConfigurationResponseMessage>
-  </m:ResponseMessages>
+<m:ResponseMessages>
+<m:GetServiceConfigurationResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:MailTipsConfiguration>
+<t:MailTipsEnabled>true</t:MailTipsEnabled>
+<t:MaxRecipientsPerCallRequest>100</t:MaxRecipientsPerCallRequest>
+<t:MaxMessageSize>104857600</t:MaxMessageSize>
+<t:LargeAudienceThreshold>100</t:LargeAudienceThreshold>
+<t:ShowExternalRecipientCount>true</t:ShowExternalRecipientCount>
+<t:InternalDomains>
+<t:SMPTDomain>
+<t:DomainName>{domain_escaped}</t:DomainName>
+</t:SMPTDomain>
+</t:InternalDomains>
+<t:MaxMailTipsCallsPerCallRequest>100</t:MaxMailTipsCallsPerCallRequest>
+</m:MailTipsConfiguration>
+</m:GetServiceConfigurationResponseMessage>
+</m:ResponseMessages>
 </m:GetServiceConfigurationResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS
     );
@@ -2706,18 +2724,148 @@ async fn handle_get_service_configuration() -> Response {
 }
 
 async fn handle_get_server_time_zones() -> Response {
+    let tz_defs = render_timezone_definitions();
     let inner = format!(
         r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
-  <m:ResponseMessages>
-    <m:GetServerTimeZonesResponseMessage ResponseClass="Success">
-      <m:ResponseCode>NoError</m:ResponseCode>
-      <m:TimeZoneDefinitions/>
-    </m:GetServerTimeZonesResponseMessage>
-  </m:ResponseMessages>
+<m:ResponseMessages>
+<m:GetServerTimeZonesResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:TimeZoneDefinitions>{}</m:TimeZoneDefinitions>
+</m:GetServerTimeZonesResponseMessage>
+</m:ResponseMessages>
 </m:GetServerTimeZonesResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS, EWS_TYPE_NS, tz_defs
     );
     soap_ok(inner)
+}
+
+use once_cell::sync::Lazy;
+
+static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
+    render_timezone_definitions()
+});
+
+use once_cell::sync::Lazy;
+
+static TIMEZONE_DEFINITIONS: Lazy<String> = Lazy::new(|| {
+    render_timezone_definitions()
+});
+
+async fn handle_get_server_time_zones() -> Response {
+    let inner = format!(
+        r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetServerTimeZonesResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:TimeZoneDefinitions>{}</m:TimeZoneDefinitions>
+</m:GetServerTimeZonesResponseMessage>
+</m:ResponseMessages>
+</m:GetServerTimeZonesResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, *TIMEZONE_DEFINITIONS
+    );
+    soap_ok(inner)
+}
+    use strum::IntoEnumIterator;
+    use windows_timezones::WindowsTimezone;
+
+    let zones: Vec<&'static str> = vec![
+        "UTC","GMT Standard Time","Central Europe Standard Time","W. Europe Standard Time",
+        "E. Europe Standard Time","Pacific Standard Time","Mountain Standard Time",
+        "Central Standard Time","Eastern Standard Time","US Eastern Standard Time",
+        "US Mountain Standard Time","Pacific SA Standard Time","Atlantic Standard Time",
+        "SA Pacific Standard Time","Greenland Standard Time","Azores Standard Time",
+        "Cape Verde Standard Time","Morocco Standard Time","W. Central Africa Standard Time",
+        "Jordan Standard Time","Middle East Standard Time","Egypt Standard Time",
+        "Syria Standard Time","E. Africa Standard Time","Arabic Standard Time",
+        "Arab Standard Time","Russian Standard Time","Kaliningrad Standard Time",
+        "Turkey Standard Time","Israel Standard Time","Iran Standard Time",
+        "Afghanistan Standard Time","Pakistan Standard Time","India Standard Time",
+        "Sri Lanka Standard Time","Nepal Standard Time","Central Asia Standard Time",
+        "North Asia Standard Time","SE Asia Standard Time","North Asia East Standard Time",
+        "China Standard Time","Korea Standard Time","Tokyo Standard Time",
+        "West Pacific Standard Time","AUS Central Standard Time",
+        "AUS Eastern Standard Time","Tasmania Standard Time","New Zealand Standard Time",
+    ];
+
+    let mut result = String::with_capacity(zones.len() * 400);
+    for name in &zones {
+        if !WindowsTimezone::iter().any(|v| v.name() == *name) {
+            continue;
+        }
+        let iana = crate::timezone::windows_timezone_name_to_tz(name);
+        let (bias, std_date_xml, dst_date_xml) = if let Some(tz) = iana {
+            let iana_str = tz.name();
+            match crate::timezone::iana_to_windows_params(iana_str) {
+                Some((bias, _std_name, _dst_name, std_blob, dst_blob, _std_bias_val, dst_bias_val)) => {
+                    let std_xml = tz_blob_to_std_time_xml(&std_blob);
+                    let dst_xml = tz_blob_to_daylight_time_xml(&dst_blob, dst_bias_val);
+                    (bias, std_xml, dst_xml)
+                }
+                None => (0, String::new(), String::new()),
+            }
+        } else {
+            (0, String::new(), String::new())
+        };
+        let std_name = name.replace("Standard Time", "Standard");
+        result.push_str(&format!(
+            r#"<t:TimeZoneDefinition Id="{}" Name="{}"><t:Bias>{}</t:Bias>{}{}</t:TimeZoneDefinition>"#,
+            xml_escape(name),
+            xml_escape(&std_name),
+            bias,
+            std_date_xml,
+            dst_date_xml,
+        ));
+    }
+    result
+}
+
+fn tz_blob_to_std_time_xml(blob: &[u8; 16]) -> String {
+    if blob.iter().all(|&b| b == 0) {
+        return r#"<t:StandardTime><t:Bias>0</t:Bias></t:StandardTime>"#.to_string();
+    }
+    let month = blob[2] as u32;
+    let day_order = blob[6] as u32;
+    let hour = blob[8] as u32;
+    let day_of_week = match blob[4] {
+        0 => "Sunday",
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        6 => "Saturday",
+        _ => "Sunday",
+    };
+    format!(
+        r#"<t:StandardTime><t:Bias>0</t:Bias><t:Time>{:02}:00:00</t:Time><t:DayOrder>{}</t:DayOrder><t:Month>{}</t:Month><t:DayOfWeek>{}</t:DayOfWeek></t:StandardTime>"#,
+        hour, day_order, month, day_of_week
+    )
+}
+
+fn tz_blob_to_daylight_time_xml(blob: &[u8; 16], dst_bias: i32) -> String {
+    if blob.iter().all(|&b| b == 0) && dst_bias == 0 {
+        return String::new();
+    }
+    let month = blob[2] as u32;
+    let day_order = blob[6] as u32;
+    let hour = blob[8] as u32;
+    let day_of_week = match blob[4] {
+        0 => "Sunday",
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        6 => "Saturday",
+        _ => "Sunday",
+    };
+    if month == 0 {
+        return String::new();
+    }
+    format!(
+        r#"<t:DaylightTime><t:Bias>{}</t:Bias><t:Time>{:02}:00:00</t:Time><t:DayOrder>{}</t:DayOrder><t:Month>{}</t:Month><t:DayOfWeek>{}</t:DayOfWeek></t:DaylightTime>"#,
+        dst_bias, hour, day_order, month, day_of_week
+    )
 }
 
 async fn handle_get_folder_info() -> Response {

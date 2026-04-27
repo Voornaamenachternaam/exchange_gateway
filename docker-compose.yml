@@ -8,9 +8,8 @@ services:
     environment:
       - TZ=${GATEWAY_TZ:-UTC}
       - RUST_LOG=${RUST_LOG:-info}
-      - MAIL_DOMAIN=${MAIL_DOMAIN:-example.com}
     volumes:
-      - ./config.toml:/etc/exchange-gateway/config.toml:ro
+      - ./exchange-gateway.config.toml:/etc/exchange-gateway/config.toml:ro
     ports:
       - "[::]:8134:8134"
     networks:
