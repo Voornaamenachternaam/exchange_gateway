@@ -30,12 +30,79 @@ impl CaldavClient {
         })
     }
 
+    pub fn new_from_base(caldav_base: &str) -> Result<Self> {
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(2);
+        let client = ClientBuilder::new(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()?,
+        )
+        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+        .build();
+        Ok(Self {
+            base: caldav_base.to_string(),
+            client,
+        })
+    }
+
+    pub async fn verify_credentials(&self, username: &str, password: &str) -> bool {
+        let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
+        let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+<D:prop><D:resourcetype/></D:prop>
+</D:propfind>"#;
+        match self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap_or(reqwest::Method::GET), &home_url)
+            .basic_auth(username, Some(password))
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(propfind_body)
+            .send()
+            .await
+        {
+            Ok(r) => r.status().is_success() || r.status().as_u16() == 207,
+            Err(_) => false,
+        }
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base
     }
 
     pub fn client(&self) -> &ClientWithMiddleware {
         &self.client
+    }
+
+    pub async fn get_freebusy(
+        &self,
+        collection_href: &str,
+        start: &str,
+        end: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<String> {
+        let report = format!(
+            r#"<?xml version="1.0" encoding="utf-8" ?>
+<C:free-busy-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+<C:time-range start="{start}" end="{end}" />
+</C:free-busy-query>"#,
+            start = start,
+            end = end
+        );
+        let resp = self
+            .client
+            .request(reqwest::Method::from_bytes(b"REPORT")?, collection_href)
+            .basic_auth(username, Some(password))
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .header("Depth", "1")
+            .body(report)
+            .send()
+            .await?;
+        if !resp.status().is_success() && resp.status().as_u16() != 207 {
+            return Err(anyhow::anyhow!("failed to query freebusy: {}", resp.status()));
+        }
+        Ok(resp.text().await?)
     }
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {

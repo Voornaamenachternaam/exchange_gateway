@@ -9,3 +9,7 @@ gateway_host = "exchange.example.com"
 mail_domain = "example.com"
 max_attachment_bytes = 5242880
 room_booking_enabled = true
+tls_cert_path = "/etc/exchange-gateway/tls/fullchain.pem"
+tls_key_path = "/etc/exchange-gateway/tls/privkey.pem"
+auth_cache_ttl_secs = 300
+auth_cache_max_entries = 1024
