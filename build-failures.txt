@@ -1,0 +1,17 @@
+FAILED: .
+       Compiling exchange_gateway v1.3.0 (/home/runner/work/exchange_gateway/exchange_gateway)
+       Compiling tokio-test v0.4.5
+    error: unexpected closing delimiter: `}`
+        --> src/ews.rs:2820:1
+         |
+    2791 |     for name in &zones {
+         |                        - this opening brace...
+    ...
+    2818 |     }
+         |     - ...matches this closing brace
+    2819 |     result
+    2820 | }
+         | ^ unexpected closing delimiter
+    
+    error: could not compile `exchange_gateway` (lib) due to 1 previous error
+    warning: build failed, waiting for other jobs to finish...
