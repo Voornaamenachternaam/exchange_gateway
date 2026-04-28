@@ -72,6 +72,10 @@ async function forward(request, env) {
   if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
     return new Response('Payload Too Large', { status: 413 });
   }
+  const bodyResult = await readRequestBodyWithLimit(request, maxBodyBytes);
+  if (bodyResult.tooLarge) {
+    return new Response('Payload Too Large', { status: 413 });
+  }
   const rateLimit = await enforceRateLimit(request, env);
   if (!rateLimit.allowed) {
     return new Response('Too Many Requests', {
@@ -97,7 +101,7 @@ async function forward(request, env) {
     return await fetch(new Request(upstream.toString(), {
       method: request.method,
       headers,
-      body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+      body: bodyResult.body,
       redirect: 'manual',
       signal: ctrl.signal
     }));
@@ -127,6 +131,30 @@ function mapAutodiscoverPathForOrigin(pathname) {
   if (lower === '/autodiscover.svc') return '/autodiscover/autodiscover.svc';
   if (lower === '/autodiscover.json') return '/autodiscover/autodiscover.json';
   return pathname;
+}
+
+async function readRequestBodyWithLimit(request, maxBodyBytes) {
+  const method = (request.method || 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD') {
+    return { tooLarge: false, body: undefined };
+  }
+  if (!request.body) {
+    return { tooLarge: false, body: undefined };
+  }
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBodyBytes) {
+      await reader.cancel('payload too large');
+      return { tooLarge: true, body: undefined };
+    }
+    chunks.push(value);
+  }
+  return { tooLarge: false, body: new Blob(chunks) };
 }
 
 function sanitizeForwardHeaders(inputHeaders) {
