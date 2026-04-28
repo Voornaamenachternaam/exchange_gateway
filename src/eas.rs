@@ -674,7 +674,7 @@ fn options_response(request_id: &str) -> Response {
             ),
             (
                 "MS-ASProtocolCommands",
-                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert",
+                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert,SendMail,SmartReply,SmartForward",
             ),
         ],
         "",
