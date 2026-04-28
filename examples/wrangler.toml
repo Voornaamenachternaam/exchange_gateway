@@ -1,81 +1,36 @@
 # examples/wrangler.toml
 
-name = "exchange-gateway-edge"
+name = "exchange-gateway"
 main = "../worker/index.js"
 compatibility_date = "2026-03-22"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-GATEWAY_HOST = "exchange.mail.example.com"
-
-ORIGIN_BASE_URL = "https://exchange-origin.example.com"
-
-RATE_LIMIT_ENABLED = "true"
-RATE_LIMIT_MAX = "120"
-RATE_LIMIT_WINDOW_SEC = "60"
-
-SQL_API_ENABLED = "false"
-
-MAX_FORWARD_BODY_BYTES = "4194304"
-MAX_API_BODY_BYTES = "262144"
+GATEWAY_HOST = "exchange.example.com"
 
 [[routes]]
-pattern = "exchange.mail.example.com/EWS/*"
-zone_name = "mail.example.com"
+pattern = "exchange.example.com/EWS/*"
+zone_name = "example.com"
 
 [[routes]]
-pattern = "exchange.mail.example.com/OAB/*"
-zone_name = "mail.example.com"
+pattern = "exchange.example.com/OAB/*"
+zone_name = "example.com"
 
 [[routes]]
-pattern = "exchange.mail.example.com/Microsoft-Server-ActiveSync"
-zone_name = "mail.example.com"
+pattern = "exchange.example.com/Microsoft-Server-ActiveSync"
+zone_name = "example.com"
 
 [[routes]]
-pattern = "exchange.mail.example.com/autodiscover/*"
-zone_name = "mail.example.com"
+pattern = "exchange.example.com/autodiscover/*"
+zone_name = "example.com"
 
 [[routes]]
-pattern = "exchange.mail.example.com/Autodiscover/*"
-zone_name = "mail.example.com"
+pattern = "exchange.example.com/Autodiscover/*"
+zone_name = "example.com"
 
 [[routes]]
-pattern = "exchange.mail.example.com/health"
-zone_name = "mail.example.com"
-
-[[d1_databases]]
-binding = "EXCHANGE_DB"
-database_name = "exchange-gateway"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
-
-[[kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
-
-
-[triggers]
-crons = ["0 * * * *"]
-
+pattern = "exchange.example.com/health"
+zone_name = "example.com"
 
 [build]
 command = ""
-
-[env.preview]
-name = "exchange-gateway-edge-preview"
-
-[env.preview.vars]
-GATEWAY_HOST = "exchange-preview.mail.example.com"
-ORIGIN_BASE_URL = "https://exchange-origin-preview.example.com"
-RATE_LIMIT_ENABLED = "false"
-SQL_API_ENABLED = "true"
-MAX_FORWARD_BODY_BYTES = "4194304"
-MAX_API_BODY_BYTES = "262144"
-
-[[env.preview.d1_databases]]
-binding = "EXCHANGE_DB"
-database_name = "exchange-gateway-preview"
-database_id = "REPLACE_WITH_PREVIEW_D1_DATABASE_ID"
-
-[[env.preview.kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"

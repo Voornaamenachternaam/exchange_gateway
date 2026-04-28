@@ -10,9 +10,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
-use axum_server::tls_rustls::RustlsConfig;
-use opentelemetry::{KeyValue, global, trace::TracerProvider};
-use opentelemetry_otlp::WithExportConfig;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower::ServiceBuilder;
@@ -75,13 +72,9 @@ fn build_response(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _otel_guard = init_telemetry()?;
-
-    if _otel_guard.is_none() {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .init();
-    }
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let config_path = std::env::var("GATEWAY_CONFIG")
         .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
@@ -98,13 +91,13 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tracing::info!(
-        "Exchange Gateway starting. bind={} gateway_host={} tls={}",
+        "Exchange Gateway starting. bind={} gateway_host={}",
         config.bind,
         config.gateway_host,
-        config.tls_enabled()
     );
 
-    let storage = Arc::new(Storage::new(&config.worker_url, config.worker_secret())?);
+    let storage = Arc::new(Storage::new(&config.database_path)?);
+    storage.init_schema()?;
 
     let app_state = Arc::new(AppState::new(config.clone(), storage));
 
@@ -125,7 +118,6 @@ async fn main() -> anyhow::Result<()> {
             ServiceBuilder::new()
                 .layer(SetSensitiveRequestHeadersLayer::new([
                     header::AUTHORIZATION,
-                    header::HeaderName::from_static("x-gateway-secret"),
                 ]))
                 .layer(TraceLayer::new_for_http())
                 .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
@@ -162,11 +154,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr: SocketAddr = config.bind.parse()?;
 
-    if config.tls_enabled() {
-        serve_tls(addr, app, &config).await?;
-    } else {
-        serve_plain(addr, app).await?;
-    }
+    serve_plain(addr, app).await?;
 
     tracing::info!("Server shutdown complete");
     Ok(())
@@ -178,27 +166,6 @@ async fn serve_plain(addr: SocketAddr, app: Router) -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    Ok(())
-}
-
-async fn serve_tls(addr: SocketAddr, app: Router, config: &Config) -> anyhow::Result<()> {
-    let cert_path = config.tls_cert_path.as_deref().unwrap_or_default();
-    let key_path = config.tls_key_path.as_deref().unwrap_or_default();
-    tracing::info!("Listening on {} (HTTPS with rustls)", addr);
-    let tls_config = RustlsConfig::from_pem_file(cert_path, key_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to load TLS cert/key: {}", e))?;
-    let handle = axum_server::Handle::new();
-    let shutdown_handle = handle.clone();
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        shutdown_handle.graceful_shutdown(None);
-    });
-    axum_server::bind_rustls(addr, tls_config)
-        .handle(handle)
-        .serve(app.into_make_service())
-        .await
-        .map_err(|e| anyhow::anyhow!("TLS server error: {}", e))?;
     Ok(())
 }
 
@@ -230,60 +197,18 @@ async fn shutdown_signal() {
     let terminate = async { std::future::pending::<()>() };
 
     tokio::select! {
-     _ = ctrl_c => {},
-     _ = terminate => {},
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
     tracing::info!("Shutdown signal received");
 }
 
-fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::SdkTracerProvider>> {
-    let endpoint = match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-        Ok(e) => e,
-        Err(_) => return Ok(None),
-    };
-
-    let service_name =
-        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "exchange-gateway".to_string());
-
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(format!("{}/v1/traces", endpoint))
-        .build()?;
-
-    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_resource(
-            opentelemetry_sdk::Resource::builder()
-                .with_service_name(service_name.clone())
-                .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
-                .build(),
-        )
-        .with_batch_exporter(exporter)
-        .build();
-
-    let _tracer = tracer_provider.tracer("exchange-gateway");
-
-    global::set_tracer_provider(tracer_provider.clone());
-
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    tracing::info!("OpenTelemetry tracing initialized (endpoint: {})", endpoint);
-
-    Ok(Some(tracer_provider))
-}
-
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
-    let worker_ok = match state.storage.get_latest_change_seq().await {
-        Ok(_) => true,
+    match state.storage.get_latest_change_seq().await {
+        Ok(_) => (StatusCode::OK, "OK").into_response(),
         Err(e) => {
-            tracing::warn!("Health check: Worker connectivity failed: {}", e);
-            false
+            tracing::warn!("Health check: Database connectivity failed: {}", e);
+            (StatusCode::SERVICE_UNAVAILABLE, "Database unavailable").into_response()
         }
-    };
-    if worker_ok {
-        (StatusCode::OK, "OK").into_response()
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "Worker unavailable").into_response()
     }
 }
