@@ -64,12 +64,15 @@ async function forward(request, env) {
   if (!allow.includes(method)) {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: allow.join(', ') } });
   }
-  const contentLength = Number.parseInt(request.headers.get('content-length') || '0', 10);
+  const contentLengthHeader = request.headers.get('content-length');
+  const contentLength = contentLengthHeader && /^\d+$/.test(contentLengthHeader.trim())
+    ? Number(contentLengthHeader)
+    : null;
   const maxBodyBytes = Math.max(
     1024,
     Number.parseInt(env.MAX_FORWARD_BODY_BYTES || `${DEFAULT_MAX_FORWARD_BODY_BYTES}`, 10) || DEFAULT_MAX_FORWARD_BODY_BYTES
   );
-  if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+  if (contentLength !== null && contentLength > maxBodyBytes) {
     return new Response('Payload Too Large', { status: 413 });
   }
   const bodyResult = await readRequestBodyWithLimit(request, maxBodyBytes);
