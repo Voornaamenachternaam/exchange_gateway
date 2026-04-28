@@ -49,15 +49,7 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
         let mut cfg: Config = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
-        if cfg.gateway_host.is_empty() {
-            if let Some(host) = extract_host_from_url(&cfg.caldav_base) {
-                cfg.gateway_host = host;
-            } else {
-                tracing::warn!(
-                    "Config: 'gateway_host' not specified and could not be extracted from 'caldav_base'. Autodiscover responses may be incorrect."
-                );
-            }
-        }
+        cfg.gateway_host = cfg.gateway_host.trim().to_string();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -81,6 +73,9 @@ impl Config {
         }
         if self.mail_domain.trim().is_empty() {
             return Err(anyhow::anyhow!("Config: 'mail_domain' is required"));
+        }
+        if self.gateway_host.trim().is_empty() {
+            return Err(anyhow::anyhow!("Config: 'gateway_host' is required"));
         }
         validate_url(&self.caldav_base, "caldav_base")?;
         if self.hmac_secret.expose_secret().len() < 32 {
@@ -107,15 +102,6 @@ impl Config {
             ));
         }
         Ok(())
-    }
-}
-
-fn extract_host_from_url(url_str: &str) -> Option<String> {
-    let parsed = Url::parse(url_str).ok()?;
-    let host = parsed.host_str()?;
-    match parsed.port() {
-        Some(port) => Some(format!("{host}:{port}")),
-        None => Some(host.to_string()),
     }
 }
 
