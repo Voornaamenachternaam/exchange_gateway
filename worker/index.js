@@ -17,7 +17,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
-    const handledPath = isAutodiscover(path) || isForwardedPath(path) || path === '/health';
+    const handledPath = isHandledPath(path);
 
     if (request.method === 'OPTIONS' && handledPath) {
       return new Response(null, { status: 204, headers: corsHeaders() });
@@ -45,6 +45,10 @@ function isForwardedPath(path) {
 
 function isAutodiscover(path) {
   return path.includes('/autodiscover/') || path.endsWith('/autodiscover.xml') || path.endsWith('/autodiscover.svc') || path.endsWith('/autodiscover.json');
+}
+
+function isHandledPath(path) {
+  return isAutodiscover(path) || isForwardedPath(path) || path === '/health';
 }
 
 async function forward(request, env) {
