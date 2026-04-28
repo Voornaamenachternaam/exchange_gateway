@@ -159,13 +159,13 @@ impl Storage {
 
     fn with_conn<T, F>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&rusqlite::Connection) -> Result<T>,
+        F: FnOnce(&mut rusqlite::Connection) -> Result<T>,
     {
-        let conn = self.pool.get()?;
+        let mut conn = self.pool.get()?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        f(&conn)
+        f(&mut conn)
     }
 
     pub async fn fetch_calendar_permission(
@@ -361,8 +361,10 @@ impl Storage {
         etag: &str,
     ) -> Result<()> {
         self.with_conn(|c| {
-            c.execute("INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag, updated_at) VALUES (?1,?2,?3,?4,?5,?6,CURRENT_TIMESTAMP) ON CONFLICT(owner,server_id) DO UPDATE SET caldav_href=excluded.caldav_href,resource_href=excluded.resource_href,uid=excluded.uid,etag=excluded.etag,updated_at=CURRENT_TIMESTAMP", params![owner, caldav_href, resource_href, server_id, uid, etag])?;
-            c.execute("INSERT INTO change_journal (owner, server_id, op, resource_href, created_at) VALUES (?1,?2,'upsert',?3,CURRENT_TIMESTAMP)", params![owner, server_id, resource_href])?;
+            let tx = c.transaction()?;
+            tx.execute("INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag, updated_at) VALUES (?1,?2,?3,?4,?5,?6,CURRENT_TIMESTAMP) ON CONFLICT(owner,server_id) DO UPDATE SET caldav_href=excluded.caldav_href,resource_href=excluded.resource_href,uid=excluded.uid,etag=excluded.etag,updated_at=CURRENT_TIMESTAMP", params![owner, caldav_href, resource_href, server_id, uid, etag])?;
+            tx.execute("INSERT INTO change_journal (owner, server_id, op, resource_href, created_at) VALUES (?1,?2,'upsert',?3,CURRENT_TIMESTAMP)", params![owner, server_id, resource_href])?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -392,8 +394,13 @@ impl Storage {
 
     pub async fn delete_item_by_server_id(&self, owner: &str, server_id: &str) -> Result<()> {
         self.with_conn(|c| {
-            c.execute("DELETE FROM item_map WHERE owner=?1 AND server_id=?2", params![owner, server_id])?;
-            c.execute("INSERT INTO change_journal (owner, server_id, op, created_at) VALUES (?1,?2,'delete',CURRENT_TIMESTAMP)", params![owner, server_id])?;
+            let tx = c.transaction()?;
+            tx.execute(
+                "DELETE FROM item_map WHERE owner=?1 AND server_id=?2",
+                params![owner, server_id],
+            )?;
+            tx.execute("INSERT INTO change_journal (owner, server_id, op, created_at) VALUES (?1,?2,'delete',CURRENT_TIMESTAMP)", params![owner, server_id])?;
+            tx.commit()?;
             Ok(())
         })
     }
