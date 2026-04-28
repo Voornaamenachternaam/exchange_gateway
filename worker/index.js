@@ -79,7 +79,8 @@ async function forward(request, env) {
       headers: { 'Retry-After': String(rateLimit.retryAfterSec) }
     });
   }
-  const upstream = new URL(incoming.pathname + incoming.search, env.ORIGIN_BASE_URL);
+  const upstreamPath = mapAutodiscoverPathForOrigin(incoming.pathname);
+  const upstream = new URL(upstreamPath + incoming.search, env.ORIGIN_BASE_URL);
   const headers = sanitizeForwardHeaders(request.headers);
   headers.set('X-Forwarded-Proto', 'https');
   headers.set('X-Forwarded-Host', incoming.host);
@@ -118,6 +119,14 @@ function allowedMethodsForPath(path) {
 
 function pathMatchesPrefix(path, prefix) {
   return path === prefix || path.startsWith(`${prefix}/`);
+}
+
+function mapAutodiscoverPathForOrigin(pathname) {
+  const lower = pathname.toLowerCase();
+  if (lower === '/autodiscover.xml') return '/autodiscover/autodiscover.xml';
+  if (lower === '/autodiscover.svc') return '/autodiscover/autodiscover.svc';
+  if (lower === '/autodiscover.json') return '/autodiscover/autodiscover.json';
+  return pathname;
 }
 
 function sanitizeForwardHeaders(inputHeaders) {
