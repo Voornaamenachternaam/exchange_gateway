@@ -143,7 +143,12 @@ impl Storage {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        let manager = SqliteConnectionManager::file(db_path);
+        let manager = SqliteConnectionManager::file(db_path).with_init(|conn| {
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
+            Ok(())
+        });
         let pool = Pool::builder().max_size(16).build(manager)?;
         let storage = Self { pool };
         storage.initialize()?;
@@ -162,9 +167,6 @@ impl Storage {
         F: FnOnce(&mut rusqlite::Connection) -> Result<T>,
     {
         let mut conn = self.pool.get()?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         f(&mut conn)
     }
 
