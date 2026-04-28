@@ -14,10 +14,9 @@ RATE_LIMIT_ENABLED = "true"
 RATE_LIMIT_MAX = "120"
 RATE_LIMIT_WINDOW_SEC = "60"
 
-SQL_API_ENABLED = "false"
 
 MAX_FORWARD_BODY_BYTES = "4194304"
-MAX_API_BODY_BYTES = "262144"
+UPSTREAM_TIMEOUT_MS = "30000"
 
 [[routes]]
 pattern = "exchange.mail.example.com/EWS/*"
@@ -43,10 +42,6 @@ zone_name = "mail.example.com"
 pattern = "exchange.mail.example.com/health"
 zone_name = "mail.example.com"
 
-[[d1_databases]]
-binding = "EXCHANGE_DB"
-database_name = "exchange-gateway"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
@@ -67,14 +62,9 @@ name = "exchange-gateway-edge-preview"
 GATEWAY_HOST = "exchange-preview.mail.example.com"
 ORIGIN_BASE_URL = "https://exchange-origin-preview.example.com"
 RATE_LIMIT_ENABLED = "false"
-SQL_API_ENABLED = "true"
 MAX_FORWARD_BODY_BYTES = "4194304"
-MAX_API_BODY_BYTES = "262144"
+UPSTREAM_TIMEOUT_MS = "30000"
 
-[[env.preview.d1_databases]]
-binding = "EXCHANGE_DB"
-database_name = "exchange-gateway-preview"
-database_id = "REPLACE_WITH_PREVIEW_D1_DATABASE_ID"
 
 [[env.preview.kv_namespaces]]
 binding = "RATE_LIMIT_KV"

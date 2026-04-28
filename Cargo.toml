@@ -6,10 +6,12 @@ edition = "2024"
 rust-version = "1.95.0"
 
 [dependencies]
+rusqlite = "0.39.0"
+r2d2 = "0.8.10"
+r2d2_sqlite = "^0.33.0"
 tokio = { version = "^1.52.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
-axum-server = { version = "^0.8.0", features = ["tls-rustls"] }
 hyper = "^1.9.0"
 hyper-util = "^0.1.20"
 reqwest = { version = "^0.13.3", features = ["rustls", "json", "gzip", "brotli", "deflate", "stream"] }
@@ -80,7 +82,6 @@ roxmltree = "^0.21.1"
 itertools = "^0.14.0"
 derive_more = { version = "^2.1", features = ["full"] }
 bstr = "^1.12.1"
-rustls-pemfile = "^2.2.0"
 
 [dev-dependencies]
 proptest = "^1.11.0"

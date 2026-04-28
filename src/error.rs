@@ -15,6 +15,9 @@ pub enum GatewayError {
     #[error("Storage error: {0}")]
     Storage(String),
 
+    #[error("SQLite error: {0}")]
+    Sqlite(String),
+
     #[error("Config error: {0}")]
     Config(String),
 
@@ -133,6 +136,7 @@ impl GatewayError {
             GatewayError::Xml(_) => 400,
             GatewayError::Ics(_) => 400,
             GatewayError::Storage(_) => 500,
+            GatewayError::Sqlite(_) => 500,
             GatewayError::Config(_) => 500,
             GatewayError::Unauthenticated => 401,
             GatewayError::NotFound(_) => 404,
@@ -165,6 +169,12 @@ impl GatewayError {
 impl From<anyhow::Error> for GatewayError {
     fn from(e: anyhow::Error) -> Self {
         GatewayError::Storage(e.to_string())
+    }
+}
+
+impl From<rusqlite::Error> for GatewayError {
+    fn from(e: rusqlite::Error) -> Self {
+        GatewayError::Sqlite(e.to_string())
     }
 }
 

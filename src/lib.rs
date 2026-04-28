@@ -33,5 +33,5 @@ pub use permission::{
     CalendarPermission, DelegateInfo, DelegateManager, DelegatePermission, PermissionCheck,
     PermissionEnforcement, PermissionLevel, PermissionRights,
 };
-pub use storage::Storage;
+pub use storage::{AuditRow, DelegateRow, PermissionRow, Storage};
 pub use util::xml_escape;

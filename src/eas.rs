@@ -674,7 +674,7 @@ fn options_response(request_id: &str) -> Response {
             ),
             (
                 "MS-ASProtocolCommands",
-                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert,SendMail,SmartReply,SmartForward,MoveItems",
+                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert",
             ),
         ],
         "",
@@ -706,6 +706,17 @@ fn bad_request_response(request_id: &str, msg: &str) -> Response {
             r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">4</Status><!-- {} -->"#,
             msg
         ),
+    )
+        .into_response();
+    inject_common_headers(&mut r, request_id);
+    r
+}
+
+fn method_not_allowed_response(request_id: &str) -> Response {
+    let mut r = (
+        StatusCode::METHOD_NOT_ALLOWED,
+        [("Allow", "OPTIONS,POST")],
+        "Method Not Allowed",
     )
         .into_response();
     inject_common_headers(&mut r, request_id);
@@ -1806,6 +1817,9 @@ pub async fn handle(
     }
     if method == Method::OPTIONS {
         return options_response(&request_id);
+    }
+    if method != Method::POST {
+        return method_not_allowed_response(&request_id);
     }
     if body.len() > MAX_BODY_SIZE {
         return bad_request_response(&request_id, "Request body too large");

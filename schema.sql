@@ -1,22 +1,7 @@
--- d1_schema.sql
+-- schema.sql
 
-DROP TABLE IF EXISTS sync_state;
-DROP TABLE IF EXISTS item_map;
-DROP TABLE IF EXISTS ews_sync_state;
-DROP TABLE IF EXISTS device_info;
-DROP TABLE IF EXISTS provision_state;
-DROP TABLE IF EXISTS deleted_item_tombstone;
-DROP TABLE IF EXISTS change_journal;
-DROP TABLE IF EXISTS client_sync_command;
-DROP TABLE IF EXISTS api_idempotency;
-DROP TABLE IF EXISTS schema_version;
-DROP TABLE IF EXISTS meeting_response;
-DROP TABLE IF EXISTS calendar_exceptions;
-DROP TABLE IF EXISTS meeting_state;
-DROP TABLE IF EXISTS meeting_attendee;
-DROP TABLE IF EXISTS meeting_scheduling_queue;
 
-CREATE TABLE sync_state (
+CREATE TABLE IF NOT EXISTS sync_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     collection_id TEXT NOT NULL,
@@ -27,7 +12,7 @@ CREATE TABLE sync_state (
     UNIQUE(owner, collection_id)
 );
 
-CREATE TABLE item_map (
+CREATE TABLE IF NOT EXISTS item_map (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     caldav_href TEXT,
@@ -40,7 +25,7 @@ CREATE TABLE item_map (
     UNIQUE(owner, server_id)
 );
 
-CREATE TABLE deleted_item_tombstone (
+CREATE TABLE IF NOT EXISTS deleted_item_tombstone (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     server_id TEXT NOT NULL,
@@ -49,7 +34,7 @@ CREATE TABLE deleted_item_tombstone (
     UNIQUE(owner, server_id)
 );
 
-CREATE TABLE change_journal (
+CREATE TABLE IF NOT EXISTS change_journal (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     server_id TEXT NOT NULL,
@@ -59,7 +44,7 @@ CREATE TABLE change_journal (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE client_sync_command (
+CREATE TABLE IF NOT EXISTS client_sync_command (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     collection_id TEXT NOT NULL,
@@ -72,7 +57,7 @@ CREATE TABLE client_sync_command (
     UNIQUE(owner, collection_id, client_id)
 );
 
-CREATE TABLE provision_state (
+CREATE TABLE IF NOT EXISTS provision_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     device_id TEXT NOT NULL,
@@ -83,7 +68,7 @@ CREATE TABLE provision_state (
     UNIQUE(owner, device_id)
 );
 
-CREATE TABLE ews_sync_state (
+CREATE TABLE IF NOT EXISTS ews_sync_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email TEXT NOT NULL,
     folder_id TEXT NOT NULL,
@@ -93,7 +78,7 @@ CREATE TABLE ews_sync_state (
     UNIQUE(user_email, folder_id)
 );
 
-CREATE TABLE device_info (
+CREATE TABLE IF NOT EXISTS device_info (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email TEXT NOT NULL,
     device_id TEXT NOT NULL,
@@ -109,19 +94,13 @@ CREATE TABLE device_info (
     UNIQUE(user_email, device_id)
 );
 
-CREATE TABLE api_idempotency (
-    idempotency_key TEXT PRIMARY KEY,
-    route_name TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE schema_version (
+CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
     description TEXT NOT NULL,
     applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE meeting_response (
+CREATE TABLE IF NOT EXISTS meeting_response (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     request_id TEXT NOT NULL,
@@ -131,7 +110,7 @@ CREATE TABLE meeting_response (
     UNIQUE(owner, request_id)
 );
 
-CREATE TABLE calendar_exceptions (
+CREATE TABLE IF NOT EXISTS calendar_exceptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     parent_server_id TEXT NOT NULL,
@@ -142,34 +121,33 @@ CREATE TABLE calendar_exceptions (
     UNIQUE(owner, parent_server_id, exception_start)
 );
 
-INSERT INTO schema_version (version, description) VALUES (1, 'initial gateway typed schema');
+INSERT OR IGNORE INTO schema_version (version, description) VALUES (1, 'initial gateway typed schema');
 
-CREATE INDEX idx_api_idempotency_created ON api_idempotency(created_at);
-CREATE INDEX idx_item_map_owner_time ON item_map(owner, updated_at);
-CREATE INDEX idx_item_map_resource ON item_map(owner, resource_href);
-CREATE INDEX idx_item_map_uid ON item_map(owner, uid);
-CREATE INDEX idx_item_map_instance ON item_map(owner, instance_id);
-CREATE INDEX idx_deleted_owner_time ON deleted_item_tombstone(owner, deleted_at);
-CREATE INDEX idx_change_journal_owner ON change_journal(owner, id);
-CREATE INDEX idx_change_journal_op ON change_journal(owner, op, id);
-CREATE INDEX idx_change_journal_server ON change_journal(owner, server_id);
-CREATE INDEX idx_ews_sync_lookup ON ews_sync_state(user_email, folder_id);
-CREATE INDEX idx_provision_lookup ON provision_state(owner, device_id);
-CREATE INDEX idx_device_info_owner ON device_info(user_email);
-CREATE INDEX idx_meeting_response_owner ON meeting_response(owner);
-CREATE INDEX idx_calendar_exceptions_parent ON calendar_exceptions(owner, parent_server_id);
+CREATE INDEX IF NOT EXISTS idx_item_map_owner_time ON item_map(owner, updated_at);
+CREATE INDEX IF NOT EXISTS idx_item_map_resource ON item_map(owner, resource_href);
+CREATE INDEX IF NOT EXISTS idx_item_map_uid ON item_map(owner, uid);
+CREATE INDEX IF NOT EXISTS idx_item_map_instance ON item_map(owner, instance_id);
+CREATE INDEX IF NOT EXISTS idx_deleted_owner_time ON deleted_item_tombstone(owner, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_change_journal_owner ON change_journal(owner, id);
+CREATE INDEX IF NOT EXISTS idx_change_journal_op ON change_journal(owner, op, id);
+CREATE INDEX IF NOT EXISTS idx_change_journal_server ON change_journal(owner, server_id);
+CREATE INDEX IF NOT EXISTS idx_ews_sync_lookup ON ews_sync_state(user_email, folder_id);
+CREATE INDEX IF NOT EXISTS idx_provision_lookup ON provision_state(owner, device_id);
+CREATE INDEX IF NOT EXISTS idx_device_info_owner ON device_info(user_email);
+CREATE INDEX IF NOT EXISTS idx_meeting_response_owner ON meeting_response(owner);
+CREATE INDEX IF NOT EXISTS idx_calendar_exceptions_parent ON calendar_exceptions(owner, parent_server_id);
 
-INSERT INTO schema_version (version, description)
+INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (2, 'v2: change_journal.resource_href inline; additional indexes');
 
-INSERT INTO schema_version (version, description)
+INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (3, 'v3: device_info expanded with model, os, phone_number, imei, user_agent columns');
 
-INSERT INTO schema_version (version, description)
+INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (4, 'v4: Added protocol_version, instance_id, meeting_response, calendar_exceptions for protocol 16.1 compatibility');
 
 
-CREATE TABLE meeting_state (
+CREATE TABLE IF NOT EXISTS meeting_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     uid TEXT NOT NULL,
     owner TEXT NOT NULL,
@@ -190,7 +168,7 @@ CREATE TABLE meeting_state (
     UNIQUE(owner, uid)
 );
 
-CREATE TABLE meeting_attendee (
+CREATE TABLE IF NOT EXISTS meeting_attendee (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     meeting_uid TEXT NOT NULL,
     owner TEXT NOT NULL,
@@ -207,7 +185,7 @@ CREATE TABLE meeting_attendee (
     UNIQUE(owner, meeting_uid, email)
 );
 
-CREATE TABLE meeting_scheduling_queue (
+CREATE TABLE IF NOT EXISTS meeting_scheduling_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     meeting_uid TEXT NOT NULL,
     owner TEXT NOT NULL,
@@ -222,20 +200,20 @@ CREATE TABLE meeting_scheduling_queue (
     processed_at DATETIME
 );
 
-INSERT INTO schema_version (version, description)
+INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (5, 'v5: Meeting workflow - state machine, attendee tracking, RFC 6638 scheduling queue');
 
-CREATE INDEX idx_meeting_state_owner ON meeting_state(owner);
-CREATE INDEX idx_meeting_state_uid ON meeting_state(uid);
-CREATE INDEX idx_meeting_state_organizer ON meeting_state(owner, organizer_email);
-CREATE INDEX idx_meeting_state_time ON meeting_state(owner, start_time, end_time);
-CREATE INDEX idx_meeting_attendee_meeting ON meeting_attendee(owner, meeting_uid);
-CREATE INDEX idx_meeting_attendee_email ON meeting_attendee(owner, email);
-CREATE INDEX idx_meeting_scheduling_pending ON meeting_scheduling_queue(owner, status);
-CREATE INDEX idx_meeting_scheduling_uid ON meeting_scheduling_queue(meeting_uid);
+CREATE INDEX IF NOT EXISTS idx_meeting_state_owner ON meeting_state(owner);
+CREATE INDEX IF NOT EXISTS idx_meeting_state_uid ON meeting_state(uid);
+CREATE INDEX IF NOT EXISTS idx_meeting_state_organizer ON meeting_state(owner, organizer_email);
+CREATE INDEX IF NOT EXISTS idx_meeting_state_time ON meeting_state(owner, start_time, end_time);
+CREATE INDEX IF NOT EXISTS idx_meeting_attendee_meeting ON meeting_attendee(owner, meeting_uid);
+CREATE INDEX IF NOT EXISTS idx_meeting_attendee_email ON meeting_attendee(owner, email);
+CREATE INDEX IF NOT EXISTS idx_meeting_scheduling_pending ON meeting_scheduling_queue(owner, status);
+CREATE INDEX IF NOT EXISTS idx_meeting_scheduling_uid ON meeting_scheduling_queue(meeting_uid);
 
 
-CREATE TABLE calendar_permission (
+CREATE TABLE IF NOT EXISTS calendar_permission (
     id TEXT PRIMARY KEY,
     folder_id TEXT NOT NULL,
     owner TEXT NOT NULL,
@@ -249,7 +227,7 @@ CREATE TABLE calendar_permission (
     UNIQUE(owner, folder_id, user_email)
 );
 
-CREATE TABLE calendar_delegate (
+CREATE TABLE IF NOT EXISTS calendar_delegate (
     id TEXT PRIMARY KEY,
     delegator TEXT NOT NULL,
     delegate_email TEXT NOT NULL,
@@ -268,7 +246,7 @@ CREATE TABLE calendar_delegate (
     UNIQUE(delegator, delegate_email)
 );
 
-CREATE TABLE permission_audit (
+CREATE TABLE IF NOT EXISTS permission_audit (
     id TEXT PRIMARY KEY,
     folder_id TEXT NOT NULL,
     owner TEXT NOT NULL,
@@ -280,24 +258,24 @@ CREATE TABLE permission_audit (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO schema_version (version, description)
+INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (6, 'v6: Calendar permissions, delegate management, and audit trail based on MS-OXCPERM');
 
-CREATE INDEX idx_permission_folder ON calendar_permission(owner, folder_id);
-CREATE INDEX idx_permission_user ON calendar_permission(owner, user_email);
-CREATE INDEX idx_permission_default ON calendar_permission(owner, folder_id, is_default);
-CREATE INDEX idx_permission_anonymous ON calendar_permission(owner, folder_id, is_anonymous);
+CREATE INDEX IF NOT EXISTS idx_permission_folder ON calendar_permission(owner, folder_id);
+CREATE INDEX IF NOT EXISTS idx_permission_user ON calendar_permission(owner, user_email);
+CREATE INDEX IF NOT EXISTS idx_permission_default ON calendar_permission(owner, folder_id, is_default);
+CREATE INDEX IF NOT EXISTS idx_permission_anonymous ON calendar_permission(owner, folder_id, is_anonymous);
 
-CREATE INDEX idx_delegate_delegator ON calendar_delegate(delegator);
-CREATE INDEX idx_delegate_email ON calendar_delegate(delegate_email);
-CREATE INDEX idx_delegate_delegator_email ON calendar_delegate(delegator, delegate_email);
+CREATE INDEX IF NOT EXISTS idx_delegate_delegator ON calendar_delegate(delegator);
+CREATE INDEX IF NOT EXISTS idx_delegate_email ON calendar_delegate(delegate_email);
+CREATE INDEX IF NOT EXISTS idx_delegate_delegator_email ON calendar_delegate(delegator, delegate_email);
 
-CREATE INDEX idx_permission_audit_folder ON permission_audit(owner, folder_id);
-CREATE INDEX idx_permission_audit_actor ON permission_audit(actor_email);
-CREATE INDEX idx_permission_audit_target ON permission_audit(target_email);
-CREATE INDEX idx_permission_audit_time ON permission_audit(owner, created_at);
+CREATE INDEX IF NOT EXISTS idx_permission_audit_folder ON permission_audit(owner, folder_id);
+CREATE INDEX IF NOT EXISTS idx_permission_audit_actor ON permission_audit(actor_email);
+CREATE INDEX IF NOT EXISTS idx_permission_audit_target ON permission_audit(target_email);
+CREATE INDEX IF NOT EXISTS idx_permission_audit_time ON permission_audit(owner, created_at);
 
-CREATE TABLE calendar_attachment (
+CREATE TABLE IF NOT EXISTS calendar_attachment (
     id TEXT PRIMARY KEY,
     parent_item_server_id TEXT NOT NULL,
     owner TEXT NOT NULL,
@@ -314,13 +292,13 @@ CREATE TABLE calendar_attachment (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_attachment_parent ON calendar_attachment(owner, parent_item_server_id);
-CREATE INDEX idx_attachment_owner ON calendar_attachment(owner);
-CREATE INDEX idx_attachment_id ON calendar_attachment(id);
+CREATE INDEX IF NOT EXISTS idx_attachment_parent ON calendar_attachment(owner, parent_item_server_id);
+CREATE INDEX IF NOT EXISTS idx_attachment_owner ON calendar_attachment(owner);
+CREATE INDEX IF NOT EXISTS idx_attachment_id ON calendar_attachment(id);
 
-INSERT INTO schema_version (version, description) VALUES (7, 'v7: Attachment support - CreateAttachment/GetAttachment/DeleteAttachment with base64 content storage');
+INSERT OR IGNORE INTO schema_version (version, description) VALUES (7, 'v7: Attachment support - CreateAttachment/GetAttachment/DeleteAttachment with base64 content storage');
 
-CREATE TABLE room_list (
+CREATE TABLE IF NOT EXISTS room_list (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -329,7 +307,7 @@ CREATE TABLE room_list (
     UNIQUE(email)
 );
 
-CREATE TABLE room (
+CREATE TABLE IF NOT EXISTS room (
     id TEXT PRIMARY KEY,
     room_list_email TEXT,
     email TEXT NOT NULL,
@@ -341,8 +319,8 @@ CREATE TABLE room (
     UNIQUE(email)
 );
 
-CREATE INDEX idx_room_list_email ON room_list(email);
-CREATE INDEX idx_room_email ON room(email);
-CREATE INDEX idx_room_room_list ON room(room_list_email);
+CREATE INDEX IF NOT EXISTS idx_room_list_email ON room_list(email);
+CREATE INDEX IF NOT EXISTS idx_room_email ON room(email);
+CREATE INDEX IF NOT EXISTS idx_room_room_list ON room(room_list_email);
 
-INSERT INTO schema_version (version, description) VALUES (8, 'v8: Room/resource booking - GetRoomLists/GetRooms with room mailbox support');
+INSERT OR IGNORE INTO schema_version (version, description) VALUES (8, 'v8: Room/resource booking - GetRoomLists/GetRooms with room mailbox support');

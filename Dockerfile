@@ -2,6 +2,8 @@
 FROM rust:1.95.0-slim AS builder
 WORKDIR /app
 ENV RUSTFLAGS="-D warnings"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  pkg-config libsqlite3-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
 RUN cargo build --release

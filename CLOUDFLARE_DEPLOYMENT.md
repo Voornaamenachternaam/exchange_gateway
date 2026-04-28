@@ -9,21 +9,7 @@
 - Stalwart Mailserver v0.15.5 running with RocksDB and ACME TLS
 - Exchange Gateway Docker container running alongside Stalwart
 
-## Step 1: Create D1 Database
-
-```bash
-wrangler d1 create exchange_gateway_db
-```
-
-Record the `database_id` from the output and set it in `wrangler.toml`.
-
-Initialize the schema:
-
-```bash
-wrangler d1 execute exchange_gateway_db --file=d1_schema.sql
-```
-
-## Step 2: Create KV Namespace
+## Step 1: Create KV Namespace
 
 ```bash
 wrangler kv:namespace create RATE_LIMIT_KV
@@ -31,15 +17,15 @@ wrangler kv:namespace create RATE_LIMIT_KV
 
 Record the `id` from the output and set it in `wrangler.toml`.
 
-## Step 3: Set Secrets
+## Step 2: Set Secrets
 
 ```bash
 wrangler secret put GATEWAY_SECRET
 ```
 
-Enter the same secret value configured in `exchange-gateway.config.toml` under `worker_secret`.
+Enter the same secret value configured in `exchange-gateway.config.toml` under `hmac_secret`.
 
-## Step 4: Configure DNS
+## Step 3: Configure DNS
 
 Add the following DNS records in your Cloudflare dashboard:
 
@@ -58,7 +44,7 @@ The `exchange-origin` subdomain is the direct origin that Cloudflare Tunnel conn
 
 The `_autodiscover._tcp` SRV record enables Outlook auto-discovery for the domain.
 
-## Step 5: Configure Cloudflare Tunnel
+## Step 4: Configure Cloudflare Tunnel
 
 Create a tunnel in the Cloudflare Zero Trust dashboard:
 
@@ -155,16 +141,14 @@ The Cloudflare free tier includes:
 
 - 100,000 Worker requests per day
 - 10 ms CPU time per invocation
-- 5 million D1 reads per month
-- 100,000 D1 writes per month
 - 1 GB KV storage
-- 1,000 KV reads per day (100,000 writes)
+- 100,000 KV reads/day and 1,000 KV writes/day (free tier baseline)
 
 For a single-user or small-team calendar setup, these limits are sufficient. Monitor usage in the Cloudflare dashboard.
 
 ## Hardening Controls
 
-1. **Authentication**: All EWS and ActiveSync requests require Basic authentication. The Worker validates credentials against the Stalwart IMAP backend via the Rust gateway.
+1. **Authentication**: All EWS and ActiveSync requests require Basic authentication and are validated by the Rust gateway against the Stalwart backend.
 
 2. **TLS**: Cloudflare provides automatic TLS termination for all client-facing endpoints. The Cloudflare Tunnel between Cloudflare and the origin container uses HTTP over the private Docker network (`http://exchange_gateway:8134`). The gateway container itself runs plain HTTP; no TLS certificates or key files are needed on the container because Cloudflare handles all TLS.
 
@@ -178,7 +162,7 @@ For a single-user or small-team calendar setup, these limits are sufficient. Mon
    - `Referrer-Policy: strict-origin-when-cross-origin`
    - `Cache-Control: private, no-store`
 
-5. **Request Size Limits**: The Worker and gateway both enforce a 4 MB maximum body size for forwarded requests and 256 KB for API requests.
+5. **Request Size Limits**: The Worker and gateway enforce a 4 MB maximum body size for forwarded requests.
 
 ## Stalwart Configuration Additions
 

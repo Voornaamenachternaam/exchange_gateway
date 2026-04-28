@@ -10,7 +10,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
-use axum_server::tls_rustls::RustlsConfig;
 use opentelemetry::{KeyValue, global, trace::TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
 use tokio::net::TcpListener;
@@ -98,13 +97,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tracing::info!(
-        "Exchange Gateway starting. bind={} gateway_host={} tls={}",
+        "Exchange Gateway starting. bind={} gateway_host={}",
         config.bind,
-        config.gateway_host,
-        config.tls_enabled()
+        config.gateway_host
     );
 
-    let storage = Arc::new(Storage::new(&config.worker_url, config.worker_secret())?);
+    let storage = Arc::new(Storage::new(&config.database_path)?);
 
     let app_state = Arc::new(AppState::new(config.clone(), storage));
 
@@ -162,11 +160,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr: SocketAddr = config.bind.parse()?;
 
-    if config.tls_enabled() {
-        serve_tls(addr, app, &config).await?;
-    } else {
-        serve_plain(addr, app).await?;
-    }
+    serve_plain(addr, app).await?;
 
     tracing::info!("Server shutdown complete");
     Ok(())
@@ -178,27 +172,6 @@ async fn serve_plain(addr: SocketAddr, app: Router) -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    Ok(())
-}
-
-async fn serve_tls(addr: SocketAddr, app: Router, config: &Config) -> anyhow::Result<()> {
-    let cert_path = config.tls_cert_path.as_deref().unwrap_or_default();
-    let key_path = config.tls_key_path.as_deref().unwrap_or_default();
-    tracing::info!("Listening on {} (HTTPS with rustls)", addr);
-    let tls_config = RustlsConfig::from_pem_file(cert_path, key_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to load TLS cert/key: {}", e))?;
-    let handle = axum_server::Handle::new();
-    let shutdown_handle = handle.clone();
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        shutdown_handle.graceful_shutdown(None);
-    });
-    axum_server::bind_rustls(addr, tls_config)
-        .handle(handle)
-        .serve(app.into_make_service())
-        .await
-        .map_err(|e| anyhow::anyhow!("TLS server error: {}", e))?;
     Ok(())
 }
 
@@ -274,16 +247,16 @@ fn init_telemetry() -> anyhow::Result<Option<opentelemetry_sdk::trace::SdkTracer
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
-    let worker_ok = match state.storage.get_latest_change_seq().await {
+    let db_ok = match state.storage.get_latest_change_seq().await {
         Ok(_) => true,
         Err(e) => {
-            tracing::warn!("Health check: Worker connectivity failed: {}", e);
+            tracing::warn!("Health check: SQLite connectivity failed: {}", e);
             false
         }
     };
-    if worker_ok {
+    if db_ok {
         (StatusCode::OK, "OK").into_response()
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "Worker unavailable").into_response()
+        (StatusCode::SERVICE_UNAVAILABLE, "Database unavailable").into_response()
     }
 }
