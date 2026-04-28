@@ -40,7 +40,7 @@ export default {
 };
 
 function isForwardedPath(path) {
-  return FORWARDED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+  return FORWARDED_PATH_PREFIXES.some((prefix) => pathMatchesPrefix(path, prefix));
 }
 
 function isAutodiscover(path) {
@@ -108,12 +108,16 @@ async function forward(request, env) {
 }
 
 function allowedMethodsForPath(path) {
-  if (path.startsWith('/ews/')) return ['POST', 'OPTIONS'];
-  if (path.startsWith('/microsoft-server-activesync')) return ['POST', 'OPTIONS'];
-  if (path.startsWith('/oab/')) return ['GET', 'HEAD', 'OPTIONS'];
+  if (pathMatchesPrefix(path, '/ews')) return ['POST', 'OPTIONS'];
+  if (pathMatchesPrefix(path, '/microsoft-server-activesync')) return ['POST', 'OPTIONS'];
+  if (pathMatchesPrefix(path, '/oab')) return ['GET', 'HEAD', 'OPTIONS'];
   if (isAutodiscover(path)) return ['GET', 'POST', 'OPTIONS'];
   if (path === '/health') return ['GET', 'HEAD', 'OPTIONS'];
   return ['GET', 'POST', 'HEAD', 'OPTIONS'];
+}
+
+function pathMatchesPrefix(path, prefix) {
+  return path === prefix || path.startsWith(`${prefix}/`);
 }
 
 function sanitizeForwardHeaders(inputHeaders) {
