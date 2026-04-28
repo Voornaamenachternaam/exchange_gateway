@@ -2,6 +2,8 @@
 use crate::util::xml_escape_text;
 use anyhow::{Result, anyhow};
 use base64::Engine;
+use indexmap::IndexMap;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
@@ -10,6 +12,66 @@ const STR_I: u8 = 0x03;
 const LITERAL: u8 = 0x04;
 const STR_T: u8 = 0x83;
 const OPAQUE: u8 = 0xC3;
+
+/// Zero-copy WBXML binary header structure.
+/// The WBXML binary format starts with:
+///   version (u8), public_id (mb_u_int32), charset (mb_u_int32), str_table_len (mb_u_int32)
+/// Since the variable-length mb_u_int32 encoding complicates fixed-layout parsing,
+/// we use zerocopy for the fixed first byte (version) and handle the rest manually.
+#[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C, packed)]
+struct WbxmlVersionByte {
+    version: u8,
+}
+
+/// WBXML string table entry parsed from the header region.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct WbxmlStringTableEntry {
+    offset: usize,
+    length: usize,
+}
+
+/// Parsed WBXML header with validated offsets.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct WbxmlHeader {
+    version: u8,
+    public_id: u32,
+    charset: u32,
+    string_table_len: usize,
+    string_table_start: usize,
+    body_start: usize,
+}
+
+impl WbxmlHeader {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        if bytes.is_empty() {
+            return Err(anyhow!("Empty WBXML payload"));
+        }
+        let version_byte = WbxmlVersionByte::ref_from_bytes(bytes)
+            .map_err(|_| anyhow!("Failed to read WBXML version byte"))?;
+        let version = version_byte.version;
+        let mut pos = 1usize;
+        let public_id = Wbxml::read_mb_uint(bytes, &mut pos)?;
+        let charset = Wbxml::read_mb_uint(bytes, &mut pos)?;
+        let string_table_len = usize::try_from(Wbxml::read_mb_uint(bytes, &mut pos)?)
+            .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
+        if pos + string_table_len > bytes.len() {
+            return Err(anyhow!("WBXML string table exceeds payload"));
+        }
+        let string_table_start = pos;
+        let body_start = pos + string_table_len;
+        Ok(Self {
+            version,
+            public_id,
+            charset,
+            string_table_len,
+            string_table_start,
+            body_start,
+        })
+    }
+}
 
 static TAG_TO_NAME: phf::Map<[u8; 2], &'static str> = phf::phf_map! {
     [0u8, 0x05u8] => "Sync",
@@ -1132,20 +1194,9 @@ impl Wbxml {
             return Ok(String::from_utf8(bytes.to_vec())?);
         }
 
-        let mut pos = 0usize;
-        let _version = *bytes
-            .get(pos)
-            .ok_or_else(|| anyhow!("Missing WBXML version"))?;
-        pos += 1;
-        let _public_id = Self::read_mb_uint(bytes, &mut pos)?;
-        let _charset = Self::read_mb_uint(bytes, &mut pos)?;
-        let str_table_len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
-            .map_err(|_| anyhow!("Invalid WBXML string table length"))?;
-        if pos + str_table_len > bytes.len() {
-            return Err(anyhow!("WBXML string table exceeds payload"));
-        }
-        let string_table = &bytes[pos..pos + str_table_len];
-        pos += str_table_len;
+        let header = WbxmlHeader::parse(bytes)?;
+        let string_table = &bytes[header.string_table_start..header.string_table_start + header.string_table_len];
+        let mut pos = header.body_start;
 
         let mut current_code_page = 0u8;
         let mut xml_stack: Vec<String> = Vec::new();
@@ -1242,7 +1293,7 @@ impl Wbxml {
         let mut buf: Vec<u8> = vec![0x03, 0x01, 0x6A, 0x00];
         let mut current_code_page = 0u8;
         let mut ns_stack: Vec<Option<u8>> = Vec::new();
-        let mut prefix_ns_stack: Vec<std::collections::HashMap<String, Option<u8>>> = Vec::new();
+        let mut prefix_ns_stack: Vec<IndexMap<String, Option<u8>>> = Vec::new();
 
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -1251,8 +1302,8 @@ impl Wbxml {
         loop {
             match reader.read_event_into(&mut event_buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
-                    let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
-                        std::collections::HashMap::new();
+                    let mut new_prefixes: IndexMap<String, Option<u8>> =
+                        IndexMap::new();
                     for attr in e.attributes().flatten() {
                         let key_bytes = attr.key.as_ref();
                         if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
@@ -1299,8 +1350,8 @@ impl Wbxml {
                     )?;
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
-                        std::collections::HashMap::new();
+                    let mut new_prefixes: IndexMap<String, Option<u8>> =
+                        IndexMap::new();
                     for attr in e.attributes().flatten() {
                         let key_bytes = attr.key.as_ref();
                         if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {

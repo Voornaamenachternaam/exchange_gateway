@@ -32,12 +32,14 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Datelike;
 use const_hex;
+use heck::ToPascalCase;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 
@@ -148,6 +150,33 @@ impl EwsAction {
             EwsAction::GetAttachment => "GetAttachmentResponseMessage",
             EwsAction::DeleteAttachment => "DeleteAttachmentResponseMessage",
         }
+    }
+
+    /// Derive the PascalCase action name for response body construction using heck.
+    #[allow(dead_code)]
+    fn pascal_name(&self) -> String {
+        let name = match self {
+            EwsAction::GetFolder => "GetFolder",
+            EwsAction::FindFolder => "FindFolder",
+            EwsAction::FindItem => "FindItem",
+            EwsAction::GetItem => "GetItem",
+            EwsAction::CreateItem => "CreateItem",
+            EwsAction::UpdateItem => "UpdateItem",
+            EwsAction::DeleteItem => "DeleteItem",
+            EwsAction::SyncFolderItems => "SyncFolderItems",
+            EwsAction::SyncFolderHierarchy => "SyncFolderHierarchy",
+            EwsAction::GetRoomLists => "GetRoomLists",
+            EwsAction::GetRooms => "GetRooms",
+            EwsAction::GetDelegate => "GetDelegate",
+            EwsAction::AddDelegate => "AddDelegate",
+            EwsAction::RemoveDelegate => "RemoveDelegate",
+            EwsAction::UpdateDelegate => "UpdateDelegate",
+            EwsAction::CreateAttachment => "CreateAttachment",
+            EwsAction::GetAttachment => "GetAttachment",
+            EwsAction::DeleteAttachment => "DeleteAttachment",
+            _ => "Unknown",
+        };
+        name.to_pascal_case()
     }
 }
 
@@ -1211,7 +1240,7 @@ fn suggestions_xml_for_window(
     let safe_slot = slot_minutes.clamp(5, 1440);
     let safe_meeting = meeting_minutes.clamp(safe_slot, 24 * 60);
     let slots_needed = ((safe_meeting + safe_slot - 1) / safe_slot) as usize;
-    let mut day_buckets: std::collections::BTreeMap<String, Vec<String>> =
+    let mut day_buckets: IndexMap<String, Vec<String>> =
         suggestion_day_keys(start, end)
             .into_iter()
             .map(|day| (day, Vec::new()))
@@ -1912,7 +1941,7 @@ async fn handle_sync_folder_items(
             );
         }
     };
-    let mut current_map = HashMap::new();
+    let mut current_map = IndexMap::new();
     for item in items {
         current_map.insert(item.row.server_id.clone(), item);
     }

@@ -16,11 +16,12 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_util::future::join_all;
+use heck::ToSnakeCase;
+use indexmap::IndexMap;
 use lru::LruCache;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use secrecy::{ExposeSecret, SecretString};
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -107,8 +108,13 @@ struct CommandGrammar {
     _optional_tags: &'static [&'static str],
 }
 
+/// Normalize an EAS command name using heck for consistent snake_case matching.
+fn normalize_eas_command(command: &str) -> String {
+    command.to_snake_case()
+}
+
 fn command_grammar(command: &str) -> Option<CommandGrammar> {
-    match command.to_ascii_lowercase().as_str() {
+    match normalize_eas_command(command).as_str() {
         "sync" => Some(CommandGrammar {
             namespace: "AirSync:",
             required_tags: &["Collections", "Collection", "SyncKey"],
@@ -385,14 +391,14 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
     values
 }
 
-fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
+fn value_from_query(query: &IndexMap<String, String>, key: &str) -> Option<String> {
     query
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(key))
         .map(|(_, v)| v.clone())
 }
 
-fn command_from_query(query: &HashMap<String, String>) -> Option<String> {
+fn command_from_query(query: &IndexMap<String, String>) -> Option<String> {
     query
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("Cmd"))
@@ -554,7 +560,7 @@ fn parse_device_information(xml: &str) -> DeviceInfo {
     )
 }
 
-fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap) -> EasRequest {
+fn parse_request(query: &IndexMap<String, String>, xml: &str, headers: &HeaderMap) -> EasRequest {
     let window_size = extract_first_tag_text(xml, b"WindowSize")
         .and_then(|v| v.parse::<usize>().ok())
         .map(|v| {
@@ -1796,7 +1802,7 @@ async fn handle_search(
 pub async fn handle(
     State(state): State<Arc<AppState>>,
     method: Method,
-    Query(query): Query<HashMap<String, String>>,
+    Query(query): Query<IndexMap<String, String>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {

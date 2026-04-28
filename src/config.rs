@@ -5,6 +5,8 @@ use std::fs;
 use url::Url;
 use zeroize::Zeroizing;
 
+use crate::keyring::try_keyring_secret;
+
 const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
 const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
@@ -68,6 +70,19 @@ impl Config {
                 tracing::warn!(
                     "Config: 'gateway_host' not specified and could not be extracted from 'worker_url'. Autodiscover responses may be incorrect."
                 );
+            }
+        }
+        // Attempt to load secrets from Linux keyring if they contain placeholders
+        if cfg.worker_secret.expose_secret().starts_with("keyring:") {
+            let key_name = &cfg.worker_secret.expose_secret()["keyring:".len()..];
+            if let Some(secret) = try_keyring_secret(key_name) {
+                cfg.worker_secret = SecretString::new(secret.into());
+            }
+        }
+        if cfg.hmac_secret.expose_secret().starts_with("keyring:") {
+            let key_name = &cfg.hmac_secret.expose_secret()["keyring:".len()..];
+            if let Some(secret) = try_keyring_secret(key_name) {
+                cfg.hmac_secret = SecretString::new(secret.into());
             }
         }
         cfg.validate()?;

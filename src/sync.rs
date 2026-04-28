@@ -12,8 +12,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
+use indexmap::IndexMap;
 use sha2::Sha256;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -1340,7 +1341,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         .await?
         .into_iter()
         .map(|item| (item.server_id.clone(), item))
-        .collect::<HashMap<_, _>>();
+        .collect::<IndexMap<_, _>>();
 
     struct PendingItem {
         server_id: String,

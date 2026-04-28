@@ -5,15 +5,48 @@ use chrono_tz::Tz;
 use std::str::FromStr;
 use strum::IntoEnumIterator;
 use windows_timezones::WindowsTimezone;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 const TZ_BLOB_LEN: usize = 172;
+
+/// Zero-copy representation of the EAS TIMEZONE_BLOB header fields.
+/// Layout: bias (i32 LE), followed by wchar standard name (32 x u16 LE),
+/// then standard date (16 bytes), standard bias (i32 LE),
+/// wchar daylight name (32 x u16 LE), daylight date (16 bytes), daylight bias (i32 LE).
+#[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C, packed)]
+struct EasTimezoneBlobHeader {
+    bias: i32,
+}
+
+#[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C, packed)]
+struct EasTimezoneBiasField {
+    bias: i32,
+}
+
+/// Zero-copy representation of the SYSTEMTIME structure used in timezone blobs.
+#[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C, packed)]
+#[allow(dead_code)]
+struct SystemTimeField {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+}
 
 pub fn decode_eas_timezone_bias(b64: &str) -> Option<i32> {
     let bytes = BASE64.decode(b64.trim()).ok()?;
     if bytes.len() < 4 {
         return None;
     }
-    Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    let header = EasTimezoneBiasField::ref_from_bytes(&bytes).ok()?;
+    Some(header.bias)
 }
 
 fn read_wchar_name(bytes: &[u8], offset: usize) -> String {
@@ -85,7 +118,8 @@ pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
     if bytes.len() < TZ_BLOB_LEN {
         return None;
     }
-    let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let header = EasTimezoneBlobHeader::ref_from_bytes(&bytes).ok()?;
+    let bias = header.bias;
     let std_name = read_wchar_name(&bytes, 4);
     let dst_name = read_wchar_name(&bytes, 88);
 
@@ -117,13 +151,16 @@ pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
     let (bias, std_name, dst_name, std_date, dst_date, std_bias, dst_bias) =
         iana_to_windows_params(iana)?;
     let mut blob = [0u8; TZ_BLOB_LEN];
-    blob[0..4].copy_from_slice(&bias.to_le_bytes());
+    let header = EasTimezoneBlobHeader { bias };
+    blob[0..4].copy_from_slice(header.as_bytes());
     write_wchar_name(&mut blob, 4, &std_name);
     blob[68..84].copy_from_slice(&std_date);
-    blob[84..88].copy_from_slice(&std_bias.to_le_bytes());
+    let std_bias_field = EasTimezoneBiasField { bias: std_bias };
+    blob[84..88].copy_from_slice(std_bias_field.as_bytes());
     write_wchar_name(&mut blob, 88, &dst_name);
     blob[152..168].copy_from_slice(&dst_date);
-    blob[168..172].copy_from_slice(&dst_bias.to_le_bytes());
+    let dst_bias_field = EasTimezoneBiasField { bias: dst_bias };
+    blob[168..172].copy_from_slice(dst_bias_field.as_bytes());
     Some(BASE64.encode(blob))
 }
 

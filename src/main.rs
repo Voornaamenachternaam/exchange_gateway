@@ -13,6 +13,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use opentelemetry::{KeyValue, global, trace::TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
+use mio::{Interest, Poll, Token, net::TcpListener as MioTcpListener};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower::ServiceBuilder;
@@ -24,7 +25,7 @@ use tower_http::{
 use tracing_subscriber::EnvFilter;
 
 use exchange_gateway::{
-    autodiscover, config::Config, eas, ews, models::AppState, oab, storage::Storage,
+    autodiscover, config::Config, docker, eas, ews, models::AppState, oab, storage::Storage,
 };
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -83,6 +84,13 @@ async fn main() -> anyhow::Result<()> {
             .init();
     }
 
+    // Check Docker daemon availability for container orchestration
+    if docker::check_docker_daemon_available().await {
+        tracing::info!("Docker daemon is available for container orchestration");
+    } else {
+        tracing::debug!("Docker daemon not available (non-containerized mode)");
+    }
+
     let config_path = std::env::var("GATEWAY_CONFIG")
         .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
 
@@ -103,6 +111,20 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host,
         config.tls_enabled()
     );
+
+    // Pre-bind check using mio to verify socket availability before starting server
+    let addr: SocketAddr = config.bind.parse()?;
+    {
+        let mut mio_listener = MioTcpListener::bind(addr)?;
+        let poll = Poll::new()?;
+        poll.registry().register(
+            &mut mio_listener,
+            Token(0),
+            Interest::READABLE,
+        )?;
+        drop(mio_listener);
+        drop(poll);
+    }
 
     let storage = Arc::new(Storage::new(&config.worker_url, config.worker_secret())?);
 

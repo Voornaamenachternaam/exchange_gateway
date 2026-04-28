@@ -1,6 +1,7 @@
 // src/ews_folders.rs
 use crate::util::xml_escape;
 use const_hex;
+use heck::ToSnakeCase;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,15 +84,17 @@ impl FromStr for DistinguishedFolder {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
+        // Use heck for robust snake_case normalization before matching
+        let normalized = s.to_snake_case();
+        match normalized.as_str() {
             "calendar" => Ok(Self::Calendar),
-            "msgfolderroot" | "root" => Ok(Self::MsgFolderRoot),
+            "msg_folder_root" | "root" => Ok(Self::MsgFolderRoot),
             "inbox" => Ok(Self::Inbox),
-            "sentitems" => Ok(Self::SentItems),
-            "deleteditems" => Ok(Self::DeletedItems),
+            "sent_items" => Ok(Self::SentItems),
+            "deleted_items" => Ok(Self::DeletedItems),
             "drafts" => Ok(Self::Drafts),
             "outbox" => Ok(Self::Outbox),
-            "junkemail" | "junk" => Ok(Self::JunkEmail),
+            "junk_email" | "junk" => Ok(Self::JunkEmail),
             "contacts" => Ok(Self::Contacts),
             "tasks" => Ok(Self::Tasks),
             "notes" => Ok(Self::Notes),

@@ -1,5 +1,6 @@
 // src/permission/types.rs
 use bitflags::bitflags;
+use heck::ToSnakeCase;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -313,16 +314,18 @@ impl FromStr for PermissionLevel {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
+        // Use heck for robust snake_case normalization before matching
+        let normalized = s.to_snake_case();
+        match normalized.as_str() {
             "none" => Ok(Self::None),
-            "freebusy" | "freebusyonly" | "freebusytimeonly" => Ok(Self::FreeBusy),
+            "free_busy" | "free_busy_only" | "free_busy_time_only" => Ok(Self::FreeBusy),
             "reviewer" => Ok(Self::Reviewer),
             "contributor" => Ok(Self::Contributor),
-            "noneditingauthor" => Ok(Self::NonEditingAuthor),
+            "non_editing_author" => Ok(Self::NonEditingAuthor),
             "author" => Ok(Self::Author),
-            "publishingauthor" => Ok(Self::PublishingAuthor),
+            "publishing_author" => Ok(Self::PublishingAuthor),
             "editor" => Ok(Self::Editor),
-            "publishingeditor" => Ok(Self::PublishingEditor),
+            "publishing_editor" => Ok(Self::PublishingEditor),
             "owner" => Ok(Self::Owner),
             _ => Err(()),
         }
@@ -516,7 +519,8 @@ impl FromStr for DelegatePermission {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
+        let normalized = s.to_snake_case();
+        match normalized.as_str() {
             "none" => Ok(Self::None),
             "author" => Ok(Self::Author),
             "editor" => Ok(Self::Editor),
