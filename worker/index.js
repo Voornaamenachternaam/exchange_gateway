@@ -17,8 +17,9 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname.toLowerCase();
+    const handledPath = isAutodiscover(path) || isForwardedPath(path) || path === '/health';
 
-    if (request.method === 'OPTIONS') {
+    if (request.method === 'OPTIONS' && handledPath) {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
