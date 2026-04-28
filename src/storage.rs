@@ -424,7 +424,13 @@ impl Storage {
     }
 
     pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
-        self.with_conn(|c| { let mut s=c.prepare("SELECT server_id FROM deleted_item_tombstone WHERE owner=?1 AND strftime('%s', deleted_at) >= ?2 ORDER BY id")?; let rows=s.query_map(params![owner,since_unix_ts],|r| r.get(0))?; rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into) })
+        self.with_conn(|c| {
+            let mut s = c.prepare(
+                "SELECT server_id FROM change_journal WHERE owner=?1 AND strftime('%s', created_at) >= ?2 AND op='delete' ORDER BY id",
+            )?;
+            let rows = s.query_map(params![owner, since_unix_ts], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        })
     }
 
     pub async fn get_latest_change_seq(&self) -> Result<i64> {
@@ -459,7 +465,13 @@ impl Storage {
         owner: &str,
         since_seq: i64,
     ) -> Result<Vec<(i64, String)>> {
-        self.with_conn(|c| { let mut s=c.prepare("SELECT id, server_id FROM deleted_item_tombstone WHERE owner=?1 AND id>?2 ORDER BY id")?; let rows=s.query_map(params![owner,since_seq],|r| Ok((r.get(0)?,r.get(1)?)))?; rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into) })
+        self.with_conn(|c| {
+            let mut s = c.prepare(
+                "SELECT id, server_id FROM change_journal WHERE owner=?1 AND id>?2 AND op='delete' ORDER BY id",
+            )?;
+            let rows = s.query_map(params![owner, since_seq], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        })
     }
 
     pub async fn set_provision_policy(
