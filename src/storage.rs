@@ -552,7 +552,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT server_id, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 ORDER BY updated_at DESC LIMIT ?2 OFFSET ?3",
+                "SELECT server_id, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 ORDER BY updated_at DESC, server_id ASC LIMIT ?2 OFFSET ?3",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(params![params.0, params.1, params.2], EwsItemRow::from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
