@@ -354,24 +354,31 @@ impl Storage {
         &self,
         owner: &str,
         collection_id: &str,
-        sync_key: &str,
+        since_timestamp: &str,
         limit: i64,
     ) -> Result<Vec<EwsItemRow>> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), format!("%{}%", collection_id), sync_key.to_string(), limit);
+        let owner = owner.to_string();
+        let collection_id = collection_id.to_string();
+        let since_timestamp = since_timestamp.to_string();
         
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
                 "SELECT im.server_id, im.resource_href, im.uid, im.etag, im.updated_at
                  FROM item_map im
-                 WHERE im.owner = ?1 AND im.resource_href LIKE ?2
-                 ORDER BY im.updated_at DESC LIMIT ?4",
+                 WHERE im.owner = ?1 AND im.resource_href LIKE ?2 || '%'
+                 AND im.updated_at > ?3
+                 ORDER BY im.updated_at ASC, im.server_id ASC
+                 LIMIT ?4",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1, params.2, params.3], EwsItemRow::from_row)
-                .map_err(|e| anyhow!("Query map error: {}", e))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| anyhow!("Collect error: {}", e))
+            stmt.query_map(
+                rusqlite::params![owner, collection_id, since_timestamp, limit],
+                EwsItemRow::from_row
+            )
+            .map_err(|e| anyhow!("Query map error: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("Collect error: {}", e))
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -424,7 +431,8 @@ impl Storage {
                  WHERE im.owner = ?1 AND im.server_id IN (
                      SELECT server_id FROM change_journal WHERE owner = ?1 AND id > ?2 AND op = 'upsert'
                  )
-                 ORDER BY im.updated_at DESC LIMIT ?3",
+                 ORDER BY im.server_id ASC
+                 LIMIT ?3",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(params![params.0, params.1, params.2], EwsItemRow::from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
