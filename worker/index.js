@@ -95,7 +95,7 @@ export default {
           if (location) {
             const newLocation = location.replace(
               new RegExp(`https?://${upstreamHost}(:${upstreamPort})?`, "g"),
-              `${url.protocol}//${upstreamHost}`
+              `${url.protocol}//${url.host}`
             );
             responseHeaders.set("Location", newLocation);
           }
