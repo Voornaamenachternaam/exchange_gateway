@@ -1276,7 +1276,7 @@ async fn handle_item_operations(
                 .get_attachment(&owner_lower, file_ref)
                 .await
             {
-            let parent_id = &attachment.parent_item_server_id;
+Some(attachment) => {            let parent_id = &attachment.parent_item_server_id;
             let item_owner = match state.storage.get_item_owner(parent_id).await {
                 Ok(Some(o)) => o,
                 Ok(None) => {
@@ -1297,9 +1297,6 @@ async fn handle_item_operations(
                     continue;
                 }
             };
-                        &item_owner,
-                        crate::ews_folders::DistinguishedFolder::Calendar,
-                    );
                     let enforcement = PermissionEnforcement::new(&state.storage);
                     let perm_ctx = PermissionContext::new(
                         username.to_string(),
@@ -1332,7 +1329,7 @@ async fn handle_item_operations(
                         crate::attachment::render_eas_attachment_content_xml(&attachment)
                     ));
                 }
-                Ok(None) => {
+                None => {
                     responses.push_str(&format!(
                         "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
                         xml_escape(&store),
