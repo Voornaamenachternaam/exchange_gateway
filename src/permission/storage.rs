@@ -2,7 +2,8 @@
 use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry};
 use crate::storage::Storage;
 use anyhow::Result;
-use rusqlite::{FromRow, OptionalExtension};
+use rusqlite::OptionalExtension;
+use rusqlite_from_row::FromRow;
 
 fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(s)

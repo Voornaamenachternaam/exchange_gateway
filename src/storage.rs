@@ -2,7 +2,8 @@
 use anyhow::{anyhow, Result};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, FromRow, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
+use rusqlite_from_row::FromRow;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
