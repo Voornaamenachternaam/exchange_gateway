@@ -208,7 +208,8 @@ impl<'a> PermissionStorage<'a> {
             conn.execute(
                 "INSERT INTO calendar_permission (id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(id) DO UPDATE SET folder_id = ?2, user_name = ?5, rights = ?6, is_default = ?7, is_anonymous = ?8, updated_at = CURRENT_TIMESTAMP",
                 rusqlite::params![params.0, params.1, params.2, params.3, params.4, params.5, params.6, params.7],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -222,7 +223,8 @@ impl<'a> PermissionStorage<'a> {
             conn.execute(
                 "DELETE FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND user_email = ?3",
                 rusqlite::params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -312,7 +314,8 @@ impl<'a> PermissionStorage<'a> {
             conn.execute(
                 "INSERT INTO calendar_delegate (id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) ON CONFLICT(delegator, delegate_email) DO UPDATE SET delegate_name = ?4, calendar_permission = ?5, inbox_permission = ?6, tasks_permission = ?7, contacts_permission = ?8, notes_permission = ?9, journal_permission = ?10, receive_copies = ?11, receive_infos = ?12, view_private = ?13, updated_at = CURRENT_TIMESTAMP",
                 rusqlite::params![params.0, params.1, params.2, params.3, params.4, params.5, params.6, params.7, params.8, params.9, params.10, params.11, params.12],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -326,7 +329,8 @@ impl<'a> PermissionStorage<'a> {
             conn.execute(
                 "DELETE FROM calendar_delegate WHERE delegator = ?1 AND delegate_email = ?2",
                 rusqlite::params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -344,7 +348,8 @@ impl<'a> PermissionStorage<'a> {
             conn.execute(
                 "INSERT INTO permission_audit (id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![params.0, params.1, params.2, params.3, params.4, params.5, params.6, params.7],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
