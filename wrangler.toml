@@ -1,5 +1,4 @@
 # wrangler.toml
-
 name = "exchange-gateway"
 main = "worker/index.js"
 compatibility_date = "2026-03-22"
@@ -35,8 +34,12 @@ zone_name = "example.com"
 [build]
 command = ""
 
+# Environment variables for upstream tunnel connection
+# UPSTREAM_HOST: The public hostname of your Cloudflare Tunnel (e.g., exchange-origin.example.com)
+# UPSTREAM_PORT: The HTTPS port (default: 443)
 [env.production]
 name = "exchange-gateway-production"
-
 [env.production.vars]
 GATEWAY_HOST = "exchange.example.com"
+UPSTREAM_HOST = "exchange-origin.example.com"
+UPSTREAM_PORT = "443"
