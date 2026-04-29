@@ -128,19 +128,6 @@ impl<'a> PermissionStorage<'a> {
         Self { storage }
     }
 
-    fn spawn_blocking<F, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
-        T: Send + 'static,
-    {
-        let pool = self.storage.pool();
-        tokio::task::spawn_blocking(move || {
-            let conn = pool.get()?;
-            f(&conn)
-        })
-        .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?
-    }
-
     pub async fn get_permission(
         &self,
         owner: &str,
@@ -149,15 +136,18 @@ impl<'a> PermissionStorage<'a> {
     ) -> Result<Option<CalendarPermission>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string(), user_email.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at
-                 FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND user_email = ?3",
-            )?;
+                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND user_email = ?3",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_row(rusqlite::params![params.0, params.1, params.2], PermissionRow::from_row)
                 .optional()
+                .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(CalendarPermission::from))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
     pub async fn get_permissions_for_folder(
@@ -167,15 +157,19 @@ impl<'a> PermissionStorage<'a> {
     ) -> Result<Vec<CalendarPermission>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at
-                 FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 ORDER BY user_email ASC",
-            )?;
+                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 ORDER BY user_email ASC",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(rusqlite::params![params.0, params.1], PermissionRow::from_row)
-                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                .map_err(|e| anyhow!("Query map error: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Collect error: {}", e))
                 .map(|rows| rows.into_iter().map(CalendarPermission::from).collect())
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
     pub async fn get_permissions_for_user(
@@ -185,15 +179,19 @@ impl<'a> PermissionStorage<'a> {
     ) -> Result<Vec<CalendarPermission>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), user_email.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at
-                 FROM calendar_permission WHERE owner = ?1 AND user_email = ?2 ORDER BY folder_id ASC",
-            )?;
+                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND user_email = ?2 ORDER BY folder_id ASC",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(rusqlite::params![params.0, params.1], PermissionRow::from_row)
-                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                .map_err(|e| anyhow!("Query map error: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Collect error: {}", e))
                 .map(|rows| rows.into_iter().map(CalendarPermission::from).collect())
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
     pub async fn upsert_permission(&self, permission: &CalendarPermission) -> Result<()> {
@@ -205,171 +203,168 @@ impl<'a> PermissionStorage<'a> {
             if permission.is_default { 1i32 } else { 0i32 },
             if permission.is_anonymous { 1i32 } else { 0i32 }
         );
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
-                "INSERT INTO calendar_permission (id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(id) DO UPDATE SET folder_id = ?2, user_name = ?5, rights = ?6, is_default = ?7, is_anonymous = ?8, updated_at = CURRENT_TIMESTAMP",
+                "INSERT INTO calendar_permission (id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(id) DO UPDATE SET folder_id = ?2, user_name = ?5, rights = ?6, is_default = ?7, is_anonymous = ?8, updated_at = CURRENT_TIMESTAMP",
                 rusqlite::params![params.0, params.1, params.2, params.3, params.4, params.5, params.6, params.7],
-            )?;
-            Ok(())
+            ).map_err(|e| anyhow!("DB error: {}", e))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn delete_permission(
-        &self,
-        owner: &str,
-        folder_id: &str,
-        user_email: &str,
-    ) -> Result<()> {
+    pub async fn delete_permission(&self, owner: &str, folder_id: &str, user_email: &str) -> Result<()> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string(), user_email.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "DELETE FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND user_email = ?3",
                 rusqlite::params![params.0, params.1, params.2],
-            )?;
-            Ok(())
+            ).map_err(|e| anyhow!("DB error: {}", e))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_default_permission(
-        &self,
-        owner: &str,
-        folder_id: &str,
-    ) -> Result<Option<CalendarPermission>> {
+    pub async fn get_default_permission(&self, owner: &str, folder_id: &str) -> Result<Option<CalendarPermission>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at
-                 FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND is_default = 1",
-            )?;
+                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND is_default = 1",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_row(rusqlite::params![params.0, params.1], PermissionRow::from_row)
                 .optional()
+                .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(CalendarPermission::from))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_anonymous_permission(
-        &self,
-        owner: &str,
-        folder_id: &str,
-    ) -> Result<Option<CalendarPermission>> {
+    pub async fn get_anonymous_permission(&self, owner: &str, folder_id: &str) -> Result<Option<CalendarPermission>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at
-                 FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND is_anonymous = 1",
-            )?;
+                "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND is_anonymous = 1",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_row(rusqlite::params![params.0, params.1], PermissionRow::from_row)
                 .optional()
+                .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(CalendarPermission::from))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_delegate(
-        &self,
-        delegator: &str,
-        delegate_email: &str,
-    ) -> Result<Option<DelegateInfo>> {
+    pub async fn get_delegate(&self, delegator: &str, delegate_email: &str) -> Result<Option<DelegateInfo>> {
         let pool = self.storage.pool();
         let params = (delegator.to_string(), delegate_email.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at
-                 FROM calendar_delegate WHERE delegator = ?1 AND delegate_email = ?2",
-            )?;
+                "SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at FROM calendar_delegate WHERE delegator = ?1 AND delegate_email = ?2",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_row(rusqlite::params![params.0, params.1], DelegateRow::from_row)
                 .optional()
+                .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(DelegateInfo::from))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
     pub async fn get_delegates(&self, delegator: &str) -> Result<Vec<DelegateInfo>> {
         let pool = self.storage.pool();
         let delegator = delegator.to_string();
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at
-                 FROM calendar_delegate WHERE delegator = ?1 ORDER BY delegate_email ASC",
-            )?;
+                "SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at FROM calendar_delegate WHERE delegator = ?1 ORDER BY delegate_email ASC",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(rusqlite::params![delegator], DelegateRow::from_row)
-                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                .map_err(|e| anyhow!("Query map error: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Collect error: {}", e))
                 .map(|rows| rows.into_iter().map(DelegateInfo::from).collect())
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
     pub async fn upsert_delegate(&self, delegate: &DelegateInfo) -> Result<()> {
         let pool = self.storage.pool();
         let params = (
-            delegate.id.clone(), delegate.delegator.clone(),
-            delegate.delegate_email.clone(), delegate.delegate_name.clone(),
-            delegate.calendar_permission as i32, delegate.inbox_permission as i32,
-            delegate.tasks_permission as i32, delegate.contacts_permission as i32,
-            delegate.notes_permission as i32, delegate.journal_permission as i32,
-            if delegate.receive_copies { 1i32 } else { 0i32 },
-            if delegate.receive_infos { 1i32 } else { 0i32 },
-            if delegate.view_private { 1i32 } else { 0i32 }
+            delegate.id.clone(), delegate.delegator.clone(), delegate.delegate_email.clone(),
+            delegate.delegate_name.clone(), delegate.calendar_permission as i32,
+            delegate.inbox_permission as i32, delegate.tasks_permission as i32,
+            delegate.contacts_permission as i32, delegate.notes_permission as i32,
+            delegate.journal_permission as i32, if delegate.receive_copies { 1i32 } else { 0i32 },
+            if delegate.receive_infos { 1i32 } else { 0i32 }, if delegate.view_private { 1i32 } else { 0i32 }
         );
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
-                "INSERT INTO calendar_delegate (id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                 ON CONFLICT(delegator, delegate_email) DO UPDATE SET
-                 delegate_name = ?4, calendar_permission = ?5, inbox_permission = ?6, tasks_permission = ?7, contacts_permission = ?8, notes_permission = ?9, journal_permission = ?10, receive_copies = ?11, receive_infos = ?12, view_private = ?13, updated_at = CURRENT_TIMESTAMP",
+                "INSERT INTO calendar_delegate (id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) ON CONFLICT(delegator, delegate_email) DO UPDATE SET delegate_name = ?4, calendar_permission = ?5, inbox_permission = ?6, tasks_permission = ?7, contacts_permission = ?8, notes_permission = ?9, journal_permission = ?10, receive_copies = ?11, receive_infos = ?12, view_private = ?13, updated_at = CURRENT_TIMESTAMP",
                 rusqlite::params![params.0, params.1, params.2, params.3, params.4, params.5, params.6, params.7, params.8, params.9, params.10, params.11, params.12],
-            )?;
-            Ok(())
+            ).map_err(|e| anyhow!("DB error: {}", e))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
     pub async fn delete_delegate(&self, delegator: &str, delegate_email: &str) -> Result<()> {
         let pool = self.storage.pool();
         let params = (delegator.to_string(), delegate_email.to_string());
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "DELETE FROM calendar_delegate WHERE delegator = ?1 AND delegate_email = ?2",
                 rusqlite::params![params.0, params.1],
-            )?;
-            Ok(())
+            ).map_err(|e| anyhow!("DB error: {}", e))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
     pub async fn add_audit_entry(&self, entry: &PermissionAuditEntry) -> Result<()> {
         let pool = self.storage.pool();
         let params = (
-            entry.id.clone(), entry.folder_id.clone(),
-            entry.owner.clone(), entry.actor_email.clone(),
-            entry.target_email.clone(), entry.operation.clone(),
+            entry.id.clone(), entry.folder_id.clone(), entry.owner.clone(),
+            entry.actor_email.clone(), entry.target_email.clone(), entry.operation.clone(),
             entry.old_rights.map(|v| v as i32), entry.new_rights.map(|v| v as i32)
         );
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "INSERT INTO permission_audit (id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![params.0, params.1, params.2, params.3, params.4, params.5, params.6, params.7],
-            )?;
-            Ok(())
+            ).map_err(|e| anyhow!("DB error: {}", e))
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_audit_log(
-        &self,
-        owner: &str,
-        folder_id: &str,
-        limit: usize,
-    ) -> Result<Vec<PermissionAuditEntry>> {
+    pub async fn get_audit_log(&self, owner: &str, folder_id: &str, limit: usize) -> Result<Vec<PermissionAuditEntry>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string(), limit as i64);
-        self.spawn_blocking(move |conn| {
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights, created_at
-                 FROM permission_audit WHERE owner = ?1 AND folder_id = ?2 ORDER BY created_at DESC LIMIT ?3",
-            )?;
+                "SELECT id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights, created_at FROM permission_audit WHERE owner = ?1 AND folder_id = ?2 ORDER BY created_at DESC LIMIT ?3",
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(rusqlite::params![params.0, params.1, params.2], AuditRow::from_row)
-                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+                .map_err(|e| anyhow!("Query map error: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Collect error: {}", e))
                 .map(|rows| rows.into_iter().map(PermissionAuditEntry::from).collect())
         })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 }
