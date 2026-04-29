@@ -231,8 +231,8 @@ impl Storage {
         );
         
         tokio::task::spawn_blocking(move || {
-            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            let tx = conn.unchecked_transaction();
+            let mut conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
+            let tx = conn.transaction().map_err(|e| anyhow!("Transaction error: {}", e))?;
             let result = (|| {
                 tx.execute(
                     "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -325,8 +325,8 @@ impl Storage {
         let params = (owner.to_string(), server_id.to_string());
         
         tokio::task::spawn_blocking(move || {
-            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            let tx = conn.unchecked_transaction();
+            let mut conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
+            let tx = conn.transaction().map_err(|e| anyhow!("Transaction error: {}", e))?;
             let result = (|| {
                 tx.execute(
                     "INSERT OR REPLACE INTO deleted_item_tombstone (owner, server_id) VALUES (?1, ?2)",
