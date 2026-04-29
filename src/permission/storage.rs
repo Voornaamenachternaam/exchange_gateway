@@ -1,9 +1,13 @@
 // src/permission/storage.rs
 use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry};
 use crate::storage::Storage;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use rusqlite::OptionalExtension;
-use rusqlite_from_row::FromRow;
+use serde_rusqlite::from_row;
+
+fn convert_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row) -> rusqlite::Result<T> {
+    from_row(row).map_err(|_| rusqlite::Error::InvalidQuery)
+}
 
 fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(s)
@@ -18,7 +22,7 @@ fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
         })
 }
 
-#[derive(FromRow, Debug)]
+#[derive(Debug, Deserialize)]
 struct PermissionRow {
     id: String,
     folder_id: String,
@@ -49,7 +53,7 @@ impl From<PermissionRow> for CalendarPermission {
     }
 }
 
-#[derive(FromRow, Debug)]
+#[derive(Debug, Deserialize)]
 struct DelegateRow {
     id: String,
     delegator: String,
@@ -90,7 +94,7 @@ impl From<DelegateRow> for DelegateInfo {
     }
 }
 
-#[derive(FromRow, Debug)]
+#[derive(Debug, Deserialize)]
 struct AuditRow {
     id: String,
     folder_id: String,
@@ -119,6 +123,19 @@ impl From<AuditRow> for PermissionAuditEntry {
     }
 }
 
+// Type-specific row conversion helpers
+fn permission_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<PermissionRow> {
+    convert_row(row)
+}
+
+fn delegate_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<DelegateRow> {
+    convert_row(row)
+}
+
+fn audit_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<AuditRow> {
+    convert_row(row)
+}
+
 pub struct PermissionStorage<'a> {
     storage: &'a Storage,
 }
@@ -145,7 +162,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND user_email = ?3",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(rusqlite::params![params.0, params.1, params.2], PermissionRow::from_row)
+            stmt.query_row(rusqlite::params![params.0, params.1, params.2], permission_row_from_row)
                 .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(CalendarPermission::from))
@@ -166,7 +183,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 ORDER BY user_email ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(rusqlite::params![params.0, params.1], PermissionRow::from_row)
+            stmt.query_map(rusqlite::params![params.0, params.1], permission_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -188,7 +205,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND user_email = ?2 ORDER BY folder_id ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(rusqlite::params![params.0, params.1], PermissionRow::from_row)
+            stmt.query_map(rusqlite::params![params.0, params.1], permission_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -258,7 +275,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND is_default = 1",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(rusqlite::params![params.0, params.1], PermissionRow::from_row)
+            stmt.query_row(rusqlite::params![params.0, params.1], permission_row_from_row)
                 .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(CalendarPermission::from))
@@ -279,7 +296,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, folder_id, owner, user_email, user_name, rights, is_default, is_anonymous, created_at, updated_at FROM calendar_permission WHERE owner = ?1 AND folder_id = ?2 AND is_anonymous = 1",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(rusqlite::params![params.0, params.1], PermissionRow::from_row)
+            stmt.query_row(rusqlite::params![params.0, params.1], permission_row_from_row)
                 .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(CalendarPermission::from))
@@ -300,7 +317,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at FROM calendar_delegate WHERE delegator = ?1 AND delegate_email = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(rusqlite::params![params.0, params.1], DelegateRow::from_row)
+            stmt.query_row(rusqlite::params![params.0, params.1], permission_row_from_row)
                 .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(DelegateInfo::from))
@@ -317,7 +334,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at FROM calendar_delegate WHERE delegator = ?1 ORDER BY delegate_email ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(rusqlite::params![delegator], DelegateRow::from_row)
+            stmt.query_map(rusqlite::params![delegator], delegate_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -409,7 +426,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, folder_id, owner, actor_email, target_email, operation, old_rights, new_rights, created_at FROM permission_audit WHERE owner = ?1 AND folder_id = ?2 ORDER BY created_at DESC LIMIT ?3",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(rusqlite::params![params.0, params.1, params.2], AuditRow::from_row)
+            stmt.query_map(rusqlite::params![params.0, params.1, params.2], audit_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
