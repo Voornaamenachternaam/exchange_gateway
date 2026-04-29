@@ -1362,29 +1362,29 @@ async fn handle_item_operations(
             ));
             continue;
         };
+match state.storage.get_item_owner(&server_id).await {
+    Ok(None) => {
+        responses.push_str(&format!(
+            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+            xml_escape(&store),
+            xml_escape(&collection_id),
+            xml_escape(&server_id)
+        ));
+        continue;
+    }
+    Err(e) => {
+        tracing::error!("Failed to lookup item owner for {}: {}", server_id, e);
+        responses.push_str(&format!(
+            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+            xml_escape(&store),
+            xml_escape(&collection_id),
+            xml_escape(&server_id)
+        ));
+        continue;
+    }
+    _ => {}
+};
 
-        let _ = state.storage.get_item_owner(&server_id).await
-            .map_err(|e| EasError::ServerError)?;
-            Ok(None) => {
-                responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
-                    xml_escape(&store),
-                    xml_escape(&collection_id),
-                    xml_escape(&server_id)
-                ));
-                continue;
-            }
-            Err(e) => {
-                tracing::error!("Failed to lookup item owner for {}: {}", server_id, e);
-                responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
-                    xml_escape(&store),
-                    xml_escape(&collection_id),
-                    xml_escape(&server_id)
-                ));
-                continue;
-            }
-        };
 
         let calendar_folder_id = crate::ews_folders::folder_id_for(
             &owner,
