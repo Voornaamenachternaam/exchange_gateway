@@ -243,7 +243,7 @@ impl Storage {
                     "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', ?3)",
                     params![params.0, params.3, params.2],
                 ).map_err(|e| anyhow!("DB error: {}", e))?;
-                Ok::<(), rusqlite::Error>(())
+                Ok::<(), anyhow::Error>(())
             })();
             match result {
                 Ok(()) => tx.commit().map_err(|e| anyhow!("Commit error: {}", e)),
@@ -336,7 +336,7 @@ impl Storage {
                     "INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')",
                     params![params.0, params.1],
                 ).map_err(|e| anyhow!("DB error: {}", e))?;
-                Ok::<(), rusqlite::Error>(())
+                Ok::<(), anyhow::Error>(())
             })();
             match result {
                 Ok(()) => tx.commit().map_err(|e| anyhow!("Commit error: {}", e)),
