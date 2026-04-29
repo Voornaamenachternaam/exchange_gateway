@@ -1,20 +1,5 @@
 -- d1_schema.sql
 
-DROP TABLE IF EXISTS sync_state;
-DROP TABLE IF EXISTS item_map;
-DROP TABLE IF EXISTS ews_sync_state;
-DROP TABLE IF EXISTS device_info;
-DROP TABLE IF EXISTS provision_state;
-DROP TABLE IF EXISTS deleted_item_tombstone;
-DROP TABLE IF EXISTS change_journal;
-DROP TABLE IF EXISTS client_sync_command;
-DROP TABLE IF EXISTS api_idempotency;
-DROP TABLE IF EXISTS schema_version;
-DROP TABLE IF EXISTS meeting_response;
-DROP TABLE IF EXISTS calendar_exceptions;
-DROP TABLE IF EXISTS meeting_state;
-DROP TABLE IF EXISTS meeting_attendee;
-DROP TABLE IF EXISTS meeting_scheduling_queue;
 
 CREATE TABLE sync_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
