@@ -1278,7 +1278,7 @@ async fn handle_item_operations(
             {
                 Ok(Some(attachment)) => {
 let parent_id = &attachment.parent_item_server_id;
-let parent_is_owned = match state.storage.verify_item_owner(&auth.owner, parent_id).await {
+let parent_is_owned = match state.storage.verify_item_owner(&owner_lower, parent_id).await {
     Ok(exists) => exists,
     Err(e) => {
         tracing::error!(error = %e, "Failed to verify item owner");
@@ -1286,7 +1286,7 @@ let parent_is_owned = match state.storage.verify_item_owner(&auth.owner, parent_
     }
 };
 let item_owner = if parent_is_owned {
-    auth.owner.clone()
+    owner_lower.clone()
 } else {
     owner_lower.clone()
 };
@@ -1356,7 +1356,7 @@ let item_owner = if parent_is_owned {
             continue;
         };
 
-        let item_exists = state.storage.verify_item_owner(&auth.owner, &server_id).await
+        let item_exists = state.storage.verify_item_owner(&owner_lower, &server_id).await
             .map_err(|e| EasError::ServerError)?;
             Ok(None) => {
                 responses.push_str(&format!(
