@@ -1,8 +1,8 @@
 // src/storage.rs
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use rusqlite_from_row::FromRow;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -180,7 +180,7 @@ impl Storage {
         let collection_id = collection_id.to_string();
         let sync_key = sync_key.to_string();
         let token = token.map(|s| s.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -202,7 +202,7 @@ impl Storage {
         let pool = self.pool.clone();
         let owner = owner.to_string();
         let collection_id = collection_id.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -210,7 +210,9 @@ impl Storage {
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_row(params![owner, collection_id], |row| {
                 Ok((row.get(0)?, row.get(1)?))
-            }).optional().map_err(|e| anyhow!("Query error: {}", e))
+            })
+            .optional()
+            .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -227,10 +229,14 @@ impl Storage {
     ) -> Result<()> {
         let pool = self.pool.clone();
         let params = (
-            owner.to_string(), caldav_href.to_string(), resource_href.to_string(),
-            server_id.to_string(), uid.to_string(), etag.to_string()
+            owner.to_string(),
+            caldav_href.to_string(),
+            resource_href.to_string(),
+            server_id.to_string(),
+            uid.to_string(),
+            etag.to_string(),
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let mut conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let tx = conn.transaction().map_err(|e| anyhow!("Transaction error: {}", e))?;
@@ -265,8 +271,12 @@ impl Storage {
         client_id: &str,
     ) -> Result<Option<(Option<String>, String)>> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), collection_id.to_string(), client_id.to_string());
-        
+        let params = (
+            owner.to_string(),
+            collection_id.to_string(),
+            client_id.to_string(),
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -290,10 +300,13 @@ impl Storage {
     ) -> Result<()> {
         let pool = self.pool.clone();
         let params = (
-            owner.to_string(), collection_id.to_string(), client_id.to_string(),
-            server_id.map(|s| s.to_string()), status.to_string()
+            owner.to_string(),
+            collection_id.to_string(),
+            client_id.to_string(),
+            server_id.map(|s| s.to_string()),
+            status.to_string(),
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -310,13 +323,14 @@ impl Storage {
     pub async fn delete_item_by_server_id(&self, owner: &str, server_id: &str) -> Result<()> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), server_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "DELETE FROM item_map WHERE owner = ?1 AND server_id = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -326,7 +340,7 @@ impl Storage {
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), server_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let mut conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let tx = conn.transaction().map_err(|e| anyhow!("Transaction error: {}", e))?;
@@ -364,20 +378,22 @@ impl Storage {
         let owner = owner.to_string();
         let collection_id = collection_id.to_string();
         let since_timestamp = since_timestamp.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            let mut stmt = conn.prepare(
-                "SELECT im.server_id, im.resource_href, im.uid, im.etag, im.updated_at
+            let mut stmt = conn
+                .prepare(
+                    "SELECT im.server_id, im.resource_href, im.uid, im.etag, im.updated_at
                  FROM item_map im
                  WHERE im.owner = ?1 AND im.resource_href LIKE ?2 || '%'
                  AND im.updated_at > ?3
                  ORDER BY im.updated_at ASC, im.server_id ASC
                  LIMIT ?4",
-            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
+                )
+                .map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(
                 rusqlite::params![owner, collection_id, since_timestamp, limit],
-                EwsItemRow::from_row
+                EwsItemRow::from_row,
             )
             .map_err(|e| anyhow!("Query map error: {}", e))?
             .collect::<Result<Vec<_>, _>>()
@@ -390,7 +406,7 @@ impl Storage {
     pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
         let pool = self.pool.clone();
         let owner = owner.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -407,11 +423,15 @@ impl Storage {
 
     pub async fn get_latest_change_seq(&self) -> Result<i64> {
         let pool = self.pool.clone();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            conn.query_row("SELECT COALESCE(MAX(id), 0) FROM change_journal", [], |row| row.get(0))
-                .map_err(|e| anyhow!("Query error: {}", e))
+            conn.query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM change_journal",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -425,7 +445,7 @@ impl Storage {
     ) -> Result<Vec<EwsItemRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), since, limit);
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -446,10 +466,14 @@ impl Storage {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn list_deleted_since_seq(&self, owner: &str, since: i64) -> Result<Vec<(i64, String)>> {
+    pub async fn list_deleted_since_seq(
+        &self,
+        owner: &str,
+        since: i64,
+    ) -> Result<Vec<(i64, String)>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), since);
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -467,7 +491,7 @@ impl Storage {
     pub async fn list_journal_since_seq(&self, owner: &str, since: i64) -> Result<Vec<JournalRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), since);
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -490,8 +514,13 @@ impl Storage {
         policy_status: &str,
     ) -> Result<()> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), device_id.to_string(), policy_key.to_string(), policy_status.to_string());
-        
+        let params = (
+            owner.to_string(),
+            device_id.to_string(),
+            policy_key.to_string(),
+            policy_status.to_string(),
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -512,7 +541,7 @@ impl Storage {
     ) -> Result<Option<(String, String)>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), device_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -529,12 +558,16 @@ impl Storage {
     pub async fn upsert_device_info(&self, params: &DeviceInfoParams<'_>) -> Result<()> {
         let pool = self.pool.clone();
         let p = (
-            params.owner.to_string(), params.device_id.to_string(),
-            params.friendly_name.to_string(), params.model.to_string(),
-            params.os.to_string(), params.phone_number.to_string(),
-            params.imei.to_string(), params.user_agent.to_string()
+            params.owner.to_string(),
+            params.device_id.to_string(),
+            params.friendly_name.to_string(),
+            params.model.to_string(),
+            params.os.to_string(),
+            params.phone_number.to_string(),
+            params.imei.to_string(),
+            params.user_agent.to_string(),
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -550,10 +583,15 @@ impl Storage {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn list_ews_items(&self, owner: &str, limit: i64, offset: i64) -> Result<Vec<EwsItemRow>> {
+    pub async fn list_ews_items(
+        &self,
+        owner: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<EwsItemRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), limit, offset);
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -571,13 +609,14 @@ impl Storage {
     pub async fn get_ews_sync_state(&self, owner: &str, folder_id: &str) -> Result<Option<String>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), folder_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
                 "SELECT sync_state FROM ews_sync_state WHERE user_email = ?1 AND folder_id = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(params![params.0, params.1], |row| row.get(0)).optional()
+            stmt.query_row(params![params.0, params.1], |row| row.get(0))
+                .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
@@ -591,7 +630,7 @@ impl Storage {
     ) -> Result<Option<EwsItemRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), server_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -608,13 +647,14 @@ impl Storage {
         let pool = self.pool.clone();
         let owner = owner.to_string();
         let server_id = server_id.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            let mut stmt = conn.prepare(
-                "SELECT 1 FROM item_map WHERE owner = ?1 AND server_id = ?2 LIMIT 1"
-            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            let exists = stmt.query_row(params![owner, server_id], |_| Ok(true))
+            let mut stmt = conn
+                .prepare("SELECT 1 FROM item_map WHERE owner = ?1 AND server_id = ?2 LIMIT 1")
+                .map_err(|e| anyhow!("Prepare error: {}", e))?;
+            let exists = stmt
+                .query_row(params![owner, server_id], |_| Ok(true))
                 .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))?
                 .unwrap_or(false);
@@ -627,13 +667,14 @@ impl Storage {
     pub async fn get_item_owner(&self, server_id: &str) -> Result<Option<String>> {
         let pool = self.pool.clone();
         let server_id = server_id.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            let mut stmt = conn.prepare(
-                "SELECT owner FROM item_map WHERE server_id = ?1"
-            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(params![server_id], |row| row.get(0)).optional()
+            let mut stmt = conn
+                .prepare("SELECT owner FROM item_map WHERE server_id = ?1")
+                .map_err(|e| anyhow!("Prepare error: {}", e))?;
+            stmt.query_row(params![server_id], |row| row.get(0))
+                .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
@@ -647,15 +688,20 @@ impl Storage {
         sync_state: &str,
     ) -> Result<()> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), folder_id.to_string(), sync_state.to_string());
-        
+        let params = (
+            owner.to_string(),
+            folder_id.to_string(),
+            sync_state.to_string(),
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "INSERT INTO ews_sync_state (user_email, folder_id, sync_state) VALUES (?1, ?2, ?3)
                  ON CONFLICT(user_email, folder_id) DO UPDATE SET sync_state = ?3",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -672,10 +718,13 @@ impl Storage {
     ) -> Result<()> {
         let pool = self.pool.clone();
         let params = (
-            owner.to_string(), parent_server_id.to_string(), exception_start.to_string(),
-            server_id.map(|s| s.to_string()), if is_deleted { 1i32 } else { 0i32 }
+            owner.to_string(),
+            parent_server_id.to_string(),
+            exception_start.to_string(),
+            server_id.map(|s| s.to_string()),
+            if is_deleted { 1i32 } else { 0i32 },
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -689,10 +738,14 @@ impl Storage {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_calendar_exceptions(&self, owner: &str, parent_server_id: &str) -> Result<Vec<CalendarExceptionRow>> {
+    pub async fn get_calendar_exceptions(
+        &self,
+        owner: &str,
+        parent_server_id: &str,
+    ) -> Result<Vec<CalendarExceptionRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), parent_server_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -714,8 +767,12 @@ impl Storage {
         exception_start: &str,
     ) -> Result<Option<CalendarExceptionRow>> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), parent_server_id.to_string(), exception_start.to_string());
-        
+        let params = (
+            owner.to_string(),
+            parent_server_id.to_string(),
+            exception_start.to_string(),
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -735,8 +792,12 @@ impl Storage {
         exception_start: &str,
     ) -> Result<()> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), parent_server_id.to_string(), exception_start.to_string());
-        
+        let params = (
+            owner.to_string(),
+            parent_server_id.to_string(),
+            exception_start.to_string(),
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -757,8 +818,13 @@ impl Storage {
         user_response: i32,
     ) -> Result<()> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), request_id.to_string(), calendar_id.to_string(), user_response);
-        
+        let params = (
+            owner.to_string(),
+            request_id.to_string(),
+            calendar_id.to_string(),
+            user_response,
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -779,7 +845,7 @@ impl Storage {
     ) -> Result<Option<MeetingResponseRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), request_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -795,14 +861,21 @@ impl Storage {
     pub async fn upsert_meeting_state(&self, params: &MeetingStateParams<'_>) -> Result<()> {
         let pool = self.pool.clone();
         let p = (
-            params.uid.to_string(), params.owner.to_string(), params.sequence,
-            params.state.to_string(), params.state_flags, params.is_organizer as i32,
-            params.organizer_email.map(|s| s.to_string()), params.organizer_name.map(|s| s.to_string()),
-            params.subject.map(|s| s.to_string()), params.location.map(|s| s.to_string()),
-            params.start_time.to_string(), params.end_time.to_string(),
-            params.timezone.map(|s| s.to_string())
+            params.uid.to_string(),
+            params.owner.to_string(),
+            params.sequence,
+            params.state.to_string(),
+            params.state_flags,
+            params.is_organizer as i32,
+            params.organizer_email.map(|s| s.to_string()),
+            params.organizer_name.map(|s| s.to_string()),
+            params.subject.map(|s| s.to_string()),
+            params.location.map(|s| s.to_string()),
+            params.start_time.to_string(),
+            params.end_time.to_string(),
+            params.timezone.map(|s| s.to_string()),
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -820,10 +893,14 @@ impl Storage {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_meeting_state(&self, owner: &str, uid: &str) -> Result<Option<MeetingStateRow>> {
+    pub async fn get_meeting_state(
+        &self,
+        owner: &str,
+        uid: &str,
+    ) -> Result<Option<MeetingStateRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), uid.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -840,13 +917,14 @@ impl Storage {
     pub async fn delete_meeting_state(&self, owner: &str, uid: &str) -> Result<()> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), uid.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "DELETE FROM meeting_state WHERE owner = ?1 AND uid = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -856,12 +934,18 @@ impl Storage {
     pub async fn upsert_meeting_attendee(&self, params: &MeetingAttendeeParams<'_>) -> Result<()> {
         let pool = self.pool.clone();
         let p = (
-            params.meeting_uid.to_string(), params.owner.to_string(), params.email.to_string(),
-            params.name.map(|s| s.to_string()), params.status, params.role,
-            params.response_time.map(|s| s.to_string()), params.proposed_start.map(|s| s.to_string()),
-            params.proposed_end.map(|s| s.to_string()), params.sequence
+            params.meeting_uid.to_string(),
+            params.owner.to_string(),
+            params.email.to_string(),
+            params.name.map(|s| s.to_string()),
+            params.status,
+            params.role,
+            params.response_time.map(|s| s.to_string()),
+            params.proposed_start.map(|s| s.to_string()),
+            params.proposed_end.map(|s| s.to_string()),
+            params.sequence,
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -877,10 +961,14 @@ impl Storage {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_meeting_attendees(&self, owner: &str, meeting_uid: &str) -> Result<Vec<MeetingAttendeeRow>> {
+    pub async fn get_meeting_attendees(
+        &self,
+        owner: &str,
+        meeting_uid: &str,
+    ) -> Result<Vec<MeetingAttendeeRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), meeting_uid.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -903,14 +991,19 @@ impl Storage {
         email: &str,
     ) -> Result<()> {
         let pool = self.pool.clone();
-        let params = (owner.to_string(), meeting_uid.to_string(), email.to_string());
-        
+        let params = (
+            owner.to_string(),
+            meeting_uid.to_string(),
+            email.to_string(),
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "DELETE FROM meeting_attendee WHERE owner = ?1 AND meeting_uid = ?2 AND email = ?3",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -920,13 +1013,14 @@ impl Storage {
     pub async fn delete_meeting_attendees(&self, owner: &str, meeting_uid: &str) -> Result<()> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), meeting_uid.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "DELETE FROM meeting_attendee WHERE owner = ?1 AND meeting_uid = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -943,10 +1037,13 @@ impl Storage {
     ) -> Result<()> {
         let pool = self.pool.clone();
         let params = (
-            meeting_uid.to_string(), owner.to_string(), operation.to_string(),
-            sequence, ical_data.map(|s| s.to_string())
+            meeting_uid.to_string(),
+            owner.to_string(),
+            operation.to_string(),
+            sequence,
+            ical_data.map(|s| s.to_string()),
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -959,10 +1056,14 @@ impl Storage {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_pending_scheduling(&self, owner: &str, limit: i64) -> Result<Vec<SchedulingQueueRow>> {
+    pub async fn get_pending_scheduling(
+        &self,
+        owner: &str,
+        limit: i64,
+    ) -> Result<Vec<SchedulingQueueRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), limit.min(100));
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -986,7 +1087,7 @@ impl Storage {
     ) -> Result<()> {
         let pool = self.pool.clone();
         let params = (status.to_string(), error_message.map(|s| s.to_string()), id);
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -1007,7 +1108,7 @@ impl Storage {
     ) -> Result<Vec<MeetingStateRow>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), start.to_string(), end.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -1029,15 +1130,20 @@ impl Storage {
     ) -> Result<()> {
         let pool = self.pool.clone();
         let p = (
-            attachment.id.clone(), attachment.parent_item_server_id.clone(),
-            attachment.owner.clone(), attachment.name.clone(),
-            attachment.content_type.clone(), attachment.content_size,
+            attachment.id.clone(),
+            attachment.parent_item_server_id.clone(),
+            attachment.owner.clone(),
+            attachment.name.clone(),
+            attachment.content_type.clone(),
+            attachment.content_size,
             attachment.content_base64.clone(),
             if attachment.is_inline { 1i32 } else { 0i32 },
-            attachment.content_id.clone(), attachment.content_location.clone(),
-            attachment.attachment_type.clone(), attachment.last_modified_time.clone()
+            attachment.content_id.clone(),
+            attachment.content_location.clone(),
+            attachment.attachment_type.clone(),
+            attachment.last_modified_time.clone(),
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -1061,7 +1167,7 @@ impl Storage {
     ) -> Result<Option<crate::attachment::AttachmentRecord>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), attachment_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -1096,7 +1202,7 @@ impl Storage {
     ) -> Result<Vec<crate::attachment::AttachmentRecord>> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), parent_item_server_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -1129,13 +1235,14 @@ impl Storage {
     pub async fn delete_calendar_attachment(&self, owner: &str, attachment_id: &str) -> Result<()> {
         let pool = self.pool.clone();
         let params = (owner.to_string(), attachment_id.to_string());
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "DELETE FROM calendar_attachment WHERE owner = ?1 AND id = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -1144,15 +1251,20 @@ impl Storage {
 
     pub async fn upsert_room_list(&self, room_list: &crate::room::RoomListRecord) -> Result<()> {
         let pool = self.pool.clone();
-        let params = (room_list.id.clone(), room_list.email.clone(), room_list.name.clone());
-        
+        let params = (
+            room_list.id.clone(),
+            room_list.email.clone(),
+            room_list.name.clone(),
+        );
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
                 "INSERT INTO room_list (id, email, name) VALUES (?1, ?2, ?3)
                  ON CONFLICT(email) DO UPDATE SET name = ?3, updated_at = CURRENT_TIMESTAMP",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -1161,10 +1273,11 @@ impl Storage {
 
     pub async fn get_room_lists(&self, _owner: &str) -> Result<Vec<crate::room::RoomListRecord>> {
         let pool = self.pool.clone();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            let mut stmt = conn.prepare("SELECT id, email, name FROM room_list ORDER BY name ASC")
+            let mut stmt = conn
+                .prepare("SELECT id, email, name FROM room_list ORDER BY name ASC")
                 .map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map([], |row| {
                 Ok(crate::room::RoomListRecord {
@@ -1172,9 +1285,10 @@ impl Storage {
                     email: row.get(1)?,
                     name: row.get(2)?,
                 })
-            }).map_err(|e| anyhow!("Query map error: {}", e))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| anyhow!("Collect error: {}", e))
+            })
+            .map_err(|e| anyhow!("Query map error: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("Collect error: {}", e))
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -1183,7 +1297,7 @@ impl Storage {
     pub async fn delete_room_list(&self, _owner: &str, email: &str) -> Result<()> {
         let pool = self.pool.clone();
         let email = email.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute("DELETE FROM room_list WHERE email = ?1", params![email])
@@ -1196,7 +1310,7 @@ impl Storage {
 
     pub async fn get_all_rooms(&self, _owner: &str) -> Result<Vec<crate::room::RoomRecord>> {
         let pool = self.pool.clone();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare("SELECT id, room_list_email, email, name, capacity, is_available FROM room ORDER BY name ASC")
@@ -1221,7 +1335,7 @@ impl Storage {
     pub async fn delete_room(&self, _owner: &str, email: &str) -> Result<()> {
         let pool = self.pool.clone();
         let email = email.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute("DELETE FROM room WHERE email = ?1", params![email])
@@ -1235,10 +1349,14 @@ impl Storage {
     pub async fn upsert_room(&self, room: &crate::room::RoomRecord) -> Result<()> {
         let pool = self.pool.clone();
         let params = (
-            room.id.clone(), room.room_list_email.clone(), room.email.clone(),
-            room.name.clone(), room.capacity, if room.is_available { 1i32 } else { 0i32 }
+            room.id.clone(),
+            room.room_list_email.clone(),
+            room.email.clone(),
+            room.name.clone(),
+            room.capacity,
+            if room.is_available { 1i32 } else { 0i32 },
         );
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -1259,7 +1377,7 @@ impl Storage {
     ) -> Result<Vec<crate::room::RoomRecord>> {
         let pool = self.pool.clone();
         let room_list_email = room_list_email.to_string();
-        
+
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(

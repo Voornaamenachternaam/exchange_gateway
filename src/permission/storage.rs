@@ -135,7 +135,11 @@ impl<'a> PermissionStorage<'a> {
         user_email: &str,
     ) -> Result<Option<CalendarPermission>> {
         let pool = self.storage.pool();
-        let params = (owner.to_string(), folder_id.to_string(), user_email.to_string());
+        let params = (
+            owner.to_string(),
+            folder_id.to_string(),
+            user_email.to_string(),
+        );
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
@@ -197,11 +201,14 @@ impl<'a> PermissionStorage<'a> {
     pub async fn upsert_permission(&self, permission: &CalendarPermission) -> Result<()> {
         let pool = self.storage.pool();
         let params = (
-            permission.id.clone(), permission.folder_id.clone(),
-            permission.owner.clone(), permission.user_email.clone(),
-            permission.user_name.clone(), permission.rights as i32,
+            permission.id.clone(),
+            permission.folder_id.clone(),
+            permission.owner.clone(),
+            permission.user_email.clone(),
+            permission.user_name.clone(),
+            permission.rights as i32,
             if permission.is_default { 1i32 } else { 0i32 },
-            if permission.is_anonymous { 1i32 } else { 0i32 }
+            if permission.is_anonymous { 1i32 } else { 0i32 },
         );
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
@@ -215,9 +222,18 @@ impl<'a> PermissionStorage<'a> {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn delete_permission(&self, owner: &str, folder_id: &str, user_email: &str) -> Result<()> {
+    pub async fn delete_permission(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        user_email: &str,
+    ) -> Result<()> {
         let pool = self.storage.pool();
-        let params = (owner.to_string(), folder_id.to_string(), user_email.to_string());
+        let params = (
+            owner.to_string(),
+            folder_id.to_string(),
+            user_email.to_string(),
+        );
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute(
@@ -230,7 +246,11 @@ impl<'a> PermissionStorage<'a> {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_default_permission(&self, owner: &str, folder_id: &str) -> Result<Option<CalendarPermission>> {
+    pub async fn get_default_permission(
+        &self,
+        owner: &str,
+        folder_id: &str,
+    ) -> Result<Option<CalendarPermission>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string());
         tokio::task::spawn_blocking(move || {
@@ -247,7 +267,11 @@ impl<'a> PermissionStorage<'a> {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_anonymous_permission(&self, owner: &str, folder_id: &str) -> Result<Option<CalendarPermission>> {
+    pub async fn get_anonymous_permission(
+        &self,
+        owner: &str,
+        folder_id: &str,
+    ) -> Result<Option<CalendarPermission>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string());
         tokio::task::spawn_blocking(move || {
@@ -264,7 +288,11 @@ impl<'a> PermissionStorage<'a> {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_delegate(&self, delegator: &str, delegate_email: &str) -> Result<Option<DelegateInfo>> {
+    pub async fn get_delegate(
+        &self,
+        delegator: &str,
+        delegate_email: &str,
+    ) -> Result<Option<DelegateInfo>> {
         let pool = self.storage.pool();
         let params = (delegator.to_string(), delegate_email.to_string());
         tokio::task::spawn_blocking(move || {
@@ -302,12 +330,19 @@ impl<'a> PermissionStorage<'a> {
     pub async fn upsert_delegate(&self, delegate: &DelegateInfo) -> Result<()> {
         let pool = self.storage.pool();
         let params = (
-            delegate.id.clone(), delegate.delegator.clone(), delegate.delegate_email.clone(),
-            delegate.delegate_name.clone(), delegate.calendar_permission as i32,
-            delegate.inbox_permission as i32, delegate.tasks_permission as i32,
-            delegate.contacts_permission as i32, delegate.notes_permission as i32,
-            delegate.journal_permission as i32, if delegate.receive_copies { 1i32 } else { 0i32 },
-            if delegate.receive_infos { 1i32 } else { 0i32 }, if delegate.view_private { 1i32 } else { 0i32 }
+            delegate.id.clone(),
+            delegate.delegator.clone(),
+            delegate.delegate_email.clone(),
+            delegate.delegate_name.clone(),
+            delegate.calendar_permission as i32,
+            delegate.inbox_permission as i32,
+            delegate.tasks_permission as i32,
+            delegate.contacts_permission as i32,
+            delegate.notes_permission as i32,
+            delegate.journal_permission as i32,
+            if delegate.receive_copies { 1i32 } else { 0i32 },
+            if delegate.receive_infos { 1i32 } else { 0i32 },
+            if delegate.view_private { 1i32 } else { 0i32 },
         );
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
@@ -329,7 +364,8 @@ impl<'a> PermissionStorage<'a> {
             conn.execute(
                 "DELETE FROM calendar_delegate WHERE delegator = ?1 AND delegate_email = ?2",
                 rusqlite::params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            )
+            .map_err(|e| anyhow!("DB error: {}", e))?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -339,9 +375,14 @@ impl<'a> PermissionStorage<'a> {
     pub async fn add_audit_entry(&self, entry: &PermissionAuditEntry) -> Result<()> {
         let pool = self.storage.pool();
         let params = (
-            entry.id.clone(), entry.folder_id.clone(), entry.owner.clone(),
-            entry.actor_email.clone(), entry.target_email.clone(), entry.operation.clone(),
-            entry.old_rights.map(|v| v as i32), entry.new_rights.map(|v| v as i32)
+            entry.id.clone(),
+            entry.folder_id.clone(),
+            entry.owner.clone(),
+            entry.actor_email.clone(),
+            entry.target_email.clone(),
+            entry.operation.clone(),
+            entry.old_rights.map(|v| v as i32),
+            entry.new_rights.map(|v| v as i32),
         );
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
@@ -355,7 +396,12 @@ impl<'a> PermissionStorage<'a> {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
-    pub async fn get_audit_log(&self, owner: &str, folder_id: &str, limit: usize) -> Result<Vec<PermissionAuditEntry>> {
+    pub async fn get_audit_log(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        limit: usize,
+    ) -> Result<Vec<PermissionAuditEntry>> {
         let pool = self.storage.pool();
         let params = (owner.to_string(), folder_id.to_string(), limit as i64);
         tokio::task::spawn_blocking(move || {
