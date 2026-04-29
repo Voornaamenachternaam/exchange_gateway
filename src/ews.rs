@@ -1665,9 +1665,19 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         );
     }
 
-    let owner = match state.storage.get_ews_item_owner(&item_id).await {
-        Ok(Some(o)) => o,
-        Ok(None) => {
+let item_exists = match state.storage.verify_item_owner(&auth.owner, &item_id).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                tracing::error!(error = %e, "An internal error occurred");
+                return operation_error_response(
+                    &EwsAction::GetItem,
+                    "ErrorInternalServerError",
+                    "An internal error occurred",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+        if !item_exists {
             return operation_error_response(
                 &EwsAction::GetItem,
                 "ErrorItemNotFound",
@@ -1675,22 +1685,11 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                 StatusCode::OK,
             );
         }
-        Err(e) => {
-            tracing::error!(error = %e, "An internal error occurred");
-            return operation_error_response(
-                &EwsAction::GetItem,
-                "ErrorInternalServerError",
-                "An internal error occurred",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
-    let calendar_folder_id = folder_id_for(&owner, DistinguishedFolder::Calendar);
+    let calendar_folder_id = folder_id_for(&auth.owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
     let perm_ctx = PermissionContext::new(
         auth.username.clone(),
-        owner.clone(),
+        auth.owner.clone(),
         calendar_folder_id.clone(),
     );
     match enforcement.can_read_item(&perm_ctx).await {

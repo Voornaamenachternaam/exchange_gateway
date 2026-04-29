@@ -1277,12 +1277,19 @@ async fn handle_item_operations(
                 .await
             {
                 Ok(Some(attachment)) => {
-                    let parent_id = &attachment.parent_item_server_id;
-                    let item_owner = match state.storage.get_ews_item_owner(parent_id).await {
-                        Ok(Some(o)) => o,
-                        _ => owner_lower.clone(),
-                    };
-                    let calendar_folder_id = crate::ews_folders::folder_id_for(
+let parent_id = &attachment.parent_item_server_id;
+let parent_is_owned = match state.storage.verify_item_owner(&auth.owner, parent_id).await {
+    Ok(exists) => exists,
+    Err(e) => {
+        tracing::error!(error = %e, "Failed to verify item owner");
+        false
+    }
+};
+let item_owner = if parent_is_owned {
+    auth.owner.clone()
+} else {
+    owner_lower.clone()
+};
                         &item_owner,
                         crate::ews_folders::DistinguishedFolder::Calendar,
                     );
@@ -1349,8 +1356,8 @@ async fn handle_item_operations(
             continue;
         };
 
-        let owner = match state.storage.get_ews_item_owner(&server_id).await {
-            Ok(Some(o)) => o,
+        let item_exists = state.storage.verify_item_owner(&auth.owner, &server_id).await
+            .map_err(|e| EasError::ServerError)?;
             Ok(None) => {
                 responses.push_str(&format!(
                     "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
