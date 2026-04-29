@@ -10,12 +10,16 @@ services:
       - RUST_LOG=${RUST_LOG:-info}
     volumes:
       - ./exchange-gateway.config.toml:/etc/exchange-gateway/config.toml:ro
+      - exchange_gateway_data:/var/lib/exchange-gateway
     ports:
       - "[::]:8134:8134"
     networks:
       my-bridge-network:
         ipv4_address: 172.28.0.11
         ipv6_address: fd00:dead:beef::11
+
+volumes:
+  exchange_gateway_data:
 
 networks:
   my-bridge-network:

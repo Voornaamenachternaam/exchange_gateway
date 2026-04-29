@@ -1665,32 +1665,31 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         );
     }
 
-    let owner = match state.storage.get_ews_item_owner(&item_id).await {
-        Ok(Some(o)) => o,
-        Ok(None) => {
-            return operation_error_response(
-                &EwsAction::GetItem,
-                "ErrorItemNotFound",
-                "Requested item does not exist",
-                StatusCode::OK,
-            );
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "An internal error occurred");
-            return operation_error_response(
-                &EwsAction::GetItem,
-                "ErrorInternalServerError",
-                "An internal error occurred",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
-    let calendar_folder_id = folder_id_for(&owner, DistinguishedFolder::Calendar);
+let item_owner = match state.storage.get_item_owner(&item_id).await {
+            Ok(Some(o)) => o,
+            Ok(None) => {
+                return operation_error_response(
+                    &EwsAction::GetItem,
+                    "ErrorItemNotFound",
+                    "Requested item does not exist",
+                    StatusCode::OK,
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "An internal error occurred");
+                return operation_error_response(
+                    &EwsAction::GetItem,
+                    "ErrorInternalServerError",
+                    "An internal error occurred",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+    let calendar_folder_id = folder_id_for(&item_owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
     let perm_ctx = PermissionContext::new(
         auth.username.clone(),
-        owner.clone(),
+        item_owner.clone(),
         calendar_folder_id.clone(),
     );
     match enforcement.can_read_item(&perm_ctx).await {

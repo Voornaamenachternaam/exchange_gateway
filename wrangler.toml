@@ -1,23 +1,11 @@
 # wrangler.toml
-
-name = "exchange-gateway-db"
-main = "../worker/index.js"
+name = "exchange-gateway"
+main = "worker/index.js"
 compatibility_date = "2026-03-22"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
 GATEWAY_HOST = "exchange.example.com"
-
-ORIGIN_BASE_URL = "https://exchange-origin.example.com"
-
-RATE_LIMIT_ENABLED = "true"
-RATE_LIMIT_MAX = "120"
-RATE_LIMIT_WINDOW_SEC = "60"
-
-SQL_API_ENABLED = "false"
-
-MAX_FORWARD_BODY_BYTES = "4194304"
-MAX_API_BODY_BYTES = "262144"
 
 [[routes]]
 pattern = "exchange.example.com/EWS/*"
@@ -43,42 +31,15 @@ zone_name = "example.com"
 pattern = "exchange.example.com/health"
 zone_name = "example.com"
 
-# Secrets (set via: wrangler secret put <NAME>)
-# GATEWAY_SECRET - shared secret between the worker and the Rust gateway
-
-[[d1_databases]]
-binding = "EXCHANGE_DB"
-database_name = "exchange_gateway_db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
-
-[[kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
-
-
-[triggers]
-crons = ["0 * * * *"]
-
-
 [build]
 command = ""
 
-[env.preview]
-name = "exchange-gateway-db-preview"
-
-[env.preview.vars]
-GATEWAY_HOST = "exchange-preview.example.com"
-ORIGIN_BASE_URL = "https://exchange-origin-preview.example.com"
-RATE_LIMIT_ENABLED = "false"
-SQL_API_ENABLED = "true"
-MAX_FORWARD_BODY_BYTES = "4194304"
-MAX_API_BODY_BYTES = "262144"
-
-[[env.preview.d1_databases]]
-binding = "EXCHANGE_DB"
-database_name = "exchange_gateway_db_preview"
-database_id = "REPLACE_WITH_PREVIEW_D1_DATABASE_ID"
-
-[[env.preview.kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
+# Environment variables for upstream tunnel connection
+# UPSTREAM_HOST: The public hostname of your Cloudflare Tunnel (e.g., exchange-origin.example.com)
+# UPSTREAM_PORT: The HTTPS port (default: 443)
+[env.production]
+name = "exchange-gateway-production"
+[env.production.vars]
+GATEWAY_HOST = "exchange.example.com"
+UPSTREAM_HOST = "exchange-origin.example.com"
+UPSTREAM_PORT = "443"

@@ -1276,13 +1276,27 @@ async fn handle_item_operations(
                 .get_attachment(&owner_lower, file_ref)
                 .await
             {
-                Ok(Some(attachment)) => {
-                    let parent_id = &attachment.parent_item_server_id;
-                    let item_owner = match state.storage.get_ews_item_owner(parent_id).await {
-                        Ok(Some(o)) => o,
-                        _ => owner_lower.clone(),
-                    };
-                    let calendar_folder_id = crate::ews_folders::folder_id_for(
+            let parent_id = &attachment.parent_item_server_id;
+            let item_owner = match state.storage.get_item_owner(parent_id).await {
+                Ok(Some(o)) => o,
+                Ok(None) => {
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(file_ref)
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to get item owner");
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(file_ref)
+                    ));
+                    continue;
+                }
+            };
                         &item_owner,
                         crate::ews_folders::DistinguishedFolder::Calendar,
                     );
@@ -1349,8 +1363,8 @@ async fn handle_item_operations(
             continue;
         };
 
-        let owner = match state.storage.get_ews_item_owner(&server_id).await {
-            Ok(Some(o)) => o,
+        let _ = state.storage.get_item_owner(&server_id).await
+            .map_err(|e| EasError::ServerError)?;
             Ok(None) => {
                 responses.push_str(&format!(
                     "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
