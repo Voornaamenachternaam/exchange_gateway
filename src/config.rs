@@ -1,8 +1,7 @@
 // src/config.rs
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::fs;
-use zeroize::Zeroizing;
 
 const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
@@ -18,7 +17,7 @@ pub struct Config {
     pub caldav_base: String,
     pub database_path: String,
     #[serde(skip_serializing)]
-    pub hmac_secret: Zeroizing<String>,
+    pub hmac_secret: SecretString,
     #[serde(default = "default_max_attachment_bytes")]
     pub max_attachment_bytes: usize,
     #[serde(default)]
@@ -43,10 +42,10 @@ fn default_auth_cache_max_entries() -> usize {
 
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let content: Zeroizing<String> = fs::read_to_string(path)
-            .map(Zeroizing::new)
+        let content = fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read config file at '{}': {}", path, e))?;
-        let mut cfg: Config = toml::from_str(&content)
+        let secret = SecretString::from(content);
+        let mut cfg: Config = toml::from_str(secret.expose_secret())
             .map_err(|e| anyhow::anyhow!("Failed to parse config TOML: {}", e))?;
         if cfg.gateway_host.is_empty() {
             if let Some(host) = extract_host_from_caldav(&cfg.caldav_base) {
@@ -62,7 +61,7 @@ impl Config {
     }
 
     pub fn hmac_secret(&self) -> &str {
-        &self.hmac_secret
+        self.hmac_secret.expose_secret()
     }
 
     pub fn max_attachment_bytes(&self) -> usize {
@@ -85,12 +84,13 @@ impl Config {
         if self.database_path.is_empty() {
             return Err(anyhow::anyhow!("Config: 'database_path' is required"));
         }
-        if self.hmac_secret.len() < 32 {
+        let secret_len = self.hmac_secret.expose_secret().len();
+        if secret_len < 32 {
             return Err(anyhow::anyhow!(
                 "Config: 'hmac_secret' must be at least 32 characters"
             ));
         }
-        if self.hmac_secret.starts_with("REPLACE_") {
+        if self.hmac_secret.expose_secret().starts_with("REPLACE_") {
             return Err(anyhow::anyhow!(
                 "Config: 'hmac_secret' still contains a placeholder"
             ));
