@@ -122,7 +122,7 @@ export default {
       }
     }
 
-    if (path === "/" || path === "/health") {
+    if (path === "/") {
       return new Response("Exchange Gateway Worker is running", {
         status: 200,
         headers: {
