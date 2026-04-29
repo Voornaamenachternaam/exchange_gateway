@@ -22,7 +22,7 @@ impl Storage {
 
 #[derive(FromRow, Debug)]
 pub struct JournalRow {
-    pub seq: i64,
+    pub id: i64,
     pub server_id: String,
     pub op: String,
     pub resource_href: Option<String>,
@@ -187,7 +187,8 @@ impl Storage {
                 "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
                 params![owner, collection_id, sync_key, token],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -299,7 +300,8 @@ impl Storage {
                 "INSERT INTO client_sync_command (owner, collection_id, client_id, server_id, status) VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(owner, collection_id, client_id) DO UPDATE SET server_id = ?4, status = ?5, updated_at = CURRENT_TIMESTAMP",
                 params![params.0, params.1, params.2, params.3, params.4],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -314,7 +316,8 @@ impl Storage {
             conn.execute(
                 "DELETE FROM item_map WHERE owner = ?1 AND server_id = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -450,7 +453,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, server_id FROM change_journal WHERE owner = ?1 AND id > ?2 AND op = 'delete'",
+                "SELECT id, server_id FROM change_journal WHERE owner = ?1 AND id > ?2 AND op = 'delete' ORDER BY id ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(params![params.0, params.1], |row| Ok((row.get(0)?, row.get(1)?)))
                 .map_err(|e| anyhow!("Query map error: {}", e))?
@@ -495,7 +498,8 @@ impl Storage {
                 "INSERT INTO provision_state (owner, device_id, policy_key, policy_status) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(owner, device_id) DO UPDATE SET policy_key = ?3, policy_status = ?4, updated_at = CURRENT_TIMESTAMP",
                 params![params.0, params.1, params.2, params.3],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -539,7 +543,8 @@ impl Storage {
                  ON CONFLICT(user_email, device_id) DO UPDATE SET
                  friendly_name = ?3, model = ?4, os = ?5, phone_number = ?6, imei = ?7, user_agent = ?8, last_seen = CURRENT_TIMESTAMP",
                 params![p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -650,7 +655,8 @@ impl Storage {
                 "INSERT INTO ews_sync_state (user_email, folder_id, sync_state) VALUES (?1, ?2, ?3)
                  ON CONFLICT(user_email, folder_id) DO UPDATE SET sync_state = ?3",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -676,7 +682,8 @@ impl Storage {
                 "INSERT INTO calendar_exceptions (owner, parent_server_id, exception_start, server_id, is_deleted) VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(owner, parent_server_id, exception_start) DO UPDATE SET server_id = ?4, is_deleted = ?5",
                 params![params.0, params.1, params.2, params.3, params.4],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -735,7 +742,8 @@ impl Storage {
             conn.execute(
                 "DELETE FROM calendar_exceptions WHERE owner = ?1 AND parent_server_id = ?2 AND exception_start = ?3",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -757,7 +765,8 @@ impl Storage {
                 "INSERT INTO meeting_response (owner, request_id, calendar_id, user_response) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(owner, request_id) DO UPDATE SET calendar_id = ?3, user_response = ?4",
                 params![params.0, params.1, params.2, params.3],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -804,7 +813,8 @@ impl Storage {
                  subject = ?9, location = ?10, start_time = ?11, end_time = ?12, timezone = ?13,
                  last_sequence_time = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP",
                 params![p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7, p.8, p.9, p.10, p.11, p.12],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -836,7 +846,8 @@ impl Storage {
             conn.execute(
                 "DELETE FROM meeting_state WHERE owner = ?1 AND uid = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -859,7 +870,8 @@ impl Storage {
                  ON CONFLICT(owner, meeting_uid, email) DO UPDATE SET
                  name = ?4, status = ?5, role = ?6, response_time = ?7, proposed_start = ?8, proposed_end = ?9, sequence = ?10, updated_at = CURRENT_TIMESTAMP",
                 params![p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7, p.8, p.9],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -898,7 +910,8 @@ impl Storage {
             conn.execute(
                 "DELETE FROM meeting_attendee WHERE owner = ?1 AND meeting_uid = ?2 AND email = ?3",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -913,7 +926,8 @@ impl Storage {
             conn.execute(
                 "DELETE FROM meeting_attendee WHERE owner = ?1 AND meeting_uid = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -938,7 +952,8 @@ impl Storage {
             conn.execute(
                 "INSERT INTO meeting_scheduling_queue (meeting_uid, owner, operation, sequence, ical_data, status, attempts) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 0)",
                 params![params.0, params.1, params.2, params.3, params.4],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -977,7 +992,8 @@ impl Storage {
             conn.execute(
                 "UPDATE meeting_scheduling_queue SET status = ?1, error_message = ?2, attempts = attempts + 1, last_attempt = CURRENT_TIMESTAMP, processed_at = CURRENT_TIMESTAMP WHERE id = ?3",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -1031,7 +1047,8 @@ impl Storage {
                  parent_item_server_id = ?2, name = ?4, content_type = ?5, content_size = ?6, content_base64 = ?7, is_inline = ?8,
                  content_id = ?9, content_location = ?10, attachment_type = ?11, last_modified_time = ?12, updated_at = CURRENT_TIMESTAMP",
                 params![p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7, p.8, p.9, p.10, p.11],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -1118,7 +1135,8 @@ impl Storage {
             conn.execute(
                 "DELETE FROM calendar_attachment WHERE owner = ?1 AND id = ?2",
                 params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -1134,7 +1152,8 @@ impl Storage {
                 "INSERT INTO room_list (id, email, name) VALUES (?1, ?2, ?3)
                  ON CONFLICT(email) DO UPDATE SET name = ?3, updated_at = CURRENT_TIMESTAMP",
                 params![params.0, params.1, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -1168,7 +1187,8 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute("DELETE FROM room_list WHERE email = ?1", params![email])
-                .map_err(|e| anyhow!("DB error: {}", e))
+                .map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -1205,7 +1225,8 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             conn.execute("DELETE FROM room WHERE email = ?1", params![email])
-                .map_err(|e| anyhow!("DB error: {}", e))
+                .map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -1224,7 +1245,8 @@ impl Storage {
                 "INSERT INTO room (id, room_list_email, email, name, capacity, is_available) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(email) DO UPDATE SET room_list_email = ?2, name = ?4, capacity = ?5, is_available = ?6, updated_at = CURRENT_TIMESTAMP",
                 params![params.0, params.1, params.2, params.3, params.4, params.5],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            ).map_err(|e| anyhow!("DB error: {}", e))?;
+            Ok::<(), anyhow::Error>(())
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
