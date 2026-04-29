@@ -101,7 +101,15 @@ export default {
           }
         }
 
-        const body = await upstreamResponse.arrayBuffer();
+        const body = upstreamResponse.body;
+        if (body === null) {
+          return new Response(null, {
+            status: upstreamResponse.status,
+            statusText: upstreamResponse.statusText,
+            headers: responseHeaders
+          });
+        }
+
         return new Response(body, {
           status: upstreamResponse.status,
           statusText: upstreamResponse.statusText,
