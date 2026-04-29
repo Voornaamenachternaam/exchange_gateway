@@ -232,15 +232,26 @@ impl Storage {
         
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            conn.execute(
-                "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(owner, server_id) DO UPDATE SET caldav_href = ?2, resource_href = ?3, uid = ?5, etag = ?6, updated_at = CURRENT_TIMESTAMP",
-                params![params.0, params.1, params.2, params.3, params.4, params.5],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
-            conn.execute(
-                "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', ?3)",
-                params![params.0, params.3, params.2],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            let tx = conn.unchecked_transaction();
+            let result = (|| {
+                tx.execute(
+                    "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(owner, server_id) DO UPDATE SET caldav_href = ?2, resource_href = ?3, uid = ?5, etag = ?6, updated_at = CURRENT_TIMESTAMP",
+                    params![params.0, params.1, params.2, params.3, params.4, params.5],
+                ).map_err(|e| anyhow!("DB error: {}", e))?;
+                tx.execute(
+                    "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', ?3)",
+                    params![params.0, params.3, params.2],
+                ).map_err(|e| anyhow!("DB error: {}", e))?;
+                Ok::<(), rusqlite::Error>(())
+            })();
+            match result {
+                Ok(()) => tx.commit().map_err(|e| anyhow!("Commit error: {}", e)),
+                Err(e) => {
+                    tx.rollback().ok();
+                    Err(e)
+                }
+            }
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
@@ -315,14 +326,25 @@ impl Storage {
         
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            conn.execute(
-                "INSERT OR REPLACE INTO deleted_item_tombstone (owner, server_id) VALUES (?1, ?2)",
-                params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))?;
-            conn.execute(
-                "INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')",
-                params![params.0, params.1],
-            ).map_err(|e| anyhow!("DB error: {}", e))
+            let tx = conn.unchecked_transaction();
+            let result = (|| {
+                tx.execute(
+                    "INSERT OR REPLACE INTO deleted_item_tombstone (owner, server_id) VALUES (?1, ?2)",
+                    params![params.0, params.1],
+                ).map_err(|e| anyhow!("DB error: {}", e))?;
+                tx.execute(
+                    "INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')",
+                    params![params.0, params.1],
+                ).map_err(|e| anyhow!("DB error: {}", e))?;
+                Ok::<(), rusqlite::Error>(())
+            })();
+            match result {
+                Ok(()) => tx.commit().map_err(|e| anyhow!("Commit error: {}", e)),
+                Err(e) => {
+                    tx.rollback().ok();
+                    Err(e)
+                }
+            }
         })
         .await
         .map_err(|e| anyhow!("Task join error: {}", e))?
