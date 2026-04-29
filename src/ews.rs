@@ -1665,8 +1665,16 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         );
     }
 
-let item_exists = match state.storage.verify_item_owner(&auth.owner, &item_id).await {
-            Ok(exists) => exists,
+let item_owner = match state.storage.get_item_owner(&item_id).await {
+            Ok(Some(o)) => o,
+            Ok(None) => {
+                return operation_error_response(
+                    &EwsAction::GetItem,
+                    "ErrorItemNotFound",
+                    "Requested item does not exist",
+                    StatusCode::OK,
+                );
+            }
             Err(e) => {
                 tracing::error!(error = %e, "An internal error occurred");
                 return operation_error_response(
@@ -1677,19 +1685,11 @@ let item_exists = match state.storage.verify_item_owner(&auth.owner, &item_id).a
                 );
             }
         };
-        if !item_exists {
-            return operation_error_response(
-                &EwsAction::GetItem,
-                "ErrorItemNotFound",
-                "Requested item does not exist",
-                StatusCode::OK,
-            );
-        }
-    let calendar_folder_id = folder_id_for(&auth.owner, DistinguishedFolder::Calendar);
+    let calendar_folder_id = folder_id_for(&item_owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
     let perm_ctx = PermissionContext::new(
         auth.username.clone(),
-        auth.owner.clone(),
+        item_owner.clone(),
         calendar_folder_id.clone(),
     );
     match enforcement.can_read_item(&perm_ctx).await {

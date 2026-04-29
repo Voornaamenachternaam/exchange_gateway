@@ -619,6 +619,22 @@ impl Storage {
         .map_err(|e| anyhow!("Task join error: {}", e))?
     }
 
+    pub async fn get_item_owner(&self, server_id: &str) -> Result<Option<String>> {
+        let pool = self.pool.clone();
+        let server_id = server_id.to_string();
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
+            let mut stmt = conn.prepare(
+                "SELECT owner FROM item_map WHERE server_id = ?1"
+            ).map_err(|e| anyhow!("Prepare error: {}", e))?;
+            stmt.query_row(params![server_id], |row| row.get(0)).optional()
+                .map_err(|e| anyhow!("Query error: {}", e))
+        })
+        .await
+        .map_err(|e| anyhow!("Task join error: {}", e))?
+    }
+
     pub async fn set_ews_sync_state(
         &self,
         owner: &str,

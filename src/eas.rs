@@ -1276,20 +1276,27 @@ async fn handle_item_operations(
                 .get_attachment(&owner_lower, file_ref)
                 .await
             {
-                Ok(Some(attachment)) => {
-let parent_id = &attachment.parent_item_server_id;
-let parent_is_owned = match state.storage.verify_item_owner(&owner_lower, parent_id).await {
-    Ok(exists) => exists,
-    Err(e) => {
-        tracing::error!(error = %e, "Failed to verify item owner");
-        false
-    }
-};
-let item_owner = if parent_is_owned {
-    owner_lower.clone()
-} else {
-    owner_lower.clone()
-};
+            let parent_id = &attachment.parent_item_server_id;
+            let item_owner = match state.storage.get_item_owner(parent_id).await {
+                Ok(Some(o)) => o,
+                Ok(None) => {
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(file_ref)
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to get item owner");
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(file_ref)
+                    ));
+                    continue;
+                }
+            };
                         &item_owner,
                         crate::ews_folders::DistinguishedFolder::Calendar,
                     );
@@ -1356,7 +1363,7 @@ let item_owner = if parent_is_owned {
             continue;
         };
 
-        let item_exists = state.storage.verify_item_owner(&owner_lower, &server_id).await
+        let _ = state.storage.get_item_owner(&server_id).await
             .map_err(|e| EasError::ServerError)?;
             Ok(None) => {
                 responses.push_str(&format!(
