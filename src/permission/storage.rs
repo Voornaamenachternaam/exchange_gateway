@@ -317,7 +317,7 @@ impl<'a> PermissionStorage<'a> {
             let mut stmt = conn.prepare(
                 "SELECT id, delegator, delegate_email, delegate_name, calendar_permission, inbox_permission, tasks_permission, contacts_permission, notes_permission, journal_permission, receive_copies, receive_infos, view_private, created_at, updated_at FROM calendar_delegate WHERE delegator = ?1 AND delegate_email = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(rusqlite::params![params.0, params.1], permission_row_from_row)
+            stmt.query_row(rusqlite::params![params.0, params.1], delegate_row_from_row)
                 .optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
                 .map(|opt| opt.map(DelegateInfo::from))
