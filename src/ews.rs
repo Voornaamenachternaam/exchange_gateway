@@ -1752,7 +1752,11 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         }
     };
     let calendar_item_xml = match caldav
-        .get_event(&item.resource_href, &item_owner, auth.password.expose_secret())
+        .get_event(
+            &item.resource_href,
+            &item_owner,
+            auth.password.expose_secret(),
+        )
         .await
     {
         Ok((ics, _)) => match parse_ics_event(&ics) {
@@ -1881,11 +1885,7 @@ async fn handle_sync_folder_items(
     } else {
         latest_seq
     };
-    let journal_rows = match state
-        .storage
-        .list_journal_since_seq(owner, since)
-        .await
-        {
+    let journal_rows = match state.storage.list_journal_since_seq(owner, since).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "An internal error occurred");
