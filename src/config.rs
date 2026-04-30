@@ -54,12 +54,8 @@ fn default_auth_cache_max_entries() -> usize {
 
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let mut has_file = false;
         let content = match fs::read_to_string(path) {
-            Ok(c) => {
-                has_file = true;
-                c
-            }
+            Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!("Config file not found at '{}', using environment variables only", path);
                 String::new()
@@ -76,9 +72,7 @@ impl Config {
         let secret = SecretString::from(content.clone());
         let mut cfg: Config = match toml::from_str::<Config>(secret.expose_secret()) {
             Ok(c) => c,
-            Err(e) if !has_file || content.trim().is_empty() => {
-                Config::default()
-            }
+            Err(_) if content.trim().is_empty() => Config::default(),
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "Failed to parse config TOML at '{}': {}",
