@@ -1,0 +1,411 @@
+FAILED: .
+       Compiling exchange_gateway v1.3.0 (/home/runner/work/exchange_gateway/exchange_gateway)
+       Compiling tokio-test v0.4.5
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+     --> src/caldav.rs:5:5
+      |
+    5 | use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
+      |     ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+      |
+      = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0432]: unresolved import `reqwest_middleware`
+     --> src/caldav.rs:6:5
+      |
+    6 | use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+      |     ^^^^^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `reqwest_middleware`
+      |
+      = help: if you wanted to use a crate named `reqwest_middleware`, use `cargo add reqwest_middleware` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest_retry` in this scope
+     --> src/caldav.rs:7:5
+      |
+    7 | use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
+      |     ^^^^^^^^^^^^^ use of unresolved module or unlinked crate `reqwest_retry`
+      |
+      = help: if you wanted to use a crate named `reqwest_retry`, use `cargo add reqwest_retry` to add it to your `Cargo.toml`
+    
+    error[E0432]: unresolved import `reqwest_retry`
+     --> src/caldav.rs:7:5
+      |
+    7 | use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
+      |     ^^^^^^^^^^^^^ use of unresolved module or unlinked crate `reqwest_retry`
+      |
+      = help: if you wanted to use a crate named `reqwest_retry`, use `cargo add reqwest_retry` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+      --> src/caldav.rs:21:13
+       |
+    21 |             reqwest::Client::builder()
+       |             ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+       |
+       = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+      --> src/caldav.rs:36:13
+       |
+    36 |             reqwest::Client::builder()
+       |             ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+       |
+       = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+      --> src/caldav.rs:57:17
+       |
+    57 |                 reqwest::Method::from_bytes(b"PROPFIND").unwrap_or(reqwest::Method::GET),
+       |                 ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+       |
+       = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+      --> src/caldav.rs:57:68
+       |
+    57 |                 reqwest::Method::from_bytes(b"PROPFIND").unwrap_or(reqwest::Method::GET),
+       |                                                                    ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+       |
+       = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+      --> src/caldav.rs:98:22
+       |
+    98 |             .request(reqwest::Method::from_bytes(b"REPORT")?, collection_href)
+       |                      ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+       |
+       = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+       --> src/caldav.rs:127:22
+        |
+    127 |             .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
+        |                      ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+        |
+        = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+       --> src/caldav.rs:217:22
+        |
+    217 |             .request(reqwest::Method::from_bytes(b"REPORT")?, collection_href)
+        |                      ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+        |
+        = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+       --> src/caldav.rs:313:20
+        |
+    313 |         let base = reqwest::Url::parse(&self.base)?;
+        |                    ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+        |
+        = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+       --> src/caldav.rs:326:20
+        |
+    326 |         let base = reqwest::Url::parse(&collection)?;
+        |                    ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+        |
+        = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+       --> src/caldav.rs:331:9
+        |
+    331 |         reqwest::Url::parse(href)
+        |         ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+        |
+        = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+       --> src/caldav.rs:390:33
+        |
+    390 |     let home_url_parsed = match reqwest::Url::parse(home_url) {
+        |                                 ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+        |
+        = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+       --> src/caldav.rs:418:24
+        |
+    418 |             let path = reqwest::Url::parse(href)
+        |                        ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+        |
+        = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    error[E0425]: cannot find value `calendar_folder_id` in this scope
+        --> src/eas.rs:1305:25
+         |
+    1305 |                         calendar_folder_id,
+         |                         ^^^^^^^^^^^^^^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/eas.rs:1387:14
+         |
+    1387 |             &owner,
+         |              ^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/eas.rs:1393:13
+         |
+    1393 |             owner.clone(),
+         |             ^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/eas.rs:1421:41
+         |
+    1421 |             .get_ews_item_by_server_id(&owner, &server_id)
+         |                                         ^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/eas.rs:1436:67
+         |
+    1436 |         let get_future = caldav.get_event(&lookup.resource_href, &owner, password.expose_secret());
+         |                                                                   ^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/eas.rs:1458:40
+         |
+    1458 |             .get_attachments_for_item(&owner, &server_id)
+         |                                        ^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/ews.rs:1718:37
+         |
+    1718 |         .get_ews_item_by_server_id(&owner, &item_id)
+         |                                     ^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/ews.rs:1755:42
+         |
+    1755 |         .get_event(&item.resource_href, &owner, auth.password.expose_secret())
+         |                                          ^^^^^ not found in this scope
+    
+    error[E0425]: cannot find value `owner` in this scope
+        --> src/ews.rs:1762:48
+         |
+    1762 |                     .get_attachments_for_item(&owner, &item.server_id)
+         |                                                ^^^^^ not found in this scope
+    
+    error[E0061]: this method takes 3 arguments but 2 arguments were supplied
+        --> src/eas.rs:1071:18
+         |
+    1071 |                 .list_changes_since_seq(owner, since)
+         |                  ^^^^^^^^^^^^^^^^^^^^^^-------------- argument #3 of type `i64` is missing
+         |
+    note: method defined here
+        --> src/storage.rs:473:18
+         |
+     473 |     pub async fn list_changes_since_seq(
+         |                  ^^^^^^^^^^^^^^^^^^^^^^
+    ...
+     477 |         limit: i64,
+         |         ----------
+    help: provide the argument
+         |
+    1071 |                 .list_changes_since_seq(owner, since, /* i64 */)
+         |                                                     +++++++++++
+    
+    error[E0061]: this method takes 3 arguments but 2 arguments were supplied
+        --> src/eas.rs:1228:10
+         |
+    1228 |         .list_changes_since_seq(owner, since)
+         |          ^^^^^^^^^^^^^^^^^^^^^^-------------- argument #3 of type `i64` is missing
+         |
+    note: method defined here
+        --> src/storage.rs:473:18
+         |
+     473 |     pub async fn list_changes_since_seq(
+         |                  ^^^^^^^^^^^^^^^^^^^^^^
+    ...
+     477 |         limit: i64,
+         |         ----------
+    help: provide the argument
+         |
+    1228 |         .list_changes_since_seq(owner, since, /* i64 */)
+         |                                             +++++++++++
+    
+    error[E0308]: mismatched types
+        --> src/eas.rs:1279:17
+         |
+    1274 |               match state
+         |  ___________________-
+    1275 | |                 .attachment_manager
+    1276 | |                 .get_attachment(&owner_lower, file_ref)
+    1277 | |                 .await
+         | |______________________- this expression has type `std::result::Result<std::option::Option<FileAttachment>, anyhow::Error>`
+    1278 |               {
+    1279 |                   Some(attachment) => {
+         |                   ^^^^^^^^^^^^^^^^ expected `Result<Option<FileAttachment>, Error>`, found `Option<_>`
+         |
+         = note: expected enum `std::result::Result<std::option::Option<FileAttachment>, anyhow::Error>`
+                    found enum `std::option::Option<_>`
+    help: try wrapping the pattern in `Ok`
+         |
+    1279 |                 Ok(Some(attachment)) => {
+         |                 +++                +
+    
+    error[E0308]: mismatched types
+        --> src/eas.rs:1333:17
+         |
+    1274 |               match state
+         |  ___________________-
+    1275 | |                 .attachment_manager
+    1276 | |                 .get_attachment(&owner_lower, file_ref)
+    1277 | |                 .await
+         | |______________________- this expression has type `std::result::Result<std::option::Option<FileAttachment>, anyhow::Error>`
+    ...
+    1333 |                   None => {
+         |                   ^^^^ expected `Result<Option<FileAttachment>, Error>`, found `Option<_>`
+         |
+         = note: expected enum `std::result::Result<std::option::Option<FileAttachment>, anyhow::Error>`
+                    found enum `std::option::Option<_>`
+    help: try wrapping the pattern in `Ok`
+         |
+    1333 |                 Ok(None) => {
+         |                 +++    +
+    
+    error[E0061]: this method takes 2 arguments but 4 arguments were supplied
+        --> src/ews.rs:1886:10
+         |
+    1886 |         .list_journal_since_seq(owner, since, upper_bound, max_changes.saturating_add(1))
+         |          ^^^^^^^^^^^^^^^^^^^^^^               -----------  ----------------------------- unexpected argument #4 of type `usize`
+         |                                               |
+         |                                               unexpected argument #3 of type `i64`
+         |
+    note: method defined here
+        --> src/storage.rs:524:18
+         |
+     524 |     pub async fn list_journal_since_seq(&self, owner: &str, since: i64) -> Result<Vec<JournalRow>> {
+         |                  ^^^^^^^^^^^^^^^^^^^^^^
+    help: remove the extra arguments
+         |
+    1886 -         .list_journal_since_seq(owner, since, upper_bound, max_changes.saturating_add(1))
+    1886 +         .list_journal_since_seq(owner, since)
+         |
+    
+    error[E0609]: no field `seq` on type `&JournalRow`
+        --> src/ews.rs:1928:33
+         |
+    1928 |         last_returned_seq = row.seq;
+         |                                 ^^^ unknown field
+         |
+         = note: available fields are: `id`, `server_id`, `op`, `resource_href`
+    
+    error[E0277]: the trait bound `AttachmentType: ToSql` is not satisfied
+        --> src/storage.rs:1188:17
+         |
+    1188 |                 params![p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7, p.8, p.9, p.10, p.11],
+         |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+         |
+    help: the trait `ToSql` is not implemented for `AttachmentType`
+        --> src/attachment.rs:331:1
+         |
+     331 | pub enum AttachmentType {
+         | ^^^^^^^^^^^^^^^^^^^^^^^
+         = help: the following other types implement trait `ToSql`:
+                   &T
+                   Arc<T>
+                   Box<T>
+                   Cow<'_, T>
+                   Rc<T>
+                   ToSqlOutput<'_>
+                   Vec<u8>
+                   [u8; N]
+                 and 25 others
+         = note: required for the cast from `&AttachmentType` to `&dyn ToSql`
+         = note: this error originates in the macro `params` (in Nightly builds, run with -Z macro-backtrace for more info)
+    
+    error[E0277]: the trait bound `AttachmentType: FromSql` is not satisfied
+        --> src/storage.rs:1222:42
+         |
+    1222 |                     attachment_type: row.get(10)?,
+         |                                          ^^^ unsatisfied trait bound
+         |
+    help: the trait `FromSql` is not implemented for `AttachmentType`
+        --> src/attachment.rs:331:1
+         |
+     331 | pub enum AttachmentType {
+         | ^^^^^^^^^^^^^^^^^^^^^^^
+         = help: the following other types implement trait `FromSql`:
+                   Arc<[u8]>
+                   Arc<str>
+                   Box<[u8]>
+                   Box<str>
+                   Cow<'_, T>
+                   Rc<[u8]>
+                   Rc<str>
+                   Vec<u8>
+                 and 23 others
+    note: required by a bound in `Row::<'_>::get`
+        --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.39.0/src/row.rs:285:32
+         |
+     285 |     pub fn get<I: RowIndex, T: FromSql>(&self, idx: I) -> Result<T> {
+         |                                ^^^^^^^ required by this bound in `Row::<'_>::get`
+    
+    error[E0063]: missing fields `created_at` and `updated_at` in initializer of `AttachmentRecord`
+        --> src/storage.rs:1211:20
+         |
+    1211 |                 Ok(crate::attachment::AttachmentRecord {
+         |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `created_at` and `updated_at`
+    
+    error[E0277]: the trait bound `AttachmentType: FromSql` is not satisfied
+        --> src/storage.rs:1257:42
+         |
+    1257 |                     attachment_type: row.get(10)?,
+         |                                          ^^^ unsatisfied trait bound
+         |
+    help: the trait `FromSql` is not implemented for `AttachmentType`
+        --> src/attachment.rs:331:1
+         |
+     331 | pub enum AttachmentType {
+         | ^^^^^^^^^^^^^^^^^^^^^^^
+         = help: the following other types implement trait `FromSql`:
+                   Arc<[u8]>
+                   Arc<str>
+                   Box<[u8]>
+                   Box<str>
+                   Cow<'_, T>
+                   Rc<[u8]>
+                   Rc<str>
+                   Vec<u8>
+                 and 23 others
+    note: required by a bound in `Row::<'_>::get`
+        --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.39.0/src/row.rs:285:32
+         |
+     285 |     pub fn get<I: RowIndex, T: FromSql>(&self, idx: I) -> Result<T> {
+         |                                ^^^^^^^ required by this bound in `Row::<'_>::get`
+    
+    error[E0063]: missing fields `created_at` and `updated_at` in initializer of `AttachmentRecord`
+        --> src/storage.rs:1246:20
+         |
+    1246 |                 Ok(crate::attachment::AttachmentRecord {
+         |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `created_at` and `updated_at`
+    
+    error[E0063]: missing fields `created_at` and `updated_at` in initializer of `RoomListRecord`
+        --> src/storage.rs:1316:20
+         |
+    1316 |                 Ok(crate::room::RoomListRecord {
+         |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `created_at` and `updated_at`
+    
+    error[E0063]: missing fields `created_at` and `updated_at` in initializer of `RoomRecord`
+        --> src/storage.rs:1352:20
+         |
+    1352 |                 Ok(crate::room::RoomRecord {
+         |                    ^^^^^^^^^^^^^^^^^^^^^^^ missing `created_at` and `updated_at`
+    
+    error[E0063]: missing fields `created_at` and `updated_at` in initializer of `RoomRecord`
+        --> src/storage.rs:1420:20
+         |
+    1420 |                 Ok(crate::room::RoomRecord {
+         |                    ^^^^^^^^^^^^^^^^^^^^^^^ missing `created_at` and `updated_at`
+    
+    error[E0433]: cannot find module or crate `reqwest` in this scope
+     --> src/error.rs:7:20
+      |
+    7 |     CalDav(#[from] reqwest::Error),
+      |                    ^^^^^^^ use of unresolved module or unlinked crate `reqwest`
+      |
+      = help: if you wanted to use a crate named `reqwest`, use `cargo add reqwest` to add it to your `Cargo.toml`
+    
+    Some errors have detailed explanations: E0061, E0063, E0277, E0308, E0425, E0432, E0433, E0609.
+    For more information about an error, try `rustc --explain E0061`.
+    error: could not compile `exchange_gateway` (lib) due to 40 previous errors
+    warning: build failed, waiting for other jobs to finish...
+    error: could not compile `exchange_gateway` (lib test) due to 40 previous errors
