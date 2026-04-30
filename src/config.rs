@@ -61,7 +61,10 @@ impl Config {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::info!("Config file not found at '{}', using environment variables only", path);
+                tracing::info!(
+                    "Config file not found at '{}', using environment variables only",
+                    path
+                );
                 String::new()
             }
             Err(e) => {
@@ -106,7 +109,10 @@ impl Config {
 
     fn validate(&self) -> anyhow::Result<()> {
         if self.bind.is_empty() {
-            return Err(anyhow::anyhow!("Config: 'bind' address is required (set via {} or config)", ENV_BIND));
+            return Err(anyhow::anyhow!(
+                "Config: 'bind' address is required (set via {} or config)",
+                ENV_BIND
+            ));
         }
         if !self.bind.contains(':') {
             return Err(anyhow::anyhow!(
@@ -114,11 +120,17 @@ impl Config {
             ));
         }
         if self.mail_domain.trim().is_empty() {
-            return Err(anyhow::anyhow!("Config: 'mail_domain' is required (set via {} or config)", ENV_MAIL_DOMAIN));
+            return Err(anyhow::anyhow!(
+                "Config: 'mail_domain' is required (set via {} or config)",
+                ENV_MAIL_DOMAIN
+            ));
         }
         validate_url(&self.caldav_base, "caldav_base")?;
         if self.database_path.is_empty() {
-            return Err(anyhow::anyhow!("Config: 'database_path' is required (set via {} or config)", ENV_DATABASE_PATH));
+            return Err(anyhow::anyhow!(
+                "Config: 'database_path' is required (set via {} or config)",
+                ENV_DATABASE_PATH
+            ));
         }
         let secret_len = self.hmac_secret.expose_secret().len();
         if secret_len < 32 {
@@ -153,7 +165,11 @@ fn get_env_with_fallback(primary: &str, fallback: Option<&str>) -> Option<String
     }
 }
 
-fn apply_env_string(cfg: &mut Config, value: Option<String>, setter: impl FnOnce(&mut Config, String)) {
+fn apply_env_string(
+    cfg: &mut Config,
+    value: Option<String>,
+    setter: impl FnOnce(&mut Config, String),
+) {
     if let Some(val) = value {
         tracing::debug!("Applying configuration from environment");
         setter(cfg, val);
@@ -161,19 +177,36 @@ fn apply_env_string(cfg: &mut Config, value: Option<String>, setter: impl FnOnce
 }
 
 fn apply_environment_overrides(cfg: &mut Config) {
-    apply_env_string(cfg, get_env_with_fallback(ENV_BIND, None), |c, v| c.bind = v);
-    apply_env_string(cfg, get_env_with_fallback(ENV_CALDAV_BASE, None), |c, v| c.caldav_base = v);
-    apply_env_string(cfg, get_env_with_fallback(ENV_DATABASE_PATH, None), |c, v| c.database_path = v);
+    apply_env_string(cfg, get_env_with_fallback(ENV_BIND, None), |c, v| {
+        c.bind = v
+    });
+    apply_env_string(cfg, get_env_with_fallback(ENV_CALDAV_BASE, None), |c, v| {
+        c.caldav_base = v
+    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_DATABASE_PATH, None),
+        |c, v| c.database_path = v,
+    );
 
     if let Some(val) = get_env_with_fallback(ENV_HMAC_SECRET, None) {
         tracing::debug!("Applying {} from environment", ENV_HMAC_SECRET);
         cfg.hmac_secret = SecretString::from(val);
     }
 
-    apply_env_string(cfg, get_env_with_fallback(ENV_GATEWAY_HOST, None), |c, v| c.gateway_host = v);
-    apply_env_string(cfg, get_env_with_fallback(ENV_MAIL_DOMAIN, None), |c, v| c.mail_domain = v);
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_GATEWAY_HOST, None),
+        |c, v| c.gateway_host = v,
+    );
+    apply_env_string(cfg, get_env_with_fallback(ENV_MAIL_DOMAIN, None), |c, v| {
+        c.mail_domain = v
+    });
 
-    if let Some(val) = env::var(ENV_MAX_ATTACHMENT_BYTES).ok().filter(|v| !v.is_empty()) {
+    if let Some(val) = env::var(ENV_MAX_ATTACHMENT_BYTES)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
         match val.parse::<usize>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_MAX_ATTACHMENT_BYTES);
@@ -192,13 +225,14 @@ fn apply_environment_overrides(cfg: &mut Config) {
     if let Some(val) = get_env_with_fallback(ENV_ROOM_BOOKING_ENABLED, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_ROOM_BOOKING_ENABLED);
-        cfg.room_booking_enabled = matches!(
-            lower.as_str(),
-            "1" | "true" | "yes" | "on" | "enabled"
-        );
+        cfg.room_booking_enabled =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
 
-    if let Some(val) = env::var(ENV_AUTH_CACHE_TTL_SECS).ok().filter(|v| !v.is_empty()) {
+    if let Some(val) = env::var(ENV_AUTH_CACHE_TTL_SECS)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
         match val.parse::<u64>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_TTL_SECS);
@@ -214,7 +248,10 @@ fn apply_environment_overrides(cfg: &mut Config) {
         }
     }
 
-    if let Some(val) = env::var(ENV_AUTH_CACHE_MAX_ENTRIES).ok().filter(|v| !v.is_empty()) {
+    if let Some(val) = env::var(ENV_AUTH_CACHE_MAX_ENTRIES)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
         match val.parse::<usize>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_MAX_ENTRIES);
@@ -306,10 +343,7 @@ mod tests {
 
         for (input, expected) in test_cases {
             let lower = input.to_lowercase();
-            let result = matches!(
-                lower.as_str(),
-                "1" | "true" | "yes" | "on" | "enabled"
-            );
+            let result = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
             assert_eq!(
                 result, expected,
                 "Input '{}' should parse to {}",
