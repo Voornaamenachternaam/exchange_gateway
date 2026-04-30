@@ -1,0 +1,460 @@
+# Cloudflare Tunnel Setup Guide for Exchange Gateway
+
+This guide configures Cloudflare Tunnel (cloudflared) to provide TLS termination and route traffic to the Exchange Gateway container. No Cloudflare Workers are required.
+
+## Architecture Overview
+
+```
+Outlook Client (HTTPS)
+        ↓
+Cloudflare Edge (TLS terminated by default)
+        ↓
+Cloudflare Tunnel (encrypted HTTP/2)
+        ↓
+cloudflared (your server)
+        ↓
+Exchange Gateway Container (HTTP on port 8134)
+```
+
+Cloudflare automatically terminates TLS at their edge. The tunnel provides encrypted transport from edge to your origin.
+
+---
+
+## Prerequisites
+
+- Cloudflare account with domain (e.g., stalwart.example.com)
+- cloudflared installed on your server
+- Docker and Docker Compose installed
+- Exchange Gateway container running
+
+---
+
+## Step 1: Install cloudflared
+
+### Ubuntu/Debian
+
+```bash
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+chmod +x /usr/local/bin/cloudflared
+```
+
+### Verify Installation
+
+```bash
+cloudflared --version
+```
+
+---
+
+## Step 2: Create a Cloudflare Tunnel
+
+### Option A: Using Cloudflare Dashboard (Recommended for Free Tier)
+
+1. Log into [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. Navigate to **Networks → Tunnels**
+3. Click **Create a tunnel**
+4. Select **Cloudflared** as the connector type
+5. Choose your account/domain
+6. Name your tunnel (e.g., `exchange-gateway-tunnel`)
+7. Copy the tunnel token (you'll need it below)
+
+### Option B: Using Command Line
+
+```bash
+# Authenticate with Cloudflare
+cloudflared tunnel login
+
+# Create tunnel
+cloudflared tunnel create exchange-gateway-tunnel
+
+# Note the tunnel ID from output
+```
+
+---
+
+## Step 3: Configure Ingress Rules
+
+Create the cloudflared configuration file:
+
+```bash
+sudo mkdir -p /etc/cloudflared
+sudo nano /etc/cloudflared/config.yml
+```
+
+### Configuration File: `/etc/cloudflared/config.yml`
+
+```yaml
+# Cloudflare Tunnel Configuration for Exchange Gateway
+# This file configures routing for calendar protocols through the tunnel
+
+# Tunnel connection details
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/credentials.json
+
+# Ingress rules define how requests are routed
+# Rules are matched in order, first match wins
+ingress:
+  # Rule 1: All calendar protocol paths to Exchange Gateway
+  # Matches: /EWS/*, /ews/*, /autodiscover/*, /Microsoft-Server-ActiveSync/*, /OAB/*
+  - hostname: calendar.stalwart.example.com
+    path: "(^/EWS.*|^/ews.*|^/autodiscover.*|^/Microsoft-Server-ActiveSync.*|^/OAB.*|^/Autodiscover.*)"
+    service: http://exchange-gateway:8134
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+      tlsTimeout: 10s
+
+  # Rule 2: Health check endpoint
+  - hostname: calendar.stalwart.example.com
+    path: "^/health$"
+    service: http://exchange-gateway:8134
+    originRequest:
+      noTLSVerify: false
+
+  # Rule 3: Root path with redirect to health
+  - hostname: calendar.stalwart.example.com
+    path: "^/$"
+    service: http_status:302
+    originRequest:
+      redirect: https://calendar.stalwart.example.com/health
+
+  # Rule 4: Catch-all for unhandled paths (return 404)
+  - service: http_status:404
+```
+
+### Alternative: Simple Configuration (Single Rule)
+
+For simpler setups without regex path matching:
+
+```yaml
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # Route all traffic for this hostname to the Exchange Gateway
+  - hostname: calendar.stalwart.example.com
+    service: http://exchange-gateway:8134
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+
+  # Default fallback
+  - service: http_status:404
+```
+
+---
+
+## Step 4: Run cloudflared
+
+### As a Systemd Service (Recommended for Production)
+
+Create the service file:
+
+```bash
+sudo nano /etc/systemd/system/cloudflared.service
+```
+
+```ini
+[Unit]
+Description=Cloudflare Tunnel for Exchange Gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel run --config /etc/cloudflared/config.yml
+Restart=on-failure
+RestartSec=5s
+User=root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+sudo systemctl status cloudflared
+```
+
+### Using Docker Compose
+
+Add cloudflared to your Docker Compose configuration:
+
+```yaml
+# docker-compose.yml (partial)
+services:
+  exchange-gateway:
+    image: exchange-gateway:latest
+    container_name: exchange-gateway
+    ports:
+      - "127.0.0.1:8134:8134"
+    volumes:
+      - ./config.toml:/etc/exchange-gateway/config.toml:ro
+      - ./data:/var/lib/exchange-gateway
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    command: tunnel run --config /etc/cloudflared/config.yml
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    depends_on:
+      - exchange-gateway
+    network_mode: service:exchange-gateway
+```
+
+Create the credentials file:
+
+```bash
+# Get credentials from Cloudflare Dashboard
+# Networks → Tunnels → Your Tunnel → Access Token
+cat > ./cloudflared/credentials.json << 'EOF'
+{
+  "AccountTag": "<YOUR_ACCOUNT_TAG>",
+  "TunnelID": "<TUNNEL_ID>",
+  "TunnelName": "exchange-gateway-tunnel",
+  "TunnelSecret": "<YOUR_TUNNEL_SECRET>"
+}
+EOF
+chmod 600 ./cloudflared/credentials.json
+```
+
+---
+
+## Step 5: Configure DNS in Cloudflare Dashboard
+
+After creating the tunnel, you need to create a DNS record:
+
+1. Navigate to **Websites → stalwart.example.com → DNS**
+2. Click **Add record**
+3. Select **CNAME** record
+4. Set:
+   - **Name**: `calendar`
+   - **Target**: `<your-tunnel-id>.cfargotunnel.com`
+   - **Proxy status**: DNS only (for now) OR Proxied (after testing)
+
+5. Click **Save**
+
+### Verify Tunnel Connection
+
+```bash
+# Check tunnel status
+sudo journalctl -u cloudflared -f
+
+# Or directly
+cloudflared tunnel list
+cloudflared tunnel info exchange-gateway-tunnel
+```
+
+---
+
+## Step 6: Test the Setup
+
+### Local Test
+
+```bash
+# Test health endpoint locally
+curl -v http://localhost:8134/health
+
+# Test with headers showing origin
+curl -v -H "Host: calendar.stalwart.example.com" http://localhost:8134/health
+```
+
+### Remote Test (After DNS Propagation)
+
+```bash
+# Test EWS endpoint
+curl -v https://calendar.stalwart.example.com/EWS/Exchange.asmx
+
+# Test AutoDiscover
+curl -v https://calendar.stalwart.example.com/autodiscover/autodiscover.xml
+
+# Verify TLS certificate (should show Cloudflare)
+openssl s_client -connect calendar.stalwart.example.com:443 -servername calendar.stalwart.example.com 2>/dev/null | openssl x509 -noout -dates
+```
+
+---
+
+## Security Considerations
+
+### TLS Configuration
+
+Cloudflare handles TLS automatically. For enhanced security:
+
+1. **Always use Proxied mode** (orange cloud) - enables Cloudflare's DDoS protection
+2. **Enable TLS 1.3 only** in Cloudflare Dashboard:
+   - SSL/TLS → Overview → Custom certificate (optional)
+   - SSL/TLS → Edge Certificates → TLS 1.3
+
+### Ingress Security
+
+```yaml
+ingress:
+  - hostname: calendar.stalwart.example.com
+    service: http://exchange-gateway:8134
+    originRequest:
+      # Verify TLS certificate from origin (if origin uses HTTPS)
+      noTLSVerify: false
+      
+      # Restrict IP ranges (optional)
+      # originIP: "10.0.0.0/8"  # Only allow from internal network
+      
+      connectTimeout: 30s
+      tlsTimeout: 10s
+```
+
+### Firewall Rules
+
+Cloudflare Dashboard → Security → WAF:
+
+```bash
+# Recommended Cloudflare Rules
+# Block all non-Cloudflare traffic at firewall level
+# This ensures only Cloudflare can reach your origin
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+#### 1. Tunnel Connection Fails
+
+```bash
+# Check logs
+sudo journalctl -u cloudflared -n 100
+
+# Verify credentials
+cat /etc/cloudflared/credentials.json
+
+# Test tunnel manually
+cloudflared tunnel run --config /etc/cloudflared/config.yml --logle debug
+```
+
+#### 2. 502 Bad Gateway
+
+- Verify Exchange Gateway is running: `docker ps`
+- Check Exchange Gateway logs: `docker logs exchange-gateway`
+- Test locally: `curl http://exchange-gateway:8134/health`
+
+#### 3. DNS Not Resolving
+
+```bash
+# Check DNS propagation
+dig calendar.stalwart.example.com
+
+# Verify CNAME target
+nslookup calendar.stalwart.example.com
+```
+
+#### 4. TLS Certificate Errors
+
+Cloudflare handles TLS at edge. If you see certificate errors:
+- Ensure DNS is proxied (orange cloud)
+- Check SSL/TLS mode in Cloudflare Dashboard (Full or Full Strict recommended)
+
+### Debug Commands
+
+```bash
+# Full tunnel diagnostics
+cloudflared tunnel diagnostics <TUNNEL_ID>
+
+# Test ingress rules
+cloudflared tunnel ingress test https://calendar.stalwart.example.com/EWS/Exchange.asmx
+
+# Check Cloudflare edge connectivity
+curl -v https://calendar.stalwart.example.com/health \
+  -H "CF-Ray: test" \
+  -H "CF-Connecting-IP: 1.1.1.1"
+```
+
+---
+
+## Full Docker Compose Example
+
+```yaml
+# docker-compose.yml
+services:
+  exchange-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: exchange-gateway
+    image: exchange-gateway:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8134:8134"  # Local-only, accessed via tunnel
+    environment:
+      - RUST_LOG=info
+      - TZ=UTC
+    volumes:
+      - ./config.toml:/etc/exchange-gateway/config.toml:ro
+      - ./data:/var/lib/exchange-gateway
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    depends_on:
+      exchange-gateway:
+        condition: service_healthy
+    command: tunnel run --config /etc/cloudflared/config.yml
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    network_mode: service:exchange-gateway
+
+networks:
+  default:
+    name: exchange-gateway-network
+```
+
+---
+
+## Environment Variables Reference
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `TUNNEL_ID` | Your Cloudflare tunnel ID | Yes |
+| `TUNNEL_SECRET` | Tunnel authentication secret | Yes |
+| `CLOUDFLARED_ORIGIN_CERT` | Origin certificate for mTLS | No |
+
+---
+
+## Support and Resources
+
+- [Cloudflare Tunnel Documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+- [Cloudflare Dashboard](https://dash.cloudflare.com/)
+- [cloudflared GitHub Releases](https://github.com/cloudflare/cloudflared/releases)
+
+---
+
+## Summary: Why No Worker?
+
+Cloudflare Tunnel provides:
+
+1. **TLS Termination**: Automatic at Cloudflare edge
+2. **Encryption**: HTTP/2 with TLS between edge and origin
+3. **Routing**: Ingress rules for path-based routing
+4. **High Availability**: Built-in failover
+
+Cloudflare Workers add complexity without benefit for this use case. The tunnel handles everything needed for calendar protocol proxying.

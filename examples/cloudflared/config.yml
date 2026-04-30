@@ -1,0 +1,38 @@
+# cloudflared/config.yml
+# Cloudflare Tunnel Ingress Configuration for Exchange Gateway
+# Place this file at: /etc/cloudflared/config.yml
+
+# Replace <TUNNEL_ID> with your tunnel ID from Cloudflare Dashboard
+# Networks → Tunnels → Your Tunnel → Tunnel ID
+tunnel: <TUNNEL_ID>
+
+# Credentials file location (created by cloudflared during tunnel setup)
+credentials-file: /etc/cloudflared/credentials.json
+
+# Ingress rules - routes traffic to services
+# Rules are matched top-to-bottom, first match wins
+ingress:
+  # Route all calendar protocol paths to Exchange Gateway
+  # Paths: /EWS/*, /ews/*, /autodiscover/*, /Microsoft-Server-ActiveSync/*, /OAB/*
+  - hostname: calendar.stalwart.example.com
+    path: "(^/EWS.*|^/ews.*|^/autodiscover.*|^/Microsoft-Server-ActiveSync.*|^/OAB.*|^/Autodiscover.*|^/Microsoft-Server-ActiveSync)"
+    service: http://exchange-gateway:8134
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+      tlsTimeout: 10s
+
+  # Health check endpoint
+  - hostname: calendar.stalwart.example.com
+    path: "^/health$"
+    service: http://exchange-gateway:8134
+
+  # Root path - redirect to health
+  - hostname: calendar.stalwart.example.com
+    path: "^/$"
+    service: http_status:302
+    originRequest:
+      redirect: https://calendar.stalwart.example.com/health
+
+  # Catch-all - 404 for unmatched paths
+  - service: http_status:404

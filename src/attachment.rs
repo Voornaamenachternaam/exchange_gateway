@@ -328,7 +328,9 @@ fn normalize_content_type(content_type: &str, name: &str) -> Result<String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum AttachmentType {
+    #[default]
     File,
     Item,
 }
