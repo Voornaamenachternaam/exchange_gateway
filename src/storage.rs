@@ -197,7 +197,8 @@ impl Storage {
             let conn = pool.get().map_err(|e| anyhow!("Pool get error: {}", e))?;
             conn.execute_batch(include_str!("../d1_schema.sql"))
                 .map_err(|e| anyhow!("Schema init error: {}", e))
-        }).map_err(|e| anyhow!("Task join error: {}", e))?;
+        })
+        .map_err(|e| anyhow!("Task join error: {}", e))?;
         Ok(())
     }
 
