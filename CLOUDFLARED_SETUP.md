@@ -383,6 +383,44 @@ curl -v https://calendar.stalwart.example.com/health \
 
 ---
 
+## Stalwart Configuration
+
+To enable CalDAV access for the Exchange Gateway, add these settings to your Stalwart `config.toml`:
+
+```toml
+[server.socket."0.0.0.0:8080"]
+protocol = "http"
+
+[server.socket."[::]:8080"]
+protocol = "http"
+
+[authentication.fallback-admin]
+enable = true
+
+[storage]
+backend = "rocksdb"
+
+[certificate.acme]
+enable = true
+
+[lookup.default]
+domain = "example.com"
+
+[jmap]
+enable = true
+
+[dav]
+enable = true
+```
+
+Replace `example.com` with your actual mail domain.
+
+## Database
+
+The Exchange Gateway uses SQLite at `/var/lib/exchange-gateway/gateway.db`. Schema is auto-initialized on first startup.
+
+---
+
 ## Full Docker Compose Example
 
 ```yaml
