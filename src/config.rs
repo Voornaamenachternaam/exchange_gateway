@@ -1,13 +1,13 @@
 // src/config.rs
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
+use std::env;
 use std::fs;
 
 const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
 const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
 
-const ENV_PREFIX: &str = "GATEWAY_";
 const ENV_BIND: &str = "GATEWAY_BIND";
 const ENV_CALDAV_BASE: &str = "GATEWAY_CALDAV_BASE";
 const ENV_DATABASE_PATH: &str = "GATEWAY_DATABASE_PATH";
@@ -32,7 +32,7 @@ pub struct Config {
     pub hmac_secret: SecretString,
     #[serde(default = "default_max_attachment_bytes")]
     pub max_attachment_bytes: usize,
-    #[serde(default)]
+    #[serde(default = "default_room_booking_enabled")]
     pub room_booking_enabled: bool,
     #[serde(default = "default_auth_cache_ttl_secs")]
     pub auth_cache_ttl_secs: u64,
@@ -42,6 +42,10 @@ pub struct Config {
 
 fn default_max_attachment_bytes() -> usize {
     DEFAULT_MAX_ATTACHMENT_BYTES
+}
+
+fn default_room_booking_enabled() -> bool {
+    true
 }
 
 fn default_auth_cache_ttl_secs() -> u64 {
@@ -87,7 +91,7 @@ impl Config {
         if cfg.gateway_host.is_empty() {
             if let Some(host) = extract_host_from_caldav(&cfg.caldav_base) {
                 cfg.gateway_host = host;
-            } else if std::env::var(ENV_GATEWAY_HOST).is_ok() {
+            } else if env::var(ENV_GATEWAY_HOST).is_ok() {
             } else {
                 tracing::warn!(
                     "Config: 'gateway_host' not specified and could not be extracted from 'caldav_base'. Autodiscover responses may be incorrect."
@@ -149,94 +153,122 @@ impl Config {
 }
 
 fn apply_environment_overrides(cfg: &mut Config) {
-    if let Ok(val) = std::env::var(ENV_BIND) {
-        if !val.is_empty() {
+    match env::var(ENV_BIND) {
+        Ok(val) if !val.is_empty() => {
             tracing::debug!("Applying {} from environment", ENV_BIND);
             cfg.bind = val;
         }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("{} not set: {}", ENV_BIND, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_CALDAV_BASE) {
-        if !val.is_empty() {
+    match env::var(ENV_CALDAV_BASE) {
+        Ok(val) if !val.is_empty() => {
             tracing::debug!("Applying {} from environment", ENV_CALDAV_BASE);
             cfg.caldav_base = val;
         }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("{} not set: {}", ENV_CALDAV_BASE, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_DATABASE_PATH) {
-        if !val.is_empty() {
+    match env::var(ENV_DATABASE_PATH) {
+        Ok(val) if !val.is_empty() => {
             tracing::debug!("Applying {} from environment", ENV_DATABASE_PATH);
             cfg.database_path = val;
         }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("{} not set: {}", ENV_DATABASE_PATH, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_HMAC_SECRET) {
-        if !val.is_empty() {
+    match env::var(ENV_HMAC_SECRET) {
+        Ok(val) if !val.is_empty() => {
             tracing::debug!("Applying {} from environment", ENV_HMAC_SECRET);
             cfg.hmac_secret = SecretString::from(val);
         }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("{} not set: {}", ENV_HMAC_SECRET, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_GATEWAY_HOST) {
-        if !val.is_empty() {
+    match env::var(ENV_GATEWAY_HOST) {
+        Ok(val) if !val.is_empty() => {
             tracing::debug!("Applying {} from environment", ENV_GATEWAY_HOST);
             cfg.gateway_host = val;
         }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("{} not set: {}", ENV_GATEWAY_HOST, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_MAIL_DOMAIN) {
-        if !val.is_empty() {
+    match env::var(ENV_MAIL_DOMAIN) {
+        Ok(val) if !val.is_empty() => {
             tracing::debug!("Applying {} from environment", ENV_MAIL_DOMAIN);
             cfg.mail_domain = val;
         }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("{} not set: {}", ENV_MAIL_DOMAIN, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_MAX_ATTACHMENT_BYTES) {
-        if let Ok(parsed) = val.parse::<usize>() {
-            tracing::debug!("Applying {} from environment", ENV_MAX_ATTACHMENT_BYTES);
-            cfg.max_attachment_bytes = parsed;
-        } else {
-            tracing::warn!(
-                "Invalid value for {}: '{}', using default",
-                ENV_MAX_ATTACHMENT_BYTES,
-                val
+    match env::var(ENV_MAX_ATTACHMENT_BYTES) {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_MAX_ATTACHMENT_BYTES);
+                cfg.max_attachment_bytes = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_MAX_ATTACHMENT_BYTES,
+                    val
+                );
+            }
+        },
+        Err(e) => tracing::debug!("{} not set: {}", ENV_MAX_ATTACHMENT_BYTES, e),
+    }
+
+    match env::var(ENV_ROOM_BOOKING_ENABLED) {
+        Ok(val) if !val.is_empty() => {
+            let lower = val.to_lowercase();
+            tracing::debug!("Applying {} from environment", ENV_ROOM_BOOKING_ENABLED);
+            cfg.room_booking_enabled = matches!(
+                lower.as_str(),
+                "1" | "true" | "yes" | "on" | "enabled"
             );
         }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("{} not set: {}", ENV_ROOM_BOOKING_ENABLED, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_ROOM_BOOKING_ENABLED) {
-        let lower = val.to_lowercase();
-        tracing::debug!("Applying {} from environment", ENV_ROOM_BOOKING_ENABLED);
-        cfg.room_booking_enabled = matches!(
-            lower.as_str(),
-            "1" | "true" | "yes" | "on" | "enabled"
-        );
+    match env::var(ENV_AUTH_CACHE_TTL_SECS) {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_TTL_SECS);
+                cfg.auth_cache_ttl_secs = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_AUTH_CACHE_TTL_SECS,
+                    val
+                );
+            }
+        },
+        Err(e) => tracing::debug!("{} not set: {}", ENV_AUTH_CACHE_TTL_SECS, e),
     }
 
-    if let Ok(val) = std::env::var(ENV_AUTH_CACHE_TTL_SECS) {
-        if let Ok(parsed) = val.parse::<u64>() {
-            tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_TTL_SECS);
-            cfg.auth_cache_ttl_secs = parsed;
-        } else {
-            tracing::warn!(
-                "Invalid value for {}: '{}', using default",
-                ENV_AUTH_CACHE_TTL_SECS,
-                val
-            );
-        }
-    }
-
-    if let Ok(val) = std::env::var(ENV_AUTH_CACHE_MAX_ENTRIES) {
-        if let Ok(parsed) = val.parse::<usize>() {
-            tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_MAX_ENTRIES);
-            cfg.auth_cache_max_entries = parsed;
-        } else {
-            tracing::warn!(
-                "Invalid value for {}: '{}', using default",
-                ENV_AUTH_CACHE_MAX_ENTRIES,
-                val
-            );
-        }
+    match env::var(ENV_AUTH_CACHE_MAX_ENTRIES) {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_MAX_ENTRIES);
+                cfg.auth_cache_max_entries = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_AUTH_CACHE_MAX_ENTRIES,
+                    val
+                );
+            }
+        },
+        Err(e) => tracing::debug!("{} not set: {}", ENV_AUTH_CACHE_MAX_ENTRIES, e),
     }
 }
 
