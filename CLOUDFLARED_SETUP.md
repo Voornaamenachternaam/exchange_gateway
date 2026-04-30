@@ -383,6 +383,44 @@ curl -v https://calendar.stalwart.example.com/health \
 
 ---
 
+## Stalwart Configuration
+
+To enable CalDAV access for the Exchange Gateway, add these settings to your Stalwart `config.toml`:
+
+```toml
+[server.socket."0.0.0.0:8080"]
+protocol = "http"
+
+[server.socket."[::]:8080"]
+protocol = "http"
+
+[authentication.fallback-admin]
+enable = true
+
+[storage]
+backend = "rocksdb"
+
+[certificate.acme]
+enable = true
+
+[lookup.default]
+domain = "example.com"
+
+[jmap]
+enable = true
+
+[dav]
+enable = true
+```
+
+Replace `example.com` with your actual mail domain.
+
+## Database
+
+The Exchange Gateway uses SQLite at `/var/lib/exchange-gateway/gateway.db`. Schema is auto-initialized on first startup.
+
+---
+
 ## Full Docker Compose Example
 
 ```yaml
@@ -431,6 +469,51 @@ networks:
 ---
 
 ## Environment Variables Reference
+
+### Exchange Gateway Configuration
+
+All Exchange Gateway settings can be configured via environment variables (prefixed with `GATEWAY_`) or via the TOML config file. Environment variables take precedence over config file values.
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `GATEWAY_BIND` | Listen address (host:port) | `[::]:8134` | Yes |
+| `GATEWAY_CALDAV_BASE` | Stalwart CalDAV URL | - | Yes |
+| `GATEWAY_DATABASE_PATH` | SQLite database path | `/var/lib/exchange-gateway/gateway.db` | No |
+| `GATEWAY_HMAC_SECRET` | HMAC signing secret (min 32 chars) | - | Yes |
+| `GATEWAY_HOST` | Public hostname for Autodiscover | Auto-detected | Yes |
+| `GATEWAY_MAIL_DOMAIN` | Mail domain for calendar items | - | Yes |
+| `GATEWAY_MAX_ATTACHMENT_BYTES` | Max attachment size in bytes | `5242880` (5MB) | No |
+| `GATEWAY_ROOM_BOOKING_ENABLED` | Enable room/resource booking | `true` | No |
+| `GATEWAY_AUTH_CACHE_TTL_SECS` | Auth cache TTL in seconds | `300` | No |
+| `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Max auth cache entries | `10000` | No |
+
+### Boolean Values
+
+For boolean environment variables (like `GATEWAY_ROOM_BOOKING_ENABLED`), the following values are accepted as `true`:
+
+- `1`, `true`, `yes`, `on`, `enabled` (case-insensitive)
+
+Any other value is interpreted as `false`.
+
+### Example Docker Compose Configuration
+
+```yaml
+services:
+  exchange-gateway:
+    environment:
+      # Required
+      - GATEWAY_CALDAV_BASE=http://stalwart:8080/dav/
+      - GATEWAY_HMAC_SECRET=your-32-character-minimum-secret-here
+      - GATEWAY_HOST=calendar.stalwart.example.com
+      - GATEWAY_MAIL_DOMAIN=example.com
+
+      # Optional
+      - GATEWAY_BIND=[::]:8134
+      - GATEWAY_MAX_ATTACHMENT_BYTES=5242880
+      - GATEWAY_ROOM_BOOKING_ENABLED=true
+```
+
+### Cloudflare Tunnel Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
