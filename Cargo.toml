@@ -7,6 +7,9 @@ rust-version = "1.95.0"
 
 [dependencies]
 tokio = { version = "^1.52.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
+reqwest = { version = "^0.12.0", features = ["json", "multipart", "rustls-tls"], default-features = false }
+reqwest-middleware = "^0.3.0"
+reqwest-retry = "^0.6.0"
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
 quick-xml = { version = "^0.39.2", features = ["serialize", "async-tokio", "encoding"] }

@@ -1,5 +1,3 @@
-<!-- CLOUDFLARE_DEPLOYMENT.md -->
-
 # Cloudflare Deployment Guide
 
 ## Overview
