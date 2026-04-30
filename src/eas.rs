@@ -1068,7 +1068,7 @@ async fn handle_ping(
                 .unwrap_or(0);
             let changed = state
                 .storage
-                .list_changes_since_seq(owner, since)
+                .list_changes_since_seq(owner, since, 1000)
                 .await
                 .unwrap_or_default();
             let deleted = state
@@ -1225,7 +1225,7 @@ async fn handle_get_item_estimate(
     };
     let changed = state
         .storage
-        .list_changes_since_seq(owner, since)
+        .list_changes_since_seq(owner, since, 1000)
         .await
         .unwrap_or_default();
     let deleted = state
@@ -1276,7 +1276,7 @@ async fn handle_item_operations(
                 .get_attachment(&owner_lower, file_ref)
                 .await
             {
-                Some(attachment) => {
+                Ok(Some(attachment)) => {
                     let parent_id = &attachment.parent_item_server_id;
                     let item_owner = match state.storage.get_item_owner(parent_id).await {
                         Ok(Some(o)) => o,
@@ -1298,6 +1298,10 @@ async fn handle_item_operations(
                             continue;
                         }
                     };
+                    let calendar_folder_id = crate::ews_folders::folder_id_for(
+                        &item_owner,
+                        crate::ews_folders::DistinguishedFolder::Calendar,
+                    );
                     let enforcement = PermissionEnforcement::new(&state.storage);
                     let perm_ctx = PermissionContext::new(
                         username.to_string(),
@@ -1330,7 +1334,7 @@ async fn handle_item_operations(
                         crate::attachment::render_eas_attachment_content_xml(&attachment)
                     ));
                 }
-                None => {
+                Ok(None) => {
                     responses.push_str(&format!(
                         "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
                         xml_escape(&store),
@@ -1384,13 +1388,13 @@ async fn handle_item_operations(
         };
 
         let calendar_folder_id = crate::ews_folders::folder_id_for(
-            &owner,
+            &owner_lower,
             crate::ews_folders::DistinguishedFolder::Calendar,
         );
         let enforcement = PermissionEnforcement::new(&state.storage);
         let perm_ctx = PermissionContext::new(
             username.to_string(),
-            owner.clone(),
+            owner_lower.clone(),
             calendar_folder_id.clone(),
         );
         match enforcement.can_read_item(&perm_ctx).await {
@@ -1418,7 +1422,7 @@ async fn handle_item_operations(
 
         let lookup = match state
             .storage
-            .get_ews_item_by_server_id(&owner, &server_id)
+            .get_ews_item_by_server_id(&owner_lower, &server_id)
             .await
         {
             Ok(Some(row)) => row,
@@ -1433,7 +1437,11 @@ async fn handle_item_operations(
             }
         };
 
-        let get_future = caldav.get_event(&lookup.resource_href, &owner, password.expose_secret());
+        let get_future = caldav.get_event(
+            &lookup.resource_href,
+            &owner_lower,
+            password.expose_secret(),
+        );
         let Ok(Ok((ics, _etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
             responses.push_str(&format!(
                 "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
@@ -1455,7 +1463,7 @@ async fn handle_item_operations(
         let mut app_data = sync::render_calendar_app_data(&item);
         if let Ok(att_list) = state
             .attachment_manager
-            .get_attachments_for_item(&owner, &server_id)
+            .get_attachments_for_item(&owner_lower, &server_id)
             .await
             && !att_list.is_empty()
         {

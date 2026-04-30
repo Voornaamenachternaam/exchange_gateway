@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD;
 use mime::Mime;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use rusqlite;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 use std::sync::Arc;
@@ -347,6 +348,21 @@ impl From<&str> for AttachmentType {
         match s.to_ascii_lowercase().as_str() {
             "item" => Self::Item,
             _ => Self::File,
+        }
+    }
+}
+
+impl rusqlite::ToSql for AttachmentType {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(rusqlite::types::ToSqlOutput::Borrowed(self.as_str().into()))
+    }
+}
+
+impl rusqlite::types::FromSql for AttachmentType {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "item" => Ok(AttachmentType::Item),
+            _ => Ok(AttachmentType::File),
         }
     }
 }
