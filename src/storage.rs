@@ -3,9 +3,13 @@ use anyhow::{Result, anyhow};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{OptionalExtension, params};
-use rusqlite_from_row::FromRow;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_rusqlite::from_row;
 use std::sync::Arc;
+
+fn convert_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row) -> rusqlite::Result<T> {
+    from_row(row).map_err(|_| rusqlite::Error::InvalidQuery)
+}
 
 pub type SqlPool = Pool<SqliteConnectionManager>;
 
@@ -20,7 +24,7 @@ impl Storage {
     }
 }
 
-#[derive(FromRow, Debug)]
+#[derive(Debug, Deserialize)]
 pub struct JournalRow {
     pub id: i64,
     pub server_id: String,
@@ -28,7 +32,7 @@ pub struct JournalRow {
     pub resource_href: Option<String>,
 }
 
-#[derive(FromRow, Debug)]
+#[derive(Debug, Deserialize)]
 pub struct EwsItemRow {
     pub server_id: String,
     pub resource_href: String,
@@ -77,7 +81,7 @@ pub struct MeetingAttendeeParams<'a> {
     pub sequence: u32,
 }
 
-#[derive(FromRow, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct CalendarExceptionRow {
     pub parent_server_id: String,
     pub exception_start: String,
@@ -86,7 +90,7 @@ pub struct CalendarExceptionRow {
     pub created_at: String,
 }
 
-#[derive(FromRow, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MeetingResponseRow {
     pub request_id: String,
     pub calendar_id: String,
@@ -94,7 +98,7 @@ pub struct MeetingResponseRow {
     pub created_at: String,
 }
 
-#[derive(FromRow, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MeetingStateRow {
     pub uid: String,
     pub owner: String,
@@ -114,7 +118,7 @@ pub struct MeetingStateRow {
     pub last_sequence_time: Option<String>,
 }
 
-#[derive(FromRow, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MeetingAttendeeRow {
     pub meeting_uid: String,
     pub owner: String,
@@ -130,7 +134,7 @@ pub struct MeetingAttendeeRow {
     pub updated_at: String,
 }
 
-#[derive(FromRow, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct SchedulingQueueRow {
     pub id: i64,
     pub meeting_uid: String,
@@ -144,6 +148,35 @@ pub struct SchedulingQueueRow {
     pub error_message: Option<String>,
     pub created_at: String,
     pub processed_at: Option<String>,
+}
+
+// Type-specific row conversion helpers for use with rusqlite query_map/query_row
+fn journal_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<JournalRow> {
+    convert_row(row)
+}
+
+fn ews_item_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<EwsItemRow> {
+    convert_row(row)
+}
+
+fn calendar_exception_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<CalendarExceptionRow> {
+    convert_row(row)
+}
+
+fn meeting_response_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<MeetingResponseRow> {
+    convert_row(row)
+}
+
+fn meeting_state_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<MeetingStateRow> {
+    convert_row(row)
+}
+
+fn meeting_attendee_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<MeetingAttendeeRow> {
+    convert_row(row)
+}
+
+fn scheduling_queue_row_from_row(row: &rusqlite::Row) -> rusqlite::Result<SchedulingQueueRow> {
+    convert_row(row)
 }
 
 impl Storage {
@@ -393,7 +426,7 @@ impl Storage {
                 .map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(
                 rusqlite::params![owner, collection_id, since_timestamp, limit],
-                EwsItemRow::from_row,
+                ews_item_row_from_row,
             )
             .map_err(|e| anyhow!("Query map error: {}", e))?
             .collect::<Result<Vec<_>, _>>()
@@ -457,7 +490,7 @@ impl Storage {
                  ORDER BY im.server_id ASC
                  LIMIT ?3",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1, params.2], EwsItemRow::from_row)
+            stmt.query_map(params![params.0, params.1, params.2], ews_item_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -497,7 +530,7 @@ impl Storage {
             let mut stmt = conn.prepare(
                 "SELECT id, server_id, op, resource_href FROM change_journal WHERE owner = ?1 AND id > ?2 ORDER BY id ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1], JournalRow::from_row)
+            stmt.query_map(params![params.0, params.1], journal_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -597,7 +630,7 @@ impl Storage {
             let mut stmt = conn.prepare(
                 "SELECT server_id, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 ORDER BY updated_at DESC, server_id ASC LIMIT ?2 OFFSET ?3",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1, params.2], EwsItemRow::from_row)
+            stmt.query_map(params![params.0, params.1, params.2], ews_item_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -636,7 +669,7 @@ impl Storage {
             let mut stmt = conn.prepare(
                 "SELECT server_id, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 AND server_id = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(params![params.0, params.1], EwsItemRow::from_row).optional()
+            stmt.query_row(params![params.0, params.1], ews_item_row_from_row).optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
@@ -751,7 +784,7 @@ impl Storage {
             let mut stmt = conn.prepare(
                 "SELECT parent_server_id, exception_start, server_id, is_deleted, created_at FROM calendar_exceptions WHERE owner = ?1 AND parent_server_id = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1], CalendarExceptionRow::from_row)
+            stmt.query_map(params![params.0, params.1], calendar_exception_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -778,7 +811,7 @@ impl Storage {
             let mut stmt = conn.prepare(
                 "SELECT parent_server_id, exception_start, server_id, is_deleted, created_at FROM calendar_exceptions WHERE owner = ?1 AND parent_server_id = ?2 AND exception_start = ?3",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(params![params.0, params.1, params.2], CalendarExceptionRow::from_row).optional()
+            stmt.query_row(params![params.0, params.1, params.2], calendar_exception_row_from_row).optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
@@ -851,7 +884,7 @@ impl Storage {
             let mut stmt = conn.prepare(
                 "SELECT request_id, calendar_id, user_response, created_at FROM meeting_response WHERE owner = ?1 AND request_id = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(params![params.0, params.1], MeetingResponseRow::from_row).optional()
+            stmt.query_row(params![params.0, params.1], meeting_response_row_from_row).optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
@@ -907,7 +940,7 @@ impl Storage {
                 "SELECT uid, owner, sequence, state, state_flags, is_organizer, organizer_email, organizer_name, subject, location, start_time, end_time, timezone, created_at, updated_at, last_sequence_time
                  FROM meeting_state WHERE owner = ?1 AND uid = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_row(params![params.0, params.1], MeetingStateRow::from_row).optional()
+            stmt.query_row(params![params.0, params.1], meeting_state_row_from_row).optional()
                 .map_err(|e| anyhow!("Query error: {}", e))
         })
         .await
@@ -975,7 +1008,7 @@ impl Storage {
                 "SELECT meeting_uid, owner, email, name, status, role, response_time, proposed_start, proposed_end, sequence, created_at, updated_at
                  FROM meeting_attendee WHERE owner = ?1 AND meeting_uid = ?2 ORDER BY email ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1], MeetingAttendeeRow::from_row)
+            stmt.query_map(params![params.0, params.1], meeting_attendee_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -1070,7 +1103,7 @@ impl Storage {
                 "SELECT id, meeting_uid, owner, operation, sequence, ical_data, status, attempts, last_attempt, error_message, created_at, processed_at
                  FROM meeting_scheduling_queue WHERE owner = ?1 AND status = 'pending' ORDER BY id ASC LIMIT ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1], SchedulingQueueRow::from_row)
+            stmt.query_map(params![params.0, params.1], scheduling_queue_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
@@ -1115,7 +1148,7 @@ impl Storage {
                 "SELECT uid, owner, sequence, state, state_flags, is_organizer, organizer_email, organizer_name, subject, location, start_time, end_time, timezone, created_at, updated_at, last_sequence_time
                  FROM meeting_state WHERE owner = ?1 AND start_time >= ?2 AND end_time <= ?3 ORDER BY start_time ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
-            stmt.query_map(params![params.0, params.1, params.2], MeetingStateRow::from_row)
+            stmt.query_map(params![params.0, params.1, params.2], meeting_state_row_from_row)
                 .map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| anyhow!("Collect error: {}", e))
