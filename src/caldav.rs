@@ -3,27 +3,20 @@ use crate::config::Config;
 use anyhow::Result;
 use const_hex;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use uuid::Uuid;
 
 pub struct CaldavClient {
     base: String,
-    client: ClientWithMiddleware,
+    client: reqwest::Client,
 }
 
 impl CaldavClient {
     pub fn new(cfg: &Config) -> Result<Self> {
-        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
-        let client = ClientBuilder::new(
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()?,
-        )
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
         Ok(Self {
             base: cfg.caldav_base.clone(),
             client,
@@ -31,14 +24,9 @@ impl CaldavClient {
     }
 
     pub fn new_from_base(caldav_base: &str) -> Result<Self> {
-        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(2);
-        let client = ClientBuilder::new(
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()?,
-        )
-        .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-        .build();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
         Ok(Self {
             base: caldav_base.to_string(),
             client,
@@ -73,7 +61,7 @@ impl CaldavClient {
         &self.base
     }
 
-    pub fn client(&self) -> &ClientWithMiddleware {
+    pub fn client(&self) -> &reqwest::Client {
         &self.client
     }
 

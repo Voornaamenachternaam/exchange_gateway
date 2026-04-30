@@ -1715,7 +1715,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
 
     let item = match state
         .storage
-        .get_ews_item_by_server_id(&owner, &item_id)
+        .get_ews_item_by_server_id(&item_owner, &item_id)
         .await
     {
         Ok(v) => v,
@@ -1752,14 +1752,14 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         }
     };
     let calendar_item_xml = match caldav
-        .get_event(&item.resource_href, &owner, auth.password.expose_secret())
+        .get_event(&item.resource_href, &item_owner, auth.password.expose_secret())
         .await
     {
         Ok((ics, _)) => match parse_ics_event(&ics) {
             Some(ci) => {
                 let att_list = state
                     .attachment_manager
-                    .get_attachments_for_item(&owner, &item.server_id)
+                    .get_attachments_for_item(&item_owner, &item.server_id)
                     .await
                     .unwrap_or_default();
                 let has_atts = !att_list.is_empty();
@@ -1883,9 +1883,9 @@ async fn handle_sync_folder_items(
     };
     let journal_rows = match state
         .storage
-        .list_journal_since_seq(owner, since, upper_bound, max_changes.saturating_add(1))
+        .list_journal_since_seq(owner, since)
         .await
-    {
+        {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "An internal error occurred");
@@ -1925,7 +1925,7 @@ async fn handle_sync_folder_items(
     let mut changes_xml = String::new();
     let mut last_returned_seq = since;
     for row in visible_rows {
-        last_returned_seq = row.seq;
+        last_returned_seq = row.id;
         if !emitted_ids.insert(row.server_id.clone()) {
             continue;
         }

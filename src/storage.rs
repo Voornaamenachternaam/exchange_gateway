@@ -197,7 +197,7 @@ impl Storage {
             let conn = pool.get().map_err(|e| anyhow!("Pool get error: {}", e))?;
             conn.execute_batch(include_str!("../d1_schema.sql"))
                 .map_err(|e| anyhow!("Schema init error: {}", e))
-        });
+        }).map_err(|e| anyhow!("Task join error: {}", e))?;
         Ok(())
     }
 
@@ -1173,7 +1173,7 @@ impl Storage {
             if attachment.is_inline { 1i32 } else { 0i32 },
             attachment.content_id.clone(),
             attachment.content_location.clone(),
-            attachment.attachment_type.clone(),
+            attachment.attachment_type.as_str().to_string(),
             attachment.last_modified_time.clone(),
         );
 
@@ -1204,7 +1204,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, parent_item_server_id, owner, name, content_type, content_size, content_base64, is_inline, content_id, content_location, attachment_type, last_modified_time
+                "SELECT id, parent_item_server_id, owner, name, content_type, content_size, content_base64, is_inline, content_id, content_location, attachment_type, last_modified_time, created_at, updated_at
                  FROM calendar_attachment WHERE owner = ?1 AND id = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_row(params![params.0, params.1], |row| {
@@ -1219,8 +1219,10 @@ impl Storage {
                     is_inline: row.get::<_, i32>(7)? != 0,
                     content_id: row.get(8)?,
                     content_location: row.get(9)?,
-                    attachment_type: row.get(10)?,
+                    attachment_type: row.get::<_, String>(10)?.as_str().into(),
                     last_modified_time: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             }).optional().map_err(|e| anyhow!("Query error: {}", e))
         })
@@ -1239,7 +1241,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, parent_item_server_id, owner, name, content_type, content_size, content_base64, is_inline, content_id, content_location, attachment_type, last_modified_time
+                "SELECT id, parent_item_server_id, owner, name, content_type, content_size, content_base64, is_inline, content_id, content_location, attachment_type, last_modified_time, created_at, updated_at
                  FROM calendar_attachment WHERE owner = ?1 AND parent_item_server_id = ?2",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(params![params.0, params.1], |row| {
@@ -1254,8 +1256,10 @@ impl Storage {
                     is_inline: row.get::<_, i32>(7)? != 0,
                     content_id: row.get(8)?,
                     content_location: row.get(9)?,
-                    attachment_type: row.get(10)?,
+                    attachment_type: row.get::<_, String>(10)?.as_str().into(),
                     last_modified_time: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             }).map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
@@ -1310,13 +1314,15 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn
-                .prepare("SELECT id, email, name FROM room_list ORDER BY name ASC")
+                .prepare("SELECT id, email, name, created_at, updated_at FROM room_list ORDER BY name ASC")
                 .map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map([], |row| {
                 Ok(crate::room::RoomListRecord {
                     id: row.get(0)?,
                     email: row.get(1)?,
                     name: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .map_err(|e| anyhow!("Query map error: {}", e))?
@@ -1346,7 +1352,7 @@ impl Storage {
 
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-            let mut stmt = conn.prepare("SELECT id, room_list_email, email, name, capacity, is_available FROM room ORDER BY name ASC")
+            let mut stmt = conn.prepare("SELECT id, room_list_email, email, name, capacity, is_available, created_at, updated_at FROM room ORDER BY name ASC")
                 .map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map([], |row| {
                 Ok(crate::room::RoomRecord {
@@ -1356,6 +1362,8 @@ impl Storage {
                     name: row.get(3)?,
                     capacity: row.get(4)?,
                     is_available: row.get::<_, i32>(5)? != 0,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             }).map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
@@ -1414,7 +1422,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let mut stmt = conn.prepare(
-                "SELECT id, room_list_email, email, name, capacity, is_available FROM room WHERE room_list_email = ?1 ORDER BY name ASC",
+                "SELECT id, room_list_email, email, name, capacity, is_available, created_at, updated_at FROM room WHERE room_list_email = ?1 ORDER BY name ASC",
             ).map_err(|e| anyhow!("Prepare error: {}", e))?;
             stmt.query_map(params![room_list_email], |row| {
                 Ok(crate::room::RoomRecord {
@@ -1424,6 +1432,8 @@ impl Storage {
                     name: row.get(3)?,
                     capacity: row.get(4)?,
                     is_available: row.get::<_, i32>(5)? != 0,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             }).map_err(|e| anyhow!("Query map error: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
