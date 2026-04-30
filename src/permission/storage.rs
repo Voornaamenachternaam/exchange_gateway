@@ -3,6 +3,7 @@ use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAudit
 use crate::storage::Storage;
 use anyhow::{Result, anyhow};
 use rusqlite::OptionalExtension;
+use serde::Deserialize;
 use serde_rusqlite::from_row;
 
 fn convert_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row) -> rusqlite::Result<T> {
