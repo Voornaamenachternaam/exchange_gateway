@@ -96,8 +96,8 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host,
     );
 
-    let storage = Arc::new(Storage::new(&config.database_path)?);
-    storage.init_schema()?;
+    let storage = Arc::new(Storage::new(&format!("sqlite:{}?mode=rwc", config.database_path)).await?);
+    storage.init_schema().await?;
 
     let app_state = Arc::new(AppState::new(config.clone(), storage));
 
