@@ -73,17 +73,12 @@ impl Config {
             }
         };
 
-        let secret = SecretString::from(content.clone());
-        let mut cfg: Config = match toml::from_str::<Config>(secret.expose_secret()) {
-            Ok(c) => c,
-            Err(_) if content.trim().is_empty() => Config::default(),
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to parse config TOML at '{}': {}",
-                    path,
-                    e
-                ));
-            }
+        let mut cfg: Config = if content.trim().is_empty() {
+            Config::default()
+        } else {
+            let secret = SecretString::from(content);
+            toml::from_str(secret.expose_secret())
+                .map_err(|e| anyhow::anyhow!("Failed to parse config TOML at '{}': {}", path, e))?
         };
 
         apply_environment_overrides(&mut cfg);
@@ -91,7 +86,6 @@ impl Config {
         if cfg.gateway_host.is_empty() {
             if let Some(host) = extract_host_from_caldav(&cfg.caldav_base) {
                 cfg.gateway_host = host;
-            } else if env::var(ENV_GATEWAY_HOST).is_ok() {
             } else {
                 tracing::warn!(
                     "Config: 'gateway_host' not specified and could not be extracted from 'caldav_base'. Autodiscover responses may be incorrect."
@@ -152,63 +146,35 @@ impl Config {
     }
 }
 
+fn get_env_with_fallback(primary: &str, fallback: Option<&str>) -> Option<String> {
+    match env::var(primary) {
+        Ok(val) if !val.is_empty() => Some(val),
+        Ok(_) | Err(_) => fallback.and_then(|f| env::var(f).ok().filter(|v| !v.is_empty())),
+    }
+}
+
+fn apply_env_string(cfg: &mut Config, value: Option<String>, setter: impl FnOnce(&mut Config, String)) {
+    if let Some(val) = value {
+        tracing::debug!("Applying configuration from environment");
+        setter(cfg, val);
+    }
+}
+
 fn apply_environment_overrides(cfg: &mut Config) {
-    match env::var(ENV_BIND) {
-        Ok(val) if !val.is_empty() => {
-            tracing::debug!("Applying {} from environment", ENV_BIND);
-            cfg.bind = val;
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("{} not set: {}", ENV_BIND, e),
+    apply_env_string(cfg, get_env_with_fallback(ENV_BIND, None), |c, v| c.bind = v);
+    apply_env_string(cfg, get_env_with_fallback(ENV_CALDAV_BASE, None), |c, v| c.caldav_base = v);
+    apply_env_string(cfg, get_env_with_fallback(ENV_DATABASE_PATH, None), |c, v| c.database_path = v);
+
+    if let Some(val) = get_env_with_fallback(ENV_HMAC_SECRET, None) {
+        tracing::debug!("Applying {} from environment", ENV_HMAC_SECRET);
+        cfg.hmac_secret = SecretString::from(val);
     }
 
-    match env::var(ENV_CALDAV_BASE) {
-        Ok(val) if !val.is_empty() => {
-            tracing::debug!("Applying {} from environment", ENV_CALDAV_BASE);
-            cfg.caldav_base = val;
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("{} not set: {}", ENV_CALDAV_BASE, e),
-    }
+    apply_env_string(cfg, get_env_with_fallback(ENV_GATEWAY_HOST, None), |c, v| c.gateway_host = v);
+    apply_env_string(cfg, get_env_with_fallback(ENV_MAIL_DOMAIN, None), |c, v| c.mail_domain = v);
 
-    match env::var(ENV_DATABASE_PATH) {
-        Ok(val) if !val.is_empty() => {
-            tracing::debug!("Applying {} from environment", ENV_DATABASE_PATH);
-            cfg.database_path = val;
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("{} not set: {}", ENV_DATABASE_PATH, e),
-    }
-
-    match env::var(ENV_HMAC_SECRET) {
-        Ok(val) if !val.is_empty() => {
-            tracing::debug!("Applying {} from environment", ENV_HMAC_SECRET);
-            cfg.hmac_secret = SecretString::from(val);
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("{} not set: {}", ENV_HMAC_SECRET, e),
-    }
-
-    match env::var(ENV_GATEWAY_HOST) {
-        Ok(val) if !val.is_empty() => {
-            tracing::debug!("Applying {} from environment", ENV_GATEWAY_HOST);
-            cfg.gateway_host = val;
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("{} not set: {}", ENV_GATEWAY_HOST, e),
-    }
-
-    match env::var(ENV_MAIL_DOMAIN) {
-        Ok(val) if !val.is_empty() => {
-            tracing::debug!("Applying {} from environment", ENV_MAIL_DOMAIN);
-            cfg.mail_domain = val;
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("{} not set: {}", ENV_MAIL_DOMAIN, e),
-    }
-
-    match env::var(ENV_MAX_ATTACHMENT_BYTES) {
-        Ok(val) => match val.parse::<usize>() {
+    if let Some(val) = env::var(ENV_MAX_ATTACHMENT_BYTES).ok().filter(|v| !v.is_empty()) {
+        match val.parse::<usize>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_MAX_ATTACHMENT_BYTES);
                 cfg.max_attachment_bytes = parsed;
@@ -220,25 +186,20 @@ fn apply_environment_overrides(cfg: &mut Config) {
                     val
                 );
             }
-        },
-        Err(e) => tracing::debug!("{} not set: {}", ENV_MAX_ATTACHMENT_BYTES, e),
-    }
-
-    match env::var(ENV_ROOM_BOOKING_ENABLED) {
-        Ok(val) if !val.is_empty() => {
-            let lower = val.to_lowercase();
-            tracing::debug!("Applying {} from environment", ENV_ROOM_BOOKING_ENABLED);
-            cfg.room_booking_enabled = matches!(
-                lower.as_str(),
-                "1" | "true" | "yes" | "on" | "enabled"
-            );
         }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("{} not set: {}", ENV_ROOM_BOOKING_ENABLED, e),
     }
 
-    match env::var(ENV_AUTH_CACHE_TTL_SECS) {
-        Ok(val) => match val.parse::<u64>() {
+    if let Some(val) = get_env_with_fallback(ENV_ROOM_BOOKING_ENABLED, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_ROOM_BOOKING_ENABLED);
+        cfg.room_booking_enabled = matches!(
+            lower.as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        );
+    }
+
+    if let Some(val) = env::var(ENV_AUTH_CACHE_TTL_SECS).ok().filter(|v| !v.is_empty()) {
+        match val.parse::<u64>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_TTL_SECS);
                 cfg.auth_cache_ttl_secs = parsed;
@@ -250,12 +211,11 @@ fn apply_environment_overrides(cfg: &mut Config) {
                     val
                 );
             }
-        },
-        Err(e) => tracing::debug!("{} not set: {}", ENV_AUTH_CACHE_TTL_SECS, e),
+        }
     }
 
-    match env::var(ENV_AUTH_CACHE_MAX_ENTRIES) {
-        Ok(val) => match val.parse::<usize>() {
+    if let Some(val) = env::var(ENV_AUTH_CACHE_MAX_ENTRIES).ok().filter(|v| !v.is_empty()) {
+        match val.parse::<usize>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_AUTH_CACHE_MAX_ENTRIES);
                 cfg.auth_cache_max_entries = parsed;
@@ -267,8 +227,7 @@ fn apply_environment_overrides(cfg: &mut Config) {
                     val
                 );
             }
-        },
-        Err(e) => tracing::debug!("{} not set: {}", ENV_AUTH_CACHE_MAX_ENTRIES, e),
+        }
     }
 }
 
@@ -380,5 +339,46 @@ mod tests {
                 host, should_pass
             );
         }
+    }
+
+    #[test]
+    fn test_get_env_with_fallback_primary_takes_precedence() {
+        env::set_var("TEST_PRIMARY", "primary_value");
+        env::set_var("TEST_FALLBACK", "fallback_value");
+        let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
+        assert_eq!(result, Some("primary_value".to_string()));
+        env::remove_var("TEST_PRIMARY");
+        env::remove_var("TEST_FALLBACK");
+    }
+
+    #[test]
+    fn test_get_env_with_fallback_uses_fallback() {
+        env::set_var("TEST_FALLBACK", "fallback_value");
+        let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
+        assert_eq!(result, Some("fallback_value".to_string()));
+        env::remove_var("TEST_FALLBACK");
+    }
+
+    #[test]
+    fn test_get_env_with_fallback_empty_string_ignored() {
+        env::set_var("TEST_FALLBACK", "fallback_value");
+        let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
+        assert_eq!(result, Some("fallback_value".to_string()));
+        env::remove_var("TEST_FALLBACK");
+    }
+
+    #[test]
+    fn test_apply_env_string() {
+        let mut cfg = Config::default();
+        apply_env_string(&mut cfg, Some("test_value".to_string()), |c, v| c.bind = v);
+        assert_eq!(cfg.bind, "test_value");
+    }
+
+    #[test]
+    fn test_apply_env_string_none() {
+        let mut cfg = Config::default();
+        let original = cfg.bind.clone();
+        apply_env_string(&mut cfg, None, |c, v| c.bind = v);
+        assert_eq!(cfg.bind, original);
     }
 }
