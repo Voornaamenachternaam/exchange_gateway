@@ -1,6 +1,6 @@
 // src/storage.rs
 use anyhow::{Result, anyhow};
-use sqlx::{Pool, Sqlite, FromRow};
+use sqlx::{FromRow, Pool, Sqlite};
 use std::sync::Arc;
 
 pub type SqlPool = Pool<Sqlite>;
@@ -187,7 +187,7 @@ impl Storage {
         collection_id: &str,
     ) -> Result<Option<(String, Option<String>)>> {
         let row = sqlx::query(
-            "SELECT sync_key, token FROM sync_state WHERE owner = ?1 AND collection_id = ?2"
+            "SELECT sync_key, token FROM sync_state WHERE owner = ?1 AND collection_id = ?2",
         )
         .bind(owner)
         .bind(collection_id)
@@ -235,7 +235,9 @@ impl Storage {
         .await
         .map_err(|e| anyhow!("DB error: {}", e))?;
 
-        sqlx::Commit::commit(tx).await.map_err(|e| anyhow!("Commit error: {}", e))?;
+        sqlx::Commit::commit(tx)
+            .await
+            .map_err(|e| anyhow!("Commit error: {}", e))?;
         Ok(())
     }
 
@@ -296,12 +298,14 @@ impl Storage {
             .await
             .map_err(|e| anyhow!("Transaction error: {}", e))?;
 
-        sqlx::query("INSERT OR REPLACE INTO deleted_item_tombstone (owner, server_id) VALUES (?1, ?2)")
-            .bind(owner)
-            .bind(server_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO deleted_item_tombstone (owner, server_id) VALUES (?1, ?2)",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| anyhow!("DB error: {}", e))?;
 
         sqlx::query("INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')")
             .bind(owner)
@@ -310,7 +314,9 @@ impl Storage {
             .await
             .map_err(|e| anyhow!("DB error: {}", e))?;
 
-        sqlx::Commit::commit(tx).await.map_err(|e| anyhow!("Commit error: {}", e))?;
+        sqlx::Commit::commit(tx)
+            .await
+            .map_err(|e| anyhow!("Commit error: {}", e))?;
         Ok(())
     }
 
@@ -327,7 +333,7 @@ impl Storage {
              WHERE im.owner = ?1 AND im.resource_href LIKE ?2 || '%'
              AND im.updated_at > ?3
              ORDER BY im.updated_at ASC, im.server_id ASC
-             LIMIT ?4"
+             LIMIT ?4",
         )
         .bind(owner)
         .bind(collection_id)
@@ -345,7 +351,7 @@ impl Storage {
             .fetch_all(self.pool.as_ref())
             .await
             .map_err(|e| anyhow!("Query error: {}", e))?;
-        
+
         Ok(rows.into_iter().map(|r| r.get(0)).collect())
     }
 
@@ -370,7 +376,7 @@ impl Storage {
                  SELECT server_id FROM change_journal WHERE owner = ?1 AND id > ?2 AND op = 'upsert'
              )
              ORDER BY im.server_id ASC
-             LIMIT ?3"
+             LIMIT ?3",
         )
         .bind(owner)
         .bind(since)
@@ -391,7 +397,7 @@ impl Storage {
             .fetch_all(self.pool.as_ref())
             .await
             .map_err(|e| anyhow!("Query error: {}", e))?;
-        
+
         Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
@@ -440,7 +446,7 @@ impl Storage {
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| anyhow!("Query error: {}", e))?;
-        
+
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
 
@@ -483,13 +489,15 @@ impl Storage {
     }
 
     pub async fn get_ews_sync_state(&self, owner: &str, folder_id: &str) -> Result<Option<String>> {
-        let row = sqlx::query("SELECT sync_state FROM ews_sync_state WHERE user_email = ?1 AND folder_id = ?2")
-            .bind(owner)
-            .bind(folder_id)
-            .fetch_optional(self.pool.as_ref())
-            .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
-        
+        let row = sqlx::query(
+            "SELECT sync_state FROM ews_sync_state WHERE user_email = ?1 AND folder_id = ?2",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| anyhow!("Query error: {}", e))?;
+
         Ok(row.map(|r| r.get(0)))
     }
 
@@ -535,7 +543,7 @@ impl Storage {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO ews_sync_state (user_email, folder_id, sync_state) VALUES (?1, ?2, ?3)
-             ON CONFLICT(user_email, folder_id) DO UPDATE SET sync_state = ?3"
+             ON CONFLICT(user_email, folder_id) DO UPDATE SET sync_state = ?3",
         )
         .bind(owner)
         .bind(folder_id)
@@ -752,13 +760,15 @@ impl Storage {
         meeting_uid: &str,
         email: &str,
     ) -> Result<()> {
-        sqlx::query("DELETE FROM meeting_attendee WHERE owner = ?1 AND meeting_uid = ?2 AND email = ?3")
-            .bind(owner)
-            .bind(meeting_uid)
-            .bind(email)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+        sqlx::query(
+            "DELETE FROM meeting_attendee WHERE owner = ?1 AND meeting_uid = ?2 AND email = ?3",
+        )
+        .bind(owner)
+        .bind(meeting_uid)
+        .bind(email)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| anyhow!("DB error: {}", e))?;
         Ok(())
     }
 
@@ -901,7 +911,10 @@ impl Storage {
             is_inline: r.get::<_, i32>(7) != 0,
             content_id: r.get(8),
             content_location: r.get(9),
-            attachment_type: r.get::<_, String>(10).map(|s| s.as_str().into()).unwrap_or_default(),
+            attachment_type: r
+                .get::<_, String>(10)
+                .map(|s| s.as_str().into())
+                .unwrap_or_default(),
             last_modified_time: r.get(11),
             created_at: r.get(12),
             updated_at: r.get(13),
@@ -923,22 +936,28 @@ impl Storage {
         .await
         .map_err(|e| anyhow!("Query error: {}", e))?;
 
-        Ok(rows.into_iter().map(|r| crate::attachment::AttachmentRecord {
-            id: r.get(0),
-            parent_item_server_id: r.get(1),
-            owner: r.get(2),
-            name: r.get(3),
-            content_type: r.get(4),
-            content_size: r.get(5),
-            content_base64: r.get(6),
-            is_inline: r.get::<_, i32>(7) != 0,
-            content_id: r.get(8),
-            content_location: r.get(9),
-            attachment_type: r.get::<_, String>(10).map(|s| s.as_str().into()).unwrap_or_default(),
-            last_modified_time: r.get(11),
-            created_at: r.get(12),
-            updated_at: r.get(13),
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::attachment::AttachmentRecord {
+                id: r.get(0),
+                parent_item_server_id: r.get(1),
+                owner: r.get(2),
+                name: r.get(3),
+                content_type: r.get(4),
+                content_size: r.get(5),
+                content_base64: r.get(6),
+                is_inline: r.get::<_, i32>(7) != 0,
+                content_id: r.get(8),
+                content_location: r.get(9),
+                attachment_type: r
+                    .get::<_, String>(10)
+                    .map(|s| s.as_str().into())
+                    .unwrap_or_default(),
+                last_modified_time: r.get(11),
+                created_at: r.get(12),
+                updated_at: r.get(13),
+            })
+            .collect())
     }
 
     pub async fn delete_calendar_attachment(&self, owner: &str, attachment_id: &str) -> Result<()> {
@@ -954,7 +973,7 @@ impl Storage {
     pub async fn upsert_room_list(&self, room_list: &crate::room::RoomListRecord) -> Result<()> {
         sqlx::query(
             "INSERT INTO room_list (id, email, name) VALUES (?1, ?2, ?3)
-             ON CONFLICT(email) DO UPDATE SET name = ?3, updated_at = CURRENT_TIMESTAMP"
+             ON CONFLICT(email) DO UPDATE SET name = ?3, updated_at = CURRENT_TIMESTAMP",
         )
         .bind(&room_list.id)
         .bind(&room_list.email)
@@ -966,18 +985,23 @@ impl Storage {
     }
 
     pub async fn get_room_lists(&self, _owner: &str) -> Result<Vec<crate::room::RoomListRecord>> {
-        let rows = sqlx::query("SELECT id, email, name, created_at, updated_at FROM room_list ORDER BY name ASC")
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
+        let rows = sqlx::query(
+            "SELECT id, email, name, created_at, updated_at FROM room_list ORDER BY name ASC",
+        )
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| anyhow!("Query error: {}", e))?;
 
-        Ok(rows.into_iter().map(|r| crate::room::RoomListRecord {
-            id: r.get(0),
-            email: r.get(1),
-            name: r.get(2),
-            created_at: r.get(3),
-            updated_at: r.get(4),
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::room::RoomListRecord {
+                id: r.get(0),
+                email: r.get(1),
+                name: r.get(2),
+                created_at: r.get(3),
+                updated_at: r.get(4),
+            })
+            .collect())
     }
 
     pub async fn delete_room_list(&self, _owner: &str, email: &str) -> Result<()> {
@@ -995,16 +1019,19 @@ impl Storage {
             .await
             .map_err(|e| anyhow!("Query error: {}", e))?;
 
-        Ok(rows.into_iter().map(|r| crate::room::RoomRecord {
-            id: r.get(0),
-            room_list_email: r.get(1),
-            email: r.get(2),
-            name: r.get(3),
-            capacity: r.get(4),
-            is_available: r.get::<_, i32>(5) != 0,
-            created_at: r.get(6),
-            updated_at: r.get(7),
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::room::RoomRecord {
+                id: r.get(0),
+                room_list_email: r.get(1),
+                email: r.get(2),
+                name: r.get(3),
+                capacity: r.get(4),
+                is_available: r.get::<_, i32>(5) != 0,
+                created_at: r.get(6),
+                updated_at: r.get(7),
+            })
+            .collect())
     }
 
     pub async fn delete_room(&self, _owner: &str, email: &str) -> Result<()> {
@@ -1046,15 +1073,18 @@ impl Storage {
         .await
         .map_err(|e| anyhow!("Query error: {}", e))?;
 
-        Ok(rows.into_iter().map(|r| crate::room::RoomRecord {
-            id: r.get(0),
-            room_list_email: r.get(1),
-            email: r.get(2),
-            name: r.get(3),
-            capacity: r.get(4),
-            is_available: r.get::<_, i32>(5) != 0,
-            created_at: r.get(6),
-            updated_at: r.get(7),
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::room::RoomRecord {
+                id: r.get(0),
+                room_list_email: r.get(1),
+                email: r.get(2),
+                name: r.get(3),
+                capacity: r.get(4),
+                is_available: r.get::<_, i32>(5) != 0,
+                created_at: r.get(6),
+                updated_at: r.get(7),
+            })
+            .collect())
     }
 }
