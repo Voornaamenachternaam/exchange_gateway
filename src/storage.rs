@@ -3,6 +3,7 @@ use anyhow::{Result, anyhow};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{OptionalExtension, params};
+use serde::Deserialize;
 use serde_rusqlite::from_row;
 use std::sync::Arc;
 
