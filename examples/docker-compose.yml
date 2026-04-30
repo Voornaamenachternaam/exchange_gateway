@@ -1,0 +1,60 @@
+# docker-compose.yml
+# Cloudflare Tunnel + Exchange Gateway Setup
+# 
+# This docker-compose.yml includes both:
+#   1. Exchange Gateway (calendar protocol proxy)
+#   2. Cloudflare Tunnel (cloudflared) for TLS termination
+#
+# Prerequisites:
+#   1. Create a Cloudflare Tunnel in Dashboard (Networks → Tunnels)
+#   2. Download credentials.json from tunnel settings
+#   3. Update config.yml with your tunnel ID
+#   4. Set up DNS CNAME in Cloudflare Dashboard
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose logs -f cloudflared
+
+services:
+  exchange-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: exchange-gateway
+    image: exchange-gateway:latest
+    restart: unless-stopped
+    expose:
+      - "8134"
+    environment:
+      - RUST_LOG=info
+      - TZ=UTC
+    volumes:
+      - ./config.toml:/etc/exchange-gateway/config.toml:ro
+      - exchange-gateway-data:/var/lib/exchange-gateway
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    depends_on:
+      exchange-gateway:
+        condition: service_healthy
+    command: tunnel run --config /etc/cloudflared/config.yml
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    network_mode: service:exchange-gateway
+
+volumes:
+  exchange-gateway-data:
+    driver: local
+
+networks:
+  default:
+    name: exchange-gateway-network

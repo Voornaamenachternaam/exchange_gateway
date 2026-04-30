@@ -1,6 +1,6 @@
 // src/storage.rs
 use anyhow::{Result, anyhow};
-use sqlx::{FromRow, Pool, Sqlite};
+use sqlx::{FromRow, Pool, Row, Sqlite};
 use std::sync::Arc;
 
 pub type SqlPool = Pool<Sqlite>;
@@ -235,7 +235,7 @@ impl Storage {
         .await
         .map_err(|e| anyhow!("DB error: {}", e))?;
 
-        sqlx::Commit::commit(tx)
+        tx.commit()
             .await
             .map_err(|e| anyhow!("Commit error: {}", e))?;
         Ok(())
@@ -314,7 +314,7 @@ impl Storage {
             .await
             .map_err(|e| anyhow!("DB error: {}", e))?;
 
-        sqlx::Commit::commit(tx)
+        tx.commit()
             .await
             .map_err(|e| anyhow!("Commit error: {}", e))?;
         Ok(())
@@ -908,12 +908,12 @@ impl Storage {
             content_type: r.get(4),
             content_size: r.get(5),
             content_base64: r.get(6),
-            is_inline: r.get::<_, i32>(7) != 0,
+            is_inline: r.get::<i32, _>(7) != 0,
             content_id: r.get(8),
             content_location: r.get(9),
             attachment_type: r
-                .get::<_, String>(10)
-                .map(|s| s.as_str().into())
+                .get::<Option<String>, _>(10)
+                .map(|s| crate::attachment::AttachmentType::from(s.as_str()))
                 .unwrap_or_default(),
             last_modified_time: r.get(11),
             created_at: r.get(12),
@@ -946,12 +946,12 @@ impl Storage {
                 content_type: r.get(4),
                 content_size: r.get(5),
                 content_base64: r.get(6),
-                is_inline: r.get::<_, i32>(7) != 0,
+                is_inline: r.get::<i32, _>(7) != 0,
                 content_id: r.get(8),
                 content_location: r.get(9),
                 attachment_type: r
-                    .get::<_, String>(10)
-                    .map(|s| s.as_str().into())
+                    .get::<Option<String>, _>(10)
+                    .map(|s| crate::attachment::AttachmentType::from(s.as_str()))
                     .unwrap_or_default(),
                 last_modified_time: r.get(11),
                 created_at: r.get(12),
@@ -1027,7 +1027,7 @@ impl Storage {
                 email: r.get(2),
                 name: r.get(3),
                 capacity: r.get(4),
-                is_available: r.get::<_, i32>(5) != 0,
+                is_available: r.get::<i32, _>(5) != 0,
                 created_at: r.get(6),
                 updated_at: r.get(7),
             })
@@ -1081,7 +1081,7 @@ impl Storage {
                 email: r.get(2),
                 name: r.get(3),
                 capacity: r.get(4),
-                is_available: r.get::<_, i32>(5) != 0,
+                is_available: r.get::<i32, _>(5) != 0,
                 created_at: r.get(6),
                 updated_at: r.get(7),
             })

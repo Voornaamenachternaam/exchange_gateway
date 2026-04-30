@@ -4,7 +4,25 @@
 
 ## Overview
 
-The Exchange Gateway uses a simplified architecture with local SQLite database and Cloudflare Worker for TLS termination. All Exchange protocol traffic is proxied through the Cloudflare Worker to the Exchange Gateway container running locally.
+The Exchange Gateway uses Cloudflare Tunnel (cloudflared) for TLS termination. Cloudflare terminates TLS at their edge network, and the tunnel provides encrypted transport to your origin server. No Cloudflare Workers are required.
+
+## Architecture
+
+```
+Outlook/Exchange Client
+        |
+        v (HTTPS)
+Cloudflare Edge (TLS terminated automatically)
+        |
+        v (Encrypted HTTP/2 via tunnel)
+cloudflared Tunnel -> exchange-gateway container (HTTP on port 8134)
+        |
+        v
+SQLite Database
+        |
+        v
+Stalwart CalDAV
+```
 
 ## Prerequisites
 
@@ -14,150 +32,142 @@ The Exchange Gateway uses a simplified architecture with local SQLite database a
 - Exchange Gateway Docker container running alongside Stalwart
 - cloudflared installed on the Docker host
 
-## Architecture
-
-```
-Outlook/Exchange Client
-        |
-        v (HTTPS)
-Cloudflare Worker (TLS Termination + Proxy)
-        |
-        v (HTTP via Cloudflare Tunnel)
-cloudflared Tunnel -> exchange-gateway container
-        |                          |
-        +-----------v--------------+
-                      |
-                      v
-              SQLite Database
-                      |
-                      v
-              Stalwart CalDAV
-```
-
-## Step 1: Configure DNS
-
-Add the following DNS records in your Cloudflare dashboard:
-
-| Type | Name | Content | Proxy |
-|-------|------------------------|--------------------------------|-------|
-| A | exchange | <your-server-ipv4> | On |
-| AAAA | exchange | <your-server-ipv6> | On |
-| A | exchange-origin | <your-server-ipv4> | Off |
-| AAAA | exchange-origin | <your-server-ipv6> | Off |
-| CNAME | autodiscover | exchange.example.com | On |
-| CNAME | _autodiscover._tcp | _acme.example.com (SRV target)| On |
-
-The `exchange` subdomain must be proxied (orange cloud) to route through Cloudflare Workers.
-
-The `exchange-origin` subdomain is the direct origin that Cloudflare Tunnel connects to and must not be proxied.
-
-The `_autodiscover._tcp` SRV record enables Outlook auto-discovery for the domain.
-
-## Step 2: Configure Cloudflare Tunnel
-
-Create a tunnel in the Cloudflare Zero Trust dashboard:
+## Step 1: Install cloudflared
 
 ```bash
-cloudflared tunnel create exchange-gateway
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+chmod +x /usr/local/bin/cloudflared
+cloudflared --version
 ```
 
-Configure `cloudflared-exchange-origin.yml` with the tunnel credentials and origin URL:
+## Step 2: Create a Cloudflare Tunnel
+
+### Option A: Using Cloudflare Dashboard
+
+1. Log into [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. Navigate to **Networks → Tunnels**
+3. Click **Create a tunnel**
+4. Select **Cloudflared** as the connector type
+5. Choose your account/domain
+6. Name your tunnel (e.g., `exchange-gateway-tunnel`)
+7. Copy the tunnel credentials JSON file
+
+### Option B: Using Command Line
+
+```bash
+# Authenticate with Cloudflare
+cloudflared tunnel login
+
+# Create tunnel
+cloudflared tunnel create exchange-gateway-tunnel
+
+# Note the tunnel ID from output
+cloudflared tunnel list
+```
+
+## Step 3: Configure Ingress Rules
+
+Create `/etc/cloudflared/config.yml`:
 
 ```yaml
 tunnel: <TUNNEL_ID>
-credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
-- hostname: exchange-origin.example.com
-  service: http://localhost:8134
-- service: http_status:404
+  - hostname: calendar.stalwart.example.com
+    path: "(^/EWS.*|^/ews.*|^/autodiscover.*|^/Microsoft-Server-ActiveSync.*|^/OAB.*|^/Autodiscover.*)"
+    service: http://exchange-gateway:8134
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+
+  - hostname: calendar.stalwart.example.com
+    path: "^/health$"
+    service: http://exchange-gateway:8134
+
+  - hostname: calendar.stalwart.example.com
+    path: "^/$"
+    service: http_status:302
+    originRequest:
+      redirect: https://calendar.stalwart.example.com/health
+
+  - service: http_status:404
 ```
 
-Run the tunnel connector on the same host as the Exchange Gateway container:
+## Step 4: Configure DNS
+
+1. In Cloudflare Dashboard, go to your domain's **DNS** settings
+2. Add a CNAME record:
+   - **Name**: `calendar`
+   - **Target**: `<TUNNEL_ID>.cfargotunnel.com`
+   - **Proxy status**: Proxied (orange cloud)
+
+## Step 5: Run cloudflared
+
+### As Systemd Service (Recommended)
 
 ```bash
-cloudflared tunnel run --config cloudflared-exchange-origin.yml exchange-gateway
+sudo nano /etc/systemd/system/cloudflared.service
 ```
 
-## Step 3: Configure Worker Routes
+```ini
+[Unit]
+Description=Cloudflare Tunnel for Exchange Gateway
+After=network-online.target docker.service
+Wants=network-online.target
 
-Deploy the Worker and create custom routes in `wrangler.toml`:
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel run --config /etc/cloudflared/config.yml
+Restart=on-failure
+RestartSec=5s
 
-```toml
-name = "exchange-gateway"
-main = "worker/index.js"
-compatibility_date = "2024-01-01"
-
-routes = [
-  { pattern = "exchange.example.com/ews/*", zone_name = "example.com" },
-  { pattern = "exchange.example.com/EWS/*", zone_name = "example.com" },
-  { pattern = "exchange.example.com/Microsoft-Server-ActiveSync", zone_name = "example.com" },
-  { pattern = "exchange.example.com/autodiscover/*", zone_name = "example.com" },
-  { pattern = "exchange.example.com/Autodiscover/*", zone_name = "example.com" },
-  { pattern = "exchange.example.com/oab/*", zone_name = "example.com" },
-  { pattern = "exchange.example.com/OAB/*", zone_name = "example.com" },
-  { pattern = "exchange.example.com/health", zone_name = "example.com" }
-]
+[Install]
+WantedBy=multi-user.target
 ```
-
-Deploy the Worker:
 
 ```bash
-wrangler deploy
+sudo systemctl daemon-reload
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+sudo systemctl status cloudflared
 ```
 
-## Step 4: Verify Deployment
+### Using Docker Compose
 
-1. Test Autodiscover:
+Use the provided `examples/docker-compose.yml`:
 
 ```bash
-curl -X POST https://exchange.example.com/Autodiscover/Autodiscover.xml \
+docker compose -f examples/docker-compose.yml up -d
+docker compose -f examples/docker-compose.yml logs -f cloudflared
+```
+
+## Step 6: Verify Deployment
+
+1. Test health endpoint:
+```bash
+curl https://calendar.stalwart.example.com/health
+```
+
+2. Test Autodiscover:
+```bash
+curl -X POST https://calendar.stalwart.example.com/Autodiscover/Autodiscover.xml \
   -H "Content-Type: text/xml" \
   -d '<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006"><Request><EMailAddress>user@example.com</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema></Request></Autodiscover>'
 ```
 
-2. Test EWS connectivity:
-
+3. Verify TLS (should show Cloudflare certificate):
 ```bash
-curl -u user@example.com:password \
-  https://exchange.example.com/EWS/Exchange.asmx
+openssl s_client -connect calendar.stalwart.example.com:443 -servername calendar.stalwart.example.com 2>/dev/null | openssl x509 -noout -dates
 ```
-
-3. Test ActiveSync:
-
-```bash
-curl -u user@example.com:password \
-  https://exchange.example.com/Microsoft-Server-ActiveSync
-```
-
-4. Test OAB:
-
-```bash
-curl https://exchange.example.com/OAB/oab.xml
-```
-
-5. Test health endpoint:
-
-```bash
-curl https://exchange.example.com/health
-```
-
-## Free-Plan Constraints
-
-The Cloudflare free tier includes:
-
-- 100,000 Worker requests per day
-- 10 ms CPU time per invocation
-
-For a single-user or small-team calendar setup, these limits are sufficient. Monitor usage in the Cloudflare dashboard.
 
 ## Security Model
 
-1. **TLS**: Cloudflare provides automatic TLS termination for all client-facing endpoints. The Cloudflare Tunnel between Cloudflare and the origin container uses HTTP over the private network. The gateway container runs plain HTTP with no TLS certificates needed.
+1. **TLS**: Cloudflare provides automatic TLS termination. All client-facing endpoints use HTTPS.
 
-2. **Authentication**: All EWS and ActiveSync requests require Basic authentication. The Worker validates credentials against the Stalwart IMAP backend via the Rust gateway.
+2. **Authentication**: EWS and ActiveSync requests require Basic authentication validated against Stalwart.
 
-3. **Security Headers**: The Rust gateway sets the following response headers:
+3. **Security Headers**: The gateway sets:
    - `X-Content-Type-Options: nosniff`
    - `X-Frame-Options: DENY`
    - `Content-Security-Policy: default-src 'none'`
@@ -165,11 +175,42 @@ For a single-user or small-team calendar setup, these limits are sufficient. Mon
    - `Referrer-Policy: strict-origin-when-cross-origin`
    - `Cache-Control: private, no-store`
 
-4. **Request Size Limits**: The gateway enforces a 4 MB maximum body size for forwarded requests.
+4. **Request Size Limits**: 4 MB maximum body size enforced.
+
+## Free-Tier Limits
+
+Cloudflare free tier limits:
+- Unlimited tunnels
+- 3 tunnels per account
+- No bandwidth limits for tunnels
+
+The tunnel approach has no usage-based limits, unlike Workers (100,000/day).
+
+## Troubleshooting
+
+### Tunnel Connection Fails
+```bash
+# Check logs
+sudo journalctl -u cloudflared -n 100
+
+# Test manually
+cloudflared tunnel run --config /etc/cloudflared/config.yml --logle debug
+```
+
+### 502 Bad Gateway
+- Verify Exchange Gateway is running: `docker ps`
+- Check container logs: `docker logs exchange-gateway`
+- Test locally: `curl http://localhost:8134/health`
+
+### DNS Not Resolving
+```bash
+dig calendar.stalwart.example.com
+nslookup calendar.stalwart.example.com
+```
 
 ## Stalwart Configuration Additions
 
-Add the following to your Stalwart `config.toml` to enable JMAP and CalDAV access for the Exchange Gateway:
+Add to your Stalwart `config.toml`:
 
 ```toml
 [server.socket."0.0.0.0:8080"]
@@ -197,52 +238,8 @@ enable = true
 enable = true
 ```
 
-The Exchange Gateway connects to Stalwart's CalDAV endpoint at `http://stalwart:8080/dav/` (configured via `caldav_base` in `exchange-gateway.config.toml`). Stalwart v0.15.5 serves CalDAV natively on its HTTP listener when `[dav]` is enabled. Replace `example.com` with your actual mail domain.
-
 See `stalwart-additions.toml` for the complete set of additions.
 
 ## Database
 
-The Exchange Gateway uses SQLite as its local embedded database. The database file is stored at `/var/lib/exchange-gateway/gateway.db` (configurable via `database_path` in config.toml).
-
-The schema is automatically initialized on first startup. The `d1_schema.sql` file contains the complete schema definition.
-
-## Troubleshooting
-
-### Connection Issues
-
-1. Verify the Cloudflare Tunnel is running:
-   ```bash
-   cloudflared tunnel list
-   ```
-
-2. Check the tunnel logs:
-   ```bash
-   cloudflared tunnel run --config cloudflared-exchange-origin.yml exchange-gateway --loglevel debug
-   ```
-
-3. Verify the Docker container is running:
-   ```bash
-   docker logs exchange_gateway
-   ```
-
-### Authentication Issues
-
-1. Verify credentials work with Stalwart directly:
-   ```bash
-   curl -u user@example.com:password http://stalwart:8080/dav/cal/user@example.com/
-   ```
-
-2. Check the Exchange Gateway logs for authentication errors.
-
-### Database Issues
-
-1. Verify the database file exists and is writable:
-   ```bash
-   docker exec exchange_gateway ls -la /var/lib/exchange-gateway/
-   ```
-
-2. Check the SQLite database integrity:
-   ```bash
-   docker exec exchange_gateway sqlite3 /var/lib/exchange-gateway/gateway.db "PRAGMA integrity_check;"
-   ```
+The Exchange Gateway uses SQLite at `/var/lib/exchange-gateway/gateway.db`. Schema is auto-initialized on first startup.
