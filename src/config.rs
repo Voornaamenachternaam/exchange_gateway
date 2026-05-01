@@ -316,6 +316,7 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use temp_env::with_var;
 
     #[test]
     fn test_default_config() {
@@ -377,28 +378,28 @@ mod tests {
 
     #[test]
     fn test_get_env_with_fallback_primary_takes_precedence() {
-        env::set_var("TEST_PRIMARY", "primary_value");
-        env::set_var("TEST_FALLBACK", "fallback_value");
-        let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
-        assert_eq!(result, Some("primary_value".to_string()));
-        env::remove_var("TEST_PRIMARY");
-        env::remove_var("TEST_FALLBACK");
+        with_var("TEST_PRIMARY", Some("primary_value"), || {
+            with_var("TEST_FALLBACK", Some("fallback_value"), || {
+                let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
+                assert_eq!(result, Some("primary_value".to_string()));
+            });
+        });
     }
 
     #[test]
     fn test_get_env_with_fallback_uses_fallback() {
-        env::set_var("TEST_FALLBACK", "fallback_value");
-        let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
-        assert_eq!(result, Some("fallback_value".to_string()));
-        env::remove_var("TEST_FALLBACK");
+        with_var("TEST_FALLBACK", Some("fallback_value"), || {
+            let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
+            assert_eq!(result, Some("fallback_value".to_string()));
+        });
     }
 
     #[test]
     fn test_get_env_with_fallback_empty_string_ignored() {
-        env::set_var("TEST_FALLBACK", "fallback_value");
-        let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
-        assert_eq!(result, Some("fallback_value".to_string()));
-        env::remove_var("TEST_FALLBACK");
+        with_var("TEST_FALLBACK", Some("fallback_value"), || {
+            let result = get_env_with_fallback("TEST_PRIMARY", Some("TEST_FALLBACK"));
+            assert_eq!(result, Some("fallback_value".to_string()));
+        });
     }
 
     #[test]

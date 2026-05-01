@@ -1,4 +1,3 @@
-<!-- README.md -->
 # Exchange Gateway (EWS/EAS ↔ CalDAV) for Stalwart Mailserver
 
 This repository implements an Exchange-compatible gateway in Rust that translates Outlook EWS and ActiveSync calendar operations to CalDAV operations against a Stalwart Mailserver instance.

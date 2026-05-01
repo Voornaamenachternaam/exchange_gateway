@@ -1,4 +1,4 @@
-<!-- tests/OUTLOOK_CLOUDFLARE_SMOKE.md -->
+# tests/OUTLOOK_CLOUDFLARE_SMOKE.md
 # Outlook + Cloudflare + Stalwart smoke harness
 
 This repository now includes a live-environment smoke script for the specific deployment shape targeted by `exchange_gateway`:

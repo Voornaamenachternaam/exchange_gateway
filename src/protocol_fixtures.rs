@@ -29,7 +29,6 @@ pub const EAS_RESOLVERECIPIENTS_NS: &str = "ResolveRecipients:";
 pub const EAS_VALIDATESCERT_NS: &str = "ValidateCert:";
 pub const EAS_GETITEMESTIMATE_NS: &str = "GetItemEstimate:";
 pub const EAS_MOVE_NS: &str = "Move:";
-pub const EAS_COMPOSEMAIL_NS: &str = "ComposeMail:";
 
 pub const AUTODISCOVER_XML_HEADER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">"#;
