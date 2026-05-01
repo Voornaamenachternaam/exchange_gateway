@@ -78,6 +78,7 @@ criterion = { version = "^0.8.2", features = ["async_tokio"] }
 tokio-test = "^0.4.5"
 insta = "^1.47.2"
 pretty_assertions = "^1.4.1"
+temp-env = "^0.3.1"
 
 [profile.release]
 opt-level = 3
