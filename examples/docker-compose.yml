@@ -1,15 +1,28 @@
 # docker-compose.yml
 # Cloudflare Tunnel + Exchange Gateway Setup
-# 
-# This docker-compose.yml includes both:
+#
+# This docker-compose.yml includes:
 #   1. Exchange Gateway (calendar protocol proxy)
-#   2. Cloudflare Tunnel (cloudflared) for TLS termination
+#   2. Cloudflared (Cloudflare Tunnel)
+#
+# Configuration approach:
+#   - All cloudflared variables are set via docker compose ONLY
+#   - Tunnel credentials are passed via TUNNEL_TOKEN (from Cloudflare Dashboard)
+#   - Ingress routing rules are configured via Cloudflare Dashboard (Networks → Tunnels)
+#   - No config.yml or credentials.json files needed
 #
 # Prerequisites:
-#   1. Create a Cloudflare Tunnel in Dashboard (Networks → Tunnels)
-#   2. Download credentials.json from tunnel settings
-#   3. Update config.yml with your tunnel ID
-#   4. Set up DNS CNAME in Cloudflare Dashboard
+#   1. Create a Cloudflare Tunnel in Dashboard (Networks → Tunnels → Create tunnel → Cloudflared)
+#   2. Copy the tunnel token from the dashboard
+#   3. Set TUNNEL_TOKEN in .env file or directly in this file
+#   4. Configure ingress rules in Cloudflare Dashboard under the tunnel settings
+#
+# Dashboard Ingress Rules Configuration:
+#   Go to: Networks → Tunnels → Your Tunnel → Public Hostname
+#   Add routes matching your calendar endpoints:
+#     - hostname: calendar.stalwart.example.com
+#       service: http://exchange-gateway:8134
+#       path: (optional regex for specific paths)
 #
 # Usage:
 #   docker-compose up -d
@@ -26,10 +39,27 @@ services:
     expose:
       - "8134"
     environment:
-      - RUST_LOG=info
-      - TZ=UTC
+      - RUST_LOG=${GATEWAY_RUST_LOG:-info}
+      - TZ=${GATEWAY_TZ:-UTC}
+      # Required: CalDAV base URL for Stalwart/JMAP server
+      - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}
+      # Required: HMAC secret (minimum 32 characters)
+      - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET}
+      # Required: Public hostname for Autodiscover responses
+      - GATEWAY_HOST=${GATEWAY_HOST}
+      # Required: Mail domain for calendar items
+      - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN}
+      # Optional: Override default bind address
+      - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
+      # Optional: Max attachment size (default: 5242880 bytes / 5MB)
+      - GATEWAY_MAX_ATTACHMENT_BYTES=${GATEWAY_MAX_ATTACHMENT_BYTES:-5242880}
+      # Optional: Enable room/resource booking (default: true)
+      - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
+      # Optional: Auth cache TTL in seconds (default: 300)
+      - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
+      # Optional: Max auth cache entries (default: 10000)
+      - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
     volumes:
-      - ./config.toml:/etc/exchange-gateway/config.toml:ro
       - exchange-gateway-data:/var/lib/exchange-gateway
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
@@ -37,18 +67,27 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - exchange-gateway-network
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:${CLOUDFLARED_TAG:-latest}
     container_name: cloudflared-tunnel
     restart: unless-stopped
     depends_on:
       exchange-gateway:
         condition: service_healthy
-    command: tunnel run --config /etc/cloudflared/config.yml
-    volumes:
-      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
-      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    # Use TUNNEL_TOKEN from Cloudflare Dashboard
+    # No config.yml needed - all routing configured via Cloudflare Dashboard
+    command: >
+      tunnel run
+      --token ${TUNNEL_TOKEN}
+    environment:
+      # Cloudflared logging
+      - TUNNEL_LOG_LEVEL=${CLOUDFLARED_LOG_LEVEL:-info}
+      # Additional cloudflared flags can be passed via CLOUDFLARED_EXTRA_ARGS
+      # Example: --loglevel debug --transport-loglevel warn
+    # No volumes needed when using TUNNEL_TOKEN
     network_mode: service:exchange-gateway
 
 volumes:
@@ -56,5 +95,6 @@ volumes:
     driver: local
 
 networks:
-  default:
+  exchange-gateway-network:
     name: exchange-gateway-network
+    driver: bridge
