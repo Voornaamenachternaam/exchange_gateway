@@ -551,8 +551,8 @@ For setups where **all cloudflared variables are set via Docker Compose** (no co
 6. Add route:
    - **Hostname**: `calendar.stalwart.example.com`
    - **Type**: HTTP
-   - **Service**: `http://exchange-gateway:8134`
-   - **Path** (optional): `^/EWS.*|^/ews.*|^/autodiscover.*|^/Microsoft-Server-ActiveSync.*|^/OAB.*|^/Autodiscover.*`
+   - **Service**: `http://localhost:8134` 
+   - **Path** (optional): (leave empty to route all traffic)
 
 ### Docker Compose Configuration
 
