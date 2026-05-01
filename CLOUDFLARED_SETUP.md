@@ -132,8 +132,8 @@ services:
     container_name: exchange-gateway
     image: exchange-gateway:latest
     restart: unless-stopped
-    expose:
-      - "8134"
+    ports:
+      - 8134:8134
     environment:
       - RUST_LOG=${GATEWAY_RUST_LOG:-info}
       - TZ=${GATEWAY_TZ:-UTC}
