@@ -219,11 +219,6 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
             required_tags: &[],
             _optional_tags: &["Move", "SrcMsgId", "SrcFldId", "DstFldId"],
         }),
-        "sendmail" | "smartreply" | "smartforward" => Some(CommandGrammar {
-            namespace: "ComposeMail:",
-            required_tags: &[],
-            _optional_tags: &["ClientId", "Subject", "Body", "Mime"],
-        }),
         _ => None,
     }
 }
@@ -674,7 +669,7 @@ fn options_response(request_id: &str) -> Response {
             ),
             (
                 "MS-ASProtocolCommands",
-                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert,SendMail,SmartReply,SmartForward,MoveItems",
+                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert",
             ),
         ],
         "",
@@ -2117,15 +2112,6 @@ pub async fn handle(
             handle_get_item_estimate(&state, &username, &req, &wbxml, wants_wbxml, &request_id)
                 .await
         }
-        "SendMail" | "SmartReply" | "SmartForward" => success_status_response(
-            &wbxml,
-            wants_wbxml,
-            &req.command,
-            "ComposeMail:",
-            "1",
-            "",
-            &request_id,
-        ),
         "MoveItems" => bad_request_response(
             &request_id,
             "MoveItems is not supported for this calendar-only mailbox surface",
