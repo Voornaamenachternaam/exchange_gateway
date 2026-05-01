@@ -531,6 +531,116 @@ services:
 
 ---
 
+## Alternative: Environment-Variable-Only Configuration (Docker Compose)
+
+For setups where **all cloudflared variables are set via Docker Compose** (no config files):
+
+### Configuration Approach
+
+1. **No config.yml needed** - ingress rules are configured via Cloudflare Dashboard
+2. **No credentials.json needed** - tunnel token is passed directly
+3. **All variables via Docker Compose** - using `${VARIABLE}` syntax
+
+### Cloudflare Dashboard Setup
+
+1. Navigate to **Networks → Tunnels**
+2. Click **Create a tunnel** → select **Cloudflared**
+3. Name your tunnel (e.g., `exchange-gateway-tunnel`)
+4. **Copy the tunnel token** (long string starting with `ey...`)
+5. In tunnel settings, go to **Public Hostname** tab
+6. Add route:
+   - **Hostname**: `calendar.stalwart.example.com`
+   - **Type**: HTTP
+   - **Service**: `http://exchange-gateway:8134`
+   - **Path** (optional): `^/EWS.*|^/ews.*|^/autodiscover.*|^/Microsoft-Server-ActiveSync.*|^/OAB.*|^/Autodiscover.*`
+
+### Docker Compose Configuration
+
+```yaml
+# docker-compose.yml
+services:
+  exchange-gateway:
+    build: .
+    container_name: exchange-gateway
+    image: exchange-gateway:latest
+    restart: unless-stopped
+    expose:
+      - "8134"
+    environment:
+      - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}
+      - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET}
+      - GATEWAY_HOST=${GATEWAY_HOST}
+      - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN}
+    volumes:
+      - exchange-gateway-data:/var/lib/exchange-gateway
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - exchange-gateway-network
+
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_TAG:-latest}
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    depends_on:
+      exchange-gateway:
+        condition: service_healthy
+    command: >
+      tunnel run
+      --token ${TUNNEL_TOKEN}
+    environment:
+      - TUNNEL_LOG_LEVEL=${CLOUDFLARED_LOG_LEVEL:-info}
+    network_mode: service:exchange-gateway
+
+volumes:
+  exchange-gateway-data:
+
+networks:
+  exchange-gateway-network:
+    name: exchange-gateway-network
+    driver: bridge
+```
+
+### .env File
+
+```bash
+# .env - Keep this file secure and never commit to version control
+
+# Exchange Gateway Configuration
+GATEWAY_CALDAV_BASE=http://stalwart:8080/dav/
+GATEWAY_HMAC_SECRET=your-32-character-minimum-secret-key-here
+GATEWAY_HOST=calendar.stalwart.example.com
+GATEWAY_MAIL_DOMAIN=example.com
+
+# Optional Exchange Gateway Settings
+GATEWAY_RUST_LOG=info
+GATEWAY_TZ=UTC
+GATEWAY_BIND=[::]:8134
+GATEWAY_MAX_ATTACHMENT_BYTES=5242880
+GATEWAY_ROOM_BOOKING_ENABLED=true
+
+# Cloudflare Tunnel Configuration
+# Get this from: Networks → Tunnels → Your Tunnel → Access Token
+TUNNEL_TOKEN=eyJhIjoiMTIzNDU2NzgtYWJjZC0xMjM0LTEyMzQtYWJjZD EyMzQ1Njc4OSIsInQiOiIxMjM0NTY3ODkwMDExMjEzMTQyNTE0MTc4OT
+CLOUDFLARED_TAG=latest
+CLOUDFLARED_LOG_LEVEL=info
+```
+
+### Key Differences from Traditional Setup
+
+| Aspect | Traditional (config.yml) | Environment-Variable-Only |
+|--------|-------------------------|---------------------------|
+| Config file | Required | Not needed |
+| Credentials | credentials.json file | TUNNEL_TOKEN directly |
+| Ingress rules | In config.yml | Cloudflare Dashboard |
+| Maintenance | Edit local files | Dashboard-driven |
+| Version control | config.yml may be committed | Safe to commit (no secrets) |
+
+---
+
 ## Summary: Why No Worker?
 
 Cloudflare Tunnel provides:
