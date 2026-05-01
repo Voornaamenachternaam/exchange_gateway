@@ -54,7 +54,7 @@ In the same tunnel settings:
 3. Configure:
    - **Domain**: `calendar.stalwart.example.com` (subdomain of your choice)
    - **Type**: HTTP
-   - **Service**: `http://exchange-gateway:8134`
+   - **Service**: `http://localhost:8134`
 4. Click **Save hostname**
 
 ---
