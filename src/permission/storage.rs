@@ -1,6 +1,7 @@
 // src/permission/storage.rs
 use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry};
 use crate::storage::Storage;
+use crate::storage::SafeDebug;
 use anyhow::{Result, anyhow};
 use sqlx::FromRow;
 
@@ -17,7 +18,8 @@ fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
         })
 }
 
-#[derive(Debug, FromRow)]
+// Internal row struct - converted to CalendarPermission for public use
+#[derive(FromRow)]
 struct PermissionRow {
     id: String,
     folder_id: String,
@@ -29,6 +31,15 @@ struct PermissionRow {
     is_anonymous: i32,
     created_at: String,
     updated_at: String,
+}
+
+impl SafeDebug for PermissionRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "PermissionRow {{ id: {:?}, folder_id: {:?}, owner: {:?}, user_email: {:?}, user_name: {:?}, rights: {}, is_default: {}, is_anonymous: {} }}",
+            self.id, self.folder_id, self.owner, self.user_email, self.user_name, self.rights, self.is_default, self.is_anonymous
+        )
+    }
 }
 
 impl From<PermissionRow> for CalendarPermission {
@@ -48,7 +59,8 @@ impl From<PermissionRow> for CalendarPermission {
     }
 }
 
-#[derive(Debug, FromRow)]
+// Internal row struct - converted to DelegateInfo for public use
+#[derive(FromRow)]
 struct DelegateRow {
     id: String,
     delegator: String,
@@ -65,6 +77,18 @@ struct DelegateRow {
     view_private: i32,
     created_at: String,
     updated_at: String,
+}
+
+impl SafeDebug for DelegateRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "DelegateRow {{ id: {:?}, delegator: {:?}, delegate_email: {:?}, delegate_name: {:?}, calendar_permission: {}, inbox_permission: {}, tasks_permission: {}, contacts_permission: {}, notes_permission: {}, journal_permission: {}, receive_copies: {}, receive_infos: {}, view_private: {} }}",
+            self.id, self.delegator, self.delegate_email, self.delegate_name,
+            self.calendar_permission, self.inbox_permission, self.tasks_permission,
+            self.contacts_permission, self.notes_permission, self.journal_permission,
+            self.receive_copies, self.receive_infos, self.view_private
+        )
+    }
 }
 
 impl From<DelegateRow> for DelegateInfo {
@@ -89,7 +113,8 @@ impl From<DelegateRow> for DelegateInfo {
     }
 }
 
-#[derive(Debug, FromRow)]
+// Internal row struct - converted to PermissionAuditEntry for public use
+#[derive(FromRow)]
 struct AuditRow {
     id: String,
     folder_id: String,
@@ -100,6 +125,16 @@ struct AuditRow {
     old_rights: Option<i32>,
     new_rights: Option<i32>,
     created_at: String,
+}
+
+impl SafeDebug for AuditRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "AuditRow {{ id: {:?}, folder_id: {:?}, owner: {:?}, actor_email: {:?}, target_email: {:?}, operation: {:?}, old_rights: {:?}, new_rights: {:?} }}",
+            self.id, self.folder_id, self.owner, self.actor_email, self.target_email,
+            self.operation, self.old_rights, self.new_rights
+        )
+    }
 }
 
 impl From<AuditRow> for PermissionAuditEntry {

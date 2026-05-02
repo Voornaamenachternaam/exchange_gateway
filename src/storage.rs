@@ -1,10 +1,16 @@
 // src/storage.rs
-use sqlx::{Acquire, Executor, FromRow, Pool, Row, Sqlite};
+use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
 use std::sync::Arc;
 
 use crate::error::{GatewayError, Result};
 
 pub type SqlPool = Pool<Sqlite>;
+
+// Custom Debug trait for safe, production-safe debugging of row structs.
+// This avoids accidentally logging sensitive data like content_base64, imei, phone_number.
+pub trait SafeDebug {
+    fn safe_debug(&self) -> String;
+}
 
 #[derive(Clone)]
 pub struct Storage {
@@ -17,7 +23,8 @@ impl Storage {
     }
 }
 
-#[derive(Debug, FromRow)]
+// Row struct for change journal queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct JournalRow {
     pub id: i64,
     pub server_id: String,
@@ -25,13 +32,32 @@ pub struct JournalRow {
     pub resource_href: Option<String>,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for JournalRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "JournalRow {{ id: {}, server_id: {:?}, op: {:?}, resource_href: {:?} }}",
+            self.id, self.server_id, self.op, self.resource_href
+        )
+    }
+}
+
+// Row struct for item_map queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct EwsItemRow {
     pub server_id: String,
     pub resource_href: String,
     pub uid: Option<String>,
     pub etag: Option<String>,
     pub updated_at: Option<String>,
+}
+
+impl SafeDebug for EwsItemRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "EwsItemRow {{ server_id: {:?}, resource_href: {:?}, uid: {:?}, etag: {:?}, updated_at: {:?} }}",
+            self.server_id, self.resource_href, self.uid, self.etag, self.updated_at
+        )
+    }
 }
 
 pub struct DeviceInfoParams<'a> {
@@ -74,7 +100,8 @@ pub struct MeetingAttendeeParams<'a> {
     pub sequence: u32,
 }
 
-#[derive(Debug, FromRow)]
+// Row struct for calendar_exceptions queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct CalendarExceptionRow {
     pub parent_server_id: String,
     pub exception_start: String,
@@ -83,7 +110,17 @@ pub struct CalendarExceptionRow {
     pub created_at: String,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for CalendarExceptionRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "CalendarExceptionRow {{ parent_server_id: {:?}, exception_start: {:?}, server_id: {:?}, is_deleted: {}, created_at: {:?} }}",
+            self.parent_server_id, self.exception_start, self.server_id, self.is_deleted, self.created_at
+        )
+    }
+}
+
+// Row struct for meeting_response queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct MeetingResponseRow {
     pub request_id: String,
     pub calendar_id: String,
@@ -91,7 +128,17 @@ pub struct MeetingResponseRow {
     pub created_at: String,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for MeetingResponseRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "MeetingResponseRow {{ request_id: {:?}, calendar_id: {:?}, user_response: {}, created_at: {:?} }}",
+            self.request_id, self.calendar_id, self.user_response, self.created_at
+        )
+    }
+}
+
+// Row struct for meeting_state queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct MeetingStateRow {
     pub uid: String,
     pub owner: String,
@@ -111,7 +158,19 @@ pub struct MeetingStateRow {
     pub last_sequence_time: Option<String>,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for MeetingStateRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "MeetingStateRow {{ uid: {:?}, owner: {:?}, sequence: {}, state: {:?}, state_flags: {}, is_organizer: {}, organizer_email: {:?}, organizer_name: {:?}, subject: {:?}, location: {:?}, start_time: {:?}, end_time: {:?}, timezone: {:?}, created_at: {:?}, updated_at: {:?}, last_sequence_time: {:?} }}",
+            self.uid, self.owner, self.sequence, self.state, self.state_flags, self.is_organizer,
+            self.organizer_email, self.organizer_name, self.subject, self.location,
+            self.start_time, self.end_time, self.timezone, self.created_at, self.updated_at, self.last_sequence_time
+        )
+    }
+}
+
+// Row struct for meeting_attendee queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct MeetingAttendeeRow {
     pub meeting_uid: String,
     pub owner: String,
@@ -127,7 +186,19 @@ pub struct MeetingAttendeeRow {
     pub updated_at: String,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for MeetingAttendeeRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "MeetingAttendeeRow {{ meeting_uid: {:?}, owner: {:?}, email: {:?}, name: {:?}, status: {}, role: {}, response_time: {:?}, proposed_start: {:?}, proposed_end: {:?}, sequence: {}, created_at: {:?}, updated_at: {:?} }}",
+            self.meeting_uid, self.owner, self.email, self.name, self.status, self.role,
+            self.response_time, self.proposed_start, self.proposed_end, self.sequence,
+            self.created_at, self.updated_at
+        )
+    }
+}
+
+// Row struct for meeting_scheduling_queue queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct SchedulingQueueRow {
     pub id: i64,
     pub meeting_uid: String,
@@ -141,6 +212,17 @@ pub struct SchedulingQueueRow {
     pub error_message: Option<String>,
     pub created_at: String,
     pub processed_at: Option<String>,
+}
+
+impl SafeDebug for SchedulingQueueRow {
+    fn safe_debug(&self) -> String {
+        format!(
+            "SchedulingQueueRow {{ id: {}, meeting_uid: {:?}, owner: {:?}, operation: {:?}, sequence: {}, ical_data: {:?}, status: {:?}, attempts: {}, last_attempt: {:?}, error_message: {:?}, created_at: {:?}, processed_at: {:?} }}",
+            self.id, self.meeting_uid, self.owner, self.operation, self.sequence,
+            self.ical_data.as_ref().map(|_| "<redacted>"),
+            self.status, self.attempts, self.last_attempt, self.error_message, self.created_at, self.processed_at
+        )
+    }
 }
 
 impl Storage {
