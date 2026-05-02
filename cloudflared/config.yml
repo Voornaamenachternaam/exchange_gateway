@@ -1,0 +1,30 @@
+# cloudflared Tunnel Ingress Configuration
+#
+# This file configures Cloudflare Tunnel ingress rules for the Exchange Gateway.
+# cloudflared runs natively on Ubuntu Server 24.04 LTS (not in a container).
+#
+# Deploy this file to: ~/.cloudflared/config.yml or /etc/cloudflared/config.yml
+#
+# Usage:
+#   cloudflared tunnel run --config ~/.cloudflared/config.yml <tunnel-name>
+#   cloudflared tunnel run --config /etc/cloudflared/config.yml <tunnel-name>
+#
+# Or use the token approach (recommended for systemd service):
+#   cloudflared tunnel run --token <YOUR_TUNNEL_TOKEN>
+#
+# For more information, see: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/
+
+tunnel: <YOUR-TUNNEL-UUID>
+credentials-file: ~/.cloudflared/<YOUR-TUNNEL-UUID>.json
+
+ingress:
+  - hostname: calendar.stalwart.example.com
+    service: http://localhost:8134
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+      tlsTimeout: 10s
+      httpHostHeader: calendar.stalwart.example.com
+      originServerName: calendar.stalwart.example.com
+
+  - service: http_status:404
