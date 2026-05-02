@@ -145,12 +145,10 @@ pub struct SchedulingQueueRow {
 
 impl Storage {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = Pool::connect(database_url)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to create SQLite pool: {}", e);
-                GatewayError::Storage(e.to_string())
-            })?;
+        let pool = Pool::connect(database_url).await.map_err(|e| {
+            tracing::error!("Failed to create SQLite pool: {}", e);
+            GatewayError::Storage(e.to_string())
+        })?;
         Ok(Self {
             pool: Arc::new(pool),
         })
@@ -158,13 +156,10 @@ impl Storage {
 
     pub async fn init_schema(&self) -> Result<()> {
         let schema = include_str!("../sqlite_schema.sql");
-        self.pool
-            .execute(schema)
-            .await
-            .map_err(|e| {
-                tracing::error!("Schema init error: {}", e);
-                GatewayError::Storage(format!("Schema init error: {}", e))
-            })?;
+        self.pool.execute(schema).await.map_err(|e| {
+            tracing::error!("Schema init error: {}", e);
+            GatewayError::Storage(format!("Schema init error: {}", e))
+        })?;
         Ok(())
     }
 
