@@ -184,11 +184,7 @@ fn safe_display(val: &Option<String>) -> &str {
 
 // Helper to redact a plain String field (always redacted if non-empty)
 fn redact_if_present(val: &str) -> &str {
-    if val.is_empty() {
-        "None"
-    } else {
-        "[redacted]"
-    }
+    if val.is_empty() { "None" } else { "[redacted]" }
 }
 
 impl SafeDebug for MeetingStateRow {
