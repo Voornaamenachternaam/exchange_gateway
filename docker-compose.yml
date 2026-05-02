@@ -1,0 +1,40 @@
+# docker-compose.yml
+services:
+  exchange-gateway:
+    build: .
+    container_name: exchange-gateway
+    image: exchange-gateway:latest
+    restart: unless-stopped
+    ports:
+      - "8134:8134"
+    environment:
+      - RUST_LOG=${GATEWAY_RUST_LOG:-info}
+      - TZ=${GATEWAY_TZ:-UTC}
+      - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
+      - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}
+      - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET}
+      - GATEWAY_HOST=${GATEWAY_HOST}
+      - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN}
+      - GATEWAY_DATABASE_PATH=${GATEWAY_DATABASE_PATH:-/var/lib/exchange-gateway/gateway.db}
+      - GATEWAY_MAX_ATTACHMENT_BYTES=${GATEWAY_MAX_ATTACHMENT_BYTES:-5242880}
+      - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
+      - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
+      - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
+    volumes:
+      - exchange-gateway-data:/var/lib/exchange-gateway
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - exchange-network
+
+volumes:
+  exchange-gateway-data:
+    driver: local
+
+networks:
+  exchange-network:
+    driver: bridge

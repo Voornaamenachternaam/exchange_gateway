@@ -1,8 +1,12 @@
+# CLOUDFLARED_SETUP.md
+
 # Cloudflare Tunnel Setup Guide for Exchange Gateway
 
 This guide configures Cloudflare Tunnel to expose the Exchange Gateway container via HTTPS. cloudflared runs natively on Ubuntu Server 24.04 LTS (not as a container). All container configuration is done via environment variables in Docker Compose.
 
-**No config files, credentials files, or Cloudflare Workers are needed.**
+**Two deployment options are supported:**
+1. **Token-based (recommended)**: Use `--token <TUNNEL_TOKEN>` in systemd service - no config file needed
+2. **Config-file based**: Use `--config /path/to/config.yml` with `cloudflared/config.yml` from this repository
 
 ---
 
@@ -42,6 +46,7 @@ Cloudflare terminates TLS at the edge. The tunnel provides encrypted transport f
 5. Choose your account/domain
 6. Name your tunnel (e.g., `exchange-gateway`)
 7. **Copy the tunnel token** — you'll use this in your `.env` file
+8. **Save the tunnel UUID** — you'll use this if deploying with config file
 
 ---
 
@@ -72,9 +77,11 @@ In the same tunnel settings:
 
 ---
 
-## Step 4: Create cloudflared systemd Service
+## Step 4: Deploy cloudflared
 
-Create the service file:
+### Option A: Token-Based Deployment (Recommended)
+
+Create the systemd service file:
 
 ```bash
 sudo nano /etc/systemd/system/cloudflared.service
@@ -97,17 +104,7 @@ User=root
 WantedBy=multi-user.target
 ```
 
-Replace `<YOUR_TUNNEL_TOKEN>` with the token from Step 1, or use the environment variable approach below.
-
-### Using Environment Variable for Token
-
-To avoid hardcoding the token, edit `/etc/systemd/system/cloudflared.service`:
-
-```ini
-[Service]
-Environment="TUNNEL_TOKEN=<YOUR_TUNNEL_TOKEN>"
-ExecStart=/usr/local/bin/cloudflared tunnel run --token ${TUNNEL_TOKEN}
-```
+Replace `<YOUR_TUNNEL_TOKEN>` with the token from Step 1.
 
 Then enable and start:
 
@@ -116,6 +113,43 @@ sudo systemctl daemon-reload
 sudo systemctl enable cloudflared
 sudo systemctl start cloudflared
 sudo systemctl status cloudflared
+```
+
+### Option B: Config-File Based Deployment
+
+If you prefer using a config file instead of tokens:
+
+1. Copy the ingress configuration:
+```bash
+mkdir -p ~/.cloudflared
+cp cloudflared/config.yml ~/.cloudflared/config.yml
+```
+
+2. Edit `~/.cloudflared/config.yml` to replace:
+   - `<YOUR-TUNNEL-UUID>` with your tunnel UUID from Step 1
+   - `calendar.stalwart.example.com` with your actual hostname
+
+3. Run the tunnel:
+```bash
+cloudflared tunnel run --config ~/.cloudflared/config.yml exchange-gateway
+```
+
+Or create a systemd service:
+```ini
+[Unit]
+Description=Cloudflare Tunnel for Exchange Gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel run --config /root/.cloudflared/config.yml exchange-gateway
+Restart=on-failure
+RestartSec=5s
+User=root
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 ---
@@ -294,6 +328,23 @@ curl http://127.0.0.1:8134/health
 dig calendar.stalwart.example.com
 nslookup calendar.stalwart.example.com
 ```
+
+---
+
+## Cloudflare Tunnel Ingress Configuration Reference
+
+The `cloudflared/config.yml` file provides a template for ingress rules. Key configuration options:
+
+| Field | Description |
+|-------|-------------|
+| `tunnel` | Your tunnel UUID |
+| `credentials-file` | Path to tunnel credentials JSON |
+| `hostname` | Public hostname for this route |
+| `service` | Backend service URL (http://localhost:8134) |
+| `originRequest.noTLSVerify` | Whether to skip TLS verification (false = verify) |
+| `originRequest.connectTimeout` | Connection timeout to origin |
+| `originRequest.httpHostHeader` | Host header to send to origin |
+| `originRequest.originServerName` | Expected TLS certificate CN/SAN |
 
 ---
 
