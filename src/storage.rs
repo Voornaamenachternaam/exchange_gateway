@@ -1,5 +1,5 @@
 // src/storage.rs
-use sqlx::{FromRow, Pool, Row, Sqlite};
+use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
 use std::sync::Arc;
 
 use crate::error::{GatewayError, Result};
