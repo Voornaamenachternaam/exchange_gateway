@@ -20,11 +20,24 @@ fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
         })
 }
 
-// Helper to safely display a field, redacting if present
+// Helper to safely display an optional PII field.
+// - None -> "None"
+// - Some("") (empty) -> "None" (semantically equivalent to no data)
+// - Some("...") (non-empty) -> "[redacted]" (sensitive PII)
 fn safe_display(val: &Option<String>) -> &str {
     match val {
-        Some(v) if !v.is_empty() => "[redacted]",
-        _ => "None",
+        Some(v) if v.is_empty() => "None",
+        Some(_) => "[redacted]",
+        None => "None",
+    }
+}
+
+// Helper to redact a plain String field (always redacted if non-empty) - used for emails
+fn redact_if_present(val: &str) -> &str {
+    if val.is_empty() {
+        "None"
+    } else {
+        "[redacted]"
     }
 }
 
@@ -48,8 +61,8 @@ impl SafeDebug for PermissionRow {
         f.debug_struct("PermissionRow")
             .field("id", &self.id)
             .field("folder_id", &self.folder_id)
-            .field("owner", &self.owner)
-            .field("user_email", &self.user_email)
+            .field("owner", &redact_if_present(&self.owner)) // Redacted - PII (email)
+            .field("user_email", &redact_if_present(&self.user_email)) // Redacted - PII
             .field("user_name", &safe_display(&self.user_name)) // Redacted - PII
             .field("rights", &self.rights)
             .field("is_default", &self.is_default)
@@ -99,8 +112,8 @@ impl SafeDebug for DelegateRow {
     fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DelegateRow")
             .field("id", &self.id)
-            .field("delegator", &self.delegator)
-            .field("delegate_email", &self.delegate_email)
+            .field("delegator", &redact_if_present(&self.delegator)) // Redacted - PII (email)
+            .field("delegate_email", &redact_if_present(&self.delegate_email)) // Redacted - PII
             .field("delegate_name", &safe_display(&self.delegate_name)) // Redacted - PII
             .field("calendar_permission", &self.calendar_permission)
             .field("inbox_permission", &self.inbox_permission)
@@ -156,9 +169,9 @@ impl SafeDebug for AuditRow {
         f.debug_struct("AuditRow")
             .field("id", &self.id)
             .field("folder_id", &self.folder_id)
-            .field("owner", &self.owner)
-            .field("actor_email", &self.actor_email)
-            .field("target_email", &self.target_email)
+            .field("owner", &redact_if_present(&self.owner)) // Redacted - PII (email)
+            .field("actor_email", &redact_if_present(&self.actor_email)) // Redacted - PII
+            .field("target_email", &redact_if_present(&self.target_email)) // Redacted - PII
             .field("operation", &self.operation)
             .field("old_rights", &self.old_rights)
             .field("new_rights", &self.new_rights)
