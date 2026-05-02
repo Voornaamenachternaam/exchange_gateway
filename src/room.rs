@@ -1,8 +1,8 @@
 // src/room.rs
+use crate::error::Result;
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::Storage;
 use crate::util::xml_escape;
-use anyhow::Result;
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
