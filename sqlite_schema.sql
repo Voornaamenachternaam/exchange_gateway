@@ -1,4 +1,4 @@
--- d1_schema.sql
+-- sqlite_schema.sql
 
 
 CREATE TABLE sync_state (

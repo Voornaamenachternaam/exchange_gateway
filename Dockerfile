@@ -7,7 +7,7 @@ RUN mkdir -p src && echo 'fn main(){}' > src/main.rs
 RUN cargo build --release
 RUN rm -rf src target/release/deps/exchange_gateway* target/release/exchange_gateway*
 COPY src ./src
-COPY d1_schema.sql ./d1_schema.sql
+COPY sqlite_schema.sql ./sqlite_schema.sql
 RUN touch src/main.rs && cargo build --release
 
 FROM debian:trixie-slim AS runtime

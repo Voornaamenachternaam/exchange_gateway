@@ -153,7 +153,7 @@ impl Storage {
     }
 
     pub async fn init_schema(&self) -> Result<()> {
-        sqlx::query(include_str!("../d1_schema.sql"))
+        sqlx::query(include_str!("../sqlite_schema.sql"))
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| anyhow!("Schema init error: {}", e))?;
