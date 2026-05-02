@@ -2,8 +2,8 @@
 use std::fmt;
 
 use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry};
-use crate::storage::Storage;
 use crate::storage::SafeDebug;
+use crate::storage::Storage;
 use anyhow::{Result, anyhow};
 use sqlx::FromRow;
 
@@ -34,11 +34,7 @@ fn safe_display(val: &Option<String>) -> &str {
 
 // Helper to redact a plain String field (always redacted if non-empty) - used for emails
 fn redact_if_present(val: &str) -> &str {
-    if val.is_empty() {
-        "None"
-    } else {
-        "[redacted]"
-    }
+    if val.is_empty() { "None" } else { "[redacted]" }
 }
 
 // Internal row struct - converted to CalendarPermission for public use
