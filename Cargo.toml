@@ -59,7 +59,7 @@ dashmap = "^6.1.0"
 smallvec = { version = "^1.15.1", features = ["serde", "write"] }
 http = "^1.4.0"
 smartstring = "^1.0.1"
-const-hex = "^1.18.1"
+const-hex = "^1.19.0"
 bitflags = "^2.11.1"
 unicode-normalization = "^0.1.25"
 phf = { version = "^0.13.1", features = ["macros"] }
