@@ -186,4 +186,10 @@ impl From<base64::DecodeError> for GatewayError {
     }
 }
 
+impl From<sqlx::Error> for GatewayError {
+    fn from(e: sqlx::Error) -> Self {
+        GatewayError::Storage(e.to_string())
+    }
+}
+
 pub type Result<T, E = GatewayError> = std::result::Result<T, E>;

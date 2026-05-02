@@ -1,5 +1,5 @@
 // src/storage.rs
-use sqlx::{FromRow, Pool, Row, Sqlite};
+use sqlx::{Acquire, Executor, FromRow, Pool, Row, Sqlite};
 use std::sync::Arc;
 
 use crate::error::{GatewayError, Result};
@@ -180,7 +180,7 @@ impl Storage {
         .bind(token)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -196,7 +196,7 @@ impl Storage {
         .bind(collection_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
@@ -212,7 +212,7 @@ impl Storage {
     ) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Transaction error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
         sqlx::query(
             "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -226,7 +226,7 @@ impl Storage {
         .bind(etag)
         .execute(&mut *tx)
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
         sqlx::query(
             "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', ?3)"
@@ -236,11 +236,11 @@ impl Storage {
         .bind(resource_href)
         .execute(&mut *tx)
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
         tx.commit()
             .await
-            .map_err(|e| anyhow!("Commit error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -258,7 +258,7 @@ impl Storage {
         .bind(client_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
@@ -282,7 +282,7 @@ impl Storage {
         .bind(status)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -292,14 +292,14 @@ impl Storage {
             .bind(server_id)
             .execute(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Transaction error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
         sqlx::query(
             "INSERT OR REPLACE INTO deleted_item_tombstone (owner, server_id) VALUES (?1, ?2)",
@@ -308,18 +308,18 @@ impl Storage {
         .bind(server_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
         sqlx::query("INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')")
             .bind(owner)
             .bind(server_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
         tx.commit()
             .await
-            .map_err(|e| anyhow!("Commit error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -344,7 +344,7 @@ impl Storage {
         .bind(limit)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn list_deleted_since(&self, owner: &str, since_unix_ts: i64) -> Result<Vec<String>> {
@@ -353,7 +353,7 @@ impl Storage {
             .bind(since_unix_ts)
             .fetch_all(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(rows.into_iter().map(|r| r.get(0)).collect())
     }
@@ -362,7 +362,7 @@ impl Storage {
         let row = sqlx::query("SELECT COALESCE(MAX(id), 0) FROM change_journal")
             .fetch_one(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.get(0))
     }
 
@@ -386,7 +386,7 @@ impl Storage {
         .bind(limit)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn list_deleted_since_seq(
@@ -399,7 +399,7 @@ impl Storage {
             .bind(since)
             .fetch_all(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
@@ -412,7 +412,7 @@ impl Storage {
         .bind(since)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn set_provision_policy(
@@ -432,7 +432,7 @@ impl Storage {
         .bind(policy_status)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -448,7 +448,7 @@ impl Storage {
         .bind(device_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
@@ -470,7 +470,7 @@ impl Storage {
         .bind(params.user_agent)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -488,7 +488,7 @@ impl Storage {
         .bind(offset)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn get_ews_sync_state(&self, owner: &str, folder_id: &str) -> Result<Option<String>> {
@@ -499,7 +499,7 @@ impl Storage {
         .bind(folder_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(row.map(|r| r.get(0)))
     }
@@ -516,7 +516,7 @@ impl Storage {
         .bind(server_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn verify_item_owner(&self, owner: &str, server_id: &str) -> Result<bool> {
@@ -525,7 +525,7 @@ impl Storage {
             .bind(server_id)
             .fetch_optional(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.is_some())
     }
 
@@ -534,7 +534,7 @@ impl Storage {
             .bind(server_id)
             .fetch_optional(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.map(|r| r.get(0)))
     }
 
@@ -553,7 +553,7 @@ impl Storage {
         .bind(sync_state)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -576,7 +576,7 @@ impl Storage {
         .bind(is_deleted as i32)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -592,7 +592,7 @@ impl Storage {
         .bind(parent_server_id)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn get_calendar_exception(
@@ -609,7 +609,7 @@ impl Storage {
         .bind(exception_start)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn delete_calendar_exception(
@@ -624,7 +624,7 @@ impl Storage {
             .bind(exception_start)
             .execute(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -645,7 +645,7 @@ impl Storage {
         .bind(user_response)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -661,7 +661,7 @@ impl Storage {
         .bind(request_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn upsert_meeting_state(&self, params: &MeetingStateParams<'_>) -> Result<()> {
@@ -688,7 +688,7 @@ impl Storage {
         .bind(params.timezone)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -705,7 +705,7 @@ impl Storage {
         .bind(uid)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn delete_meeting_state(&self, owner: &str, uid: &str) -> Result<()> {
@@ -714,7 +714,7 @@ impl Storage {
             .bind(uid)
             .execute(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -737,7 +737,7 @@ impl Storage {
         .bind(params.sequence)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -754,7 +754,7 @@ impl Storage {
         .bind(meeting_uid)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn delete_meeting_attendee(
@@ -771,7 +771,7 @@ impl Storage {
         .bind(email)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -781,7 +781,7 @@ impl Storage {
             .bind(meeting_uid)
             .execute(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -803,7 +803,7 @@ impl Storage {
         .bind(ical_data)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -820,7 +820,7 @@ impl Storage {
         .bind(limit.min(100))
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn mark_scheduling_processed(
@@ -837,7 +837,7 @@ impl Storage {
         .bind(id)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -856,7 +856,7 @@ impl Storage {
         .bind(end)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
     pub async fn upsert_calendar_attachment(
@@ -884,7 +884,7 @@ impl Storage {
         .bind(&attachment.last_modified_time)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -901,7 +901,7 @@ impl Storage {
         .bind(attachment_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(row.map(|r| crate::attachment::AttachmentRecord {
             id: r.get(0),
@@ -937,7 +937,7 @@ impl Storage {
         .bind(parent_item_server_id)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(rows
             .into_iter()
@@ -969,7 +969,7 @@ impl Storage {
             .bind(attachment_id)
             .execute(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -983,7 +983,7 @@ impl Storage {
         .bind(&room_list.name)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -993,7 +993,7 @@ impl Storage {
         )
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(rows
             .into_iter()
@@ -1012,7 +1012,7 @@ impl Storage {
             .bind(email)
             .execute(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -1020,7 +1020,7 @@ impl Storage {
         let rows = sqlx::query("SELECT id, room_list_email, email, name, capacity, is_available, created_at, updated_at FROM room ORDER BY name ASC")
             .fetch_all(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("Query error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(rows
             .into_iter()
@@ -1042,7 +1042,7 @@ impl Storage {
             .bind(email)
             .execute(self.pool.as_ref())
             .await
-            .map_err(|e| anyhow!("DB error: {}", e))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -1059,7 +1059,7 @@ impl Storage {
         .bind(room.is_available as i32)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("DB error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -1074,7 +1074,7 @@ impl Storage {
         .bind(room_list_email)
         .fetch_all(self.pool.as_ref())
         .await
-        .map_err(|e| anyhow!("Query error: {}", e))?;
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
 
         Ok(rows
             .into_iter()
