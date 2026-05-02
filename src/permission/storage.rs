@@ -1,4 +1,6 @@
 // src/permission/storage.rs
+use std::fmt;
+
 use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry};
 use crate::storage::Storage;
 use crate::storage::SafeDebug;
@@ -18,6 +20,14 @@ fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
         })
 }
 
+// Helper to safely display a field, redacting if present
+fn safe_display(val: &Option<String>) -> &str {
+    match val {
+        Some(v) if !v.is_empty() => "[redacted]",
+        _ => "None",
+    }
+}
+
 // Internal row struct - converted to CalendarPermission for public use
 #[derive(FromRow)]
 struct PermissionRow {
@@ -34,11 +44,17 @@ struct PermissionRow {
 }
 
 impl SafeDebug for PermissionRow {
-    fn safe_debug(&self) -> String {
-        format!(
-            "PermissionRow {{ id: {:?}, folder_id: {:?}, owner: {:?}, user_email: {:?}, user_name: {:?}, rights: {}, is_default: {}, is_anonymous: {} }}",
-            self.id, self.folder_id, self.owner, self.user_email, self.user_name, self.rights, self.is_default, self.is_anonymous
-        )
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermissionRow")
+            .field("id", &self.id)
+            .field("folder_id", &self.folder_id)
+            .field("owner", &self.owner)
+            .field("user_email", &self.user_email)
+            .field("user_name", &safe_display(&self.user_name)) // Redacted - PII
+            .field("rights", &self.rights)
+            .field("is_default", &self.is_default)
+            .field("is_anonymous", &self.is_anonymous)
+            .finish()
     }
 }
 
@@ -80,14 +96,22 @@ struct DelegateRow {
 }
 
 impl SafeDebug for DelegateRow {
-    fn safe_debug(&self) -> String {
-        format!(
-            "DelegateRow {{ id: {:?}, delegator: {:?}, delegate_email: {:?}, delegate_name: {:?}, calendar_permission: {}, inbox_permission: {}, tasks_permission: {}, contacts_permission: {}, notes_permission: {}, journal_permission: {}, receive_copies: {}, receive_infos: {}, view_private: {} }}",
-            self.id, self.delegator, self.delegate_email, self.delegate_name,
-            self.calendar_permission, self.inbox_permission, self.tasks_permission,
-            self.contacts_permission, self.notes_permission, self.journal_permission,
-            self.receive_copies, self.receive_infos, self.view_private
-        )
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DelegateRow")
+            .field("id", &self.id)
+            .field("delegator", &self.delegator)
+            .field("delegate_email", &self.delegate_email)
+            .field("delegate_name", &safe_display(&self.delegate_name)) // Redacted - PII
+            .field("calendar_permission", &self.calendar_permission)
+            .field("inbox_permission", &self.inbox_permission)
+            .field("tasks_permission", &self.tasks_permission)
+            .field("contacts_permission", &self.contacts_permission)
+            .field("notes_permission", &self.notes_permission)
+            .field("journal_permission", &self.journal_permission)
+            .field("receive_copies", &self.receive_copies)
+            .field("receive_infos", &self.receive_infos)
+            .field("view_private", &self.view_private)
+            .finish()
     }
 }
 
@@ -128,12 +152,17 @@ struct AuditRow {
 }
 
 impl SafeDebug for AuditRow {
-    fn safe_debug(&self) -> String {
-        format!(
-            "AuditRow {{ id: {:?}, folder_id: {:?}, owner: {:?}, actor_email: {:?}, target_email: {:?}, operation: {:?}, old_rights: {:?}, new_rights: {:?} }}",
-            self.id, self.folder_id, self.owner, self.actor_email, self.target_email,
-            self.operation, self.old_rights, self.new_rights
-        )
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuditRow")
+            .field("id", &self.id)
+            .field("folder_id", &self.folder_id)
+            .field("owner", &self.owner)
+            .field("actor_email", &self.actor_email)
+            .field("target_email", &self.target_email)
+            .field("operation", &self.operation)
+            .field("old_rights", &self.old_rights)
+            .field("new_rights", &self.new_rights)
+            .finish()
     }
 }
 
