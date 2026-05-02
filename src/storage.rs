@@ -149,7 +149,7 @@ impl SafeDebug for MeetingResponseRow {
     }
 }
 
-// Row struct for meeting_state queries - subject/location redacted as PII
+// Row struct for meeting_state queries - subject/location/organizer_email redacted as PII
 #[derive(FromRow)]
 pub struct MeetingStateRow {
     pub uid: String,
@@ -170,11 +170,24 @@ pub struct MeetingStateRow {
     pub last_sequence_time: Option<String>,
 }
 
-// Helper to safely display a field, redacting if empty
+// Helper to safely display a PII field.
+// - None -> "None"
+// - Some("") (empty) -> "None" (semantically equivalent to no data)
+// - Some("...") (non-empty) -> "[redacted]" (sensitive PII)
 fn safe_display(val: &Option<String>) -> &str {
     match val {
-        Some(v) if !v.is_empty() => "[redacted]",
-        _ => "None",
+        Some(v) if v.is_empty() => "None",
+        Some(_) => "[redacted]",
+        None => "None",
+    }
+}
+
+// Helper to redact a plain String field (always redacted if non-empty)
+fn redact_if_present(val: &str) -> &str {
+    if val.is_empty() {
+        "None"
+    } else {
+        "[redacted]"
     }
 }
 
@@ -187,10 +200,10 @@ impl SafeDebug for MeetingStateRow {
             .field("state", &self.state)
             .field("state_flags", &self.state_flags)
             .field("is_organizer", &self.is_organizer)
-            .field("organizer_email", &self.organizer_email)
-            .field("organizer_name", &self.organizer_name)
-            .field("subject", &safe_display(&self.subject)) // Redacted - may contain PII
-            .field("location", &safe_display(&self.location)) // Redacted - may contain PII
+            .field("organizer_email", &safe_display(&self.organizer_email)) // Redacted - PII
+            .field("organizer_name", &safe_display(&self.organizer_name)) // Redacted - PII
+            .field("subject", &safe_display(&self.subject)) // Redacted - may contain PII/confidential
+            .field("location", &safe_display(&self.location)) // Redacted - may contain PII/confidential
             .field("start_time", &self.start_time)
             .field("end_time", &self.end_time)
             .field("timezone", &self.timezone)
@@ -201,7 +214,7 @@ impl SafeDebug for MeetingStateRow {
     }
 }
 
-// Row struct for meeting_attendee queries - name redacted as PII
+// Row struct for meeting_attendee queries - email/name redacted as PII
 #[derive(FromRow)]
 pub struct MeetingAttendeeRow {
     pub meeting_uid: String,
@@ -223,7 +236,7 @@ impl SafeDebug for MeetingAttendeeRow {
         f.debug_struct("MeetingAttendeeRow")
             .field("meeting_uid", &self.meeting_uid)
             .field("owner", &self.owner)
-            .field("email", &self.email)
+            .field("email", &redact_if_present(&self.email)) // Redacted - PII
             .field("name", &safe_display(&self.name)) // Redacted - PII
             .field("status", &self.status)
             .field("role", &self.role)
