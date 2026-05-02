@@ -142,6 +142,7 @@ services:
       - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET}
       - GATEWAY_HOST=${GATEWAY_HOST}
       - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN}
+      - GATEWAY_DATABASE_PATH=${GATEWAY_DATABASE_PATH:-/var/lib/exchange-gateway/gateway.db}
       - GATEWAY_MAX_ATTACHMENT_BYTES=${GATEWAY_MAX_ATTACHMENT_BYTES:-5242880}
       - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
       - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
@@ -160,6 +161,8 @@ volumes:
     driver: local
 ```
 
+> **Note on Database Path:** The database will be created at `/var/lib/exchange-gateway/gateway.db` inside the container. With the named volume above, data persists across container restarts. If using a bind mount instead (e.g., `- /path/on/host:/var/lib/exchange-gateway`), ensure the host path exists and is writable by the container's `gateway` user (UID 10001).
+
 ### `.env` File
 
 ```bash
@@ -173,6 +176,7 @@ GATEWAY_MAIL_DOMAIN=example.com
 GATEWAY_RUST_LOG=info
 GATEWAY_TZ=UTC
 GATEWAY_BIND=[::]:8134
+GATEWAY_DATABASE_PATH=/var/lib/exchange-gateway/gateway.db
 GATEWAY_MAX_ATTACHMENT_BYTES=5242880
 GATEWAY_ROOM_BOOKING_ENABLED=true
 GATEWAY_AUTH_CACHE_TTL_SECS=300

@@ -1,7 +1,8 @@
 // src/storage.rs
-use anyhow::{Result, anyhow};
 use sqlx::{FromRow, Pool, Row, Sqlite};
 use std::sync::Arc;
+
+use crate::error::{GatewayError, Result};
 
 pub type SqlPool = Pool<Sqlite>;
 
@@ -146,17 +147,24 @@ impl Storage {
     pub async fn new(database_url: &str) -> Result<Self> {
         let pool = Pool::connect(database_url)
             .await
-            .map_err(|e| anyhow!("Failed to create SQLite pool: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to create SQLite pool: {}", e);
+                GatewayError::Storage(e.to_string())
+            })?;
         Ok(Self {
             pool: Arc::new(pool),
         })
     }
 
     pub async fn init_schema(&self) -> Result<()> {
-        sqlx::query(include_str!("../d1_schema.sql"))
-            .execute(self.pool.as_ref())
+        let schema = include_str!("../sqlite_schema.sql");
+        self.pool
+            .execute(schema)
             .await
-            .map_err(|e| anyhow!("Schema init error: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Schema init error: {}", e);
+                GatewayError::Storage(format!("Schema init error: {}", e))
+            })?;
         Ok(())
     }
 
