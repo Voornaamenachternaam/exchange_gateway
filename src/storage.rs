@@ -1,10 +1,18 @@
 // src/storage.rs
-use sqlx::{Acquire, Executor, FromRow, Pool, Row, Sqlite};
+use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
+use std::fmt;
 use std::sync::Arc;
 
 use crate::error::{GatewayError, Result};
 
 pub type SqlPool = Pool<Sqlite>;
+
+// Custom Debug trait for safe, production-safe debugging of row structs.
+// This avoids accidentally logging sensitive data like content_base64, imei, phone_number.
+// Uses fmt::Result pattern for zero-allocation formatting (like std::fmt::Debug).
+pub trait SafeDebug {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+}
 
 #[derive(Clone)]
 pub struct Storage {
@@ -17,7 +25,8 @@ impl Storage {
     }
 }
 
-#[derive(Debug, FromRow)]
+// Row struct for change journal queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct JournalRow {
     pub id: i64,
     pub server_id: String,
@@ -25,13 +34,37 @@ pub struct JournalRow {
     pub resource_href: Option<String>,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for JournalRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JournalRow")
+            .field("id", &self.id)
+            .field("server_id", &self.server_id)
+            .field("op", &self.op)
+            .field("resource_href", &self.resource_href)
+            .finish()
+    }
+}
+
+// Row struct for item_map queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct EwsItemRow {
     pub server_id: String,
     pub resource_href: String,
     pub uid: Option<String>,
     pub etag: Option<String>,
     pub updated_at: Option<String>,
+}
+
+impl SafeDebug for EwsItemRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EwsItemRow")
+            .field("server_id", &self.server_id)
+            .field("resource_href", &self.resource_href)
+            .field("uid", &self.uid)
+            .field("etag", &self.etag)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 pub struct DeviceInfoParams<'a> {
@@ -74,7 +107,8 @@ pub struct MeetingAttendeeParams<'a> {
     pub sequence: u32,
 }
 
-#[derive(Debug, FromRow)]
+// Row struct for calendar_exceptions queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct CalendarExceptionRow {
     pub parent_server_id: String,
     pub exception_start: String,
@@ -83,7 +117,20 @@ pub struct CalendarExceptionRow {
     pub created_at: String,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for CalendarExceptionRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CalendarExceptionRow")
+            .field("parent_server_id", &self.parent_server_id)
+            .field("exception_start", &self.exception_start)
+            .field("server_id", &self.server_id)
+            .field("is_deleted", &self.is_deleted)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
+// Row struct for meeting_response queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
 pub struct MeetingResponseRow {
     pub request_id: String,
     pub calendar_id: String,
@@ -91,7 +138,19 @@ pub struct MeetingResponseRow {
     pub created_at: String,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for MeetingResponseRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeetingResponseRow")
+            .field("request_id", &self.request_id)
+            .field("calendar_id", &self.calendar_id)
+            .field("user_response", &self.user_response)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
+// Row struct for meeting_state queries - subject/location/organizer_email redacted as PII
+#[derive(FromRow)]
 pub struct MeetingStateRow {
     pub uid: String,
     pub owner: String,
@@ -111,7 +170,52 @@ pub struct MeetingStateRow {
     pub last_sequence_time: Option<String>,
 }
 
-#[derive(Debug, FromRow)]
+// Helper to safely display a PII field.
+// - None -> "None"
+// - Some("") (empty) -> "None" (semantically equivalent to no data)
+// - Some("...") (non-empty) -> "[redacted]" (sensitive PII)
+fn safe_display(val: &Option<String>) -> &str {
+    match val {
+        Some(v) if v.is_empty() => "None",
+        Some(_) => "[redacted]",
+        None => "None",
+    }
+}
+
+// Helper to redact a plain String field (always redacted if non-empty)
+fn redact_if_present(val: &str) -> &str {
+    if val.is_empty() {
+        "None"
+    } else {
+        "[redacted]"
+    }
+}
+
+impl SafeDebug for MeetingStateRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeetingStateRow")
+            .field("uid", &self.uid)
+            .field("owner", &self.owner)
+            .field("sequence", &self.sequence)
+            .field("state", &self.state)
+            .field("state_flags", &self.state_flags)
+            .field("is_organizer", &self.is_organizer)
+            .field("organizer_email", &safe_display(&self.organizer_email)) // Redacted - PII
+            .field("organizer_name", &safe_display(&self.organizer_name)) // Redacted - PII
+            .field("subject", &safe_display(&self.subject)) // Redacted - may contain PII/confidential
+            .field("location", &safe_display(&self.location)) // Redacted - may contain PII/confidential
+            .field("start_time", &self.start_time)
+            .field("end_time", &self.end_time)
+            .field("timezone", &self.timezone)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("last_sequence_time", &self.last_sequence_time)
+            .finish()
+    }
+}
+
+// Row struct for meeting_attendee queries - email/name redacted as PII
+#[derive(FromRow)]
 pub struct MeetingAttendeeRow {
     pub meeting_uid: String,
     pub owner: String,
@@ -127,7 +231,27 @@ pub struct MeetingAttendeeRow {
     pub updated_at: String,
 }
 
-#[derive(Debug, FromRow)]
+impl SafeDebug for MeetingAttendeeRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeetingAttendeeRow")
+            .field("meeting_uid", &self.meeting_uid)
+            .field("owner", &self.owner)
+            .field("email", &redact_if_present(&self.email)) // Redacted - PII
+            .field("name", &safe_display(&self.name)) // Redacted - PII
+            .field("status", &self.status)
+            .field("role", &self.role)
+            .field("response_time", &self.response_time)
+            .field("proposed_start", &self.proposed_start)
+            .field("proposed_end", &self.proposed_end)
+            .field("sequence", &self.sequence)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+// Row struct for meeting_scheduling_queue queries - ical_data redacted
+#[derive(FromRow)]
 pub struct SchedulingQueueRow {
     pub id: i64,
     pub meeting_uid: String,
@@ -141,6 +265,25 @@ pub struct SchedulingQueueRow {
     pub error_message: Option<String>,
     pub created_at: String,
     pub processed_at: Option<String>,
+}
+
+impl SafeDebug for SchedulingQueueRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SchedulingQueueRow")
+            .field("id", &self.id)
+            .field("meeting_uid", &self.meeting_uid)
+            .field("owner", &self.owner)
+            .field("operation", &self.operation)
+            .field("sequence", &self.sequence)
+            .field("ical_data", &self.ical_data.as_ref().map(|_| "[redacted]")) // Always redacted
+            .field("status", &self.status)
+            .field("attempts", &self.attempts)
+            .field("last_attempt", &self.last_attempt)
+            .field("error_message", &self.error_message)
+            .field("created_at", &self.created_at)
+            .field("processed_at", &self.processed_at)
+            .finish()
+    }
 }
 
 impl Storage {

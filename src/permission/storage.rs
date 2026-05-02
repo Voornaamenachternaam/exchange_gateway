@@ -1,6 +1,9 @@
 // src/permission/storage.rs
+use std::fmt;
+
 use crate::permission::types::{CalendarPermission, DelegateInfo, PermissionAuditEntry};
 use crate::storage::Storage;
+use crate::storage::SafeDebug;
 use anyhow::{Result, anyhow};
 use sqlx::FromRow;
 
@@ -17,7 +20,29 @@ fn parse_sqlite_timestamp(s: &str) -> chrono::DateTime<chrono::Utc> {
         })
 }
 
-#[derive(Debug, FromRow)]
+// Helper to safely display an optional PII field.
+// - None -> "None"
+// - Some("") (empty) -> "None" (semantically equivalent to no data)
+// - Some("...") (non-empty) -> "[redacted]" (sensitive PII)
+fn safe_display(val: &Option<String>) -> &str {
+    match val {
+        Some(v) if v.is_empty() => "None",
+        Some(_) => "[redacted]",
+        None => "None",
+    }
+}
+
+// Helper to redact a plain String field (always redacted if non-empty) - used for emails
+fn redact_if_present(val: &str) -> &str {
+    if val.is_empty() {
+        "None"
+    } else {
+        "[redacted]"
+    }
+}
+
+// Internal row struct - converted to CalendarPermission for public use
+#[derive(FromRow)]
 struct PermissionRow {
     id: String,
     folder_id: String,
@@ -29,6 +54,21 @@ struct PermissionRow {
     is_anonymous: i32,
     created_at: String,
     updated_at: String,
+}
+
+impl SafeDebug for PermissionRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermissionRow")
+            .field("id", &self.id)
+            .field("folder_id", &self.folder_id)
+            .field("owner", &redact_if_present(&self.owner)) // Redacted - PII (email)
+            .field("user_email", &redact_if_present(&self.user_email)) // Redacted - PII
+            .field("user_name", &safe_display(&self.user_name)) // Redacted - PII
+            .field("rights", &self.rights)
+            .field("is_default", &self.is_default)
+            .field("is_anonymous", &self.is_anonymous)
+            .finish()
+    }
 }
 
 impl From<PermissionRow> for CalendarPermission {
@@ -48,7 +88,8 @@ impl From<PermissionRow> for CalendarPermission {
     }
 }
 
-#[derive(Debug, FromRow)]
+// Internal row struct - converted to DelegateInfo for public use
+#[derive(FromRow)]
 struct DelegateRow {
     id: String,
     delegator: String,
@@ -65,6 +106,26 @@ struct DelegateRow {
     view_private: i32,
     created_at: String,
     updated_at: String,
+}
+
+impl SafeDebug for DelegateRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DelegateRow")
+            .field("id", &self.id)
+            .field("delegator", &redact_if_present(&self.delegator)) // Redacted - PII (email)
+            .field("delegate_email", &redact_if_present(&self.delegate_email)) // Redacted - PII
+            .field("delegate_name", &safe_display(&self.delegate_name)) // Redacted - PII
+            .field("calendar_permission", &self.calendar_permission)
+            .field("inbox_permission", &self.inbox_permission)
+            .field("tasks_permission", &self.tasks_permission)
+            .field("contacts_permission", &self.contacts_permission)
+            .field("notes_permission", &self.notes_permission)
+            .field("journal_permission", &self.journal_permission)
+            .field("receive_copies", &self.receive_copies)
+            .field("receive_infos", &self.receive_infos)
+            .field("view_private", &self.view_private)
+            .finish()
+    }
 }
 
 impl From<DelegateRow> for DelegateInfo {
@@ -89,7 +150,8 @@ impl From<DelegateRow> for DelegateInfo {
     }
 }
 
-#[derive(Debug, FromRow)]
+// Internal row struct - converted to PermissionAuditEntry for public use
+#[derive(FromRow)]
 struct AuditRow {
     id: String,
     folder_id: String,
@@ -100,6 +162,21 @@ struct AuditRow {
     old_rights: Option<i32>,
     new_rights: Option<i32>,
     created_at: String,
+}
+
+impl SafeDebug for AuditRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuditRow")
+            .field("id", &self.id)
+            .field("folder_id", &self.folder_id)
+            .field("owner", &redact_if_present(&self.owner)) // Redacted - PII (email)
+            .field("actor_email", &redact_if_present(&self.actor_email)) // Redacted - PII
+            .field("target_email", &redact_if_present(&self.target_email)) // Redacted - PII
+            .field("operation", &self.operation)
+            .field("old_rights", &self.old_rights)
+            .field("new_rights", &self.new_rights)
+            .finish()
+    }
 }
 
 impl From<AuditRow> for PermissionAuditEntry {
