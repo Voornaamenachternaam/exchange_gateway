@@ -57,7 +57,7 @@ In the same tunnel settings:
 1. Go to the **Public Hostname** tab
 2. Click **Add a public hostname**
 3. Configure:
-   - **Domain**: `calendar.stalwart.example.com` (subdomain of your choice)
+   - **Domain**: `calendar.example.com` (subdomain of your choice)
    - **Type**: HTTP
    - **Service**: `http://localhost:8134`
 4. Click **Save hostname**
@@ -127,7 +127,7 @@ cp cloudflared/config.yml ~/.cloudflared/config.yml
 
 2. Edit `~/.cloudflared/config.yml` to replace:
    - `<YOUR-TUNNEL-UUID>` with your tunnel UUID from Step 1
-   - `calendar.stalwart.example.com` with your actual hostname
+   - `calendar.example.com` with your actual hostname
 
 3. Run the tunnel:
 ```bash
@@ -203,7 +203,7 @@ volumes:
 # Exchange Gateway Configuration (Required)
 GATEWAY_CALDAV_BASE=http://stalwart:8080/dav/
 GATEWAY_HMAC_SECRET=your-32-character-minimum-secret-key-here
-GATEWAY_HOST=calendar.stalwart.example.com
+GATEWAY_HOST=calendar.example.com
 GATEWAY_MAIL_DOMAIN=example.com
 
 # Optional Exchange Gateway Settings
@@ -244,9 +244,9 @@ curl -v http://127.0.0.1:8134/health
 
 ### Remote (after DNS propagates)
 ```bash
-curl -v https://calendar.stalwart.example.com/health
-curl -v https://calendar.stalwart.example.com/EWS/Exchange.asmx
-curl -v https://calendar.stalwart.example.com/autodiscover/autodiscover.xml
+curl -v https://calendar.example.com/health
+curl -v https://calendar.example.com/EWS/Exchange.asmx
+curl -v https://calendar.example.com/autodiscover/autodiscover.xml
 ```
 
 ---
@@ -309,6 +309,38 @@ cloudflared tunnel info
 ps aux | grep cloudflared
 ```
 
+### TLS/SSL Handshake Failure
+
+**Symptoms:** `SSL routines::sslv3 alert handshake failure` or `ERR_SSL_VERSION_OR_CIPHER_MISMATCH`
+
+**Common causes:**
+
+1. **Hostname not covered by SSL certificate:**
+
+   Cloudflare Universal SSL certificates (for `*.example.com`) do **NOT** cover third-level subdomains. For example:
+   - `calendar.example.com` is covered by `*.example.com`
+   - `calendar.example.com` is NOT covered
+
+   **Fix:** Use a second-level subdomain (e.g., `calendar.example.com`) or purchase a dedicated SSL certificate for the specific hostname.
+
+2. **SSL certificate not yet provisioned:**
+
+   Wait 5-15 minutes for Cloudflare to provision the Universal SSL certificate.
+
+3. **SSL/TLS mode mismatch:**
+
+   Ensure SSL/TLS mode is set to "Full" or "Flexible" (not "Full (strict)") when using HTTP origin.
+
+### Certificate Coverage Reference
+
+| Certificate Type | Covers |
+|-----------------|--------|
+| `*.example.com` | `a.example.com`, `calendar.example.com` |
+| `*.stalwart.example.com` | `calendar.example.com`, `mail.stalwart.example.com` |
+| Dedicated cert for `calendar.example.com` | Only `calendar.example.com` |
+
+**Recommendation:** Use second-level subdomains (e.g., `calendar.example.com`) to ensure compatibility with Cloudflare's free Universal SSL certificates.
+
 ### 502 Bad Gateway
 
 ```bash
@@ -325,8 +357,8 @@ curl http://127.0.0.1:8134/health
 ### DNS not resolving
 
 ```bash
-dig calendar.stalwart.example.com
-nslookup calendar.stalwart.example.com
+dig calendar.example.com
+nslookup calendar.example.com
 ```
 
 ---
