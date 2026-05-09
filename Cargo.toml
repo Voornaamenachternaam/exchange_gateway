@@ -7,10 +7,10 @@ rust-version = "1.95.0"
 
 [dependencies]
 reqwest = { version = "^0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-webpki-roots", "cookies"] }
-tokio = { version = "^1.52.2", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
+tokio = { version = "^1.52.3", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
-quick-xml = { version = "^0.39.3", features = ["serialize", "async-tokio", "encoding"] }
+quick-xml = { version = "^0.39.4", features = ["serialize", "async-tokio", "encoding"] }
 nom = "^8.0.0"
 serde = { version = "^1.0.228", features = ["derive", "rc", "std"] }
 serde_json = "^1.0.149"
