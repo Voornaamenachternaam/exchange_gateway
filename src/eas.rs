@@ -1828,7 +1828,11 @@ pub async fn handle(
         return unauth_response(&request_id);
     };
     // Verify credentials early to avoid unnecessary processing
-    if !state.auth_verifier.verify(&username, password.expose_secret()).await {
+    if !state
+        .auth_verifier
+        .verify(&username, password.expose_secret())
+        .await
+    {
         tracing::debug!(request_id = %request_id, user = %username, "Authentication failed");
         return unauth_response(&request_id);
     }

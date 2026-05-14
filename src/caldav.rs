@@ -122,11 +122,7 @@ impl CaldavClient {
         {
             Ok(r) => Ok(r),
             Err(e) => {
-                tracing::error!(
-                    "caldav: PROPFIND request to {} failed: {}",
-                    home_url,
-                    e
-                );
+                tracing::error!("caldav: PROPFIND request to {} failed: {}", home_url, e);
                 Err(anyhow::anyhow!("CalDAV connection failed: {}", e))
             }
         }?;
@@ -203,7 +199,7 @@ impl CaldavClient {
             start = start,
             end = end
         );
-        
+
         let resp = match self
             .client
             .request(reqwest::Method::from_bytes(b"REPORT")?, collection_href)
@@ -232,12 +228,20 @@ impl CaldavClient {
                 "caldav: REPORT on {} returned status {}: {}",
                 collection_href,
                 status,
-                if body_preview.len() > 500 { "response truncated" } else { &body_preview }
+                if body_preview.len() > 500 {
+                    "response truncated"
+                } else {
+                    &body_preview
+                }
             );
             return Err(anyhow::anyhow!(
                 "CalDAV server returned {}: {}",
                 status,
-                if body_preview.len() > 200 { "response truncated" } else { &body_preview }
+                if body_preview.len() > 200 {
+                    "response truncated"
+                } else {
+                    &body_preview
+                }
             ));
         }
 
