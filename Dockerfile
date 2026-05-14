@@ -23,7 +23,7 @@ RUN mkdir -p /etc/exchange-gateway /var/lib/exchange-gateway \
  && chmod 770 /var/lib/exchange-gateway
 COPY --from=builder /app/target/release/exchange_gateway /usr/local/bin/exchange_gateway
 RUN chmod 755 /usr/local/bin/exchange_gateway
-ENV RUST_LOG="info"
+ENV RUST_LOG="debug"
 ENV TZ="UTC"
 USER gateway
 EXPOSE 8134
