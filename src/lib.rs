@@ -14,7 +14,7 @@ pub mod ews_update;
 pub mod ical_parser;
 pub mod meeting;
 pub mod models;
-pub mod oab;
+
 pub mod permission;
 pub mod protocol_fixtures;
 pub mod room;

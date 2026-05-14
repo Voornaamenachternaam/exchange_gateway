@@ -8,7 +8,6 @@ This repository implements an Exchange-compatible gateway in Rust that translate
   - `/EWS/Exchange.asmx`
   - `/Microsoft-Server-ActiveSync`
   - `/autodiscover/*`
-  - `/OAB/*`
   - `/health`
 - SQLite database for sync state and caching
 
