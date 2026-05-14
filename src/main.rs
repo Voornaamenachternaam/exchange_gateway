@@ -233,7 +233,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
-    use crate::caldav::CaldavClient;
+    use exchange_gateway::caldav::CaldavClient;
     // Use a test username that likely doesn't exist - we expect 401 or 404, not connection failure
     let test_user = "health-check";
     let caldav = CaldavClient::new(&state.cfg)?;
@@ -256,9 +256,10 @@ async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
     // Accept any 2xx or 401/403/404 as "server is reachable"
     // We don't want health check to fail due to auth, just connectivity
     let status = resp.status();
-    if status.is_success() || status == reqwest::StatusCode::unauthorized()
-        || status == reqwest::StatusCode::forbidden()
-        || status == reqwest::StatusCode::not_found()
+    if status.is_success()
+        || status == StatusCode::UNAUTHORIZED
+        || status == StatusCode::FORBIDDEN
+        || status == StatusCode::NOT_FOUND
     {
         Ok(())
     } else {
