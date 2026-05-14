@@ -119,7 +119,6 @@ pub fn handle_autodiscover_xml(host: &str, _body: &str, email: &str) -> AdRespon
         <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
         <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
         <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
-        <OABUrl>https://{host}/OAB/oab.xml</OABUrl>
         <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
         <UMUrl>https://{host}/EWS/Exchange.asmx</UMUrl>
         <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
@@ -145,7 +144,6 @@ pub fn handle_autodiscover_xml(host: &str, _body: &str, email: &str) -> AdRespon
         <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
         <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
         <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
-        <OABUrl>https://{host}/OAB/oab.xml</OABUrl>
         <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
         <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
       </Protocol>
@@ -185,8 +183,6 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>InternalEmwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>ExternalOABUrl</a:Name><a:Value>https://{host}/OAB/oab.xml</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>InternalOABUrl</a:Name><a:Value>https://{host}/OAB/oab.xml</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>MobileSyncServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
