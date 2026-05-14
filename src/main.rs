@@ -213,7 +213,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     }
-    
+
     // Optionally check CalDAV if configured (lightweight PROPFIND)
     if !state.cfg.caldav_base.is_empty() {
         match verify_caldav_health(&state).await {
@@ -237,12 +237,16 @@ async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
     // Use a test username that likely doesn't exist - we expect 401 or 404, not connection failure
     let test_user = "health-check";
     let caldav = CaldavClient::new(&state.cfg)?;
-    let home_url = format!("{}/cal/{}/", state.cfg.caldav_base.trim_end_matches('/'), test_user);
+    let home_url = format!(
+        "{}/cal/{}/",
+        state.cfg.caldav_base.trim_end_matches('/'),
+        test_user
+    );
     let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:">
   <D:prop><D:resourcetype/></D:prop>
 </D:propfind>"#;
-    
+
     // Use HEAD or a very light request; we only care that server responds
     let resp = caldav
         .client()
@@ -252,7 +256,7 @@ async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
         .body(propfind_body)
         .send()
         .await?;
-    
+
     // Accept any 2xx or 401/403/404 as "server is reachable"
     // We don't want health check to fail due to auth, just connectivity
     let status = resp.status();
