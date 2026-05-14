@@ -126,6 +126,15 @@ impl Config {
             ));
         }
         validate_url(&self.caldav_base, "caldav_base")?;
+        // Ensure caldav_base uses http(s) and ends with /dav or /dav/
+        let caldav_parsed = url::Url::parse(&self.caldav_base)
+            .map_err(|e| anyhow::anyhow!("Config: 'caldav_base' is not a valid URL: {}", e))?;
+        let path = caldav_parsed.path().trim_end_matches('/');
+        if !path.ends_with("dav") {
+            return Err(anyhow::anyhow!(
+                "Config: 'caldav_base' must end with '/dav' (e.g., http://stalwart:8080/dav)"
+            ));
+        }
         if self.database_path.is_empty() {
             return Err(anyhow::anyhow!(
                 "Config: 'database_path' is required (set via {} or config)",

@@ -218,6 +218,11 @@ pub async fn handle(
         Some(a) => a,
         None => return unauthorized(),
     };
+    // Verify credentials early to avoid unnecessary processing
+    if !state.auth_verifier.verify(&auth.username, auth.password.expose_secret()).await {
+        tracing::debug!("EWS authentication failed for user: {}", auth.username);
+        return unauthorized();
+    }
     let Some(action) = detect_action(&body) else {
         return soap_fault(
             "ErrorInvalidRequest",

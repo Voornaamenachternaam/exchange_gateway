@@ -1827,6 +1827,11 @@ pub async fn handle(
     let Some((username, password)) = parse_basic_auth(&headers) else {
         return unauth_response(&request_id);
     };
+    // Verify credentials early to avoid unnecessary processing
+    if !state.auth_verifier.verify(&username, password.expose_secret()).await {
+        tracing::debug!(request_id = %request_id, user = %username, "Authentication failed");
+        return unauth_response(&request_id);
+    }
     let wbxml = Wbxml::new();
     let payload = body.to_vec();
     let wants_wbxml = headers

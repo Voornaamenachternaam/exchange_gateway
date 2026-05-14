@@ -110,7 +110,7 @@ impl CaldavClient {
   </D:prop>
 </D:propfind>"#;
 
-        let resp = self
+        let resp = match self
             .client
             .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
             .basic_auth(username, Some(password))
@@ -118,63 +118,66 @@ impl CaldavClient {
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(propfind_body)
             .send()
-            .await;
-
-        match resp {
-            Ok(r) if r.status().is_success() => {
-                let body = match r.text().await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!(
-                            "caldav: failed to read PROPFIND response body for {}: {} — \
-                             falling back to default calendar path",
-                            home_url,
-                            e
-                        );
-                        String::new()
-                    }
-                };
-                let hrefs = parse_calendar_collection_hrefs(&body, &home_url);
-                if !hrefs.is_empty() {
-                    tracing::debug!(
-                        "caldav: discovered {} calendar collection(s) for {}",
-                        hrefs.len(),
-                        username
-                    );
-                    return Ok(hrefs);
-                }
-                tracing::warn!(
-                    "caldav: PROPFIND Depth:1 on {} returned no calendar collections; \
-                     falling back to well-known default path",
-                    home_url
-                );
-            }
-            Ok(r) => {
-                tracing::warn!(
-                    "caldav: PROPFIND on {} returned HTTP {} — falling back to default path",
-                    home_url,
-                    r.status()
-                );
-            }
+            .await
+        {
+            Ok(r) => Ok(r),
             Err(e) => {
-                tracing::warn!(
-                    "caldav: PROPFIND on {} failed: {} — falling back to default path",
+                tracing::error!(
+                    "caldav: PROPFIND request to {} failed: {}",
                     home_url,
                     e
                 );
+                Err(anyhow::anyhow!("CalDAV connection failed: {}", e))
             }
+        }?;
+
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::MULTI_STATUS {
+            let body_preview = resp.text().await.unwrap_or_default();
+            tracing::error!(
+                "caldav: PROPFIND on {} returned status {}: {}",
+                home_url,
+                status,
+                body_preview
+            );
+            return Err(anyhow::anyhow!(
+                "CalDAV server returned {}: {}",
+                status,
+                if body_preview.len() > 200 {
+                    "response truncated"
+                } else {
+                    &body_preview
+                }
+            ));
         }
 
-        let default_url = format!(
-            "{}/cal/{}/default/",
-            self.base.trim_end_matches('/'),
+        let body = match resp.text().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(
+                    "caldav: failed to read PROPFIND response body from {}: {}",
+                    home_url,
+                    e
+                );
+                return Err(anyhow::anyhow!("Failed to read CalDAV response: {}", e));
+            }
+        };
+
+        let hrefs = parse_calendar_collection_hrefs(&body, &home_url);
+        if hrefs.is_empty() {
+            tracing::error!(
+                "caldav: PROPFIND on {} returned no calendar collections. Check Stalwart configuration and user permissions.",
+                home_url
+            );
+            return Err(anyhow::anyhow!("No calendar collections found for user"));
+        }
+
+        tracing::debug!(
+            "caldav: discovered {} calendar collection(s) for {}",
+            hrefs.len(),
             username
         );
-        tracing::debug!(
-            "caldav: using fallback default calendar URL: {}",
-            default_url
-        );
-        Ok(vec![default_url])
+        Ok(hrefs)
     }
 
     pub async fn query_events(
@@ -200,7 +203,8 @@ impl CaldavClient {
             start = start,
             end = end
         );
-        let resp = self
+        
+        let resp = match self
             .client
             .request(reqwest::Method::from_bytes(b"REPORT")?, collection_href)
             .basic_auth(username, Some(password))
@@ -208,11 +212,48 @@ impl CaldavClient {
             .header("Depth", "1")
             .body(report)
             .send()
-            .await?;
-        if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow::anyhow!("failed to query events: {}", resp.status()));
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(
+                    "caldav: REPORT request to {} failed: {}",
+                    collection_href,
+                    e
+                );
+                return Err(anyhow::anyhow!("CalDAV connection failed: {}", e));
+            }
+        };
+
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::MULTI_STATUS {
+            let body_preview = resp.text().await.unwrap_or_default();
+            tracing::error!(
+                "caldav: REPORT on {} returned status {}: {}",
+                collection_href,
+                status,
+                if body_preview.len() > 500 { "response truncated" } else { &body_preview }
+            );
+            return Err(anyhow::anyhow!(
+                "CalDAV server returned {}: {}",
+                status,
+                if body_preview.len() > 200 { "response truncated" } else { &body_preview }
+            ));
         }
-        Ok(resp.text().await?)
+
+        let body = match resp.text().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(
+                    "caldav: failed to read REPORT response body from {}: {}",
+                    collection_href,
+                    e
+                );
+                return Err(anyhow::anyhow!("Failed to read CalDAV response: {}", e));
+            }
+        };
+
+        Ok(body)
     }
 
     pub async fn get_event(
@@ -337,24 +378,28 @@ impl CaldavClient {
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(ignore_unknown)]
 struct ResourceType {
     #[serde(rename = "calendar", default)]
     calendar: Option<()>,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(ignore_unknown)]
 struct Prop {
     #[serde(rename = "resourcetype", default)]
     resourcetype: ResourceType,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(ignore_unknown)]
 struct Multistatus {
     #[serde(rename = "response", default)]
     responses: Vec<DavResponse>,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(ignore_unknown)]
 struct DavResponse {
     href: String,
     #[serde(rename = "propstat", default)]
@@ -362,6 +407,7 @@ struct DavResponse {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(ignore_unknown)]
 struct Propstat {
     prop: Prop,
 }

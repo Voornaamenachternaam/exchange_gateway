@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Result;
 use axum::{
     Router,
     extract::{Query, State},
@@ -203,11 +204,64 @@ async fn shutdown_signal() {
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
-    match state.storage.get_latest_change_seq().await {
-        Ok(_) => (StatusCode::OK, "OK").into_response(),
-        Err(e) => {
-            tracing::warn!("Health check: Database connectivity failed: {}", e);
-            (StatusCode::SERVICE_UNAVAILABLE, "Database unavailable").into_response()
+    // First check database connectivity
+    if let Err(e) = state.storage.get_latest_change_seq().await {
+        tracing::warn!("Health check: Database connectivity failed: {}", e);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Database unavailable: {}", e),
+        )
+            .into_response();
+    }
+    
+    // Optionally check CalDAV if configured (lightweight PROPFIND)
+    if !state.cfg.caldav_base.is_empty() {
+        match verify_caldav_health(&state).await {
+            Ok(_) => (StatusCode::OK, "OK").into_response(),
+            Err(e) => {
+                tracing::warn!("Health check: CalDAV connectivity failed: {}", e);
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("CalDAV backend unavailable: {}", e),
+                )
+                    .into_response()
+            }
         }
+    } else {
+        (StatusCode::OK, "OK").into_response()
+    }
+}
+
+async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
+    use crate::caldav::CaldavClient;
+    // Use a test username that likely doesn't exist - we expect 401 or 404, not connection failure
+    let test_user = "health-check";
+    let caldav = CaldavClient::new(&state.cfg)?;
+    let home_url = format!("{}/cal/{}/", state.cfg.caldav_base.trim_end_matches('/'), test_user);
+    let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop><D:resourcetype/></D:prop>
+</D:propfind>"#;
+    
+    // Use HEAD or a very light request; we only care that server responds
+    let resp = caldav
+        .client()
+        .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
+        .header("Depth", "0")
+        .header("Content-Type", "application/xml; charset=utf-8")
+        .body(propfind_body)
+        .send()
+        .await?;
+    
+    // Accept any 2xx or 401/403/404 as "server is reachable"
+    // We don't want health check to fail due to auth, just connectivity
+    let status = resp.status();
+    if status.is_success() || status == reqwest::StatusCode::unauthorized()
+        || status == reqwest::StatusCode::forbidden()
+        || status == reqwest::StatusCode::not_found()
+    {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("Unexpected status: {}", status))
     }
 }
