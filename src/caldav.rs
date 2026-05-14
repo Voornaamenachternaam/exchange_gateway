@@ -382,28 +382,24 @@ impl CaldavClient {
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Default)]
-#[serde(allow_unknown_fields)]
 struct ResourceType {
     #[serde(rename = "calendar", default)]
     calendar: Option<()>,
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(allow_unknown_fields)]
 struct Prop {
     #[serde(rename = "resourcetype", default)]
     resourcetype: ResourceType,
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(allow_unknown_fields)]
 struct Multistatus {
     #[serde(rename = "response", default)]
     responses: Vec<DavResponse>,
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(allow_unknown_fields)]
 struct DavResponse {
     href: String,
     #[serde(rename = "propstat", default)]
@@ -411,7 +407,6 @@ struct DavResponse {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(allow_unknown_fields)]
 struct Propstat {
     prop: Prop,
 }
