@@ -105,7 +105,7 @@ fn install_subscriber(
                         .with_level(true)
                         .with_target(target)
                 );
-            registry.with(layer).init();
+            registry.with(layer).try_init()?;
         }
         (LogFormat::Pretty, false) => {
             let layer = fmt::layer()
@@ -120,7 +120,7 @@ fn install_subscriber(
                         .with_level(true)
                         .with_target(target)
                 );
-            registry.with(layer).init();
+            registry.with(layer).try_init()?;
         }
         (LogFormat::Compact, true) => {
             let layer = fmt::layer()
@@ -136,7 +136,7 @@ fn install_subscriber(
                         .with_level(true)
                         .with_target(false)
                 );
-            registry.with(layer).init();
+            registry.with(layer).try_init()?;
         }
         (LogFormat::Compact, false) => {
             let layer = fmt::layer()
@@ -151,7 +151,7 @@ fn install_subscriber(
                         .with_level(true)
                         .with_target(false)
                 );
-            registry.with(layer).init();
+            registry.with(layer).try_init()?;
         }
         (LogFormat::Json, true) => {
             let layer = fmt::layer()
@@ -161,7 +161,7 @@ fn install_subscriber(
                 .with_target(false)
                 .with_thread_names(threads)
                 .with_thread_ids(threads);
-            registry.with(layer).init();
+            registry.with(layer).try_init()?;
         }
         (LogFormat::Json, false) => {
             let layer = fmt::layer()
@@ -170,7 +170,7 @@ fn install_subscriber(
                 .with_target(false)
                 .with_thread_names(threads)
                 .with_thread_ids(threads);
-            registry.with(layer).init();
+            registry.with(layer).try_init()?;
         }
     }
     
