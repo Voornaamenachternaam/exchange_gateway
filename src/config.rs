@@ -115,14 +115,17 @@ impl Config {
             }
         }
         cfg.validate()?;
-        
+
+        // Sanitize caldav_base to avoid logging embedded credentials
+        let sanitized_caldav_base = sanitize_url_for_logging(&cfg.caldav_base);
+
         tracing::info!(
             target: "config",
             bind = cfg.bind,
             gateway_host = cfg.gateway_host,
             mail_domain = cfg.mail_domain,
-            caldav_base = cfg.caldav_base,
-            database_path = cfg.database_path,
+            caldav_base_sanitized = sanitized_caldav_base,
+            database_path = redact_path(&cfg.database_path),
             max_attachment_bytes = cfg.max_attachment_bytes,
             auth_cache_ttl_secs = cfg.auth_cache_ttl_secs,
             auth_cache_max_entries = cfg.auth_cache_max_entries,
@@ -335,6 +338,36 @@ fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
             e
         )),
     }
+}
+
+/// Sanitize a URL for logging by removing any userinfo (credentials) from the URL.
+/// E.g., "http://user:pass@host/dav" becomes "http://host/dav"
+fn sanitize_url_for_logging(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => {
+            // Remove userinfo by setting username/password to None
+            let mut sanitized = parsed.clone();
+            sanitized.set_username("").ok();
+            sanitized.set_password(None).ok();
+            sanitized.to_string()
+        }
+        Err(_) => {
+            // If URL is invalid, just return the original string (it will be logged as-is)
+            // This maintains visibility into configuration issues while not exposing credentials
+            url.to_string()
+        }
+    }
+}
+
+/// Redact potentially sensitive information from a file path for logging.
+/// Shows only the filename component, redacting the full path to avoid exposing
+/// directory structure that may contain PII or system information.
+fn redact_path(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.to_string())
 }
 
 impl Default for Config {
