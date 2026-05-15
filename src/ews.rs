@@ -21,7 +21,7 @@ use crate::room::{
 };
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
-use crate::util::{nfc, normalize_username, xml_escape};
+use crate::util::{format_ews_datetime, nfc, normalize_username, xml_escape};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -29,7 +29,7 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use chrono::{Datelike, Utc};
+use chrono::Datelike;
 use const_hex;
 use itertools::Itertools;
 use quick_xml::Reader;
@@ -44,11 +44,6 @@ use std::sync::{Arc, LazyLock};
 struct AuthContext {
     username: String,
     password: SecretString,
-}
-
-/// Format a datetime for EWS: "YYYY-MM-DDTHH:MM:SSZ" (UTC with Z suffix)
-fn format_ews_datetime(dt: &chrono::DateTime<Utc>) -> String {
-    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use unicode_normalization::UnicodeNormalization;
+use chrono::Utc;
 
 pub fn xml_escape(s: &str) -> Cow<'_, str> {
     quick_xml::escape::escape(s)
@@ -90,6 +91,12 @@ pub fn normalize_username(username: &str) -> &str {
     }
 }
 
+/// Format datetime for EWS responses with proper UTC 'Z' suffix
+/// Converts from RFC3339 offset format (+00:00) to .NET expected format (Z)
+pub fn format_ews_datetime(dt: &chrono::DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +159,19 @@ mod tests {
         assert_eq!(normalize_username("\\user"), "user"); // backslash at start
         assert_eq!(normalize_username("user\\"), "user"); // backslash at end
         assert_eq!(normalize_username("DOMAIN\\user\\extra"), "extra"); // multiple backslashes - last wins
+    }
+
+    #[test]
+    fn test_format_ews_datetime() {
+        use chrono::{TimeZone, Utc};
+        let dt = Utc.with_ymd_and_hms(2026, 6, 15, 11, 0, 0).unwrap();
+        assert_eq!(format_ews_datetime(&dt), "2026-06-15T11:00:00Z");
+        
+        // Check that no offset is appended
+        let dt2 = Utc.with_ymd_and_hms(2025, 12, 31, 23, 59, 59).unwrap();
+        let formatted = format_ews_datetime(&dt2);
+        assert!(!formatted.contains('+'));
+        assert!(formatted.ends_with('Z'));
     }
 
     #[test]
