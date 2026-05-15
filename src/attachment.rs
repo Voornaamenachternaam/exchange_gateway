@@ -1,10 +1,11 @@
 // src/attachment.rs
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::Storage;
-use crate::util::xml_escape;
+use crate::util::{format_ews_datetime, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use chrono::Utc;
 use mime::Mime;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -510,7 +511,7 @@ impl AttachmentManager {
         }
 
         let id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = Utc::now().to_rfc3339();
         let content_size = i64::try_from(decoded.len()).unwrap_or(i64::MAX);
 
         let record = AttachmentRecord {
@@ -1063,7 +1064,7 @@ pub fn render_ews_attachments_xml(attachments: &[EwsAttachmentSummary]) -> Strin
             let _ = write!(
                 xml,
                 "<t:LastModifiedTime>{}</t:LastModifiedTime>",
-                lmt.to_rfc3339()
+                format_ews_datetime(lmt)
             );
         }
         xml.push_str("</t:FileAttachment>");

@@ -1,5 +1,6 @@
 // src/util.rs
 
+use chrono::Utc;
 use std::borrow::Cow;
 use unicode_normalization::UnicodeNormalization;
 
@@ -75,6 +76,27 @@ pub fn escape_ical_text(s: &str) -> String {
     result
 }
 
+/// Strip domain prefix from username: "DOMAIN\user" → "user"
+/// If backslash is at the end (e.g., "user\"), strip it instead of returning empty string.
+pub fn normalize_username(username: &str) -> &str {
+    if let Some(backslash) = username.rfind('\\') {
+        if backslash + 1 < username.len() {
+            &username[backslash + 1..]
+        } else {
+            // Backslash at the end: strip it
+            &username[..backslash]
+        }
+    } else {
+        username
+    }
+}
+
+/// Format datetime for EWS responses with proper UTC 'Z' suffix
+/// Converts from RFC3339 offset format (+00:00) to .NET expected format (Z)
+pub fn format_ews_datetime(dt: &chrono::DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +148,30 @@ mod tests {
         let nfd_email = "user@\u{0065}\u{0301}xample.com";
         assert_eq!(normalize_email(nfd_email), "user@\u{00e9}xample.com");
         assert_eq!(normalize_email("alice@example.com"), "alice@example.com");
+    }
+
+    #[test]
+    fn test_normalize_username() {
+        assert_eq!(normalize_username("user"), "user");
+        assert_eq!(normalize_username("DOMAIN\\user"), "user");
+        assert_eq!(normalize_username("EXAMPLE\\john.doe"), "john.doe");
+        assert_eq!(normalize_username("user@example.com"), "user@example.com");
+        assert_eq!(normalize_username("\\user"), "user"); // backslash at start
+        assert_eq!(normalize_username("user\\"), "user"); // backslash at end
+        assert_eq!(normalize_username("DOMAIN\\user\\extra"), "extra"); // multiple backslashes - last wins
+    }
+
+    #[test]
+    fn test_format_ews_datetime() {
+        use chrono::{TimeZone, Utc};
+        let dt = Utc.with_ymd_and_hms(2026, 6, 15, 11, 0, 0).unwrap();
+        assert_eq!(format_ews_datetime(&dt), "2026-06-15T11:00:00Z");
+
+        // Check that no offset is appended
+        let dt2 = Utc.with_ymd_and_hms(2025, 12, 31, 23, 59, 59).unwrap();
+        let formatted = format_ews_datetime(&dt2);
+        assert!(!formatted.contains('+'));
+        assert!(formatted.ends_with('Z'));
     }
 
     #[test]

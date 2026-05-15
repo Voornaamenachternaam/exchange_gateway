@@ -4,7 +4,7 @@ use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::{nfc, xml_escape};
+use crate::util::{nfc, normalize_username, xml_escape};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -316,7 +316,9 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, SecretString)> {
     BASE64.decode_vec(b64.as_bytes(), decoded.as_mut()).ok()?;
     let creds = zeroize::Zeroizing::new(String::from_utf8(decoded.to_vec()).ok()?);
     let idx = creds.find(':')?;
-    let user = creds[..idx].to_string();
+    let raw_user = creds[..idx].to_string();
+    // Strip domain prefix like "EXAMPLE\user" → "user"
+    let user = normalize_username(&raw_user).to_string();
     let pass = SecretString::from(creds[idx + 1..].to_string());
     Some((user, pass))
 }

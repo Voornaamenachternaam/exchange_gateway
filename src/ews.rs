@@ -21,8 +21,7 @@ use crate::room::{
 };
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
-use crate::util::nfc;
-use crate::util::xml_escape;
+use crate::util::{format_ews_datetime, nfc, normalize_username, xml_escape};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -301,7 +300,9 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
     STANDARD.decode_vec(b64.as_bytes(), decoded.as_mut()).ok()?;
     let creds = zeroize::Zeroizing::new(std::str::from_utf8(&decoded).ok()?.to_owned());
     let idx = creds.find(':')?;
-    let user = creds[..idx].to_string();
+    let raw_user = creds[..idx].to_string();
+    // Strip domain prefix like "EXAMPLE\user" → "user"
+    let user = normalize_username(&raw_user).to_string();
     let pass = SecretString::from(creds[idx + 1..].to_string());
     Some(AuthContext {
         username: user,
@@ -648,7 +649,7 @@ fn ews_deleted_occurrences_xml(item: &crate::calendar::CalendarItem) -> String {
             .iter()
             .map(|s| format!(
                 "<t:DeletedOccurrence><t:Start>{}</t:Start></t:DeletedOccurrence>",
-                s.to_rfc3339()
+                format_ews_datetime(s)
             ))
             .collect::<String>()
     )
@@ -680,7 +681,7 @@ fn ews_modified_occurrences_xml(
         format!(
             r#"<t:Occurrence><t:ItemId Id="{}-{}" ChangeKey="{}" /><t:Start>{}</t:Start><t:End>{}</t:End><t:OriginalStart>{}</t:OriginalStart><t:Subject>{}</t:Subject></t:Occurrence>"#,
             xml_escape(item_id), start.timestamp(), xml_escape(change_key),
-            start.to_rfc3339(), end.to_rfc3339(), e.exception_start.to_rfc3339(), xml_escape(subject)
+            format_ews_datetime(&start), format_ews_datetime(&end), format_ews_datetime(&e.exception_start), xml_escape(subject)
         )
     }).collect::<String>();
     if modified.is_empty() {
@@ -875,8 +876,8 @@ fn render_ews_calendar_item_xml_with_shape(
         xml_escape(change_key),
         xml_escape(&item.subject),
         xml_escape(&item.uid),
-        item.start.to_rfc3339(),
-        item.end.to_rfc3339(),
+        format_ews_datetime(&item.start),
+        format_ews_datetime(&item.end),
         if item.all_day { "true" } else { "false" }
     );
     if shape == ItemShape::IdOnly {
@@ -947,7 +948,7 @@ fn render_ews_calendar_item_xml_with_shape(
     }
     xml.push_str(&format!(
         "<t:DateTimeCreated>{}</t:DateTimeCreated><t:DateTimeReceived>{}</t:DateTimeReceived><t:DateTimeSent>{}</t:DateTimeSent><t:DateTimeStamp>{}</t:DateTimeStamp>",
-        created.to_rfc3339(), created.to_rfc3339(), created.to_rfc3339(), created.to_rfc3339()
+        format_ews_datetime(&created), format_ews_datetime(&created), format_ews_datetime(&created), format_ews_datetime(&created)
     ));
     xml.push_str(&format!(
         "<t:Duration>PT{}H{}M</t:Duration>",
@@ -994,7 +995,7 @@ fn render_ews_calendar_item_xml_with_shape(
     if let Some(v) = item.appointment_reply_time {
         xml.push_str(&format!(
             "<t:AppointmentReplyTime>{}</t:AppointmentReplyTime>",
-            v.to_rfc3339()
+            format_ews_datetime(&v)
         ));
     }
     if let Some(v) = &item.timezone {
@@ -1045,7 +1046,7 @@ fn render_ews_calendar_item_xml_with_shape(
         ));
         xml.push_str(&format!(
             "<t:LastModifiedTime>{}</t:LastModifiedTime>",
-            item.dtstamp.unwrap_or_else(chrono::Utc::now).to_rfc3339()
+            format_ews_datetime(&item.dtstamp.unwrap_or_else(chrono::Utc::now))
         ));
         xml.push_str(&format!(
             "<t:Size>{}</t:Size>",
@@ -1080,7 +1081,7 @@ fn render_ews_calendar_item_xml_with_shape(
     ));
     xml.push_str(&format!(
         "<t:LastModifiedTime>{}</t:LastModifiedTime>",
-        item.dtstamp.unwrap_or_else(chrono::Utc::now).to_rfc3339()
+        format_ews_datetime(&item.dtstamp.unwrap_or_else(chrono::Utc::now))
     ));
     xml.push_str(&format!(
         "<t:Size>{}</t:Size>",
@@ -1172,7 +1173,7 @@ async fn merged_freebusy_for_mailbox(
                         };
                         events_xml_out.push_str(&format!(
                             "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
-                            item.start.to_rfc3339(), item.end.to_rfc3339(), busy_type, ews_calendar_event_details_xml(&item)
+                            format_ews_datetime(&item.start), format_ews_datetime(&item.end), busy_type, ews_calendar_event_details_xml(&item)
                         ));
                     }
                 }
@@ -1245,7 +1246,7 @@ fn suggestions_xml_for_window(
         if entry.len() >= 8 {
             continue;
         }
-        entry.push(format!("<t:Suggestion><t:MeetingTime>{}</t:MeetingTime><t:IsWorkTime>true</t:IsWorkTime><t:SuggestionQuality>Excellent</t:SuggestionQuality></t:Suggestion>", slot_start.to_rfc3339()));
+        entry.push(format!("<t:Suggestion><t:MeetingTime>{}</t:MeetingTime><t:IsWorkTime>true</t:IsWorkTime><t:SuggestionQuality>Excellent</t:SuggestionQuality></t:Suggestion>", format_ews_datetime(&slot_start)));
     }
     let day_results = day_buckets.into_iter().map(|(day, suggestions)| {
         let quality = if suggestions.is_empty() { "Poor" } else { "Excellent" };
