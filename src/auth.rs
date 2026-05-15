@@ -63,12 +63,14 @@ impl AuthVerifier {
             }
         };
         let valid = caldav.verify_credentials(username, password).await;
-        self.cache.insert(cache_key.clone(), valid);
+        // Compute cache_key_len before consuming cache_key on insert to avoid clone
+        let cache_key_len = cache_key.len();
+        self.cache.insert(cache_key, valid);
         debug!(
             target: "auth",
             username = %username,
             valid = valid,
-            cache_key_len = cache_key.len(),
+            cache_key_len = cache_key_len,
             "Authentication result cached"
         );
         valid
