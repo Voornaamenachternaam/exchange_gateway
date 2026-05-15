@@ -29,6 +29,15 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+/// Strip domain prefix from username: "DOMAIN\user" → "user"
+fn normalize_username(username: &str) -> &str {
+    if let Some(backslash) = username.rfind('\\') {
+        &username[backslash + 1..]
+    } else {
+        username
+    }
+}
+
 const MAX_REQUESTS_PER_WINDOW: usize = 60;
 const WINDOW: Duration = Duration::from_secs(60);
 const RETRY_AFTER_SECONDS: u64 = 30;
@@ -316,7 +325,9 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, SecretString)> {
     BASE64.decode_vec(b64.as_bytes(), decoded.as_mut()).ok()?;
     let creds = zeroize::Zeroizing::new(String::from_utf8(decoded.to_vec()).ok()?);
     let idx = creds.find(':')?;
-    let user = creds[..idx].to_string();
+    let raw_user = creds[..idx].to_string();
+    // Strip domain prefix like "EXAMPLE\user" → "user"
+    let user = normalize_username(&raw_user).to_string();
     let pass = SecretString::from(creds[idx + 1..].to_string());
     Some((user, pass))
 }
