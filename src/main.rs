@@ -42,9 +42,10 @@ fn redact_email(email: &str) -> String {
         }
         None => {
             // No '@' means it's not a valid email; show masked prefix (maybe it's a username)
-            // Show first char if longer than 2, else show nothing
+            // Use char iteration to safely handle UTF-8, avoiding panic on multi-byte chars
+            let first_char = email.chars().next().unwrap_or('?');
             if email.len() >= 2 {
-                format!("{}***", &email[0..1])
+                format!("{}***", first_char)
             } else {
                 "***".to_string()
             }
