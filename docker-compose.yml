@@ -8,7 +8,14 @@ services:
     ports:
       - "8134:8134"
     environment:
-      - RUST_LOG=${GATEWAY_RUST_LOG:-info}
+      # Logging configuration
+      - GATEWAY_LOG_LEVEL=${GATEWAY_LOG_LEVEL:-info}
+      - GATEWAY_LOG_FORMAT=${GATEWAY_LOG_FORMAT:-pretty}
+      - GATEWAY_LOG_THREADS=${GATEWAY_LOG_THREADS:-false}
+      - GATEWAY_LOG_TARGET=${GATEWAY_LOG_TARGET:-false}
+      - GATEWAY_LOG_NO_TIMESTAMPS=${GATEWAY_LOG_NO_TIMESTAMPS:-false}
+      # Backwards compatibility
+      - RUST_LOG=${GATEWAY_RUST_LOG:-}
       - TZ=${GATEWAY_TZ:-UTC}
       - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
       - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}

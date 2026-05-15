@@ -12,6 +12,7 @@ pub mod ews;
 pub mod ews_folders;
 pub mod ews_update;
 pub mod ical_parser;
+pub mod logging;
 pub mod meeting;
 pub mod models;
 
