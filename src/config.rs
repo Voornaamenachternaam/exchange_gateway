@@ -62,12 +62,19 @@ impl Config {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!(
-                    "Config file not found at '{}', using environment variables only",
-                    path
+                    target: "config",
+                    config_path = path,
+                    "Config file not found, using environment variables"
                 );
                 String::new()
             }
             Err(e) => {
+                tracing::error!(
+                    target: "config",
+                    config_path = path,
+                    error = %e,
+                    "Failed to read config file"
+                );
                 return Err(anyhow::anyhow!(
                     "Cannot read config file at '{}': {}",
                     path,
@@ -77,6 +84,10 @@ impl Config {
         };
 
         let mut cfg: Config = if content.trim().is_empty() {
+            tracing::debug!(
+                target: "config",
+                "Config file empty, using defaults with environment overrides"
+            );
             Config::default()
         } else {
             let secret = SecretString::from(content);
@@ -88,14 +99,35 @@ impl Config {
 
         if cfg.gateway_host.is_empty() {
             if let Some(host) = extract_host_from_caldav(&cfg.caldav_base) {
+                tracing::info!(
+                    target: "config",
+                    caldav_base = cfg.caldav_base,
+                    extracted_host = host,
+                    "gateway_host not set, extracted from caldav_base"
+                );
                 cfg.gateway_host = host;
             } else {
                 tracing::warn!(
-                    "Config: 'gateway_host' not specified and could not be extracted from 'caldav_base'. Autodiscover responses may be incorrect."
+                    target: "config",
+                    caldav_base = cfg.caldav_base,
+                    "gateway_host not specified and could not be extracted from caldav_base. Autodiscover may fail."
                 );
             }
         }
         cfg.validate()?;
+        
+        tracing::info!(
+            target: "config",
+            bind = cfg.bind,
+            gateway_host = cfg.gateway_host,
+            mail_domain = cfg.mail_domain,
+            caldav_base = cfg.caldav_base,
+            database_path = cfg.database_path,
+            max_attachment_bytes = cfg.max_attachment_bytes,
+            auth_cache_ttl_secs = cfg.auth_cache_ttl_secs,
+            auth_cache_max_entries = cfg.auth_cache_max_entries,
+            "Configuration validated successfully"
+        );
         Ok(cfg)
     }
 

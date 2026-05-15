@@ -5,6 +5,7 @@ pub mod autodiscover;
 pub mod caldav;
 pub mod calendar;
 pub mod config;
+pub mod logging;
 pub mod delegate_ews;
 pub mod eas;
 pub mod error;

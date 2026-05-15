@@ -19,25 +19,97 @@ use tower_http::{
     sensitive_headers::SetSensitiveRequestHeadersLayer, set_header::SetResponseHeaderLayer,
     timeout::RequestBodyTimeoutLayer, trace::TraceLayer,
 };
-use tracing_subscriber::EnvFilter;
-
+use tracing::{debug, info, warn};
 use exchange_gateway::{
-    autodiscover, config::Config, eas, ews, models::AppState, storage::Storage,
+    autodiscover, config::Config, eas, ews, logging, models::AppState, storage::Storage,
 };
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 
 async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> Response {
+    let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
     let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
+    
+    debug!(
+        target: "http",
+        method = "POST",
+        path = "/autodiscover/autodiscover.xml",
+        body_len = body.len(),
+        email = %email,
+        "Autodiscover XML request received"
+    );
+    
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
+    
+    let elapsed_ms = start.elapsed().as_millis();
+    let success = status.is_success();
+    
+    if success {
+        info!(
+            target: "http",
+            method = "POST",
+            path = "/autodiscover/autodiscover.xml",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            response_len = body_out.len(),
+            email = %email,
+            "Autodiscover XML completed"
+        );
+    } else {
+        warn!(
+            target: "http",
+            method = "POST",
+            path = "/autodiscover/autodiscover.xml",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            email = %email,
+            "Autodiscover XML failed"
+        );
+    }
+    
     build_response(status, &hdrs, body_out)
 }
 
 async fn autodiscover_soap(State(state): State<Arc<AppState>>, body: String) -> Response {
+    let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
+    
+    debug!(
+        target: "http",
+        method = "POST",
+        path = "/autodiscover/autodiscover.svc",
+        body_len = body.len(),
+        "Autodiscover SOAP request received"
+    );
+    
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_soap(host, &body);
+    
+    let elapsed_ms = start.elapsed().as_millis();
+    let success = status.is_success();
+    
+    if success {
+        info!(
+            target: "http",
+            method = "POST",
+            path = "/autodiscover/autodiscover.svc",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            response_len = body_out.len(),
+            "Autodiscover SOAP completed"
+        );
+    } else {
+        warn!(
+            target: "http",
+            method = "POST",
+            path = "/autodiscover/autodiscover.svc",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            "Autodiscover SOAP failed"
+        );
+    }
+    
     build_response(status, &hdrs, body_out)
 }
 
@@ -45,12 +117,50 @@ async fn autodiscover_json(
     State(state): State<Arc<AppState>>,
     Query(params): Query<autodiscover::AutodiscoverJsonParams>,
 ) -> Response {
+    let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
+    
+    debug!(
+        target: "http",
+        method = "GET",
+        path = "/autodiscover/autodiscover.json",
+        protocol = ?params.protocol,
+        email = ?params.email,
+        "Autodiscover JSON request received"
+    );
+    
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_json(
         host,
         params.protocol.as_deref(),
         params.email.as_deref(),
     );
+    
+    let elapsed_ms = start.elapsed().as_millis();
+    let success = status.is_success();
+    
+    if success {
+        info!(
+            target: "http",
+            method = "GET",
+            path = "/autodiscover/autodiscover.json",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            response_len = body_out.len(),
+            protocol = ?params.protocol,
+            "Autodiscover JSON completed"
+        );
+    } else {
+        warn!(
+            target: "http",
+            method = "GET",
+            path = "/autodiscover/autodiscover.json",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            protocol = ?params.protocol,
+            "Autodiscover JSON failed"
+        );
+    }
+    
     build_response(status, &hdrs, body_out)
 }
 
@@ -73,9 +183,19 @@ fn build_response(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    // Initialize advanced logging system with fallback to basic logging on error
+    if let Err(e) = logging::init_logging() {
+        eprintln!("Failed to initialize logging: {}, falling back to basic stderr logging", e);
+        // Fall back to simple stderr logging with RUST_LOG level
+        let level = std::env::var("GATEWAY_LOG_LEVEL")
+            .or_else(|_| std::env::var("RUST_LOG"))
+            .unwrap_or_else(|_| "info".to_string());
+        let filter = tracing_subscriber::EnvFilter::try_new(&level)
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .init();
+    }
 
     let config_path = std::env::var("GATEWAY_CONFIG")
         .unwrap_or_else(|_| "/etc/exchange-gateway/config.toml".to_string());
@@ -204,9 +324,25 @@ async fn shutdown_signal() {
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
+    let start = std::time::Instant::now();
+    
+    debug!(
+        target: "health",
+        caldav_configured = !state.cfg.caldav_base.is_empty(),
+        "Health check started"
+    );
+
     // First check database connectivity
     if let Err(e) = state.storage.get_latest_change_seq().await {
-        tracing::warn!("Health check: Database connectivity failed: {}", e);
+        let elapsed_ms = start.elapsed().as_millis();
+        warn!(
+            target: "health",
+            status = "unhealthy",
+            check = "database",
+            elapsed_ms = elapsed_ms,
+            error = %e,
+            "Health check failed - database unavailable"
+        );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             format!("Database unavailable: {}", e),
@@ -217,9 +353,26 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
     // Optionally check CalDAV if configured (lightweight PROPFIND)
     if !state.cfg.caldav_base.is_empty() {
         match verify_caldav_health(&state).await {
-            Ok(_) => (StatusCode::OK, "OK").into_response(),
+            Ok(_) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                info!(
+                    target: "health",
+                    status = "healthy",
+                    elapsed_ms = elapsed_ms,
+                    "Health check passed"
+                );
+                (StatusCode::OK, "OK").into_response()
+            }
             Err(e) => {
-                tracing::warn!("Health check: CalDAV connectivity failed: {}", e);
+                let elapsed_ms = start.elapsed().as_millis();
+                warn!(
+                    target: "health",
+                    status = "unhealthy",
+                    check = "caldav",
+                    elapsed_ms = elapsed_ms,
+                    error = %e,
+                    "Health check failed - CalDAV backend unavailable"
+                );
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     format!("CalDAV backend unavailable: {}", e),
@@ -228,6 +381,14 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
             }
         }
     } else {
+        let elapsed_ms = start.elapsed().as_millis();
+        info!(
+            target: "health",
+            status = "healthy",
+            caldav_check = "skipped",
+            elapsed_ms = elapsed_ms,
+            "Health check passed (CalDAV not configured)"
+        );
         (StatusCode::OK, "OK").into_response()
     }
 }

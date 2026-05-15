@@ -3,6 +3,7 @@ use crate::caldav::CaldavClient;
 use crate::config::Config;
 use moka::sync::Cache;
 use std::time::Duration;
+use tracing::{debug, warn, trace};
 
 #[derive(Clone)]
 pub struct AuthVerifier {
@@ -26,18 +27,50 @@ impl AuthVerifier {
 
     pub async fn verify(&self, username: &str, password: &str) -> bool {
         if username.is_empty() || password.is_empty() {
+            debug!(
+                target: "auth",
+                username = ?username,
+                "Rejected empty credentials"
+            );
             return false;
         }
         let cache_key = format!("{}:{}", username, hash_password_fast(password));
         if let Some(valid) = self.cache.get(&cache_key) {
+            trace!(
+                target: "auth",
+                username = %username,
+                cache_hit = true,
+                valid = valid,
+                "Authentication cache lookup"
+            );
             return valid;
         }
+        trace!(
+            target: "auth",
+            username = %username,
+            "Cache miss - verifying with CalDAV"
+        );
         let caldav = match CaldavClient::new_from_base(&self.caldav_base) {
             Ok(c) => c,
-            Err(_) => return false,
+            Err(e) => {
+                warn!(
+                    target: "auth",
+                    username = %username,
+                    error = %e,
+                    "Failed to create CalDAV client for auth"
+                );
+                return false;
+            }
         };
         let valid = caldav.verify_credentials(username, password).await;
-        self.cache.insert(cache_key, valid);
+        self.cache.insert(cache_key.clone(), valid);
+        debug!(
+            target: "auth",
+            username = %username,
+            valid = valid,
+            cache_key_len = cache_key.len(),
+            "Authentication result cached"
+        );
         valid
     }
 }
