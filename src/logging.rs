@@ -3,7 +3,7 @@
 
 use std::env;
 use std::str::FromStr;
-use tracing::{debug, error, info, warn, Level};
+use tracing::{info, Level};
 use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 
 /// Log format configuration
@@ -48,17 +48,19 @@ impl fmt::time::FormatTime for TimestampFormatter {
 
 /// Initialize logging from environment configuration
 pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
+    // Phase 1: Pre-subscriber diagnostics go to stderr to ensure they're visible
+    // Use eprintln! because tracing subscriber not yet initialized
+
     // Determine log level: GATEWAY_LOG_LEVEL > RUST_LOG (legacy) > default (info)
-    // Use match blocks to log errors and fallbacks (avoid unwrap_or_else as per repo rules)
     let level_str = match env::var("GATEWAY_LOG_LEVEL") {
         Ok(val) => val,
         Err(_) => match env::var("RUST_LOG") {
             Ok(val) => {
-                debug!("GATEWAY_LOG_LEVEL not set, using RUST_LOG (legacy)");
+                eprintln!("debug: GATEWAY_LOG_LEVEL not set, using RUST_LOG (legacy)");
                 val
             }
             Err(_) => {
-                debug!("No log level env var set, using default 'info'");
+                eprintln!("debug: No log level env var set, using default 'info'");
                 "info".to_string()
             }
         }
@@ -67,11 +69,11 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     // Parse log level with error handling
     let level = match level_str.parse::<Level>() {
         Ok(level) => {
-            debug!("Using log level: {:?}", level);
+            eprintln!("debug: Using log level: {:?}", level);
             level
         }
         Err(e) => {
-            warn!("Invalid log level '{}': {}. Using default 'info'.", level_str, e);
+            eprintln!("warn: Invalid log level '{}': {}. Using default 'info'.", level_str, e);
             Level::INFO
         }
     };
@@ -80,20 +82,20 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let format = match env::var("GATEWAY_LOG_FORMAT") {
         Ok(val) => match val.parse::<LogFormat>() {
             Ok(format) => {
-                debug!("Using log format: {:?}", format);
+                eprintln!("debug: Using log format: {:?}", format);
                 format
             }
             Err(e) => {
-                warn!("Invalid log format '{}': {}. Using default 'pretty'.", val, e);
+                eprintln!("warn: Invalid log format '{}': {}. Using default 'pretty'.", val, e);
                 LogFormat::Pretty
             }
         },
         Err(_) => {
             if env::var("GATEWAY_LOG_JSON").is_ok() {
-                warn!("GATEWAY_LOG_JSON is deprecated; use GATEWAY_LOG_FORMAT=json instead");
+                eprintln!("warn: GATEWAY_LOG_JSON is deprecated; use GATEWAY_LOG_FORMAT=json instead");
                 LogFormat::Json
             } else {
-                debug!("GATEWAY_LOG_FORMAT not set, using default 'pretty'");
+                eprintln!("debug: GATEWAY_LOG_FORMAT not set, using default 'pretty'");
                 LogFormat::Pretty
             }
         }
@@ -104,14 +106,14 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
         Ok(val) => {
             let disabled = val == "1" || val.eq_ignore_ascii_case("true");
             if disabled {
-                debug!("Timestamps disabled via GATEWAY_LOG_NO_TIMESTAMPS");
+                eprintln!("debug: Timestamps disabled via GATEWAY_LOG_NO_TIMESTAMPS");
             } else {
-                debug!("Timestamps explicitly enabled via GATEWAY_LOG_NO_TIMESTAMPS");
+                eprintln!("debug: Timestamps explicitly enabled via GATEWAY_LOG_NO_TIMESTAMPS");
             }
             !disabled
         }
         Err(_) => {
-            debug!("GATEWAY_LOG_NO_TIMESTAMPS not set, timestamps enabled by default");
+            eprintln!("debug: GATEWAY_LOG_NO_TIMESTAMPS not set, timestamps enabled by default");
             true
         }
     };
@@ -120,11 +122,11 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let threads = match env::var("GATEWAY_LOG_THREADS") {
         Ok(val) => {
             let enabled = val == "1" || val.eq_ignore_ascii_case("true");
-            debug!("Thread info {} via GATEWAY_LOG_THREADS", if enabled { "enabled" } else { "disabled" });
+            eprintln!("debug: Thread info {} via GATEWAY_LOG_THREADS", if enabled { "enabled" } else { "disabled" });
             enabled
         }
         Err(_) => {
-            debug!("GATEWAY_LOG_THREADS not set, thread info disabled by default");
+            eprintln!("debug: GATEWAY_LOG_THREADS not set, thread info disabled by default");
             false
         }
     };
@@ -133,13 +135,13 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let target = match env::var("GATEWAY_LOG_TARGET") {
         Ok(val) => {
             let enabled = val == "1" || val.eq_ignore_ascii_case("true");
-            debug!("Module targets {} via GATEWAY_LOG_TARGET", if enabled { "enabled" } else { "disabled" });
+            eprintln!("debug: Module targets {} via GATEWAY_LOG_TARGET", if enabled { "enabled" } else { "disabled" });
             enabled
         }
         Err(_) => {
             // Enable by default for trace/debug levels to aid debugging
             let enabled = matches!(level, Level::TRACE | Level::DEBUG);
-            debug!("GATEWAY_LOG_TARGET not set, target {} for level {:?}", if enabled { "enabled" } else { "disabled" }, level);
+            eprintln!("debug: GATEWAY_LOG_TARGET not set, target {} for level {:?}", if enabled { "enabled" } else { "disabled" }, level);
             enabled
         }
     };
@@ -148,15 +150,15 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     // then fall back to level-specific filter with proper error handling
     let filter = match EnvFilter::try_from_default_env() {
         Ok(filter) => {
-            debug!("Using existing RUST_LOG/LOG environment filter");
+            eprintln!("debug: Using existing RUST_LOG/LOG environment filter");
             filter
         }
         Err(_) => {
-            debug!("No existing env filter found, creating filter from level: {:?}", level);
+            eprintln!("debug: No existing env filter found, creating filter from level: {:?}", level);
             match EnvFilter::try_new(&level.to_string()) {
                 Ok(filter) => filter,
                 Err(e) => {
-                    error!("Failed to create log filter: {}", e);
+                    eprintln!("error: Failed to create log filter: {}", e);
                     return Err(format!("Failed to create log filter: {}", e).into());
                 }
             }
