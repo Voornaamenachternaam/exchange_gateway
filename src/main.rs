@@ -24,6 +24,34 @@ use exchange_gateway::{
     autodiscover, config::Config, eas, ews, logging, models::AppState, storage::Storage,
 };
 
+/// Redact an email address for logging.
+/// Shows username and masked domain to preserve some context while protecting PII.
+/// Examples: "user@example.com" -> "user@***", "user@sub.example.co.uk" -> "user@***"
+fn redact_email(email: &str) -> String {
+    if email.is_empty() {
+        return String::new();
+    }
+    // Split on '@' to separate username from domain
+    let at_pos = email.find('@');
+    match at_pos {
+        Some(pos) => {
+            let username = &email[..pos];
+            // Show username (first part) but mask the domain entirely
+            // This preserves some debugging context (which user) without exposing domain
+            format!("{}@***", username)
+        }
+        None => {
+            // No '@' means it's not a valid email; show masked prefix (maybe it's a username)
+            // Show first char if longer than 2, else show nothing
+            if email.len() >= 2 {
+                format!("{}***", &email[0..1])
+            } else {
+                "***".to_string()
+            }
+        }
+    }
+}
+
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 
@@ -37,7 +65,7 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
         method = "POST",
         path = "/autodiscover/autodiscover.xml",
         body_len = body.len(),
-        email = %email,
+        email = %redact_email(&email),
         "Autodiscover XML request received"
     );
     
@@ -54,7 +82,7 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
             response_len = body_out.len(),
-            email = %email,
+            email = %redact_email(&email),
             "Autodiscover XML completed"
         );
     } else {
@@ -64,7 +92,7 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
             path = "/autodiscover/autodiscover.xml",
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
-            email = %email,
+            email = %redact_email(&email),
             "Autodiscover XML failed"
         );
     }
@@ -125,7 +153,7 @@ async fn autodiscover_json(
         method = "GET",
         path = "/autodiscover/autodiscover.json",
         protocol = ?params.protocol,
-        email = ?params.email,
+        email = ?params.email.as_deref().map(redact_email),
         "Autodiscover JSON request received"
     );
     
