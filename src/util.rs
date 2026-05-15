@@ -1,8 +1,8 @@
 // src/util.rs
 
+use chrono::Utc;
 use std::borrow::Cow;
 use unicode_normalization::UnicodeNormalization;
-use chrono::Utc;
 
 pub fn xml_escape(s: &str) -> Cow<'_, str> {
     quick_xml::escape::escape(s)
@@ -166,7 +166,7 @@ mod tests {
         use chrono::{TimeZone, Utc};
         let dt = Utc.with_ymd_and_hms(2026, 6, 15, 11, 0, 0).unwrap();
         assert_eq!(format_ews_datetime(&dt), "2026-06-15T11:00:00Z");
-        
+
         // Check that no offset is appended
         let dt2 = Utc.with_ymd_and_hms(2025, 12, 31, 23, 59, 59).unwrap();
         let formatted = format_ews_datetime(&dt2);
