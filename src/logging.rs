@@ -40,7 +40,8 @@ impl fmt::time::FormatTime for TimestampFormatter {
     fn format_time(&self, w: &mut fmt::format::Writer<'_>) -> std::fmt::Result {
         let now = chrono::Utc::now();
         // Format as ISO8601 with trailing Z (required by EWS/Outlook)
-        write!(w, "{}", now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+        // DelayedFormat implements Display, so no need for to_string() allocation
+        write!(w, "{}", now.format("%Y-%m-%dT%H:%M:%S%.3fZ"))
     }
 }
 
