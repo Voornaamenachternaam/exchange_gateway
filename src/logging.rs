@@ -201,7 +201,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
             let layer = fmt::layer()
                 .with_timer(TimestampFormatter)
                 .with_ansi(true)
-                .with_target(false)
+                .with_target(target)
                 .with_thread_names(threads)
                 .with_thread_ids(threads)
                 .with_file(false)
@@ -209,14 +209,14 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 .event_format(
                     fmt::format()
                         .with_level(true)
-                        .with_target(false)
+                        .with_target(target)
                 );
             registry.with(layer).try_init()?;
         }
         (LogFormat::Compact, false) => {
             let layer = fmt::layer()
                 .with_ansi(true)
-                .with_target(false)
+                .with_target(target)
                 .with_thread_names(threads)
                 .with_thread_ids(threads)
                 .with_file(false)
@@ -224,7 +224,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 .event_format(
                     fmt::format()
                         .with_level(true)
-                        .with_target(false)
+                        .with_target(target)
                 );
             registry.with(layer).try_init()?;
         }
@@ -233,7 +233,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 .json()
                 .with_timer(TimestampFormatter)
                 .with_ansi(false)
-                .with_target(false)
+                .with_target(target)
                 .with_thread_names(threads)
                 .with_thread_ids(threads);
             registry.with(layer).try_init()?;
@@ -242,7 +242,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
             let layer = fmt::layer()
                 .json()
                 .with_ansi(false)
-                .with_target(false)
+                .with_target(target)
                 .with_thread_names(threads)
                 .with_thread_ids(threads);
             registry.with(layer).try_init()?;
