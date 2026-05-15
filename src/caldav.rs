@@ -5,6 +5,7 @@ use const_hex;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
+use tracing::warn;
 use uuid::Uuid;
 
 pub struct CaldavClient {
@@ -17,20 +18,39 @@ impl CaldavClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
-        Ok(Self {
-            base: cfg.caldav_base.clone(),
-            client,
-        })
+        let base = Self::sanitize_base_url(&cfg.caldav_base);
+        Ok(Self { base, client })
     }
 
     pub fn new_from_base(caldav_base: &str) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Self {
-            base: caldav_base.to_string(),
-            client,
-        })
+        let base = Self::sanitize_base_url(caldav_base);
+        Ok(Self { base, client })
+    }
+
+    /// Sanitize base URL by removing any embedded credentials.
+    /// Credentials in the URL are deprecated and interfere with proper Basic Auth.
+    /// Returns sanitized URL without userinfo, or original if parsing fails.
+    fn sanitize_base_url(caldav_base: &str) -> String {
+        match reqwest::Url::parse(caldav_base) {
+            Ok(mut url) => {
+                let had_creds = !url.username().is_empty() || url.password().is_some();
+                if had_creds {
+                    warn!("CalDAV base URL contains embedded credentials. These will be ignored; use GATEWAY_CALDAV_USER and GATEWAY_CALDAV_PASSWORD environment variables instead, or configure credentials separately. Sanitizing URL by removing userinfo.");
+                    url.set_username("").ok();
+                    url.set_password(None).ok();
+                    url.to_string()
+                } else {
+                    caldav_base.to_string()
+                }
+            }
+            Err(_) => {
+                // If URL is invalid, pass through unchanged; error will be caught elsewhere
+                caldav_base.to_string()
+            }
+        }
     }
 
     pub async fn verify_credentials(&self, username: &str, password: &str) -> bool {
