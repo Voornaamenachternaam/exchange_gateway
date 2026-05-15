@@ -11,6 +11,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
+use exchange_gateway::{
+    autodiscover, config::Config, eas, ews, logging, models::AppState, storage::Storage,
+};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower::ServiceBuilder;
@@ -20,9 +23,6 @@ use tower_http::{
     timeout::RequestBodyTimeoutLayer, trace::TraceLayer,
 };
 use tracing::{debug, info, warn};
-use exchange_gateway::{
-    autodiscover, config::Config, eas, ews, logging, models::AppState, storage::Storage,
-};
 
 /// Redact an email address for logging.
 /// Shows username and masked domain to preserve some context while protecting PII.
@@ -60,7 +60,7 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
     let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
     let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
-    
+
     debug!(
         target: "http",
         method = "POST",
@@ -69,12 +69,12 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
         email = %redact_email(&email),
         "Autodiscover XML request received"
     );
-    
+
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
-    
+
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();
-    
+
     if success {
         info!(
             target: "http",
@@ -97,14 +97,14 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
             "Autodiscover XML failed"
         );
     }
-    
+
     build_response(status, &hdrs, body_out)
 }
 
 async fn autodiscover_soap(State(state): State<Arc<AppState>>, body: String) -> Response {
     let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
-    
+
     debug!(
         target: "http",
         method = "POST",
@@ -112,12 +112,12 @@ async fn autodiscover_soap(State(state): State<Arc<AppState>>, body: String) -> 
         body_len = body.len(),
         "Autodiscover SOAP request received"
     );
-    
+
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_soap(host, &body);
-    
+
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();
-    
+
     if success {
         info!(
             target: "http",
@@ -138,7 +138,7 @@ async fn autodiscover_soap(State(state): State<Arc<AppState>>, body: String) -> 
             "Autodiscover SOAP failed"
         );
     }
-    
+
     build_response(status, &hdrs, body_out)
 }
 
@@ -148,7 +148,7 @@ async fn autodiscover_json(
 ) -> Response {
     let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
-    
+
     debug!(
         target: "http",
         method = "GET",
@@ -157,16 +157,16 @@ async fn autodiscover_json(
         email = ?params.email.as_deref().map(redact_email),
         "Autodiscover JSON request received"
     );
-    
+
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_json(
         host,
         params.protocol.as_deref(),
         params.email.as_deref(),
     );
-    
+
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();
-    
+
     if success {
         info!(
             target: "http",
@@ -189,7 +189,7 @@ async fn autodiscover_json(
             "Autodiscover JSON failed"
         );
     }
-    
+
     build_response(status, &hdrs, body_out)
 }
 
@@ -214,16 +214,17 @@ fn build_response(
 async fn main() -> anyhow::Result<()> {
     // Initialize advanced logging system with fallback to basic logging on error
     if let Err(e) = logging::init_logging() {
-        eprintln!("Failed to initialize logging: {}, falling back to basic stderr logging", e);
+        eprintln!(
+            "Failed to initialize logging: {}, falling back to basic stderr logging",
+            e
+        );
         // Fall back to simple stderr logging with RUST_LOG level
         let level = std::env::var("GATEWAY_LOG_LEVEL")
             .or_else(|_| std::env::var("RUST_LOG"))
             .unwrap_or_else(|_| "info".to_string());
         let filter = tracing_subscriber::EnvFilter::try_new(&level)
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
     let config_path = std::env::var("GATEWAY_CONFIG")
@@ -354,7 +355,7 @@ async fn shutdown_signal() {
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
     let start = std::time::Instant::now();
-    
+
     debug!(
         target: "health",
         caldav_configured = !state.cfg.caldav_base.is_empty(),

@@ -3,21 +3,16 @@
 
 use std::env;
 use std::str::FromStr;
-use tracing::{info, Level};
-use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
+use tracing::{Level, info};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*, registry};
 
 /// Log format configuration
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogFormat {
+    #[default]
     Pretty,
     Compact,
     Json,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        Self::Pretty
-    }
 }
 
 impl FromStr for LogFormat {
@@ -28,7 +23,10 @@ impl FromStr for LogFormat {
             "pretty" => Ok(LogFormat::Pretty),
             "compact" => Ok(LogFormat::Compact),
             "json" => Ok(LogFormat::Json),
-            _ => Err(format!("Invalid log format: {}. Use 'pretty', 'compact', or 'json'", s)),
+            _ => Err(format!(
+                "Invalid log format: {}. Use 'pretty', 'compact', or 'json'",
+                s
+            )),
         }
     }
 }
@@ -63,7 +61,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("debug: No log level env var set, using default 'info'");
                 "info".to_string()
             }
-        }
+        },
     };
 
     // Parse log level with error handling
@@ -73,7 +71,10 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
             level
         }
         Err(e) => {
-            eprintln!("warn: Invalid log level '{}': {}. Using default 'info'.", level_str, e);
+            eprintln!(
+                "warn: Invalid log level '{}': {}. Using default 'info'.",
+                level_str, e
+            );
             Level::INFO
         }
     };
@@ -86,13 +87,18 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 format
             }
             Err(e) => {
-                eprintln!("warn: Invalid log format '{}': {}. Using default 'pretty'.", val, e);
+                eprintln!(
+                    "warn: Invalid log format '{}': {}. Using default 'pretty'.",
+                    val, e
+                );
                 LogFormat::Pretty
             }
         },
         Err(_) => {
             if env::var("GATEWAY_LOG_JSON").is_ok() {
-                eprintln!("warn: GATEWAY_LOG_JSON is deprecated; use GATEWAY_LOG_FORMAT=json instead");
+                eprintln!(
+                    "warn: GATEWAY_LOG_JSON is deprecated; use GATEWAY_LOG_FORMAT=json instead"
+                );
                 LogFormat::Json
             } else {
                 eprintln!("debug: GATEWAY_LOG_FORMAT not set, using default 'pretty'");
@@ -122,7 +128,10 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let threads = match env::var("GATEWAY_LOG_THREADS") {
         Ok(val) => {
             let enabled = val == "1" || val.eq_ignore_ascii_case("true");
-            eprintln!("debug: Thread info {} via GATEWAY_LOG_THREADS", if enabled { "enabled" } else { "disabled" });
+            eprintln!(
+                "debug: Thread info {} via GATEWAY_LOG_THREADS",
+                if enabled { "enabled" } else { "disabled" }
+            );
             enabled
         }
         Err(_) => {
@@ -135,18 +144,25 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let target = match env::var("GATEWAY_LOG_TARGET") {
         Ok(val) => {
             let enabled = val == "1" || val.eq_ignore_ascii_case("true");
-            eprintln!("debug: Module targets {} via GATEWAY_LOG_TARGET", if enabled { "enabled" } else { "disabled" });
+            eprintln!(
+                "debug: Module targets {} via GATEWAY_LOG_TARGET",
+                if enabled { "enabled" } else { "disabled" }
+            );
             enabled
         }
         Err(_) => {
             // Enable by default for trace/debug levels to aid debugging
             let enabled = matches!(level, Level::TRACE | Level::DEBUG);
-            eprintln!("debug: GATEWAY_LOG_TARGET not set, target {} for level {:?}", if enabled { "enabled" } else { "disabled" }, level);
+            eprintln!(
+                "debug: GATEWAY_LOG_TARGET not set, target {} for level {:?}",
+                if enabled { "enabled" } else { "disabled" },
+                level
+            );
             enabled
         }
     };
 
-    // Build filter: try existing env filter first (respects RUST_LOG/LOG patterns), 
+    // Build filter: try existing env filter first (respects RUST_LOG/LOG patterns),
     // then fall back to level-specific filter with proper error handling
     let filter = match EnvFilter::try_from_default_env() {
         Ok(filter) => {
@@ -154,8 +170,11 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
             filter
         }
         Err(_) => {
-            eprintln!("debug: No existing env filter found, creating filter from level: {:?}", level);
-            match EnvFilter::try_new(&level.to_string()) {
+            eprintln!(
+                "debug: No existing env filter found, creating filter from level: {:?}",
+                level
+            );
+            match EnvFilter::try_new(level.to_string()) {
                 Ok(filter) => filter,
                 Err(e) => {
                     eprintln!("error: Failed to create log filter: {}", e);
@@ -177,11 +196,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 .with_thread_ids(threads)
                 .with_file(target)
                 .with_line_number(target)
-                .event_format(
-                    fmt::format()
-                        .with_level(true)
-                        .with_target(target)
-                );
+                .event_format(fmt::format().with_level(true).with_target(target));
             registry.with(layer).try_init()?;
         }
         (LogFormat::Pretty, false) => {
@@ -192,11 +207,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 .with_thread_ids(threads)
                 .with_file(target)
                 .with_line_number(target)
-                .event_format(
-                    fmt::format()
-                        .with_level(true)
-                        .with_target(target)
-                );
+                .event_format(fmt::format().with_level(true).with_target(target));
             registry.with(layer).try_init()?;
         }
         (LogFormat::Compact, true) => {
@@ -208,11 +219,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 .with_thread_ids(threads)
                 .with_file(false)
                 .with_line_number(false)
-                .event_format(
-                    fmt::format()
-                        .with_level(true)
-                        .with_target(target)
-                );
+                .event_format(fmt::format().with_level(true).with_target(target));
             registry.with(layer).try_init()?;
         }
         (LogFormat::Compact, false) => {
@@ -223,11 +230,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
                 .with_thread_ids(threads)
                 .with_file(false)
                 .with_line_number(false)
-                .event_format(
-                    fmt::format()
-                        .with_level(true)
-                        .with_target(target)
-                );
+                .event_format(fmt::format().with_level(true).with_target(target));
             registry.with(layer).try_init()?;
         }
         (LogFormat::Json, true) => {
@@ -268,7 +271,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use tracing_subscriber::fmt::time::FormatTime;
-    
+
     #[test]
     fn test_parse_formats() {
         assert_eq!(LogFormat::from_str("pretty").unwrap(), LogFormat::Pretty);
@@ -276,12 +279,12 @@ mod tests {
         assert_eq!(LogFormat::from_str("json").unwrap(), LogFormat::Json);
         assert!(LogFormat::from_str("bad").is_err());
     }
-    
+
     #[test]
     fn test_default() {
         assert_eq!(LogFormat::default(), LogFormat::Pretty);
     }
-    
+
     #[test]
     fn test_timestamp_format() {
         let formatter = TimestampFormatter;
@@ -291,8 +294,16 @@ mod tests {
             formatter.format_time(&mut writer).unwrap();
         }
         eprintln!("DEBUG: timestamp output = {:?}", buffer);
-        assert!(buffer.ends_with('Z'), "timestamp='{}' should end with Z", buffer);
-        assert!(buffer.contains('T'), "timestamp='{}' should contain T", buffer);
+        assert!(
+            buffer.ends_with('Z'),
+            "timestamp='{}' should end with Z",
+            buffer
+        );
+        assert!(
+            buffer.contains('T'),
+            "timestamp='{}' should contain T",
+            buffer
+        );
         // Should match RFC3339 pattern: YYYY-MM-DDTHH:MM:SS[.fraction]Z
         assert!(buffer.len() >= 20); // "2025-12-28T14:30:45Z" is 20 chars
     }
