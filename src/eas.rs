@@ -4,7 +4,7 @@ use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::{nfc, xml_escape};
+use crate::util::{nfc, normalize_username, xml_escape};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -28,15 +28,6 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 use uuid::Uuid;
-
-/// Strip domain prefix from username: "DOMAIN\user" → "user"
-fn normalize_username(username: &str) -> &str {
-    if let Some(backslash) = username.rfind('\\') {
-        &username[backslash + 1..]
-    } else {
-        username
-    }
-}
 
 const MAX_REQUESTS_PER_WINDOW: usize = 60;
 const WINDOW: Duration = Duration::from_secs(60);

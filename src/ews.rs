@@ -21,8 +21,7 @@ use crate::room::{
 };
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
-use crate::util::nfc;
-use crate::util::xml_escape;
+use crate::util::{nfc, normalize_username, xml_escape};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -50,15 +49,6 @@ struct AuthContext {
 /// Format a datetime for EWS: "YYYY-MM-DDTHH:MM:SSZ" (UTC with Z suffix)
 fn format_ews_datetime(dt: &chrono::DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-}
-
-/// Strip domain prefix from username: "DOMAIN\user" → "user"
-fn normalize_username(username: &str) -> &str {
-    if let Some(backslash) = username.rfind('\\') {
-        &username[backslash + 1..]
-    } else {
-        username
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
