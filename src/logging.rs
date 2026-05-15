@@ -3,7 +3,8 @@
 
 use std::env;
 use std::str::FromStr;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing::{debug, error, info, warn, Level};
+use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 
 /// Log format configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,57 +41,130 @@ impl fmt::time::FormatTime for TimestampFormatter {
     fn format_time(&self, w: &mut fmt::format::Writer<'_>) -> std::fmt::Result {
         let now = chrono::Utc::now();
         // Format as ISO8601 with trailing Z (required by EWS/Outlook)
-        // DelayedFormat implements Display, so no need for to_string() allocation
+        // DelayedFormat implements Display, avoiding unnecessary allocation
         write!(w, "{}", now.format("%Y-%m-%dT%H:%M:%S%.3fZ"))
     }
 }
 
 /// Initialize logging from environment configuration
 pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
-    let level = env::var("GATEWAY_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    let format = get_log_format();
-    let timestamps = !env::var("GATEWAY_LOG_NO_TIMESTAMPS").is_ok();
-    let threads = env::var("GATEWAY_LOG_THREADS").is_ok();
-    let target = matches!(level.as_str(), "trace" | "debug") || env::var("GATEWAY_LOG_TARGET").is_ok();
-    
-    install_subscriber(&level, format, timestamps, threads, target)?;
-    
-    tracing::info!(
-        target: "logging",
-        level = %level,
-        format = ?format,
-        timestamps = timestamps,
-        threads = threads,
-        target = target,
-        "Logging initialized"
-    );
-    
-    Ok(())
-}
+    // Determine log level: GATEWAY_LOG_LEVEL > RUST_LOG (legacy) > default (info)
+    // Use match blocks to log errors and fallbacks (avoid unwrap_or_else as per repo rules)
+    let level_str = match env::var("GATEWAY_LOG_LEVEL") {
+        Ok(val) => val,
+        Err(_) => match env::var("RUST_LOG") {
+            Ok(val) => {
+                debug!("GATEWAY_LOG_LEVEL not set, using RUST_LOG (legacy)");
+                val
+            }
+            Err(_) => {
+                debug!("No log level env var set, using default 'info'");
+                "info".to_string()
+            }
+        }
+    };
 
-fn get_log_format() -> LogFormat {
-    if env::var("GATEWAY_LOG_JSON").is_ok() {
-        return LogFormat::Json;
-    }
-    env::var("GATEWAY_LOG_FORMAT")
-        .ok()
-        .and_then(|s| LogFormat::from_str(&s).ok())
-        .unwrap_or_default()
-}
+    // Parse log level with error handling
+    let level = match level_str.parse::<Level>() {
+        Ok(level) => {
+            debug!("Using log level: {:?}", level);
+            level
+        }
+        Err(e) => {
+            warn!("Invalid log level '{}': {}. Using default 'info'.", level_str, e);
+            Level::INFO
+        }
+    };
 
-fn install_subscriber(
-    level: &str,
-    format: LogFormat,
-    timestamps: bool,
-    threads: bool,
-    target: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let filter = EnvFilter::try_new(level)
-        .map_err(|e| format!("Failed to parse log level '{}': {}", level, e))?;
-    
-    let registry = tracing_subscriber::registry()
-        .with(filter);
-    
+    // Determine log format with deprecation warning for GATEWAY_LOG_JSON
+    let format = match env::var("GATEWAY_LOG_FORMAT") {
+        Ok(val) => match val.parse::<LogFormat>() {
+            Ok(format) => {
+                debug!("Using log format: {:?}", format);
+                format
+            }
+            Err(e) => {
+                warn!("Invalid log format '{}': {}. Using default 'pretty'.", val, e);
+                LogFormat::Pretty
+            }
+        },
+        Err(_) => {
+            if env::var("GATEWAY_LOG_JSON").is_ok() {
+                warn!("GATEWAY_LOG_JSON is deprecated; use GATEWAY_LOG_FORMAT=json instead");
+                LogFormat::Json
+            } else {
+                debug!("GATEWAY_LOG_FORMAT not set, using default 'pretty'");
+                LogFormat::Pretty
+            }
+        }
+    };
+
+    // Timestamps: enabled by default, disable with GATEWAY_LOG_NO_TIMESTAMPS=1
+    let timestamps = match env::var("GATEWAY_LOG_NO_TIMESTAMPS") {
+        Ok(val) => {
+            let disabled = val == "1" || val.eq_ignore_ascii_case("true");
+            if disabled {
+                debug!("Timestamps disabled via GATEWAY_LOG_NO_TIMESTAMPS");
+            } else {
+                debug!("Timestamps explicitly enabled via GATEWAY_LOG_NO_TIMESTAMPS");
+            }
+            !disabled
+        }
+        Err(_) => {
+            debug!("GATEWAY_LOG_NO_TIMESTAMPS not set, timestamps enabled by default");
+            true
+        }
+    };
+
+    // Thread info: off by default, enable with GATEWAY_LOG_THREADS=1
+    let threads = match env::var("GATEWAY_LOG_THREADS") {
+        Ok(val) => {
+            let enabled = val == "1" || val.eq_ignore_ascii_case("true");
+            debug!("Thread info {} via GATEWAY_LOG_THREADS", if enabled { "enabled" } else { "disabled" });
+            enabled
+        }
+        Err(_) => {
+            debug!("GATEWAY_LOG_THREADS not set, thread info disabled by default");
+            false
+        }
+    };
+
+    // Module targets: off by default, auto-enabled for trace/debug
+    let target = match env::var("GATEWAY_LOG_TARGET") {
+        Ok(val) => {
+            let enabled = val == "1" || val.eq_ignore_ascii_case("true");
+            debug!("Module targets {} via GATEWAY_LOG_TARGET", if enabled { "enabled" } else { "disabled" });
+            enabled
+        }
+        Err(_) => {
+            // Enable by default for trace/debug levels to aid debugging
+            let enabled = matches!(level, Level::TRACE | Level::DEBUG);
+            debug!("GATEWAY_LOG_TARGET not set, target {} for level {:?}", if enabled { "enabled" } else { "disabled" }, level);
+            enabled
+        }
+    };
+
+    // Build filter: try existing env filter first (respects RUST_LOG/LOG patterns), 
+    // then fall back to level-specific filter with proper error handling
+    let filter = match EnvFilter::try_from_default_env() {
+        Ok(filter) => {
+            debug!("Using existing RUST_LOG/LOG environment filter");
+            filter
+        }
+        Err(_) => {
+            debug!("No existing env filter found, creating filter from level: {:?}", level);
+            match EnvFilter::try_new(&level.to_string()) {
+                Ok(filter) => filter,
+                Err(e) => {
+                    error!("Failed to create log filter: {}", e);
+                    return Err(format!("Failed to create log filter: {}", e).into());
+                }
+            }
+        }
+    };
+
+    let registry = registry().with(filter);
+
     match (format, timestamps) {
         (LogFormat::Pretty, true) => {
             let layer = fmt::layer()
@@ -174,7 +248,17 @@ fn install_subscriber(
             registry.with(layer).try_init()?;
         }
     }
-    
+
+    info!(
+        target: "logging",
+        level = %level,
+        format = ?format,
+        timestamps = timestamps,
+        threads = threads,
+        target = target,
+        "Logging initialized"
+    );
+
     Ok(())
 }
 
