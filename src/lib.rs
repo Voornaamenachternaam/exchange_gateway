@@ -5,7 +5,6 @@ pub mod autodiscover;
 pub mod caldav;
 pub mod calendar;
 pub mod config;
-pub mod logging;
 pub mod delegate_ews;
 pub mod eas;
 pub mod error;
@@ -13,6 +12,7 @@ pub mod ews;
 pub mod ews_folders;
 pub mod ews_update;
 pub mod ical_parser;
+pub mod logging;
 pub mod meeting;
 pub mod models;
 

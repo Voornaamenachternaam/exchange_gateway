@@ -3,7 +3,7 @@ use crate::caldav::CaldavClient;
 use crate::config::Config;
 use moka::sync::Cache;
 use std::time::Duration;
-use tracing::{debug, warn, trace};
+use tracing::{debug, trace, warn};
 
 #[derive(Clone)]
 pub struct AuthVerifier {

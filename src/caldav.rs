@@ -38,7 +38,9 @@ impl CaldavClient {
             Ok(mut url) => {
                 let had_creds = !url.username().is_empty() || url.password().is_some();
                 if had_creds {
-                    warn!("CalDAV base URL contains embedded credentials. These will be ignored; use GATEWAY_CALDAV_USER and GATEWAY_CALDAV_PASSWORD environment variables instead, or configure credentials separately. Sanitizing URL by removing userinfo.");
+                    warn!(
+                        "CalDAV base URL contains embedded credentials. These will be ignored; use GATEWAY_CALDAV_USER and GATEWAY_CALDAV_PASSWORD environment variables instead, or configure credentials separately. Sanitizing URL by removing userinfo."
+                    );
                     url.set_username("").ok();
                     url.set_password(None).ok();
                     url.to_string()
