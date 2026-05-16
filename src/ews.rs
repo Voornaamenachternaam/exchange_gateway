@@ -1978,18 +1978,85 @@ async fn handle_sync_folder_items(
                 ));
             } else {
                 // Item exists in the change journal but not in the live CalDAV state.
-                // This means it was deleted outside the gateway (e.g., directly on Stalwart).
-                // Emit a Delete change and clean up stale local state.
-                tracing::info!(
-                    server_id = %row.server_id,
-                    "Journal 'upsert' entry references item absent from CalDAV; emitting Delete and cleaning up"
-                );
-                changes_xml.push_str(&format!(
-                    r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
-                    xml_escape(&row.server_id)
-                ));
-                let _ = state.storage.add_delete_tombstone(owner, &row.server_id).await;
-                let _ = state.storage.delete_item_by_server_id(owner, &row.server_id).await;
+                // This could mean:
+                //   1. The item was genuinely deleted from the server, OR
+                //   2. The item falls outside the 2-year CalDAV query window
+                //      used by load_current_calendar_items and is still alive.
+                //
+                // Before emitting a Delete (which would cause data loss for
+                // historical items outside the window), verify existence via
+                // a lightweight HEAD request.
+                let should_delete = match state.storage.get_ews_item_by_server_id(owner, &row.server_id).await {
+                    Ok(Some(item_row)) => {
+                        // We have a resource_href — verify on the server.
+                        match CaldavClient::new(&state.cfg) {
+                            Ok(caldav) => {
+                                match caldav.event_exists(&item_row.resource_href, owner, auth.password.expose_secret()).await {
+                                    Ok(true) => {
+                                        tracing::info!(
+                                            server_id = %row.server_id,
+                                            href = %item_row.resource_href,
+                                            "Journal item absent from windowed query but still exists on CalDAV; skipping (not deleted)"
+                                        );
+                                        false
+                                    }
+                                    Ok(false) => {
+                                        tracing::info!(
+                                            server_id = %row.server_id,
+                                            href = %item_row.resource_href,
+                                            "Journal item absent from windowed query and confirmed deleted on CalDAV; emitting Delete"
+                                        );
+                                        true
+                                    }
+                                    Err(e) => {
+                                        // Connection error — assume exists to avoid data loss.
+                                        tracing::warn!(
+                                            server_id = %row.server_id,
+                                            error = %e,
+                                            "Failed to verify CalDAV existence for journal item; skipping delete to avoid data loss"
+                                        );
+                                        false
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    server_id = %row.server_id,
+                                    error = %e,
+                                    "Failed to create CalDAV client for existence check; skipping delete to avoid data loss"
+                                );
+                                false
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // No item_map entry — no resource_href to check.
+                        // This item was likely already deleted locally or never
+                        // fully synced. Safe to emit Delete to clean up the client.
+                        tracing::info!(
+                            server_id = %row.server_id,
+                            "Journal item absent from windowed query and no local resource_href; emitting Delete"
+                        );
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            server_id = %row.server_id,
+                            error = %e,
+                            "Failed to look up item_map for existence check; skipping delete to avoid data loss"
+                        );
+                        false
+                    }
+                };
+
+                if should_delete {
+                    changes_xml.push_str(&format!(
+                        r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                        xml_escape(&row.server_id)
+                    ));
+                    let _ = state.storage.add_delete_tombstone(owner, &row.server_id).await;
+                    let _ = state.storage.delete_item_by_server_id(owner, &row.server_id).await;
+                }
             }
     }
     let includes_last = if has_more { "false" } else { "true" };

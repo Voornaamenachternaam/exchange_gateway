@@ -428,6 +428,50 @@ impl CaldavClient {
         Ok((resp.text().await?, etag))
     }
 
+    /// Lightweight existence check via HEAD request. Returns Ok(true) if the
+    /// resource exists on the CalDAV server, Ok(false) if it returns 404, or
+    /// Err on connection/timeout errors. Used during sync reconciliation to
+    /// distinguish "item outside the query window" from "item genuinely deleted".
+    pub async fn event_exists(
+        &self,
+        resource_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<bool> {
+        let url = self.absolute_url(resource_href)?;
+        let resp = self
+            .client
+            .head(url)
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() || status.as_u16() == 207 {
+            Ok(true)
+        } else if status == reqwest::StatusCode::NOT_FOUND {
+            Ok(false)
+        } else if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            // Auth failure means we can't determine existence — treat as exists
+            // to avoid data loss from transient auth issues.
+            tracing::warn!(
+                status = %status,
+                href = %resource_href,
+                "HEAD request returned auth error during existence check; assuming item exists to avoid data loss"
+            );
+            Ok(true)
+        } else {
+            // 5xx or other unexpected — assume exists to avoid data loss
+            tracing::warn!(
+                status = %status,
+                href = %resource_href,
+                "HEAD request returned unexpected status during existence check; assuming item exists to avoid data loss"
+            );
+            Ok(true)
+        }
+    }
+
     pub async fn put_event(
         &self,
         collection_href: &str,
