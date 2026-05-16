@@ -86,13 +86,15 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push multi-arch image (amd64 + arm64)
+      - name: Build and push ARM64 Docker image with caching
         id: build
         uses: docker/build-push-action@v6.19.2
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/arm64
+      cache-from: type=gha
+      cache-to: type=gha,mode=max
           push: true
           tags: |
             ${{ env.IMAGE_NAME }}:${{ env.RELEASE_TAG }}
