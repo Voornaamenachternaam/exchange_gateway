@@ -30,25 +30,25 @@ jobs:
           # Get canonical release tag from the event payload
           RELEASE_TAG="${{ github.event.release.tag_name || '' }}"
           if [ -z "$RELEASE_TAG" ]; then
-            echo "ERROR: release tag not found (github.event.release.tag_name is empty)." >&2
-            exit 1
+          echo "ERROR: release tag not found (github.event.release.tag_name is empty)." >&2
+          exit 1
           fi
 
           # Validate required secrets: only DOCKER_USERNAME and DOCKER_PASSWORD are permitted
           if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
-            echo "ERROR: secret DOCKER_USERNAME is not set. Please set DOCKER_USERNAME in repository secrets." >&2
-            exit 1
+          echo "ERROR: secret DOCKER_USERNAME is not set. Please set DOCKER_USERNAME in repository secrets." >&2
+          exit 1
           fi
           if [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
-            echo "ERROR: secret DOCKER_PASSWORD is not set. Please set DOCKER_PASSWORD in repository secrets." >&2
-            exit 1
+          echo "ERROR: secret DOCKER_PASSWORD is not set. Please set DOCKER_PASSWORD in repository secrets." >&2
+          exit 1
           fi
 
           # Repository name (use GitHub repo name as docker repository)
           REPO_NAME="${{ github.event.repository.name || github.repository }}"
           if [ -z "$REPO_NAME" ]; then
-            echo "ERROR: repository name not available from event payload." >&2
-            exit 1
+          echo "ERROR: repository name not available from event payload." >&2
+          exit 1
           fi
 
           # Compose image name: <docker-username>/<repo-name>
@@ -56,8 +56,8 @@ jobs:
 
           # Validate composed image name roughly (allowed characters)
           if ! echo "$IMAGE_NAME" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
-            echo "ERROR: derived image name is invalid: '$IMAGE_NAME'." >&2
-            exit 1
+          echo "ERROR: derived image name is invalid: '$IMAGE_NAME'." >&2
+          exit 1
           fi
 
           # RFC3339 timestamp for label
@@ -70,6 +70,7 @@ jobs:
           echo "REPO_NAME=${REPO_NAME}" >> "$GITHUB_ENV"
 
           echo "Info: will publish ${IMAGE_NAME}:${RELEASE_TAG} and ${IMAGE_NAME}:latest"
+
       - name: Setup QEMU (for cross-arch emulation)
         uses: docker/setup-qemu-action@v3.7.0
 
@@ -92,8 +93,8 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/arm64
-      cache-from: type=gha
-      cache-to: type=gha,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           push: true
           tags: |
             ${{ env.IMAGE_NAME }}:${{ env.RELEASE_TAG }}
