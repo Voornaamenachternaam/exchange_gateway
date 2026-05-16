@@ -1838,6 +1838,8 @@ pub async fn handle(
         tracing::debug!(request_id = %request_id, user = %username, "Authentication failed");
         return unauth_response(&request_id);
     }
+    // Mark user as known for fail-open during future backend outages
+    state.auth_verifier.mark_user_known(&username);
     let wbxml = Wbxml::new();
     let payload = body.to_vec();
     let wants_wbxml = headers

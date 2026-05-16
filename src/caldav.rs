@@ -17,6 +17,9 @@ impl CaldavClient {
     pub fn new(cfg: &Config) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(4)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(30))
             .build()?;
         let base = Self::sanitize_base_url(&cfg.caldav_base);
         Ok(Self { base, client })
@@ -25,6 +28,9 @@ impl CaldavClient {
     pub fn new_from_base(caldav_base: &str) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(60))
+            .tcp_keepalive(Duration::from_secs(30))
             .build()?;
         let base = Self::sanitize_base_url(caldav_base);
         Ok(Self { base, client })
@@ -56,10 +62,27 @@ impl CaldavClient {
     }
 
     pub async fn verify_credentials(&self, username: &str, password: &str) -> bool {
-        let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
+        matches!(
+            self.verify_credentials_detailed(username, password).await,
+            crate::auth::CaldavAuthResult::Valid
+        )
+    }
+
+    /// Detailed credential verification that distinguishes between
+    /// "wrong credentials" and "server unreachable".
+    pub async fn verify_credentials_detailed(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> crate::auth::CaldavAuthResult {
+        let home_url = format!(
+            "{}/cal/{}/",
+            self.base.trim_end_matches('/'),
+            urlencoding::encode(username)
+        );
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:">
-<D:prop><D:resourcetype/></D:prop>
+  <D:prop><D:resourcetype/></D:prop>
 </D:propfind>"#;
         match self
             .client
@@ -74,8 +97,43 @@ impl CaldavClient {
             .send()
             .await
         {
-            Ok(r) => r.status().is_success() || r.status().as_u16() == 207,
-            Err(_) => false,
+            Ok(r) => {
+                let status = r.status();
+                if status.is_success() || status.as_u16() == 207 {
+                    crate::auth::CaldavAuthResult::Valid
+                } else if status == reqwest::StatusCode::UNAUTHORIZED
+                    || status == reqwest::StatusCode::FORBIDDEN
+                {
+                    crate::auth::CaldavAuthResult::Invalid
+                } else if status == reqwest::StatusCode::NOT_FOUND {
+                    // 404: user authenticated but has no calendar home yet.
+                    // Treat as valid so the gateway can provision on first sync.
+                    crate::auth::CaldavAuthResult::Valid
+                } else {
+                    // 5xx or unexpected — treat as unreachable to avoid
+                    // poisoning the auth cache on transient server errors.
+                    tracing::warn!(
+                        status = %status,
+                        "CalDAV auth verification returned unexpected status; treating as unreachable"
+                    );
+                    crate::auth::CaldavAuthResult::Unreachable
+                }
+            }
+            Err(e) => {
+                if e.is_connect() || e.is_timeout() || e.is_request() {
+                    tracing::warn!(
+                        error = %e,
+                        "CalDAV auth verification connection error; treating as unreachable"
+                    );
+                    crate::auth::CaldavAuthResult::Unreachable
+                } else {
+                    tracing::warn!(
+                        error = %e,
+                        "CalDAV auth verification unexpected error; treating as invalid"
+                    );
+                    crate::auth::CaldavAuthResult::Invalid
+                }
+            }
         }
     }
 
@@ -122,7 +180,26 @@ impl CaldavClient {
     }
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
-        let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
+        let username = username.to_string();
+        let password = password.to_string();
+        self.with_connect_retry(|| {
+            let username = username.clone();
+            let password = password.clone();
+            async move { self.find_user_calendars_inner(&username, &password).await }
+        })
+        .await
+    }
+
+    async fn find_user_calendars_inner(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<Vec<String>> {
+        let home_url = format!(
+            "{}/cal/{}/",
+            self.base.trim_end_matches('/'),
+            urlencoding::encode(username)
+        );
 
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -199,6 +276,33 @@ impl CaldavClient {
     }
 
     pub async fn query_events(
+        &self,
+        collection_href: &str,
+        start: &str,
+        end: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<String> {
+        let collection_href = collection_href.to_string();
+        let start = start.to_string();
+        let end = end.to_string();
+        let username = username.to_string();
+        let password = password.to_string();
+        self.with_connect_retry(|| {
+            let collection_href = collection_href.clone();
+            let start = start.clone();
+            let end = end.clone();
+            let username = username.clone();
+            let password = password.clone();
+            async move {
+                self.query_events_inner(&collection_href, &start, &end, &username, &password)
+                    .await
+            }
+        })
+        .await
+    }
+
+    async fn query_events_inner(
         &self,
         collection_href: &str,
         start: &str,
@@ -288,6 +392,24 @@ impl CaldavClient {
         username: &str,
         password: &str,
     ) -> Result<(String, Option<String>)> {
+        let resource_href = resource_href.to_string();
+        let username = username.to_string();
+        let password = password.to_string();
+        self.with_connect_retry(|| {
+            let resource_href = resource_href.clone();
+            let username = username.clone();
+            let password = password.clone();
+            async move { self.get_event_inner(&resource_href, &username, &password).await }
+        })
+        .await
+    }
+
+    async fn get_event_inner(
+        &self,
+        resource_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<(String, Option<String>)> {
         let url = self.absolute_url(resource_href)?;
         let resp = self
             .client
@@ -315,6 +437,28 @@ impl CaldavClient {
         password: &str,
         if_match: Option<&str>,
     ) -> Result<(String, String)> {
+        let result = self.put_event_inner(collection_href, resource_href, ics, username, password, if_match).await;
+        if let Err(ref e) = result {
+            let err_msg = format!("{}", e);
+            if err_msg.contains("412") {
+                tracing::warn!(
+                    "CalDAV PUT returned 412 Precondition Failed, retrying without If-Match"
+                );
+                return self.put_event_inner(collection_href, resource_href, ics, username, password, None).await;
+            }
+        }
+        result
+    }
+
+    async fn put_event_inner(
+        &self,
+        collection_href: &str,
+        resource_href: Option<&str>,
+        ics: &str,
+        username: &str,
+        password: &str,
+        if_match: Option<&str>,
+    ) -> Result<(String, String)> {
         let target = self.resolve_resource_url(collection_href, resource_href)?;
         let mut req = self
             .client
@@ -333,16 +477,62 @@ impl CaldavClient {
         if !resp.status().is_success() {
             return Err(anyhow::anyhow!("failed to write event: {}", resp.status()));
         }
+        let resource_href_out = self.relative_href(&target);
         let etag = resp
             .headers()
             .get(ETAG)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.trim_matches('"').to_string())
-            .unwrap_or_else(|| self.synthetic_etag(ics));
-        Ok((self.relative_href(&target), etag))
+            .map(|v| v.trim_matches('"').to_string());
+
+        let etag = match etag {
+            Some(e) => e,
+            None => {
+                // Stalwart may not return ETag in PUT response (some configs).
+                // Fetch the actual ETag via GET to avoid synthetic-etag mismatch
+                // on the next update (which would cause 412 Precondition Failed).
+                tracing::debug!(
+                    href = %resource_href_out,
+                    "PUT response missing ETag; fetching actual ETag via GET"
+                );
+                match self
+                    .get_event(&resource_href_out, username, password)
+                    .await
+                {
+                    Ok((_, Some(real_etag))) => real_etag,
+                    _ => {
+                        tracing::warn!(
+                            href = %resource_href_out,
+                            "Failed to fetch ETag after PUT; falling back to synthetic etag"
+                        );
+                        self.synthetic_etag(ics)
+                    }
+                }
+            }
+        };
+        Ok((resource_href_out, etag))
     }
 
     pub async fn delete_event(
+        &self,
+        resource_href: &str,
+        username: &str,
+        password: &str,
+        if_match: Option<&str>,
+    ) -> Result<()> {
+        let result = self.delete_event_inner(resource_href, username, password, if_match).await;
+        if let Err(ref e) = result {
+            let err_msg = format!("{}", e);
+            if err_msg.contains("412") {
+                tracing::warn!(
+                    "CalDAV DELETE returned 412 Precondition Failed, retrying without If-Match"
+                );
+                return self.delete_event_inner(resource_href, username, password, None).await;
+            }
+        }
+        result
+    }
+
+    async fn delete_event_inner(
         &self,
         resource_href: &str,
         username: &str,
@@ -398,6 +588,37 @@ impl CaldavClient {
 
     fn synthetic_etag(&self, ics: &str) -> String {
         const_hex::encode(Sha256::digest(ics.as_bytes()))
+    }
+
+    /// Execute an async CalDAV operation with one retry on connection errors.
+    /// Stalwart may briefly become unavailable during restarts; one retry with
+    /// a 500ms backoff covers the common case.
+    async fn with_connect_retry<F, Fut, T>(&self, op: F) -> Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        match op().await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let err_str = format!("{}", e);
+                let is_connect = err_str.contains("connection")
+                    || err_str.contains("timed out")
+                    || err_str.contains("connect")
+                    || err_str.contains("dns")
+                    || err_str.contains("refused");
+                if is_connect {
+                    warn!(
+                        error = %e,
+                        "CalDAV connection error; retrying after 500ms backoff"
+                    );
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    op().await
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

@@ -51,7 +51,17 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
 
     // Determine log level: GATEWAY_LOG_LEVEL > RUST_LOG (legacy) > default (info)
     let level_str = match env::var("GATEWAY_LOG_LEVEL") {
-        Ok(val) => val,
+        Ok(val) => {
+            // Strip common CLI-style leading dashes (e.g., "-debug" → "debug")
+            let stripped = val.trim().trim_start_matches('-').to_string();
+            if stripped != val.trim() {
+                eprintln!(
+                    "warn: GATEWAY_LOG_LEVEL value '{}' looks like a CLI flag; using '{}' instead",
+                    val.trim(), stripped
+                );
+            }
+            stripped
+        }
         Err(_) => match env::var("RUST_LOG") {
             Ok(val) => {
                 eprintln!("debug: GATEWAY_LOG_LEVEL not set, using RUST_LOG (legacy)");
@@ -81,19 +91,29 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
 
     // Determine log format with deprecation warning for GATEWAY_LOG_JSON
     let format = match env::var("GATEWAY_LOG_FORMAT") {
-        Ok(val) => match val.parse::<LogFormat>() {
-            Ok(format) => {
-                eprintln!("debug: Using log format: {:?}", format);
-                format
-            }
-            Err(e) => {
+        Ok(val) => {
+            // Strip common CLI-style leading dashes (e.g., "-pretty" → "pretty")
+            let stripped = val.trim().trim_start_matches('-').to_string();
+            if stripped != val.trim() {
                 eprintln!(
-                    "warn: Invalid log format '{}': {}. Using default 'pretty'.",
-                    val, e
+                    "warn: GATEWAY_LOG_FORMAT value '{}' looks like a CLI flag; using '{}' instead",
+                    val.trim(), stripped
                 );
-                LogFormat::Pretty
             }
-        },
+            match stripped.parse::<LogFormat>() {
+                Ok(format) => {
+                    eprintln!("debug: Using log format: {:?}", format);
+                    format
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warn: Invalid log format '{}': {}. Using default 'pretty'.",
+                        stripped, e
+                    );
+                    LogFormat::Pretty
+                }
+            }
+        }
         Err(_) => {
             if env::var("GATEWAY_LOG_JSON").is_ok() {
                 eprintln!(
@@ -112,9 +132,9 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
         Ok(val) => {
             let disabled = val == "1" || val.eq_ignore_ascii_case("true");
             if disabled {
-                eprintln!("debug: Timestamps disabled via GATEWAY_LOG_NO_TIMESTAMPS");
+                eprintln!("debug: Timestamps disabled via GATEWAY_LOG_NO_TIMESTAMPS=1");
             } else {
-                eprintln!("debug: Timestamps explicitly enabled via GATEWAY_LOG_NO_TIMESTAMPS");
+                eprintln!("debug: GATEWAY_LOG_NO_TIMESTAMPS set to '{}' (not '1' or 'true'); timestamps remain enabled by default", val);
             }
             !disabled
         }
@@ -127,7 +147,8 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     // Thread info: off by default, enable with GATEWAY_LOG_THREADS=1
     let threads = match env::var("GATEWAY_LOG_THREADS") {
         Ok(val) => {
-            let enabled = val == "1" || val.eq_ignore_ascii_case("true");
+            let normalized = val.trim().trim_start_matches('-').to_lowercase();
+            let enabled = normalized == "1" || normalized == "true";
             eprintln!(
                 "debug: Thread info {} via GATEWAY_LOG_THREADS",
                 if enabled { "enabled" } else { "disabled" }
@@ -143,7 +164,8 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     // Module targets: off by default, auto-enabled for trace/debug
     let target = match env::var("GATEWAY_LOG_TARGET") {
         Ok(val) => {
-            let enabled = val == "1" || val.eq_ignore_ascii_case("true");
+            let normalized = val.trim().trim_start_matches('-').to_lowercase();
+            let enabled = normalized == "1" || normalized == "true";
             eprintln!(
                 "debug: Module targets {} via GATEWAY_LOG_TARGET",
                 if enabled { "enabled" } else { "disabled" }

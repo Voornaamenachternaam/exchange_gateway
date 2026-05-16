@@ -5,6 +5,16 @@ use moka::sync::Cache;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 
+/// Result of credential verification against the CalDAV backend.
+pub enum CaldavAuthResult {
+    /// Credentials confirmed valid (2xx or 207 response).
+    Valid,
+    /// Credentials confirmed invalid (401/403 or other auth failure).
+    Invalid,
+    /// Could not reach the CalDAV server (connection error, timeout, DNS failure).
+    Unreachable,
+}
+
 #[derive(Clone)]
 pub struct AuthVerifier {
     cache: Cache<String, bool>,
@@ -57,23 +67,76 @@ impl AuthVerifier {
                     target: "auth",
                     username = %username,
                     error = %e,
-                    "Failed to create CalDAV client for auth"
+                    "Failed to create CalDAV client for auth - treating as unreachable"
                 );
-                return false;
+                // Fail-open: if we can't even create a client, the backend is down.
+                // Don't cache this result; let previously-authenticated users through.
+                return self.fail_open_or_reject(username);
             }
         };
-        let valid = caldav.verify_credentials(username, password).await;
-        // Compute cache_key_len before consuming cache_key on insert to avoid clone
-        let cache_key_len = cache_key.len();
-        self.cache.insert(cache_key, valid);
-        debug!(
-            target: "auth",
-            username = %username,
-            valid = valid,
-            cache_key_len = cache_key_len,
-            "Authentication result cached"
-        );
-        valid
+        match caldav.verify_credentials_detailed(username, password).await {
+            CaldavAuthResult::Valid => {
+                self.cache.insert(cache_key, true);
+                debug!(
+                    target: "auth",
+                    username = %username,
+                    valid = true,
+                    "Authentication succeeded and cached"
+                );
+                true
+            }
+            CaldavAuthResult::Invalid => {
+                self.cache.insert(cache_key, false);
+                debug!(
+                    target: "auth",
+                    username = %username,
+                    valid = false,
+                    "Authentication failed and cached"
+                );
+                false
+            }
+            CaldavAuthResult::Unreachable => {
+                // Backend is down — don't poison the cache with a negative entry.
+                // Let previously-authenticated users through (fail-open).
+                warn!(
+                    target: "auth",
+                    username = %username,
+                    "CalDAV backend unreachable during auth verification; fail-open"
+                );
+                self.fail_open_or_reject(username)
+            }
+        }
+    }
+
+    /// When the CalDAV backend is unreachable, we fail-open for users who have
+    /// a recent successful auth cached under any password hash, and fail-closed
+    /// for users with no prior successful auth (likely genuinely unknown).
+    fn fail_open_or_reject(&self, username: &str) -> bool {
+        // Check if we've ever seen a successful auth for this username.
+        // Moka doesn't support prefix scans, so we use a secondary "known user" flag.
+        let known_key = format!("known:{}", username);
+        if self.cache.get(&known_key).is_some() {
+            debug!(
+                target: "auth",
+                username = %username,
+                "Backend unreachable, but user previously authenticated — allowing (fail-open)"
+            );
+            true
+        } else {
+            debug!(
+                target: "auth",
+                username = %username,
+                "Backend unreachable and no prior successful auth — rejecting (fail-closed)"
+            );
+            false
+        }
+    }
+
+    /// Record that a user has successfully authenticated at least once,
+    /// enabling fail-open during future backend outages.
+    pub fn mark_user_known(&self, username: &str) {
+        let known_key = format!("known:{}", username);
+        self.cache.insert(known_key, true);
     }
 }
 

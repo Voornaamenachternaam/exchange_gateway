@@ -424,40 +424,41 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
-    use exchange_gateway::caldav::CaldavClient;
-    // Use a test username that likely doesn't exist - we expect 401 or 404, not connection failure
-    let test_user = "health-check";
-    let caldav = CaldavClient::new(&state.cfg)?;
-    let home_url = format!(
-        "{}/cal/{}/",
-        state.cfg.caldav_base.trim_end_matches('/'),
-        test_user
-    );
-    let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
-<D:propfind xmlns:D="DAV:">
-  <D:prop><D:resourcetype/></D:prop>
-</D:propfind>"#;
+        use exchange_gateway::caldav::CaldavClient;
+        let caldav = CaldavClient::new(&state.cfg)?;
 
-    // Use HEAD or a very light request; we only care that server responds
-    let resp = caldav
-        .client()
-        .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
-        .header("Depth", "0")
-        .header("Content-Type", "application/xml; charset=utf-8")
-        .body(propfind_body)
-        .send()
-        .await?;
+        // Lightweight connectivity check: simple GET to the CalDAV base URL.
+        // Previously this sent PROPFIND with XML body to /dav/cal/health-check/,
+        // which caused three problems in Stalwart v0.16.5:
+        //   1. Auto-provisioning: Stalwart creates a calendar home for the
+        //      "health-check" user on first access, causing store.data-write
+        //      on every health check cycle (every 30s).
+        //   2. Auth noise: Stalwart logs "Authentication failed (Missing
+        //      Authorization header)" every 30 seconds, which can trigger
+        //      brute-force alerts or rate limiting.
+        //   3. Performance: PROPFIND with body is heavier than a simple GET.
+        //
+        // A GET to the /dav/ base URL proves the server is listening and
+        // responding to HTTP without side effects.
+        let base_url = state.cfg.caldav_base.trim_end_matches('/').to_string();
+        let resp = caldav
+            .client()
+            .get(&base_url)
+            .send()
+            .await?;
 
-    // Accept any 2xx or 401/403/404 as "server is reachable"
-    // We don't want health check to fail due to auth, just connectivity
-    let status = resp.status();
-    if status.is_success()
-        || status == StatusCode::UNAUTHORIZED
-        || status == StatusCode::FORBIDDEN
-        || status == StatusCode::NOT_FOUND
-    {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("Unexpected status: {}", status))
+        // Accept any response that proves the CalDAV server is reachable.
+        // We don't care about auth or method support — just connectivity.
+        let status = resp.status();
+        if status.is_success()
+            || status == StatusCode::UNAUTHORIZED
+            || status == StatusCode::FORBIDDEN
+            || status == StatusCode::NOT_FOUND
+            || status == StatusCode::METHOD_NOT_ALLOWED
+            || status.as_u16() == 207 // Multi-Status
+        {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Unexpected status from CalDAV base: {}", status))
+        }
     }
-}

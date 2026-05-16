@@ -226,6 +226,8 @@ pub async fn handle(
         tracing::debug!("EWS authentication failed for user: {}", auth.username);
         return unauthorized();
     }
+    // Mark user as known for fail-open during future backend outages
+    state.auth_verifier.mark_user_known(&auth.username);
     let Some(action) = detect_action(&body) else {
         return soap_fault(
             "ErrorInvalidRequest",
@@ -1947,36 +1949,48 @@ async fn handle_sync_folder_items(
             ));
             continue;
         }
-        if let Some(item) = current_map.get(&row.server_id) {
-            let ck = changekey_for_item(&item.row);
-            let att_list = state
-                .attachment_manager
-                .get_attachments_for_item(owner, &row.server_id)
-                .await
-                .unwrap_or_default();
-            let has_atts = !att_list.is_empty();
-            let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
-            let att_ref = if att_summaries.is_empty() {
-                None
+            if let Some(item) = current_map.get(&row.server_id) {
+                let ck = changekey_for_item(&item.row);
+                let att_list = state
+                    .attachment_manager
+                    .get_attachments_for_item(owner, &row.server_id)
+                    .await
+                    .unwrap_or_default();
+                let has_atts = !att_list.is_empty();
+                let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+                let att_ref = if att_summaries.is_empty() {
+                    None
+                } else {
+                    Some(att_summaries.as_slice())
+                };
+                let change_tag = if since == 0 { "Create" } else { "Update" };
+                changes_xml.push_str(&format!(
+                    r#"<t:{ct}>{}</t:{ct}>"#,
+                    render_ews_calendar_item_xml_with_shape(
+                        &item.row.server_id,
+                        &ck,
+                        &item.item,
+                        shape,
+                        has_atts,
+                        att_ref
+                    ),
+                    ct = change_tag
+                ));
             } else {
-                Some(att_summaries.as_slice())
-            };
-            let change_tag = if since == 0 { "Create" } else { "Update" };
-            changes_xml.push_str(&format!(
-                r#"<t:{ct}>{}</t:{ct}>"#,
-                render_ews_calendar_item_xml_with_shape(
-                    &item.row.server_id,
-                    &ck,
-                    &item.item,
-                    shape,
-                    has_atts,
-                    att_ref
-                ),
-                ct = change_tag
-            ));
-        } else {
-            tracing::warn!(server_id = %row.server_id, "Journal item missing from current_map; skipping sync");
-        }
+                // Item exists in the change journal but not in the live CalDAV state.
+                // This means it was deleted outside the gateway (e.g., directly on Stalwart).
+                // Emit a Delete change and clean up stale local state.
+                tracing::info!(
+                    server_id = %row.server_id,
+                    "Journal 'upsert' entry references item absent from CalDAV; emitting Delete and cleaning up"
+                );
+                changes_xml.push_str(&format!(
+                    r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                    xml_escape(&row.server_id)
+                ));
+                let _ = state.storage.add_delete_tombstone(owner, &row.server_id).await;
+                let _ = state.storage.delete_item_by_server_id(owner, &row.server_id).await;
+            }
     }
     let includes_last = if has_more { "false" } else { "true" };
     let next_seen_seq = if visible_rows.is_empty() {
@@ -2421,7 +2435,22 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             &ics,
             owner,
             auth.password.expose_secret(),
-            existing_etag.as_deref().or(stored_item.etag.as_deref()),
+            {
+                    // Per MS-OXWSCORE: ConflictResolution=AlwaysOverwrite means
+                    // the client explicitly accepts overwriting; skip If-Match to avoid 412.
+                    // OneCalendar sends ConflictResolution as an ATTRIBUTE of <UpdateItemType>
+                    // (per the EWS XSD spec), while some clients may send it as a child
+                    // element. Check both forms to handle all EWS clients.
+                    let conflict_resolution = extract_first_attr(body, b"UpdateItemType", b"ConflictResolution")
+                        .or_else(|| extract_first_tag_text(body, b"ConflictResolution"))
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    if conflict_resolution == "alwaysoverwrite" {
+                        None
+                    } else {
+                        existing_etag.as_deref().or(stored_item.etag.as_deref())
+                    }
+                },
         )
         .await
     {
@@ -3335,5 +3364,75 @@ async fn handle_delete_attachment(
                 StatusCode::INTERNAL_SERVER_ERROR,
             )
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_conflict_resolution_from_attribute() {
+        // OneCalendar sends ConflictResolution as an XML attribute of <UpdateItemType>
+        let xml = r#"<?xml version="1.0" encoding="utf-16"?>
+            <UpdateItemType xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                ConflictResolution="AlwaysOverwrite"
+                MessageDisposition="SendOnly">
+                <ItemChanges xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">
+                    <ItemChange xmlns="http://schemas.microsoft.com/exchange/services/2006/types">
+                        <ItemId Id="test123" ChangeKey="abc456" />
+                    </ItemChange>
+                </ItemChanges>
+            </UpdateItemType>"#;
+
+        // Attribute form (OneCalendar / standard EWS XSD)
+        let from_attr = extract_first_attr(xml, b"UpdateItemType", b"ConflictResolution");
+        assert_eq!(from_attr.as_deref(), Some("AlwaysOverwrite"));
+
+        // Chained: attribute first, then element fallback
+        let result = extract_first_attr(xml, b"UpdateItemType", b"ConflictResolution")
+            .or_else(|| extract_first_tag_text(xml, b"ConflictResolution"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert_eq!(result, "alwaysoverwrite");
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_from_element() {
+        // Some clients may send ConflictResolution as a child element
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+            <UpdateItemType xmlns="http://schemas.microsoft.com/exchange/services/2006/messages">
+                <ConflictResolution>AlwaysOverwrite</ConflictResolution>
+                <ItemChanges>
+                    <ItemChange>
+                        <ItemId Id="test123" ChangeKey="abc456" />
+                    </ItemChange>
+                </ItemChanges>
+            </UpdateItemType>"#;
+
+        // Attribute form should return None
+        let from_attr = extract_first_attr(xml, b"UpdateItemType", b"ConflictResolution");
+        assert_eq!(from_attr, None);
+
+        // But chained: element fallback should find it
+        let result = extract_first_attr(xml, b"UpdateItemType", b"ConflictResolution")
+            .or_else(|| extract_first_tag_text(xml, b"ConflictResolution"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert_eq!(result, "alwaysoverwrite");
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_never_overwrite() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+            <UpdateItemType ConflictResolution="NeverOverwrite" MessageDisposition="SendOnly">
+                <ItemChanges><ItemChange><ItemId Id="x" /></ItemChange></ItemChanges>
+            </UpdateItemType>"#;
+
+        let result = extract_first_attr(xml, b"UpdateItemType", b"ConflictResolution")
+            .or_else(|| extract_first_tag_text(xml, b"ConflictResolution"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert_eq!(result, "neveroverwrite");
+        assert_ne!(result, "alwaysoverwrite");
     }
 }
