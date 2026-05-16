@@ -34,7 +34,7 @@ Rust-based EWS/ActiveSync gateway that translates Exchange protocols (EWS SOAP, 
 - **ConflictResolution**: `AlwaysOverwrite` skips If-Match per MS-OXWSCORE; extracted from XML attribute (primary) or child element (fallback) to handle OneCalendar
 - **Sync state**: Base64-encoded (since_seq, upper_bound_seq) cursor for SyncFolderItems
 - **Change journal**: SQLite table tracking all upsert/delete operations for incremental sync
-- **Missing journal items**: Items in journal but absent from CalDAV are treated as deletes (tombstone + cleanup)
+- **Missing journal items**: Items in journal but absent from windowed CalDAV query are verified via HEAD before emitting Delete (prevents data loss for historical items outside 2-year window)
 - **Auth fail-open**: When Stalwart is unreachable, previously-authenticated users are allowed through; cache is NOT poisoned with `false` on connection errors
 - **Connection retry**: CalDAV operations (get_event, query_events, find_user_calendars) retry once after 500ms backoff on connection errors
 - **URL encoding**: Usernames in CalDAV URLs are percent-encoded (e.g., `@` → `%40`)
