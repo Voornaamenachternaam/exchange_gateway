@@ -1,0 +1,50 @@
+# .dockerignore - Optimize Docker build context
+
+# Git files
+.git
+.gitignore
+
+# IDE files
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+target
+*.rs.bk
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Documentation
+*.md
+*.txt
+
+# Test files
+tests
+src/tests
+
+# Cargo registry cache
+~/.cargo/registry
+~/.cargo/git
+
+# Environment files
+.env
+.env.*
+
+# Workflow files
+.github
+
+# Python files (if any)
+*.py
+__pycache__
+
+# Node modules (if any)
+node_modules
+package-lock.json
+
+# OS files
+Thumbs.db

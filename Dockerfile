@@ -9,6 +9,7 @@ WORKDIR /app
 # Enable sparse registry protocol for faster downloads
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 ENV RUSTFLAGS="-D warnings"
+ENV CARGO_TERM_COLOR=always
 
 # Copy dependency files first for optimal layer caching
 COPY Cargo.toml Cargo.lock ./
@@ -17,24 +18,31 @@ COPY Cargo.toml Cargo.lock ./
 COPY src/lib.rs ./src/lib.rs
 
 # Install dependencies - this layer will be reused as long as Cargo.toml/Cargo.lock don't change
-RUN cargo fetch --locked
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo fetch --locked
 
 # Copy remaining source files
 COPY src/ ./src/
 COPY sqlite_schema.sql ./
 
-# Build the application
-RUN cargo build --release --bin exchange_gateway
+# Build the application with cache mounts
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin exchange_gateway
 
 # Runtime stage - ultra-minimal and secure
 FROM debian:trixie-slim AS runtime
 
-# Install runtime dependencies
+# Install runtime dependencies with security updates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     libsqlite3-0 \
     curl \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user and directories with proper permissions
@@ -53,8 +61,12 @@ COPY --from=builder --chown=root:root /app/target/release/exchange_gateway /usr/
 ENV RUST_LOG="info"
 ENV TZ="UTC"
 
+# Security hardening
+RUN chmod 755 /usr/local/bin/exchange_gateway
+
 # Switch to non-root user for security
 USER gateway
+WORKDIR /var/lib/exchange-gateway
 
 # Network configuration
 EXPOSE 8134
