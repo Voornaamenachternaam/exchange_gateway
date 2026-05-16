@@ -49,6 +49,7 @@ impl SafeDebug for JournalRow {
 #[derive(FromRow)]
 pub struct EwsItemRow {
     pub server_id: String,
+    pub caldav_href: Option<String>,
     pub resource_href: String,
     pub uid: Option<String>,
     pub etag: Option<String>,
@@ -60,6 +61,7 @@ impl SafeDebug for EwsItemRow {
         f.debug_struct("EwsItemRow")
             .field("server_id", &self.server_id)
             .field("resource_href", &self.resource_href)
+            .field("caldav_href", &self.caldav_href)
             .field("uid", &self.uid)
             .field("etag", &self.etag)
             .field("updated_at", &self.updated_at)
@@ -470,7 +472,7 @@ impl Storage {
         limit: i64,
     ) -> Result<Vec<EwsItemRow>> {
         sqlx::query_as::<_, EwsItemRow>(
-            "SELECT im.server_id, im.resource_href, im.uid, im.etag, im.updated_at
+            "SELECT im.server_id, im.caldav_href, im.resource_href, im.uid, im.etag, im.updated_at
              FROM item_map im
              WHERE im.owner = ?1 AND im.resource_href LIKE ?2 || '%'
              AND im.updated_at > ?3
@@ -512,7 +514,7 @@ impl Storage {
         limit: i64,
     ) -> Result<Vec<EwsItemRow>> {
         sqlx::query_as::<_, EwsItemRow>(
-            "SELECT im.server_id, im.resource_href, im.uid, im.etag, im.updated_at
+            "SELECT im.server_id, im.caldav_href, im.resource_href, im.uid, im.etag, im.updated_at
              FROM item_map im
              WHERE im.owner = ?1 AND im.server_id IN (
                  SELECT server_id FROM change_journal WHERE owner = ?1 AND id > ?2 AND op = 'upsert'
@@ -620,7 +622,7 @@ impl Storage {
         offset: i64,
     ) -> Result<Vec<EwsItemRow>> {
         sqlx::query_as::<_, EwsItemRow>(
-            "SELECT server_id, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 ORDER BY updated_at DESC, server_id ASC LIMIT ?2 OFFSET ?3"
+            "SELECT server_id, caldav_href, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 ORDER BY updated_at DESC, server_id ASC LIMIT ?2 OFFSET ?3"
         )
         .bind(owner)
         .bind(limit)
@@ -649,7 +651,7 @@ impl Storage {
         server_id: &str,
     ) -> Result<Option<EwsItemRow>> {
         sqlx::query_as::<_, EwsItemRow>(
-            "SELECT server_id, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 AND server_id = ?2"
+            "SELECT server_id, caldav_href, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 AND server_id = ?2"
         )
         .bind(owner)
         .bind(server_id)
