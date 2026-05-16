@@ -1504,7 +1504,7 @@ async fn load_current_calendar_items(
                             server_id,
                             resource_href: href.clone(),
                             uid: Some(item.uid.clone()),
-    caldav_href: Some(collection_href.clone()),
+                            caldav_href: Some(collection_href.clone()),
                             etag: Some(safe_etag),
                             updated_at: None,
                         },
@@ -2192,7 +2192,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         server_id: server_id.clone(),
         resource_href: href,
         uid: Some(item.uid.clone()),
-    caldav_href: Some(collection_href.clone()),
+        caldav_href: Some(collection_href.clone()),
         etag: Some(etag),
         updated_at: None,
     };
@@ -2460,7 +2460,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         server_id: stored_item.server_id.clone(),
         resource_href,
         uid: Some(uid),
-    caldav_href: Some(collection_href.clone()),
+        caldav_href: Some(collection_href.clone()),
         etag: Some(new_etag),
         updated_at: None,
     };
