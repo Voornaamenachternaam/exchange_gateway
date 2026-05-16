@@ -1504,6 +1504,7 @@ async fn load_current_calendar_items(
                             server_id,
                             resource_href: href.clone(),
                             uid: Some(item.uid.clone()),
+                            caldav_href: Some(collection_href.clone()),
                             etag: Some(safe_etag),
                             updated_at: None,
                         },
@@ -2191,6 +2192,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         server_id: server_id.clone(),
         resource_href: href,
         uid: Some(item.uid.clone()),
+        caldav_href: Some(collection_href.clone()),
         etag: Some(etag),
         updated_at: None,
     };
@@ -2397,11 +2399,24 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             current_item.client_uid = Some(v);
         }
     }
+    let collection_href = stored_item.caldav_href.clone().unwrap_or_else(|| {
+        // Fallback: extract collection href from resource href by removing the filename
+        // Use string manipulation instead of std::path for URL handling
+        if let Some((parent, _)) = stored_item.resource_href.rsplit_once('/') {
+            if parent.is_empty() {
+                stored_item.resource_href.clone()
+            } else {
+                parent.to_string()
+            }
+        } else {
+            stored_item.resource_href.clone()
+        }
+    });
     let uid = current_item.uid.clone();
     let ics = render_ics(&current_item);
     let (resource_href, new_etag) = match caldav
         .put_event(
-            &stored_item.resource_href,
+            &collection_href,
             Some(&stored_item.resource_href),
             &ics,
             owner,
@@ -2425,7 +2440,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         .storage
         .upsert_item_map(
             owner,
-            &resource_href,
+            &collection_href,
             &resource_href,
             &stored_item.server_id,
             &uid,
@@ -2445,6 +2460,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         server_id: stored_item.server_id.clone(),
         resource_href,
         uid: Some(uid),
+        caldav_href: Some(collection_href.clone()),
         etag: Some(new_etag),
         updated_at: None,
     };
