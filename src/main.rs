@@ -457,28 +457,22 @@ async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
     {
         Ok(())
     } else {
-        // Server returned an unexpected status — still reachable but
-        // something may be wrong. Try a GET to the base URL as a fallback.
-        let resp2 = caldav
-            .client()
-            .get(&base_url)
-            .basic_auth("gateway-health", Some("ping"))
-            .send()
-            .await?;
-        let status2 = resp2.status();
-        if status2.is_success()
-            || status2 == StatusCode::UNAUTHORIZED
-            || status2 == StatusCode::FORBIDDEN
-            || status2 == StatusCode::NOT_FOUND
-            || status2 == StatusCode::METHOD_NOT_ALLOWED
-        {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "CalDAV server returned unexpected status: {} / {}",
-                status,
-                status2
-            ))
-        }
+        // A 5xx (or any other unexpected status) means the server is
+        // unhealthy. We do NOT fall back to a GET request because:
+        // (1) The same server returning 5xx on OPTIONS will almost
+        //     certainly return 5xx on GET too, doubling latency for
+        //     the same failure outcome.
+        // (2) If GET somehow returned 2xx after OPTIONS returned 5xx,
+        //     that would mask a genuinely unhealthy CalDAV server.
+        // Fail fast with a clear message instead.
+        warn!(
+            target: "health",
+            status = status.as_u16(),
+            "CalDAV server returned unexpected status on OPTIONS"
+        );
+        Err(anyhow::anyhow!(
+            "CalDAV server returned unexpected status: {}",
+            status
+        ))
     }
 }
