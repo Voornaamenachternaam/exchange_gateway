@@ -1483,7 +1483,7 @@ async fn load_current_calendar_items(
                     // If missing (shouldn't happen with Stalwart v0.16.5 but be
                     // defensive), try a targeted PROPFIND to obtain one. Only
                     // generate a synthetic etag as a last resort — put_event
-                    // will filter it before sending If-Match.
+                    // filters synthetic etags (prefixed with SYNTHETIC_ETAG_PREFIX) before sending If-Match.
                     let safe_etag = if etag.is_empty() {
                         caldav
                             .get_etag(&href, owner, password)
@@ -1491,16 +1491,20 @@ async fn load_current_calendar_items(
                             .ok()
                             .flatten()
                             .unwrap_or_else(|| {
-                                const_hex::encode({
-                                    let mut h = Sha256::new();
-                                    h.update(server_id.as_bytes());
-                                    h.finalize()
-                                })
+                                format!(
+                                    "{}{}",
+                                    crate::caldav::CaldavClient::SYNTHETIC_ETAG_PREFIX,
+                                    const_hex::encode({
+                                        let mut h = Sha256::new();
+                                        h.update(server_id.as_bytes());
+                                        h.finalize()
+                                    })
+                                )
                             })
                     } else {
                         etag.clone()
                     };
-                    let _ = state
+                    if let Err(e) = state
                         .storage
                         .upsert_item_map(
                             owner,
@@ -1510,7 +1514,10 @@ async fn load_current_calendar_items(
                             &item.uid,
                             &safe_etag,
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(server_id = %server_id, error = %e, "Failed to upsert item map in load_current_calendar_items");
+                    }
                     out.push(CurrentCalendarItem {
                         row: EwsItemRow {
                             server_id,
@@ -1666,10 +1673,13 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         "false"
     };
     let next_offset = offset + paged.len();
-    let _ = state
+    if let Err(e) = state
         .storage
         .set_ews_sync_state(owner, &folder_id, &format!("offset:{}", next_offset))
-        .await;
+        .await
+    {
+        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS sync state in FindItem");
+    }
     let response = format!(
         r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="{}" IndexedPagingOffset="{}"><t:Items>{}</t:Items></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS, total_items, includes_last, next_offset, item_xml
@@ -1953,6 +1963,9 @@ async fn handle_sync_folder_items(
     } else {
         &journal_rows[..]
     };
+    // Create a single CaldavClient for the entire loop to avoid allocating
+    // a new reqwest::Client (connection pool) per iteration.
+    let caldav = CaldavClient::new(&state.cfg).ok();
     let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
     let mut last_returned_seq = since;
@@ -2015,20 +2028,30 @@ async fn handle_sync_folder_items(
                 .await
             {
                 Ok(Some(stored)) => {
-                    let caldav = CaldavClient::new(&state.cfg).ok();
-                    let fetched: Option<crate::calendar::CalendarItem> = if let Some(ref c) = caldav {
-                        match c.get_event(&stored.resource_href, owner, auth.password.expose_secret()).await {
+                    let fetched: Option<crate::calendar::CalendarItem> = if let Some(ref c) = caldav
+                    {
+                        match c
+                            .get_event(&stored.resource_href, owner, auth.password.expose_secret())
+                            .await
+                        {
                             Ok((ics, etag)) => {
                                 if let Some(item) = parse_ics_event(&ics) {
                                     // Update stored etag
-                                    let _ = state.storage.upsert_item_map(
-                                        owner,
-                                        stored.caldav_href.as_deref().unwrap_or(""),
-                                        &stored.resource_href,
-                                        &row.server_id,
-                                        &item.uid,
-                                        etag.as_deref().unwrap_or(stored.etag.as_deref().unwrap_or("")),
-                                    ).await;
+                                    if let Err(e) = state
+                                        .storage
+                                        .upsert_item_map(
+                                            owner,
+                                            stored.caldav_href.as_deref().unwrap_or(""),
+                                            &stored.resource_href,
+                                            &row.server_id,
+                                            &item.uid,
+                                            etag.as_deref()
+                                                .unwrap_or(stored.etag.as_deref().unwrap_or("")),
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(server_id = %row.server_id, error = %e, "Failed to upsert item map in SyncFolderItems journal fetch");
+                                    }
                                     Some(item)
                                 } else {
                                     None
@@ -2047,7 +2070,8 @@ async fn handle_sync_folder_items(
                             .get_attachments_for_item(owner, &row.server_id)
                             .await
                             .unwrap_or_default();
-                        let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+                        let att_summaries: Vec<_> =
+                            att_list.iter().map(|a| a.to_ews_summary()).collect();
                         let att_ref = if att_summaries.is_empty() {
                             None
                         } else {
@@ -2071,8 +2095,20 @@ async fn handle_sync_folder_items(
                             server_id = %row.server_id,
                             "Event not in CalDAV window/fetchable; emitting as Delete"
                         );
-                        let _ = state.storage.add_delete_tombstone(owner, &row.server_id).await;
-                        let _ = state.storage.delete_item_by_server_id(owner, &row.server_id).await;
+                        if let Err(e) = state
+                            .storage
+                            .add_delete_tombstone(owner, &row.server_id)
+                            .await
+                        {
+                            tracing::warn!(server_id = %row.server_id, error = %e, "Failed to add delete tombstone");
+                        }
+                        if let Err(e) = state
+                            .storage
+                            .delete_item_by_server_id(owner, &row.server_id)
+                            .await
+                        {
+                            tracing::warn!(server_id = %row.server_id, error = %e, "Failed to delete item by server_id");
+                        }
                         changes_xml.push_str(&format!(
                             r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                             xml_escape(&row.server_id)
@@ -2108,10 +2144,13 @@ async fn handle_sync_folder_items(
         upper_bound
     };
     let new_sync_state = encode_sync_state_cursor(next_seen_seq, next_upper_bound);
-    let _ = state
+    if let Err(e) = state
         .storage
         .set_ews_sync_state(owner, &folder_id, &new_sync_state)
-        .await;
+        .await
+    {
+        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS sync state in SyncFolderItems");
+    }
     let response = format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
         EWS_MSG_NS,
@@ -2136,10 +2175,13 @@ async fn handle_sync_folder_hierarchy(
         .map(|s| s.is_empty())
         .unwrap_or(true);
     let new_sync_state = encode_sync_state_cursor(0, 0);
-    let _ = state
+    if let Err(e) = state
         .storage
         .set_ews_sync_state(owner, &sync_state_key, &new_sync_state)
-        .await;
+        .await
+    {
+        tracing::warn!(folder_id = %sync_state_key, error = %e, "Failed to set EWS sync state in SyncFolderHierarchy");
+    }
     let changes = if is_initial {
         let count = load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
             .await
@@ -2425,7 +2467,11 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         Some(etag) => Some(etag),
         None => {
             match caldav
-                .get_etag(&stored_item.resource_href, owner, auth.password.expose_secret())
+                .get_etag(
+                    &stored_item.resource_href,
+                    owner,
+                    auth.password.expose_secret(),
+                )
                 .await
             {
                 Ok(Some(etag)) => {
@@ -2438,7 +2484,9 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     // Do NOT fall back to stored_item.etag here — it may be a synthetic
                     // etag (SHA256, 64 hex chars) that Stalwart won't recognize.
                     // The 412 retry logic in put_event serves as a safety net regardless.
-                    tracing::debug!("No etag available from GET or PROPFIND; update will proceed without If-Match");
+                    tracing::debug!(
+                        "No etag available from GET or PROPFIND; update will proceed without If-Match"
+                    );
                     None
                 }
             }
@@ -2699,9 +2747,13 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     };
     // Attempt to get a server-recognized etag via PROPFIND for the If-Match header.
     // Fall back to the stored etag; delete_event will filter out any synthetic etags
-    // (len >= 64) before sending If-Match, and its 412 retry logic handles stale etags.
+    // (prefixed "sgw-") before sending If-Match, and its 412 retry logic handles stale etags.
     let delete_etag = match caldav
-        .get_etag(&existing.resource_href, owner, auth.password.expose_secret())
+        .get_etag(
+            &existing.resource_href,
+            owner,
+            auth.password.expose_secret(),
+        )
         .await
     {
         Ok(Some(etag)) => Some(etag),
