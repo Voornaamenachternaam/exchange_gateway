@@ -18,8 +18,9 @@
 - **IndexedFieldURI format**: Parsed as "FieldURI:FieldIndex" (e.g. "contacts:EmailAddress:EmailAddress1"). ExtendedFieldURI as "extended:PropertyTag" or "extended:DistinguishedPropertySetId:PropertyId"
 - **Storage error handling**: All `state.storage` calls use `if let Err(e) = ... { tracing::warn!(...) }` — never `let _ =`
 - **Health check fail-fast**: OPTIONS to CalDAV base URL with dummy auth. Reachable statuses (2xx, 401, 403, 404, 405) → healthy. Any 5xx → fail immediately, no GET fallback. A GET fallback would (1) double latency on failure, (2) risk masking a genuinely unhealthy server if GET returns 2xx after OPTIONS 5xx.
+- **ChangeKey = sha256(server_id + etag)**: Per MS-OXWSCORE §2.2.4.25, ChangeKey identifies a specific content version. Never include `updated_at` in the hash — it's a DB admin timestamp that changes on every upsert_item_map, making ChangeKey unstable and causing ErrorIrresolvableConflict. The etag alone captures content version from CalDAV.
 
 ## Build & Test
-- `cargo test` — 83 tests (50 unit + 22 protocol fixture + 11 integration)
+- `cargo test` — 88 tests (55 unit + 22 protocol fixture + 11 integration)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
