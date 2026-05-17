@@ -360,7 +360,7 @@ impl CaldavClient {
             .body(ics.to_string());
 
         if let Some(etag) = valid_if_match {
-            req = req.header(IF_MATCH, etag);
+            req = req.header(IF_MATCH, Self::format_etag_for_if_match(etag));
         } else if resource_href.is_none() {
             req = req.header(IF_NONE_MATCH, "*");
         }
@@ -389,7 +389,7 @@ impl CaldavClient {
                     .put(&target)
                     .basic_auth(username, Some(password))
                     .header(CONTENT_TYPE, "text/calendar; charset=utf-8")
-                    .header(IF_MATCH, &refreshed_etag)
+                    .header(IF_MATCH, Self::format_etag_for_if_match(&refreshed_etag))
                     .body(ics.to_string())
                     .send()
                     .await?;
@@ -453,7 +453,7 @@ impl CaldavClient {
         let valid_if_match = if_match.filter(|e| !Self::is_synthetic_etag(e));
         let mut req = self.client.delete(url).basic_auth(username, Some(password));
         if let Some(etag) = valid_if_match {
-            req = req.header(IF_MATCH, etag);
+            req = req.header(IF_MATCH, Self::format_etag_for_if_match(etag));
         }
         let resp = req.send().await?;
         if resp.status() == reqwest::StatusCode::PRECONDITION_FAILED {
@@ -535,6 +535,30 @@ impl CaldavClient {
     /// and would not be recognized by the CalDAV server.
     fn is_synthetic_etag(etag: &str) -> bool {
         etag.starts_with(Self::SYNTHETIC_ETAG_PREFIX) || etag.starts_with("W/")
+    }
+
+    /// Format an etag value for use in an If-Match HTTP header per RFC 7232 §2.3.
+    ///
+    /// Entity-tags in conditional headers MUST be enclosed in DQUOTE:
+    ///   `If-Match: "etag_value"`  (strong)
+    ///   `If-Match: W/"etag_value"` (weak)
+    ///
+    /// Internally, etags are stored without quotes (stripped by
+    /// `parse_etag_from_multistatus` and `trim_matches('"')` on GET/PUT
+    /// response headers). This function re-adds the required quotes.
+    fn format_etag_for_if_match(etag: &str) -> String {
+        // Guard: if already quoted (shouldn't happen, but be safe), return as-is
+        if etag.starts_with('"') {
+            return etag.to_string();
+        }
+        // Weak etags: W/ prefix goes OUTSIDE the quotes per RFC 7232 §2.3
+        //   entity-tag = [ weak ] DQUOTE opaque-tag DQUOTE
+        //   weak = %x57.2F  ; "W/"
+        if let Some(stripped) = etag.strip_prefix("W/") {
+            format!("W/\"{}\"", stripped)
+        } else {
+            format!("\"{}\"", etag)
+        }
     }
 }
 
@@ -652,4 +676,92 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
         buf.clear();
     }
     None
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_etag_for_if_match_plain() {
+        // Standard numeric etag from Stalwart PROPFIND (stripped of quotes by parser)
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("1419368738"),
+            "\"1419368738\""
+        );
+    }
+
+    #[test]
+    fn test_format_etag_for_if_match_hex() {
+        // Hex etag as seen in MS-XWDCAL examples
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("1c5a707ee8157a47bfce2b746a3dba250000012c30ab"),
+            "\"1c5a707ee8157a47bfce2b746a3dba250000012c30ab\""
+        );
+    }
+
+    #[test]
+    fn test_format_etag_for_if_match_already_quoted() {
+        // Guard: if already quoted (shouldn't happen), return as-is
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("\"1419368738\""),
+            "\"1419368738\""
+        );
+    }
+
+    #[test]
+    fn test_format_etag_for_if_match_weak() {
+        // Weak etag per RFC 7232 §2.3: W/"etag_value"
+        // Internally stored as W/1419368738 (after trim_matches)
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("W/1419368738"),
+            "W/\"1419368738\""
+        );
+    }
+
+    #[test]
+    fn test_format_etag_for_if_match_empty() {
+        // Empty etag (shouldn't happen, but be safe)
+        assert_eq!(CaldavClient::format_etag_for_if_match(""), "\"\"");
+    }
+
+    #[test]
+    fn test_parse_etag_and_format_roundtrip() {
+        // Simulate full roundtrip: PROPFIND XML → parse → format for If-Match
+        let propfind_response = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/cal/user/default/event.ics</D:href>
+    <D:propstat>
+      <D:prop><D:getetag>"1419368738"</D:getetag></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let parsed = parse_etag_from_multistatus(propfind_response).unwrap();
+        assert_eq!(parsed, "1419368738"); // Internal: unquoted
+        let if_match_value = CaldavClient::format_etag_for_if_match(&parsed);
+        assert_eq!(if_match_value, "\"1419368738\""); // If-Match: RFC 7232 quoted
+    }
+
+    #[test]
+    fn test_parse_etag_with_quotes_and_format_roundtrip() {
+        // Stalwart sometimes returns hex etags with inner quotes in PROPFIND
+        let propfind_response = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/cal/user/default/event.ics</D:href>
+    <D:propstat>
+      <D:prop><D:getetag>"1c5a707ee8157a47bfce2b746a3dba250000012c30ab"</D:getetag></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let parsed = parse_etag_from_multistatus(propfind_response).unwrap();
+        assert_eq!(parsed, "1c5a707ee8157a47bfce2b746a3dba250000012c30ab");
+        let if_match_value = CaldavClient::format_etag_for_if_match(&parsed);
+        assert_eq!(
+            if_match_value,
+            "\"1c5a707ee8157a47bfce2b746a3dba250000012c30ab\""
+        );
+    }
 }
