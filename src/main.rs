@@ -425,39 +425,54 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
 
 async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
     use exchange_gateway::caldav::CaldavClient;
-    // Use a test username that likely doesn't exist - we expect 401 or 404, not connection failure
-    let test_user = "health-check";
     let caldav = CaldavClient::new(&state.cfg)?;
-    let home_url = format!(
-        "{}/cal/{}/",
-        state.cfg.caldav_base.trim_end_matches('/'),
-        test_user
-    );
-    let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
-<D:propfind xmlns:D="DAV:">
-  <D:prop><D:resourcetype/></D:prop>
-</D:propfind>"#;
+    // Use a lightweight OPTIONS request to the CalDAV base URL with dummy
+    // Basic auth. This avoids two Stalwart log-noise problems:
+    //   (1) "Missing Authorization header" — caused by unauthenticated requests
+    //   (2) "invalid credentials" — caused by hitting user-specific paths like
+    //       /dav/cal/{username}/ with non-existent users
+    // By sending OPTIONS (not PROPFIND) to the base /dav/ path (not a user
+    // path) with dummy auth, Stalwart processes it as an authenticated request
+    // even though the credentials are invalid, avoiding the "Missing Authorization
+    // header" log entry entirely. The base path also avoids user-lookup noise.
+    let base_url = state.cfg.caldav_base.trim_end_matches('/').to_string();
 
-    // Use HEAD or a very light request; we only care that server responds
     let resp = caldav
         .client()
-        .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
-        .header("Depth", "0")
-        .header("Content-Type", "application/xml; charset=utf-8")
-        .body(propfind_body)
+        .request(reqwest::Method::OPTIONS, &base_url)
+        .basic_auth("gateway-health", Some("ping"))
         .send()
         .await?;
 
-    // Accept any 2xx or 401/403/404 as "server is reachable"
-    // We don't want health check to fail due to auth, just connectivity
     let status = resp.status();
+    // Accept any 2xx or 401/403/404/405 as "server is reachable"
+    // 401 = server is up, credentials rejected (expected)
+    // 405 = OPTIONS not allowed but server is reachable
+    // 403/404 = server is up, path not found/forbidden
     if status.is_success()
         || status == StatusCode::UNAUTHORIZED
         || status == StatusCode::FORBIDDEN
         || status == StatusCode::NOT_FOUND
+        || status == StatusCode::METHOD_NOT_ALLOWED
     {
         Ok(())
     } else {
-        Err(anyhow::anyhow!("Unexpected status: {}", status))
+        // A 5xx (or any other unexpected status) means the server is
+        // unhealthy. We do NOT fall back to a GET request because:
+        // (1) The same server returning 5xx on OPTIONS will almost
+        //     certainly return 5xx on GET too, doubling latency for
+        //     the same failure outcome.
+        // (2) If GET somehow returned 2xx after OPTIONS returned 5xx,
+        //     that would mask a genuinely unhealthy CalDAV server.
+        // Fail fast with a clear message instead.
+        warn!(
+            target: "health",
+            status = status.as_u16(),
+            "CalDAV server returned unexpected status on OPTIONS"
+        );
+        Err(anyhow::anyhow!(
+            "CalDAV server returned unexpected status: {}",
+            status
+        ))
     }
 }
