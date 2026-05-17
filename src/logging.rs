@@ -50,12 +50,13 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     // Use eprintln! because tracing subscriber not yet initialized
 
     // Determine log level: GATEWAY_LOG_LEVEL > RUST_LOG (legacy) > default (info)
+    // Strip leading dashes (common mistake: GATEWAY_LOG_LEVEL=-debug instead of debug)
     let level_str = match env::var("GATEWAY_LOG_LEVEL") {
-        Ok(val) => val,
+        Ok(val) => val.trim_start_matches('-').to_string(),
         Err(_) => match env::var("RUST_LOG") {
             Ok(val) => {
                 eprintln!("debug: GATEWAY_LOG_LEVEL not set, using RUST_LOG (legacy)");
-                val
+                val.trim_start_matches('-').to_string()
             }
             Err(_) => {
                 eprintln!("debug: No log level env var set, using default 'info'");
@@ -80,8 +81,9 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Determine log format with deprecation warning for GATEWAY_LOG_JSON
+    // Strip leading dashes (common mistake: GATEWAY_LOG_FORMAT=-pretty instead of pretty)
     let format = match env::var("GATEWAY_LOG_FORMAT") {
-        Ok(val) => match val.parse::<LogFormat>() {
+        Ok(val) => match val.trim_start_matches('-').parse::<LogFormat>() {
             Ok(format) => {
                 eprintln!("debug: Using log format: {:?}", format);
                 format

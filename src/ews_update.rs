@@ -100,6 +100,78 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
         },
     }
 
+    /// Extract the FieldURI from a FieldURI or IndexedFieldURI element.
+    /// For FieldURI: returns the "FieldURI" attribute value.
+    /// For IndexedFieldURI: returns "FieldURI:FieldIndex" format.
+    /// For ExtendedFieldURI: returns "PropertyTag:PropertyId" or "DistinguishedPropertySetId:PropertyId".
+    fn extract_field_uri_from_element(e: &quick_xml::events::BytesStart<'_>, decoder: quick_xml::Decoder, local: &str) -> Option<String> {
+        match local {
+            "FieldURI" => {
+                // <t:FieldURI FieldURI="calendar:Start" />
+                e.attributes().flatten().find_map(|attr| {
+                    if attr.key.local_name().as_ref() == b"FieldURI" {
+                        attr.decode_and_unescape_value(decoder).ok().map(|v| v.to_string())
+                    } else {
+                        None
+                    }
+                })
+            }
+            "IndexedFieldURI" => {
+                // <t:IndexedFieldURI FieldURI="contacts:EmailAddress" FieldIndex="EmailAddress1" />
+                let mut field_uri = None;
+                let mut field_index = None;
+                for attr in e.attributes().flatten() {
+                    let key = attr.key.local_name();
+                    if key.as_ref() == b"FieldURI" {
+                        if let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                            field_uri = Some(v.to_string());
+                        }
+                    } else if key.as_ref() == b"FieldIndex"
+                        && let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                            field_index = Some(v.to_string());
+                        }
+                }
+                match (field_uri, field_index) {
+                    (Some(uri), Some(idx)) => Some(format!("{}:{}", uri, idx)),
+                    (Some(uri), None) => Some(uri),
+                    _ => None,
+                }
+            }
+            "ExtendedFieldURI" => {
+                // <t:ExtendedFieldURI PropertyTag="0x001A" PropertyType="String" />
+                // or <t:ExtendedFieldURI DistinguishedPropertySetId="Appointment" PropertyId="AppointmentCounter" PropertyType="Integer" />
+                let mut tag = None;
+                let mut prop_id = None;
+                let mut dist_prop_set = None;
+                for attr in e.attributes().flatten() {
+                    let key = attr.key.local_name();
+                    if key.as_ref() == b"PropertyTag" {
+                        if let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                            tag = Some(v.to_string());
+                        }
+                    } else if key.as_ref() == b"PropertyId" {
+                        if let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                            prop_id = Some(v.to_string());
+                        }
+                    } else if key.as_ref() == b"DistinguishedPropertySetId"
+                        && let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                            dist_prop_set = Some(v.to_string());
+                        }
+                }
+                // Build a canonical key for the ExtendedFieldURI
+                if let Some(t) = tag {
+                    Some(format!("extended:{}", t))
+                } else if let Some(p) = prop_id {
+                    let prefix = dist_prop_set.as_deref().unwrap_or("unknown");
+                    Some(format!("extended:{}:{}", prefix, p))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     let mut state = State::Root;
 
     loop {
@@ -123,14 +195,10 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                         collecting_payload,
                         ..
                     } => {
-                        if local == "FieldURI" && field_uri.is_none() {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"FieldURI"
-                                    && let Ok(v) = attr.decode_and_unescape_value(decoder)
-                                {
-                                    *field_uri = Some(v.to_string());
-                                }
-                            }
+                        if field_uri.is_none()
+                            && matches!(local.as_str(), "FieldURI" | "IndexedFieldURI" | "ExtendedFieldURI")
+                        {
+                            *field_uri = extract_field_uri_from_element(e, decoder, &local);
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
                             push_start_tag(payload_xml, e, decoder);
@@ -148,14 +216,10 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                         collecting_payload,
                         ..
                     } => {
-                        if local == "FieldURI" && field_uri.is_none() {
-                            for attr in e.attributes().flatten() {
-                                if attr.key.local_name().as_ref() == b"FieldURI"
-                                    && let Ok(v) = attr.decode_and_unescape_value(decoder)
-                                {
-                                    *field_uri = Some(v.to_string());
-                                }
-                            }
+                        if field_uri.is_none()
+                            && matches!(local.as_str(), "FieldURI" | "IndexedFieldURI" | "ExtendedFieldURI")
+                        {
+                            *field_uri = extract_field_uri_from_element(e, decoder, &local);
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
                             push_empty_tag(payload_xml, e, decoder);
@@ -482,7 +546,22 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                     );
                 }
             },
-            _ => {}
+            // IndexedFieldURI patterns: e.g. "contacts:EmailAddress:EmailAddress1"
+        // These are used by OneCalendar and other EWS clients for contact-like fields
+        // embedded in calendar items. We handle the common ones gracefully.
+        uri if uri.starts_with("contacts:") || uri.starts_with("message:") => {
+            // Silently ignore contact/message field changes in calendar items
+            // (not applicable to CalDAV VEVENT)
+            tracing::debug!(field_uri = %change.field_uri, "Ignoring non-calendar IndexedFieldURI change");
+        }
+        uri if uri.starts_with("extended:") => {
+            // ExtendedFieldURI: used for MAPI extended properties.
+            // Common ones like reminder offset, appointment color, etc.
+            tracing::debug!(field_uri = %change.field_uri, "Ignoring ExtendedFieldURI change (not mappable to CalDAV)");
+        }
+        _ => {
+            tracing::debug!(field_uri = %change.field_uri, "Unrecognized FieldURI in UpdateItem; ignoring");
+        }
         }
     }
 }

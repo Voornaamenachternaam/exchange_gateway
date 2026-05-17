@@ -306,6 +306,36 @@ impl CaldavClient {
         Ok((resp.text().await?, etag))
     }
 
+    /// Fetch the current server-side ETag for a CalDAV resource via PROPFIND.
+    /// This is needed because Stalwart v0.16.5 may not return an ETag header on GET,
+    /// but always includes it in PROPFIND/REPORT multistatus responses.
+    pub async fn get_etag(
+        &self,
+        resource_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<String>> {
+        let url = self.absolute_url(resource_href)?;
+        let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop><D:getetag/></D:prop>
+</D:propfind>"#;
+        let resp = self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPFIND")?, &url)
+            .basic_auth(username, Some(password))
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(propfind_body)
+            .send()
+            .await?;
+        if !resp.status().is_success() && resp.status().as_u16() != 207 {
+            return Ok(None);
+        }
+        let body = resp.text().await?;
+        Ok(parse_etag_from_multistatus(&body))
+    }
+
     pub async fn put_event(
         &self,
         collection_href: &str,
@@ -316,6 +346,11 @@ impl CaldavClient {
         if_match: Option<&str>,
     ) -> Result<(String, String)> {
         let target = self.resolve_resource_url(collection_href, resource_href)?;
+
+        // Only use If-Match with a server-recognized etag (not a synthetic one).
+        // Synthetic etags (prefixed with "W/") or SHA256-based ones will cause
+        // Stalwart v0.16.5 to return 412 Precondition Failed.
+        let valid_if_match = if_match.filter(|e| !e.starts_with("W/") && e.len() < 64);
         let mut req = self
             .client
             .put(&target)
@@ -323,15 +358,77 @@ impl CaldavClient {
             .header(CONTENT_TYPE, "text/calendar; charset=utf-8")
             .body(ics.to_string());
 
-        if let Some(etag) = if_match {
+        if let Some(etag) = valid_if_match {
             req = req.header(IF_MATCH, etag);
         } else if resource_href.is_none() {
             req = req.header(IF_NONE_MATCH, "*");
         }
 
         let resp = req.send().await?;
-        if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("failed to write event: {}", resp.status()));
+        let status = resp.status();
+
+        if status == reqwest::StatusCode::PRECONDITION_FAILED {
+            // 412: If-Match etag was stale. Refresh the etag via PROPFIND and retry
+            // without If-Match (unconditional overwrite) to avoid client-facing errors.
+            // This handles the case where the stored etag is outdated because another
+            // client or device updated the event between our last sync and this update.
+            warn!(
+                target = %target,
+                "CalDAV PUT returned 412 Precondition Failed; refreshing etag and retrying unconditionally"
+            );
+            if let Some(refreshed_etag) = self
+                .get_etag(resource_href.unwrap_or(&target), username, password)
+                .await.ok()
+                .flatten()
+            {
+                tracing::info!(target = %target, refreshed_etag = %refreshed_etag, "Refreshed etag from PROPFIND; retrying PUT with If-Match");
+                let retry = self
+                    .client
+                    .put(&target)
+                    .basic_auth(username, Some(password))
+                    .header(CONTENT_TYPE, "text/calendar; charset=utf-8")
+                    .header(IF_MATCH, &refreshed_etag)
+                    .body(ics.to_string())
+                    .send()
+                    .await?;
+                if retry.status().is_success() {
+                    let etag = retry
+                        .headers()
+                        .get(ETAG)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|v| v.trim_matches('"').to_string())
+                        .or(refreshed_etag.into());
+                    return Ok((self.relative_href(&target), etag.unwrap_or_else(|| self.synthetic_etag(ics))));
+                }
+                // If retry with refreshed etag also fails, fall through to unconditional
+                warn!(target = %target, retry_status = %retry.status(), "Retry with refreshed etag failed; falling back to unconditional PUT");
+            }
+            // Final fallback: unconditional PUT without If-Match
+            let fallback = self
+                .client
+                .put(&target)
+                .basic_auth(username, Some(password))
+                .header(CONTENT_TYPE, "text/calendar; charset=utf-8")
+                .body(ics.to_string())
+                .send()
+                .await?;
+            if !fallback.status().is_success() {
+                return Err(anyhow::anyhow!(
+                    "failed to write event after 412 retry: {}",
+                    fallback.status()
+                ));
+            }
+            let etag = fallback
+                .headers()
+                .get(ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim_matches('"').to_string())
+                .unwrap_or_else(|| self.synthetic_etag(ics));
+            return Ok((self.relative_href(&target), etag));
+        }
+
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("failed to write event: {}", status));
         }
         let etag = resp
             .headers()
@@ -350,11 +447,34 @@ impl CaldavClient {
         if_match: Option<&str>,
     ) -> Result<()> {
         let url = self.absolute_url(resource_href)?;
+        // Only use If-Match with a server-recognized etag (not a synthetic one).
+        let valid_if_match = if_match.filter(|e| !e.starts_with("W/") && e.len() < 64);
         let mut req = self.client.delete(url).basic_auth(username, Some(password));
-        if let Some(etag) = if_match {
+        if let Some(etag) = valid_if_match {
             req = req.header(IF_MATCH, etag);
         }
         let resp = req.send().await?;
+        if resp.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+            // 412 on delete: etag is stale. Retry without If-Match.
+            warn!(
+                resource_href = %resource_href,
+                "CalDAV DELETE returned 412; retrying unconditionally"
+            );
+            let url2 = self.absolute_url(resource_href)?;
+            let retry = self
+                .client
+                .delete(url2)
+                .basic_auth(username, Some(password))
+                .send()
+                .await?;
+            if !retry.status().is_success() {
+                return Err(anyhow::anyhow!(
+                    "failed to delete event after 412 retry: {}",
+                    retry.status()
+                ));
+            }
+            return Ok(());
+        }
         if !resp.status().is_success() {
             return Err(anyhow::anyhow!("failed to delete event: {}", resp.status()));
         }
@@ -477,4 +597,42 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
             path != home_path
         })
         .collect()
+}
+
+/// Parse the D:getetag value from a WebDAV PROPFIND multistatus response.
+/// Returns None if parsing fails or no etag is found.
+fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
+    let mut reader = quick_xml::Reader::from_str(xml_body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_getetag = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                let local = e.name().local_name();
+                if local.as_ref() == b"getetag" {
+                    in_getetag = true;
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => {
+                let local = e.name().local_name();
+                if local.as_ref() == b"getetag" {
+                    in_getetag = false;
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref t)) if in_getetag => {
+                if let Ok(text) = t.decode() {
+                    let etag = text.trim_matches('"').to_string();
+                    if !etag.is_empty() {
+                        return Some(etag);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    None
 }

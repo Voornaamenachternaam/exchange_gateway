@@ -1479,12 +1479,24 @@ async fn load_current_calendar_items(
                     && let Some(item) = parse_ics_event(&ics)
                 {
                     let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
+                    // Prefer the server-returned etag from the REPORT response.
+                    // If missing (shouldn't happen with Stalwart v0.16.5 but be
+                    // defensive), try a targeted PROPFIND to obtain one. Only
+                    // generate a synthetic etag as a last resort — put_event
+                    // will filter it before sending If-Match.
                     let safe_etag = if etag.is_empty() {
-                        const_hex::encode({
-                            let mut h = Sha256::new();
-                            h.update(server_id.as_bytes());
-                            h.finalize()
-                        })
+                        caldav
+                            .get_etag(&href, owner, password)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| {
+                                const_hex::encode({
+                                    let mut h = Sha256::new();
+                                    h.update(server_id.as_bytes());
+                                    h.finalize()
+                                })
+                            })
                     } else {
                         etag.clone()
                     };
@@ -1926,6 +1938,15 @@ async fn handle_sync_folder_items(
     for item in items {
         current_map.insert(item.row.server_id.clone(), item);
     }
+    // Build a set of server_ids that have been explicitly deleted (exist in
+    // change_journal with op='delete'). This allows us to distinguish between
+    // "journal upsert for an item that was subsequently deleted" (emit Delete)
+    // and "journal upsert for an item that's genuinely missing" (stale entry).
+    let deleted_ids: HashSet<String> = journal_rows
+        .iter()
+        .filter(|r| r.op == "delete")
+        .map(|r| r.server_id.clone())
+        .collect();
     let has_more = journal_rows.len() > max_changes;
     let visible_rows = if has_more {
         &journal_rows[..max_changes]
@@ -1974,8 +1995,105 @@ async fn handle_sync_folder_items(
                 ),
                 ct = change_tag
             ));
+        } else if deleted_ids.contains(&row.server_id) {
+            // Journal has both "upsert" and "delete" for this item.
+            // The delete takes precedence — the item was removed.
+            changes_xml.push_str(&format!(
+                r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                xml_escape(&row.server_id)
+            ));
         } else {
-            tracing::warn!(server_id = %row.server_id, "Journal item missing from current_map; skipping sync");
+            // The item exists in the journal but not in current_map and was not
+            // explicitly deleted. This can happen when:
+            // (a) the CalDAV time-window query excluded the event, or
+            // (b) the event was removed from CalDAV outside the gateway.
+            // Try item_map lookup; if found, try fetching from CalDAV; if not
+            // found, treat as a delete to keep the client in sync.
+            match state
+                .storage
+                .get_ews_item_by_server_id(owner, &row.server_id)
+                .await
+            {
+                Ok(Some(stored)) => {
+                    let caldav = CaldavClient::new(&state.cfg).ok();
+                    let fetched: Option<crate::calendar::CalendarItem> = if let Some(ref c) = caldav {
+                        match c.get_event(&stored.resource_href, owner, auth.password.expose_secret()).await {
+                            Ok((ics, etag)) => {
+                                if let Some(item) = parse_ics_event(&ics) {
+                                    // Update stored etag
+                                    let _ = state.storage.upsert_item_map(
+                                        owner,
+                                        stored.caldav_href.as_deref().unwrap_or(""),
+                                        &stored.resource_href,
+                                        &row.server_id,
+                                        &item.uid,
+                                        etag.as_deref().unwrap_or(stored.etag.as_deref().unwrap_or("")),
+                                    ).await;
+                                    Some(item)
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(item) = fetched {
+                        let ck = changekey_for_item(&stored);
+                        let change_tag = if since == 0 { "Create" } else { "Update" };
+                        let att_list = state
+                            .attachment_manager
+                            .get_attachments_for_item(owner, &row.server_id)
+                            .await
+                            .unwrap_or_default();
+                        let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+                        let att_ref = if att_summaries.is_empty() {
+                            None
+                        } else {
+                            Some(att_summaries.as_slice())
+                        };
+                        changes_xml.push_str(&format!(
+                            r#"<t:{ct}>{}</t:{ct}>"#,
+                            render_ews_calendar_item_xml_with_shape(
+                                &row.server_id,
+                                &ck,
+                                &item,
+                                shape,
+                                !att_list.is_empty(),
+                                att_ref
+                            ),
+                            ct = change_tag
+                        ));
+                    } else {
+                        // Event gone from CalDAV — treat as delete and clean up
+                        tracing::debug!(
+                            server_id = %row.server_id,
+                            "Event not in CalDAV window/fetchable; emitting as Delete"
+                        );
+                        let _ = state.storage.add_delete_tombstone(owner, &row.server_id).await;
+                        let _ = state.storage.delete_item_by_server_id(owner, &row.server_id).await;
+                        changes_xml.push_str(&format!(
+                            r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                            xml_escape(&row.server_id)
+                        ));
+                    }
+                }
+                Ok(None) => {
+                    // Not in item_map either — item was already purged; emit as Delete
+                    changes_xml.push_str(&format!(
+                        r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                        xml_escape(&row.server_id)
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(server_id = %row.server_id, error = %e, "Failed to look up journal item; emitting as Delete");
+                    changes_xml.push_str(&format!(
+                        r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                        xml_escape(&row.server_id)
+                    ));
+                }
+            }
         }
     }
     let includes_last = if has_more { "false" } else { "true" };
@@ -2301,6 +2419,31 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
+    // If the GET response didn't include an ETag header (common with Stalwart v0.16.5),
+    // try to obtain one via PROPFIND so we can use a proper If-Match on the PUT.
+    let existing_etag = match existing_etag {
+        Some(etag) => Some(etag),
+        None => {
+            match caldav
+                .get_etag(&stored_item.resource_href, owner, auth.password.expose_secret())
+                .await
+            {
+                Ok(Some(etag)) => {
+                    tracing::debug!(etag = %etag, "Obtained etag via PROPFIND for update");
+                    Some(etag)
+                }
+                _ => {
+                    // No server-recognized etag available. Pass None so put_event
+                    // will NOT send If-Match (avoiding a guaranteed 412 from Stalwart).
+                    // Do NOT fall back to stored_item.etag here — it may be a synthetic
+                    // etag (SHA256, 64 hex chars) that Stalwart won't recognize.
+                    // The 412 retry logic in put_event serves as a safety net regardless.
+                    tracing::debug!("No etag available from GET or PROPFIND; update will proceed without If-Match");
+                    None
+                }
+            }
+        }
+    };
     let mut current_item =
         parse_ics_event(&existing_ics).unwrap_or_else(|| crate::calendar::CalendarItem {
             uid: stored_item
@@ -2421,7 +2564,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             &ics,
             owner,
             auth.password.expose_secret(),
-            existing_etag.as_deref().or(stored_item.etag.as_deref()),
+            existing_etag.as_deref(),
         )
         .await
     {
@@ -2554,12 +2697,22 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
+    // Attempt to get a server-recognized etag via PROPFIND for the If-Match header.
+    // Fall back to the stored etag; delete_event will filter out any synthetic etags
+    // (len >= 64) before sending If-Match, and its 412 retry logic handles stale etags.
+    let delete_etag = match caldav
+        .get_etag(&existing.resource_href, owner, auth.password.expose_secret())
+        .await
+    {
+        Ok(Some(etag)) => Some(etag),
+        _ => existing.etag.clone(),
+    };
     if let Err(e) = caldav
         .delete_event(
             &existing.resource_href,
             owner,
             auth.password.expose_secret(),
-            existing.etag.as_deref(),
+            delete_etag.as_deref(),
         )
         .await
     {
