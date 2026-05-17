@@ -445,21 +445,6 @@ fn folder_id_for_owner(owner: &str) -> String {
     folder_id_for(owner, DistinguishedFolder::Calendar)
 }
 
-/// Derive an EWS ChangeKey from server_id + etag.
-///
-/// Per [MS-OXWSCORE] §2.2.4.25, the ChangeKey "identifies a specific
-/// version of an item". In CalDAV, the etag IS the version: it changes
-/// only when the resource content changes on the server. Therefore
-/// sha256(server_id + etag) is the correct ChangeKey.
-///
-/// DO NOT include `updated_at` in the hash. `updated_at` is a database
-/// administrative timestamp that changes on every upsert_item_map call
-/// (even when content hasn't changed), making it unsuitable as a content
-/// version indicator. Including it caused the ChangeKey to become
-/// unstable: SyncFolderItems would return one ChangeKey, and the very
-/// next UpdateItem/DeleteItem would compute a different one from the
-/// same DB row (because upsert_item_map set updated_at=CURRENT_TIMESTAMP
-/// between the two calls), producing ErrorIrresolvableConflict.
 fn changekey_for_item(item: &EwsItemRow) -> String {
     let mut h = Sha256::new();
     h.update(item.server_id.as_bytes());
@@ -533,18 +518,9 @@ fn extract_requested_change_key(xml: &str) -> Option<String> {
     extract_first_attr(xml, b"ItemId", b"ChangeKey")
 }
 
-/// Extract the ConflictResolution attribute from an UpdateItem request.
-/// Per [MS-OXWSCORE] §3.1.4.9.4.1:
-///   - "AlwaysOverwrite": update proceeds even if ChangeKey doesn't match
-///   - "AutoResolve": server auto-resolves conflicts (also proceeds)
-///   - "NeverOverwrite": ErrorIrresolvableConflict if ChangeKey doesn't match
 fn extract_conflict_resolution(xml: &str) -> Option<String> {
-    // The ConflictResolution attribute is on the <UpdateItemType> element,
-    // e.g. <m:UpdateItem ConflictResolution="AlwaysOverwrite" ...>
     let lower = xml.to_ascii_lowercase();
-    // Search for the attribute in the opening tag of UpdateItem
     let tag_start = lower.find("updateitem")?;
-    // Look for ConflictResolution= after the tag start (within the same tag)
     let tag_end = lower[tag_start..]
         .find('>')
         .map(|i| tag_start + i)
@@ -553,10 +529,8 @@ fn extract_conflict_resolution(xml: &str) -> Option<String> {
     let attr_pos = tag_fragment.find("conflictresolution=")?;
     let value_start = attr_pos + "conflictresolution=".len();
     let value_rest = &tag_fragment[value_start..];
-    // Skip opening quote
     let quote_char = value_rest.chars().next()?;
     let value_rest = &value_rest[quote_char.len_utf8()..];
-    // Find closing quote
     let value_end = value_rest.find(quote_char).unwrap_or(value_rest.len());
     Some(value_rest[..value_end].to_string())
 }
@@ -1519,11 +1493,6 @@ async fn load_current_calendar_items(
                     && let Some(item) = parse_ics_event(&ics)
                 {
                     let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
-                    // Prefer the server-returned etag from the REPORT response.
-                    // If missing (shouldn't happen with Stalwart v0.16.5 but be
-                    // defensive), try a targeted PROPFIND to obtain one. Only
-                    // generate a synthetic etag as a last resort — put_event
-                    // filters synthetic etags (prefixed with SYNTHETIC_ETAG_PREFIX) before sending If-Match.
                     let safe_etag = if etag.is_empty() {
                         caldav
                             .get_etag(&href, owner, password)
@@ -1988,10 +1957,6 @@ async fn handle_sync_folder_items(
     for item in items {
         current_map.insert(item.row.server_id.clone(), item);
     }
-    // Build a set of server_ids that have been explicitly deleted (exist in
-    // change_journal with op='delete'). This allows us to distinguish between
-    // "journal upsert for an item that was subsequently deleted" (emit Delete)
-    // and "journal upsert for an item that's genuinely missing" (stale entry).
     let deleted_ids: HashSet<String> = journal_rows
         .iter()
         .filter(|r| r.op == "delete")
@@ -2003,8 +1968,6 @@ async fn handle_sync_folder_items(
     } else {
         &journal_rows[..]
     };
-    // Create a single CaldavClient for the entire loop to avoid allocating
-    // a new reqwest::Client (connection pool) per iteration.
     let caldav = CaldavClient::new(&state.cfg).ok();
     let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
@@ -2049,19 +2012,11 @@ async fn handle_sync_folder_items(
                 ct = change_tag
             ));
         } else if deleted_ids.contains(&row.server_id) {
-            // Journal has both "upsert" and "delete" for this item.
-            // The delete takes precedence — the item was removed.
             changes_xml.push_str(&format!(
                 r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                 xml_escape(&row.server_id)
             ));
         } else {
-            // The item exists in the journal but not in current_map and was not
-            // explicitly deleted. This can happen when:
-            // (a) the CalDAV time-window query excluded the event, or
-            // (b) the event was removed from CalDAV outside the gateway.
-            // Try item_map lookup; if found, try fetching from CalDAV; if not
-            // found, treat as a delete to keep the client in sync.
             match state
                 .storage
                 .get_ews_item_by_server_id(owner, &row.server_id)
@@ -2467,9 +2422,6 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::OK,
         );
     };
-    // Per [MS-OXWSCORE] §3.1.4.9.4.1, ConflictResolution controls ChangeKey
-    // validation: only NeverOverwrite returns ErrorIrresolvableConflict on
-    // mismatch. AlwaysOverwrite and AutoResolve both proceed with the update.
     let conflict_resolution =
         extract_conflict_resolution(body).unwrap_or_else(|| "AutoResolve".to_string());
     let skip_ck_validation = matches!(
@@ -2530,11 +2482,6 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     Some(etag)
                 }
                 _ => {
-                    // No server-recognized etag available. Pass None so put_event
-                    // will NOT send If-Match (avoiding a guaranteed 412 from Stalwart).
-                    // Do NOT fall back to stored_item.etag here — it may be a synthetic
-                    // etag (SHA256, 64 hex chars) that Stalwart won't recognize.
-                    // The 412 retry logic in put_event serves as a safety net regardless.
                     tracing::debug!(
                         "No etag available from GET or PROPFIND; update will proceed without If-Match"
                     );
@@ -2796,9 +2743,6 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
-    // Attempt to get a server-recognized etag via PROPFIND for the If-Match header.
-    // Fall back to the stored etag; delete_event will filter out any synthetic etags
-    // (prefixed "sgw-") before sending If-Match, and its 412 retry logic handles stale etags.
     let delete_etag = match caldav
         .get_etag(
             &existing.resource_href,
