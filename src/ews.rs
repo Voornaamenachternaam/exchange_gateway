@@ -445,14 +445,26 @@ fn folder_id_for_owner(owner: &str) -> String {
     folder_id_for(owner, DistinguishedFolder::Calendar)
 }
 
+/// Derive an EWS ChangeKey from server_id + etag.
+///
+/// Per [MS-OXWSCORE] §2.2.4.25, the ChangeKey "identifies a specific
+/// version of an item". In CalDAV, the etag IS the version: it changes
+/// only when the resource content changes on the server. Therefore
+/// sha256(server_id + etag) is the correct ChangeKey.
+///
+/// DO NOT include `updated_at` in the hash. `updated_at` is a database
+/// administrative timestamp that changes on every upsert_item_map call
+/// (even when content hasn't changed), making it unsuitable as a content
+/// version indicator. Including it caused the ChangeKey to become
+/// unstable: SyncFolderItems would return one ChangeKey, and the very
+/// next UpdateItem/DeleteItem would compute a different one from the
+/// same DB row (because upsert_item_map set updated_at=CURRENT_TIMESTAMP
+/// between the two calls), producing ErrorIrresolvableConflict.
 fn changekey_for_item(item: &EwsItemRow) -> String {
     let mut h = Sha256::new();
     h.update(item.server_id.as_bytes());
     if let Some(e) = &item.etag {
         h.update(e.as_bytes());
-    }
-    if let Some(u) = &item.updated_at {
-        h.update(u.as_bytes());
     }
     let digest = h.finalize();
     const_hex::encode(&digest[..12])
@@ -3540,5 +3552,84 @@ async fn handle_delete_attachment(
                 StatusCode::INTERNAL_SERVER_ERROR,
             )
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_row(server_id: &str, etag: Option<&str>, updated_at: Option<&str>) -> EwsItemRow {
+        EwsItemRow {
+            server_id: server_id.to_string(),
+            caldav_href: None,
+            resource_href: format!("/dav/cal/test/default/{}.ics", server_id),
+            uid: Some("test-uid".to_string()),
+            etag: etag.map(|s| s.to_string()),
+            updated_at: updated_at.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_changekey_stability_without_updated_at() {
+        // Same server_id + etag must produce the same ChangeKey regardless of updated_at.
+        // This is the core fix: updated_at is a DB admin timestamp, not a content version.
+        let row_a = make_row("ABC123", Some("etag-v1"), Some("2026-01-01T00:00:00Z"));
+        let row_b = make_row("ABC123", Some("etag-v1"), Some("2026-06-15T12:00:00Z"));
+        let row_c = make_row("ABC123", Some("etag-v1"), None);
+        assert_eq!(
+            changekey_for_item(&row_a),
+            changekey_for_item(&row_b),
+            "ChangeKey must be identical for same server_id+etag regardless of updated_at value"
+        );
+        assert_eq!(
+            changekey_for_item(&row_a),
+            changekey_for_item(&row_c),
+            "ChangeKey must be identical for same server_id+etag with and without updated_at"
+        );
+    }
+
+    #[test]
+    fn test_changekey_changes_with_etag() {
+        // Different etag → different ChangeKey (content version changed)
+        let row_v1 = make_row("ABC123", Some("etag-v1"), None);
+        let row_v2 = make_row("ABC123", Some("etag-v2"), None);
+        assert_ne!(
+            changekey_for_item(&row_v1),
+            changekey_for_item(&row_v2),
+            "ChangeKey must differ when etag differs"
+        );
+    }
+
+    #[test]
+    fn test_changekey_changes_with_server_id() {
+        // Different server_id → different ChangeKey (different items)
+        let row_a = make_row("ID_AAA", Some("etag-v1"), None);
+        let row_b = make_row("ID_BBB", Some("etag-v1"), None);
+        assert_ne!(
+            changekey_for_item(&row_a),
+            changekey_for_item(&row_b),
+            "ChangeKey must differ when server_id differs"
+        );
+    }
+
+    #[test]
+    fn test_changekey_none_etag() {
+        // No etag should still produce a deterministic ChangeKey
+        let row = make_row("ABC123", None, None);
+        let ck = changekey_for_item(&row);
+        assert!(!ck.is_empty(), "ChangeKey must not be empty");
+        // Must be 24 hex chars (12 bytes → 24 hex digits)
+        assert_eq!(ck.len(), 24, "ChangeKey must be 24 hex characters");
+    }
+
+    #[test]
+    fn test_changekey_format() {
+        let row = make_row("ABC123", Some("etag-v1"), Some("2026-01-01T00:00:00Z"));
+        let ck = changekey_for_item(&row);
+        assert_eq!(ck.len(), 24, "ChangeKey must be 24 hex characters");
+        assert!(
+            ck.chars().all(|c| c.is_ascii_hexdigit()),
+            "ChangeKey must be hex"
+        );
     }
 }
