@@ -451,9 +451,6 @@ fn changekey_for_item(item: &EwsItemRow) -> String {
     if let Some(e) = &item.etag {
         h.update(e.as_bytes());
     }
-    if let Some(u) = &item.updated_at {
-        h.update(u.as_bytes());
-    }
     let digest = h.finalize();
     const_hex::encode(&digest[..12])
 }
@@ -519,6 +516,23 @@ fn derived_response_type(item: &crate::calendar::CalendarItem) -> Option<&'stati
 
 fn extract_requested_change_key(xml: &str) -> Option<String> {
     extract_first_attr(xml, b"ItemId", b"ChangeKey")
+}
+
+fn extract_conflict_resolution(xml: &str) -> Option<String> {
+    let lower = xml.to_ascii_lowercase();
+    let tag_start = lower.find("updateitem")?;
+    let tag_end = lower[tag_start..]
+        .find('>')
+        .map(|i| tag_start + i)
+        .unwrap_or(lower.len());
+    let tag_fragment = &lower[tag_start..tag_end];
+    let attr_pos = tag_fragment.find("conflictresolution=")?;
+    let value_start = attr_pos + "conflictresolution=".len();
+    let value_rest = &tag_fragment[value_start..];
+    let quote_char = value_rest.chars().next()?;
+    let value_rest = &value_rest[quote_char.len_utf8()..];
+    let value_end = value_rest.find(quote_char).unwrap_or(value_rest.len());
+    Some(value_rest[..value_end].to_string())
 }
 
 fn validate_item_change_key(
@@ -1479,11 +1493,6 @@ async fn load_current_calendar_items(
                     && let Some(item) = parse_ics_event(&ics)
                 {
                     let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
-                    // Prefer the server-returned etag from the REPORT response.
-                    // If missing (shouldn't happen with Stalwart v0.16.5 but be
-                    // defensive), try a targeted PROPFIND to obtain one. Only
-                    // generate a synthetic etag as a last resort — put_event
-                    // filters synthetic etags (prefixed with SYNTHETIC_ETAG_PREFIX) before sending If-Match.
                     let safe_etag = if etag.is_empty() {
                         caldav
                             .get_etag(&href, owner, password)
@@ -1948,10 +1957,6 @@ async fn handle_sync_folder_items(
     for item in items {
         current_map.insert(item.row.server_id.clone(), item);
     }
-    // Build a set of server_ids that have been explicitly deleted (exist in
-    // change_journal with op='delete'). This allows us to distinguish between
-    // "journal upsert for an item that was subsequently deleted" (emit Delete)
-    // and "journal upsert for an item that's genuinely missing" (stale entry).
     let deleted_ids: HashSet<String> = journal_rows
         .iter()
         .filter(|r| r.op == "delete")
@@ -1963,8 +1968,6 @@ async fn handle_sync_folder_items(
     } else {
         &journal_rows[..]
     };
-    // Create a single CaldavClient for the entire loop to avoid allocating
-    // a new reqwest::Client (connection pool) per iteration.
     let caldav = CaldavClient::new(&state.cfg).ok();
     let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
@@ -2009,19 +2012,11 @@ async fn handle_sync_folder_items(
                 ct = change_tag
             ));
         } else if deleted_ids.contains(&row.server_id) {
-            // Journal has both "upsert" and "delete" for this item.
-            // The delete takes precedence — the item was removed.
             changes_xml.push_str(&format!(
                 r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                 xml_escape(&row.server_id)
             ));
         } else {
-            // The item exists in the journal but not in current_map and was not
-            // explicitly deleted. This can happen when:
-            // (a) the CalDAV time-window query excluded the event, or
-            // (b) the event was removed from CalDAV outside the gateway.
-            // Try item_map lookup; if found, try fetching from CalDAV; if not
-            // found, treat as a delete to keep the client in sync.
             match state
                 .storage
                 .get_ews_item_by_server_id(owner, &row.server_id)
@@ -2427,7 +2422,15 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::OK,
         );
     };
-    if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item) {
+    let conflict_resolution =
+        extract_conflict_resolution(body).unwrap_or_else(|| "AutoResolve".to_string());
+    let skip_ck_validation = matches!(
+        conflict_resolution.to_ascii_lowercase().as_str(),
+        "alwaysoverwrite" | "autoresolve"
+    );
+    if !skip_ck_validation
+        && let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item)
+    {
         return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
@@ -2479,11 +2482,6 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     Some(etag)
                 }
                 _ => {
-                    // No server-recognized etag available. Pass None so put_event
-                    // will NOT send If-Match (avoiding a guaranteed 412 from Stalwart).
-                    // Do NOT fall back to stored_item.etag here — it may be a synthetic
-                    // etag (SHA256, 64 hex chars) that Stalwart won't recognize.
-                    // The 412 retry logic in put_event serves as a safety net regardless.
                     tracing::debug!(
                         "No etag available from GET or PROPFIND; update will proceed without If-Match"
                     );
@@ -2745,9 +2743,6 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             );
         }
     };
-    // Attempt to get a server-recognized etag via PROPFIND for the If-Match header.
-    // Fall back to the stored etag; delete_event will filter out any synthetic etags
-    // (prefixed "sgw-") before sending If-Match, and its 412 retry logic handles stale etags.
     let delete_etag = match caldav
         .get_etag(
             &existing.resource_href,
@@ -3540,5 +3535,141 @@ async fn handle_delete_attachment(
                 StatusCode::INTERNAL_SERVER_ERROR,
             )
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_row(server_id: &str, etag: Option<&str>, updated_at: Option<&str>) -> EwsItemRow {
+        EwsItemRow {
+            server_id: server_id.to_string(),
+            caldav_href: None,
+            resource_href: format!("/dav/cal/test/default/{}.ics", server_id),
+            uid: Some("test-uid".to_string()),
+            etag: etag.map(|s| s.to_string()),
+            updated_at: updated_at.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_changekey_stability_without_updated_at() {
+        // Same server_id + etag must produce the same ChangeKey regardless of updated_at.
+        // This is the core fix: updated_at is a DB admin timestamp, not a content version.
+        let row_a = make_row("ABC123", Some("etag-v1"), Some("2026-01-01T00:00:00Z"));
+        let row_b = make_row("ABC123", Some("etag-v1"), Some("2026-06-15T12:00:00Z"));
+        let row_c = make_row("ABC123", Some("etag-v1"), None);
+        assert_eq!(
+            changekey_for_item(&row_a),
+            changekey_for_item(&row_b),
+            "ChangeKey must be identical for same server_id+etag regardless of updated_at value"
+        );
+        assert_eq!(
+            changekey_for_item(&row_a),
+            changekey_for_item(&row_c),
+            "ChangeKey must be identical for same server_id+etag with and without updated_at"
+        );
+    }
+
+    #[test]
+    fn test_changekey_changes_with_etag() {
+        // Different etag → different ChangeKey (content version changed)
+        let row_v1 = make_row("ABC123", Some("etag-v1"), None);
+        let row_v2 = make_row("ABC123", Some("etag-v2"), None);
+        assert_ne!(
+            changekey_for_item(&row_v1),
+            changekey_for_item(&row_v2),
+            "ChangeKey must differ when etag differs"
+        );
+    }
+
+    #[test]
+    fn test_changekey_changes_with_server_id() {
+        // Different server_id → different ChangeKey (different items)
+        let row_a = make_row("ID_AAA", Some("etag-v1"), None);
+        let row_b = make_row("ID_BBB", Some("etag-v1"), None);
+        assert_ne!(
+            changekey_for_item(&row_a),
+            changekey_for_item(&row_b),
+            "ChangeKey must differ when server_id differs"
+        );
+    }
+
+    #[test]
+    fn test_changekey_none_etag() {
+        // No etag should still produce a deterministic ChangeKey
+        let row = make_row("ABC123", None, None);
+        let ck = changekey_for_item(&row);
+        assert!(!ck.is_empty(), "ChangeKey must not be empty");
+        // Must be 24 hex chars (12 bytes → 24 hex digits)
+        assert_eq!(ck.len(), 24, "ChangeKey must be 24 hex characters");
+    }
+
+    #[test]
+    fn test_changekey_format() {
+        let row = make_row("ABC123", Some("etag-v1"), Some("2026-01-01T00:00:00Z"));
+        let ck = changekey_for_item(&row);
+        assert_eq!(ck.len(), 24, "ChangeKey must be 24 hex characters");
+        assert!(
+            ck.chars().all(|c| c.is_ascii_hexdigit()),
+            "ChangeKey must be hex"
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_always_overwrite() {
+        let xml = r#"<UpdateItemType ConflictResolution="AlwaysOverwrite" MessageDisposition="SendOnly"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("alwaysoverwrite")
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_never_overwrite() {
+        let xml = r#"<UpdateItemType ConflictResolution="NeverOverwrite" MessageDisposition="SendOnly"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("neveroverwrite")
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_auto_resolve() {
+        let xml = r#"<UpdateItemType ConflictResolution="AutoResolve"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("autoresolve")
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_missing() {
+        let xml = r#"<UpdateItemType MessageDisposition="SendOnly"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(extract_conflict_resolution(xml), None);
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_soap_envelope() {
+        // Full SOAP envelope with namespace prefix on UpdateItem
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  ConflictResolution="AlwaysOverwrite"
+                  MessageDisposition="SendOnly"
+                  SendMeetingInvitationsOrCancellations="SendToNone">
+      <m:ItemChanges>
+        <t:ItemChange xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+          <t:ItemId Id="ABC" ChangeKey="123" />
+        </t:ItemChange>
+      </m:ItemChanges>
+    </m:UpdateItem>
+  </soap:Body>
+</soap:Envelope>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("alwaysoverwrite")
+        );
     }
 }
