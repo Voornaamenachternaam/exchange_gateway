@@ -1,7 +1,5 @@
-# .github/workflows/docker-image.yml
 name: Publish Docker image on release
 
-# Trigger when a GitHub Release is published (this includes the tag and release title)
 on:
   workflow_dispatch: {}
   release:
@@ -72,23 +70,23 @@ jobs:
           echo "Info: will publish ${IMAGE_NAME}:${RELEASE_TAG} and ${IMAGE_NAME}:latest"
 
       - name: Setup QEMU (for cross-arch emulation)
-        uses: docker/setup-qemu-action@v3.7.0
+        uses: docker/setup-qemu-action@v4.0.0
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3.12.0
+        uses: docker/setup-buildx-action@v4.0.0
         with:
           use: true
           driver: docker-container
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3.7.0
+        uses: docker/login-action@v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push ARM64 Docker image with caching
         id: build
-        uses: docker/build-push-action@v6.19.2
+        uses: docker/build-push-action@v7.1.0
         with:
           context: .
           file: ./Dockerfile
