@@ -533,6 +533,34 @@ fn extract_requested_change_key(xml: &str) -> Option<String> {
     extract_first_attr(xml, b"ItemId", b"ChangeKey")
 }
 
+/// Extract the ConflictResolution attribute from an UpdateItem request.
+/// Per [MS-OXWSCORE] §3.1.4.9.4.1:
+///   - "AlwaysOverwrite": update proceeds even if ChangeKey doesn't match
+///   - "AutoResolve": server auto-resolves conflicts (also proceeds)
+///   - "NeverOverwrite": ErrorIrresolvableConflict if ChangeKey doesn't match
+fn extract_conflict_resolution(xml: &str) -> Option<String> {
+    // The ConflictResolution attribute is on the <UpdateItemType> element,
+    // e.g. <m:UpdateItem ConflictResolution="AlwaysOverwrite" ...>
+    let lower = xml.to_ascii_lowercase();
+    // Search for the attribute in the opening tag of UpdateItem
+    let tag_start = lower.find("updateitem")?;
+    // Look for ConflictResolution= after the tag start (within the same tag)
+    let tag_end = lower[tag_start..]
+        .find('>')
+        .map(|i| tag_start + i)
+        .unwrap_or(lower.len());
+    let tag_fragment = &lower[tag_start..tag_end];
+    let attr_pos = tag_fragment.find("conflictresolution=")?;
+    let value_start = attr_pos + "conflictresolution=".len();
+    let value_rest = &tag_fragment[value_start..];
+    // Skip opening quote
+    let quote_char = value_rest.chars().next()?;
+    let value_rest = &value_rest[quote_char.len_utf8()..];
+    // Find closing quote
+    let value_end = value_rest.find(quote_char).unwrap_or(value_rest.len());
+    Some(value_rest[..value_end].to_string())
+}
+
 fn validate_item_change_key(
     action: &EwsAction,
     body: &str,
@@ -2439,7 +2467,18 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::OK,
         );
     };
-    if let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item) {
+    // Per [MS-OXWSCORE] §3.1.4.9.4.1, ConflictResolution controls ChangeKey
+    // validation: only NeverOverwrite returns ErrorIrresolvableConflict on
+    // mismatch. AlwaysOverwrite and AutoResolve both proceed with the update.
+    let conflict_resolution =
+        extract_conflict_resolution(body).unwrap_or_else(|| "AutoResolve".to_string());
+    let skip_ck_validation = matches!(
+        conflict_resolution.to_ascii_lowercase().as_str(),
+        "alwaysoverwrite" | "autoresolve"
+    );
+    if !skip_ck_validation
+        && let Err(resp) = validate_item_change_key(&EwsAction::UpdateItem, body, &stored_item)
+    {
         return *resp;
     }
     let caldav = match CaldavClient::new(&state.cfg) {
@@ -3630,6 +3669,63 @@ mod tests {
         assert!(
             ck.chars().all(|c| c.is_ascii_hexdigit()),
             "ChangeKey must be hex"
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_always_overwrite() {
+        let xml = r#"<UpdateItemType ConflictResolution="AlwaysOverwrite" MessageDisposition="SendOnly"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("alwaysoverwrite")
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_never_overwrite() {
+        let xml = r#"<UpdateItemType ConflictResolution="NeverOverwrite" MessageDisposition="SendOnly"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("neveroverwrite")
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_auto_resolve() {
+        let xml = r#"<UpdateItemType ConflictResolution="AutoResolve"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("autoresolve")
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_missing() {
+        let xml = r#"<UpdateItemType MessageDisposition="SendOnly"><ItemChanges></ItemChanges></UpdateItemType>"#;
+        assert_eq!(extract_conflict_resolution(xml), None);
+    }
+
+    #[test]
+    fn test_extract_conflict_resolution_soap_envelope() {
+        // Full SOAP envelope with namespace prefix on UpdateItem
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  ConflictResolution="AlwaysOverwrite"
+                  MessageDisposition="SendOnly"
+                  SendMeetingInvitationsOrCancellations="SendToNone">
+      <m:ItemChanges>
+        <t:ItemChange xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+          <t:ItemId Id="ABC" ChangeKey="123" />
+        </t:ItemChange>
+      </m:ItemChanges>
+    </m:UpdateItem>
+  </soap:Body>
+</soap:Envelope>"#;
+        assert_eq!(
+            extract_conflict_resolution(xml).as_deref(),
+            Some("alwaysoverwrite")
         );
     }
 }
