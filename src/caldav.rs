@@ -302,7 +302,7 @@ impl CaldavClient {
             .headers()
             .get(ETAG)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.trim_matches('"').to_string());
+            .map(normalize_etag_to_internal);
         Ok((resp.text().await?, etag))
     }
 
@@ -383,27 +383,42 @@ impl CaldavClient {
                 .ok()
                 .flatten()
             {
-                tracing::info!(target = %target, refreshed_etag = %refreshed_etag, "Refreshed etag from PROPFIND; retrying PUT with If-Match");
-                let retry = self
-                    .client
-                    .put(&target)
-                    .basic_auth(username, Some(password))
-                    .header(CONTENT_TYPE, "text/calendar; charset=utf-8")
-                    .header(IF_MATCH, Self::format_etag_for_if_match(&refreshed_etag))
-                    .body(ics.to_string())
-                    .send()
-                    .await?;
-                if retry.status().is_success() {
-                    let etag = retry
-                        .headers()
-                        .get(ETAG)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|v| v.trim_matches('"').to_string())
-                        .unwrap_or_else(|| self.synthetic_etag(ics));
-                    return Ok((self.relative_href(&target), etag));
+                // Per RFC 7232 §3.1, If-Match uses the strong comparison function.
+                // Weak etags (W/...) cannot match in a strong comparison, so sending
+                // them in If-Match would cause another 412 or 400 on strict servers.
+                // Synthetic etags (sgw-...) are gateway-generated and not recognized
+                // by the CalDAV server, so they would also cause 412.
+                // In both cases, skip the conditional retry and fall through to the
+                // unconditional PUT fallback to avoid a wasteful round-trip.
+                if Self::is_synthetic_etag(&refreshed_etag) {
+                    warn!(
+                        target = %target,
+                        refreshed_etag = %refreshed_etag,
+                        "Refreshed etag is weak/synthetic; skipping conditional retry, falling back to unconditional PUT"
+                    );
+                } else {
+                    tracing::info!(target = %target, refreshed_etag = %refreshed_etag, "Refreshed etag from PROPFIND; retrying PUT with If-Match");
+                    let retry = self
+                        .client
+                        .put(&target)
+                        .basic_auth(username, Some(password))
+                        .header(CONTENT_TYPE, "text/calendar; charset=utf-8")
+                        .header(IF_MATCH, Self::format_etag_for_if_match(&refreshed_etag))
+                        .body(ics.to_string())
+                        .send()
+                        .await?;
+                    if retry.status().is_success() {
+                        let etag = retry
+                            .headers()
+                            .get(ETAG)
+                            .and_then(|v| v.to_str().ok())
+                            .map(normalize_etag_to_internal)
+                            .unwrap_or_else(|| self.synthetic_etag(ics));
+                        return Ok((self.relative_href(&target), etag));
+                    }
+                    // If retry with refreshed etag also fails, fall through to unconditional
+                    warn!(target = %target, retry_status = %retry.status(), "Retry with refreshed etag failed; falling back to unconditional PUT");
                 }
-                // If retry with refreshed etag also fails, fall through to unconditional
-                warn!(target = %target, retry_status = %retry.status(), "Retry with refreshed etag failed; falling back to unconditional PUT");
             }
             // Final fallback: unconditional PUT without If-Match
             let fallback = self
@@ -424,7 +439,7 @@ impl CaldavClient {
                 .headers()
                 .get(ETAG)
                 .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim_matches('"').to_string())
+                .map(normalize_etag_to_internal)
                 .unwrap_or_else(|| self.synthetic_etag(ics));
             return Ok((self.relative_href(&target), etag));
         }
@@ -436,7 +451,7 @@ impl CaldavClient {
             .headers()
             .get(ETAG)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.trim_matches('"').to_string())
+            .map(normalize_etag_to_internal)
             .unwrap_or_else(|| self.synthetic_etag(ics));
         Ok((self.relative_href(&target), etag))
     }
@@ -540,24 +555,26 @@ impl CaldavClient {
     /// Format an etag value for use in an If-Match HTTP header per RFC 7232 §2.3.
     ///
     /// Entity-tags in conditional headers MUST be enclosed in DQUOTE:
-    ///   `If-Match: "etag_value"`  (strong)
-    ///   `If-Match: W/"etag_value"` (weak)
+    /// `If-Match: "etag_value"` (strong)
+    /// `If-Match: W/"etag_value"` (weak)
     ///
-    /// Internally, etags are stored without quotes (stripped by
-    /// `parse_etag_from_multistatus` and `trim_matches('"')` on GET/PUT
-    /// response headers). This function re-adds the required quotes.
+    /// Internally, etags are stored without surrounding quotes (stripped by
+    /// `normalize_etag_to_internal`). This function re-adds the required
+    /// quotes. It is fully idempotent: any valid input format produces the
+    /// same correct output, including already-quoted or weak-prefixed values.
     fn format_etag_for_if_match(etag: &str) -> String {
-        // Guard: if already quoted (shouldn't happen, but be safe), return as-is
-        if etag.starts_with('"') {
-            return etag.to_string();
-        }
-        // Weak etags: W/ prefix goes OUTSIDE the quotes per RFC 7232 §2.3
-        //   entity-tag = [ weak ] DQUOTE opaque-tag DQUOTE
-        //   weak = %x57.2F  ; "W/"
-        if let Some(stripped) = etag.strip_prefix("W/") {
-            format!("W/\"{}\"", stripped)
+        // Strip any existing W/ prefix, then strip any surrounding quotes,
+        // then re-format per RFC 7232 §2.3:  [W/]"<opaque-tag>"
+        let (is_weak, rest) = if let Some(s) = etag.strip_prefix("W/") {
+            (true, s)
         } else {
-            format!("\"{}\"", etag)
+            (false, etag)
+        };
+        let opaque = rest.trim_matches('"');
+        if is_weak {
+            format!("W/\"{}\"", opaque)
+        } else {
+            format!("\"{}\"", opaque)
         }
     }
 }
@@ -642,6 +659,12 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
 
 /// Parse the D:getetag value from a WebDAV PROPFIND multistatus response.
 /// Returns None if parsing fails or no etag is found.
+///
+/// The returned etag is stored internally as the bare opaque-tag with an
+/// optional `W/` prefix for weak etags, but **without** surrounding DQUOTE
+/// characters. For example:
+///   `"1419368738"` → `1419368738`
+///   `W/"123abc"`   → `W/123abc`
 fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
     let mut reader = quick_xml::Reader::from_str(xml_body);
     reader.config_mut().trim_text(true);
@@ -664,7 +687,7 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
             }
             Ok(quick_xml::events::Event::Text(ref t)) if in_getetag => {
                 if let Ok(text) = t.decode() {
-                    let etag = text.trim_matches('"').to_string();
+                    let etag = normalize_etag_to_internal(&text);
                     if !etag.is_empty() {
                         return Some(etag);
                     }
@@ -676,6 +699,33 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
         buf.clear();
     }
     None
+}
+
+/// Normalize an etag string to its internal (unquoted) representation.
+///
+/// Strips the optional `W/` weak prefix, removes surrounding DQUOTE
+/// characters from the opaque-tag, then re-attaches the `W/` prefix if
+/// the original was weak. This handles all edge cases:
+///
+/// | Input          | Internal  |
+/// |----------------|-----------|
+/// | `"123"`        | `123`     |
+/// | `123`          | `123`     |
+/// | `W/"123"`      | `W/123`   |
+/// | `W/123`        | `W/123`   |
+/// | `W/""123""`    | `W/123`   |
+fn normalize_etag_to_internal(raw: &str) -> String {
+    let (is_weak, rest) = if let Some(s) = raw.strip_prefix("W/") {
+        (true, s)
+    } else {
+        (false, raw)
+    };
+    let opaque = rest.trim_matches('"');
+    if is_weak {
+        format!("W/{}", opaque)
+    } else {
+        opaque.to_string()
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -701,7 +751,7 @@ mod tests {
 
     #[test]
     fn test_format_etag_for_if_match_already_quoted() {
-        // Guard: if already quoted (shouldn't happen), return as-is
+        // Idempotent: already-quoted strong etag → same output
         assert_eq!(
             CaldavClient::format_etag_for_if_match("\"1419368738\""),
             "\"1419368738\""
@@ -709,11 +759,20 @@ mod tests {
     }
 
     #[test]
-    fn test_format_etag_for_if_match_weak() {
-        // Weak etag per RFC 7232 §2.3: W/"etag_value"
-        // Internally stored as W/1419368738 (after trim_matches)
+    fn test_format_etag_for_if_match_weak_unquoted() {
+        // Weak etag stored internally as W/1419368738 (after normalize_etag_to_internal)
         assert_eq!(
             CaldavClient::format_etag_for_if_match("W/1419368738"),
+            "W/\"1419368738\""
+        );
+    }
+
+    #[test]
+    fn test_format_etag_for_if_match_weak_already_quoted() {
+        // Idempotent: W/"1419368738" (already quoted weak etag) → same output
+        // This was the original bug: old code produced W/""1419368738""
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("W/\"1419368738\""),
             "W/\"1419368738\""
         );
     }
@@ -722,6 +781,37 @@ mod tests {
     fn test_format_etag_for_if_match_empty() {
         // Empty etag (shouldn't happen, but be safe)
         assert_eq!(CaldavClient::format_etag_for_if_match(""), "\"\"");
+    }
+
+    #[test]
+    fn test_normalize_etag_to_internal_strong_quoted() {
+        // Server returns: "1419368738"  →  internal: 1419368738
+        assert_eq!(normalize_etag_to_internal("\"1419368738\""), "1419368738");
+    }
+
+    #[test]
+    fn test_normalize_etag_to_internal_strong_unquoted() {
+        // Already unquoted: 1419368738  →  internal: 1419368738
+        assert_eq!(normalize_etag_to_internal("1419368738"), "1419368738");
+    }
+
+    #[test]
+    fn test_normalize_etag_to_internal_weak_quoted() {
+        // Server returns: W/"123"  →  internal: W/123
+        // This was the original bug: trim_matches('"') on W/"123" produced W/"123
+        assert_eq!(normalize_etag_to_internal("W/\"123\""), "W/123");
+    }
+
+    #[test]
+    fn test_normalize_etag_to_internal_weak_unquoted() {
+        // Already normalized: W/123  →  internal: W/123
+        assert_eq!(normalize_etag_to_internal("W/123"), "W/123");
+    }
+
+    #[test]
+    fn test_normalize_etag_to_internal_double_quoted() {
+        // Edge case: W/""123""  →  internal: W/123
+        assert_eq!(normalize_etag_to_internal("W/\"\"123\"\""), "W/123");
     }
 
     #[test]
@@ -762,6 +852,71 @@ mod tests {
         assert_eq!(
             if_match_value,
             "\"1c5a707ee8157a47bfce2b746a3dba250000012c30ab\""
+        );
+    }
+
+    #[test]
+    fn test_parse_weak_etag_and_format_roundtrip() {
+        // Weak etag roundtrip: PROPFIND returns W/"123" → parse → format for If-Match
+        let propfind_response = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/cal/user/default/event.ics</D:href>
+    <D:propstat>
+      <D:prop><D:getetag>W/"abc123"</D:getetag></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let parsed = parse_etag_from_multistatus(propfind_response).unwrap();
+        assert_eq!(parsed, "W/abc123"); // Internal: W/ prefix + bare opaque-tag
+        let if_match_value = CaldavClient::format_etag_for_if_match(&parsed);
+        assert_eq!(if_match_value, "W/\"abc123\""); // If-Match: RFC 7232 weak format
+    }
+
+    #[test]
+    fn test_is_synthetic_etag_detects_weak() {
+        // Weak etags should be treated as synthetic (not usable in If-Match)
+        assert!(CaldavClient::is_synthetic_etag("W/123"));
+        assert!(CaldavClient::is_synthetic_etag("W/\"123\""));
+    }
+
+    #[test]
+    fn test_is_synthetic_etag_detects_gateway_prefix() {
+        // Gateway-generated etags should be treated as synthetic
+        assert!(CaldavClient::is_synthetic_etag("sgw-abc123"));
+    }
+
+    #[test]
+    fn test_is_synthetic_etag_allows_strong() {
+        // Strong server-issued etags should NOT be treated as synthetic
+        assert!(!CaldavClient::is_synthetic_etag("1419368738"));
+        assert!(!CaldavClient::is_synthetic_etag(
+            "1c5a707ee8157a47bfce2b746a3dba250000012c30ab"
+        ));
+    }
+
+    #[test]
+    fn test_format_etag_idempotency_all_forms() {
+        // Regardless of input format, output must be the same (idempotent)
+        let expected_strong = "\"1419368738\"";
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("1419368738"),
+            expected_strong
+        );
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("\"1419368738\""),
+            expected_strong
+        );
+
+        let expected_weak = "W/\"1419368738\"";
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("W/1419368738"),
+            expected_weak
+        );
+        assert_eq!(
+            CaldavClient::format_etag_for_if_match("W/\"1419368738\""),
+            expected_weak
         );
     }
 }
