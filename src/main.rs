@@ -1,4 +1,5 @@
 // src/main.rs
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,7 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use axum::{
     Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -56,21 +57,45 @@ fn redact_email(email: &str) -> String {
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 
-async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> Response {
+async fn autodiscover_xml(
+    State(state): State<Arc<AppState>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    body: String,
+) -> Response {
     let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
-    let email = autodiscover::extract_email_from_body_xml(&body).unwrap_or_default();
+
+    // For GET requests (redirect discovery per MS-OXDISCO §3.1.5.4),
+    // use email from query parameter or fall back to empty string.
+    // For POST requests, parse email from the XML body.
+    let email = if method == axum::http::Method::GET {
+        params
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("emailaddress") || k.eq_ignore_ascii_case("email"))
+            .map(|(_, v)| exchange_gateway::util::nfc(v.trim()))
+            .unwrap_or_default()
+    } else {
+        autodiscover::extract_email_from_body_xml(&body).unwrap_or_default()
+    };
+
+    // Extract Accept-Language header for culture in mobilesync response
+    let accept_language = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok());
 
     debug!(
         target: "http",
-        method = "POST",
+        method = %method,
         path = "/autodiscover/autodiscover.xml",
         body_len = body.len(),
         email = %redact_email(&email),
         "Autodiscover XML request received"
     );
 
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
+    let (status, hdrs, body_out) =
+        autodiscover::handle_autodiscover_xml(host, &body, &email, accept_language);
 
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();
@@ -78,7 +103,7 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
     if success {
         info!(
             target: "http",
-            method = "POST",
+            method = %method,
             path = "/autodiscover/autodiscover.xml",
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
@@ -89,7 +114,7 @@ async fn autodiscover_xml(State(state): State<Arc<AppState>>, body: String) -> R
     } else {
         warn!(
             target: "http",
-            method = "POST",
+            method = %method,
             path = "/autodiscover/autodiscover.xml",
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
@@ -193,6 +218,64 @@ async fn autodiscover_json(
     build_response(status, &hdrs, body_out)
 }
 
+/// Autodiscover V2 JSON handler with email in URL path.
+///
+/// Some Outlook versions use the path format
+/// `/autodiscover/autodiscover.json/v1.0/{email}` instead of query parameters.
+/// This handler extracts the email from the path and the protocol from
+/// query parameters, then delegates to the standard JSON handler.
+async fn autodiscover_json_v1(
+    State(state): State<Arc<AppState>>,
+    Path(email): Path<String>,
+    Query(params): Query<autodiscover::AutodiscoverJsonParams>,
+) -> Response {
+    let start = std::time::Instant::now();
+    let host = &state.cfg.gateway_host;
+
+    debug!(
+        target: "http",
+        method = "GET",
+        path = "/autodiscover/autodiscover.json/v1.0/{email}",
+        protocol = ?params.protocol,
+        email = %redact_email(&email),
+        "Autodiscover JSON V2 path request received"
+    );
+
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_json(
+        host,
+        params.protocol.as_deref(),
+        Some(email.as_str()),
+    );
+
+    let elapsed_ms = start.elapsed().as_millis();
+    let success = status.is_success();
+
+    if success {
+        info!(
+            target: "http",
+            method = "GET",
+            path = "/autodiscover/autodiscover.json/v1.0/{email}",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            response_len = body_out.len(),
+            protocol = ?params.protocol,
+            "Autodiscover JSON V2 path completed"
+        );
+    } else {
+        warn!(
+            target: "http",
+            method = "GET",
+            path = "/autodiscover/autodiscover.json/v1.0/{email}",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms,
+            protocol = ?params.protocol,
+            "Autodiscover JSON V2 path failed"
+        );
+    }
+
+    build_response(status, &hdrs, body_out)
+}
+
 fn build_response(
     status: StatusCode,
     hdrs: &[(&'static str, &'static str)],
@@ -258,12 +341,24 @@ async fn main() -> anyhow::Result<()> {
         .route("/EWS/Exchange.asmx", post(ews::handle))
         .route("/EWS/{*path}", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
-        .route("/autodiscover/autodiscover.xml", post(autodiscover_xml))
-        .route("/Autodiscover/Autodiscover.xml", post(autodiscover_xml))
+        // Autodiscover V1 XML — both GET (redirect discovery per MS-OXDISCO §3.1.5.4)
+        // and POST (actual autodiscover request per MS-OXDSCLI).
+        // Case-insensitive paths are required per MS-OXDISCO §2.2.3.
+        .route("/autodiscover/autodiscover.xml", any(autodiscover_xml))
+        .route("/Autodiscover/Autodiscover.xml", any(autodiscover_xml))
+        // Autodiscover V1 SOAP
         .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))
         .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
+        // Autodiscover V2 JSON — used by AutoDetect cloud service and
+        // Outlook for iOS/Android (MS-ASCMD §2.2.3.1).
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
+        // Autodiscover V2 JSON with email in path (used by some Outlook versions).
+        // Single-segment {email} match — email addresses must not contain '/',
+        // so a wildcard {*email} would incorrectly capture trailing path
+        // segments (e.g. /v1.0/user@example.com/extra).
+        .route("/autodiscover/autodiscover.json/v1.0/{email}", get(autodiscover_json_v1))
+        .route("/Autodiscover/autodiscover.json/v1.0/{email}", get(autodiscover_json_v1))
         .layer(
             ServiceBuilder::new()
                 .layer(SetSensitiveRequestHeadersLayer::new([
