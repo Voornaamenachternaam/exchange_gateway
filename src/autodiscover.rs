@@ -47,23 +47,79 @@ fn content_type_soap() -> Vec<(&'static str, &'static str)> {
 
 /// Detect which response schema the client is requesting from the POST body.
 ///
-/// Per MS-ASCMD §2.2.3.1, the \`<AcceptableResponseSchema>\` element specifies
+/// Per MS-ASCMD §2.2.3.1, the `<AcceptableResponseSchema>` element specifies
 /// the expected response format. ActiveSync clients (including the AutoDetect
 /// cloud service for Outlook mobile) request the mobilesync schema.
 /// Outlook desktop clients request the outlook schema.
 /// If absent or unrecognised, defaults to Outlook for backward compatibility.
+///
+/// This parser handles the following variations:
+/// - Plain tag: `<AcceptableResponseSchema>...</AcceptableResponseSchema>`
+/// - Namespaced tag: `<a:AcceptableResponseSchema>...</a:AcceptableResponseSchema>`
+/// - Tag with attributes: `<AcceptableResponseSchema xmlns="...">...</AcceptableResponseSchema>`
+/// - Mixed: `<a:AcceptableResponseSchema xmlns:a="...">...</a:AcceptableResponseSchema>`
 fn detect_response_schema(body: &str) -> ResponseSchema {
-    if let Some(start) = body
-        .find("<AcceptableResponseSchema>")
-        .map(|i| i + "<AcceptableResponseSchema>".len())
-        && let Some(end) = body[start..].find("</AcceptableResponseSchema>")
-    {
-        let schema = body[start..start + end].trim();
-        if schema.contains("mobilesync") {
-            return ResponseSchema::MobileSync;
-        }
-        if schema.contains("outlook") {
-            return ResponseSchema::Outlook;
+    // Scan for any opening tag whose local name is "AcceptableResponseSchema",
+    // regardless of namespace prefix or extra attributes.
+    // Strategy: find "AcceptableResponseSchema" in the body, then verify it
+    // sits inside an opening tag (preceded by '<' or '<' + prefix + ':')
+    // and locate the matching close tag.
+    let mut search_from = 0;
+    while let Some(pos) = body[search_from..].find("AcceptableResponseSchema") {
+        let abs_pos = search_from + pos;
+        search_from = abs_pos + 1;
+
+        // Verify this is inside an opening tag: look backward for '<' with
+        // only a namespace prefix (word chars + ':') between it and the
+        // local name. We must not match a closing tag (which has '</' prefix)
+        // or a string value that merely contains the word.
+        let tag_name_start = if let Some(lt) = body[..abs_pos].rfind('<') {
+            let between = &body[lt + 1..abs_pos];
+            // Must be a prefix like "a:" or empty (no prefix before local name)
+            if between.is_empty() || between.chars().all(|c| c.is_alphanumeric() || c == ':') {
+                // Reject if it's a closing tag: '</' directly before the prefix/name
+                if body[..abs_pos].ends_with('/') {
+                    continue;
+                }
+                lt + 1 // start of tag name (after '<')
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        // Find the end of the opening tag ('>')
+        let open_tag_end = if let Some(gt) = body[abs_pos..].find('>') {
+            abs_pos + gt
+        } else {
+            continue;
+        };
+
+        // The content starts after the '>' of the opening tag
+        let content_start = open_tag_end + 1;
+
+        // Find the matching closing tag. We look for the closing tag that
+        // uses the same prefix as the opening tag.
+        // Extract the prefix (e.g. "a:" or "" for no prefix).
+        let prefix = &body[tag_name_start..abs_pos];
+    let close_tag = if prefix.is_empty() {
+        "</AcceptableResponseSchema>".to_string()
+    } else {
+        // Build closing tag with the same prefix: e.g. "</a:AcceptableResponseSchema>"
+        // The prefix already includes the colon (e.g. "a:"), so the format
+        // below produces "</a:AcceptableResponseSchema>" which is correct.
+        format!("</{}AcceptableResponseSchema>", prefix)
+    };
+
+    if let Some(close_pos) = body[content_start..].find(close_tag.as_str()) {
+            let schema = body[content_start..content_start + close_pos].trim();
+            if schema.contains("mobilesync") {
+                return ResponseSchema::MobileSync;
+            }
+            if schema.contains("outlook") {
+                return ResponseSchema::Outlook;
+            }
         }
     }
     ResponseSchema::Outlook
@@ -73,6 +129,62 @@ fn detect_response_schema(body: &str) -> ResponseSchema {
 enum ResponseSchema {
     Outlook,
     MobileSync,
+}
+
+/// Default culture string per MS-ASCMD §4.2.4 example.
+const DEFAULT_CULTURE: &str = "en:us";
+
+/// Parse an Accept-Language header value into a culture string suitable
+/// for the `<Culture>` element in the mobilesync response.
+///
+/// Accept-Language format (RFC 7231 §5.3.5): `lang;q=weight, lang;q=weight, ...`
+/// The culture string uses the format `{language}:{country}` where the country
+/// is derived from the language tag if not explicitly provided.
+///
+/// Examples:
+/// - `"de-DE"` → `"de:de"`
+/// - `"en-US"` → `"en:us"`
+/// - `"fr"` → `"fr:fr"`
+/// - `"ja"` → `"ja:jp"`
+/// - `"zh-CN"` → `"zh:cn"`
+/// - `""` / `None` → `"en:us"` (default)
+fn parse_culture_from_accept_language(accept_lang: Option<&str>) -> String {
+    let raw = match accept_lang {
+        Some(h) if !h.is_empty() => h,
+        _ => return DEFAULT_CULTURE.to_string(),
+    };
+
+    // Take the highest-priority language tag (first one, before any ';')
+    let primary = raw.split(',').next().unwrap_or("").trim();
+    if primary.is_empty() {
+        return DEFAULT_CULTURE.to_string();
+    }
+
+    // Strip quality value if present: "de-DE;q=0.9" → "de-DE"
+    let tag = primary.split(';').next().unwrap_or("").trim();
+    if tag.is_empty() {
+        return DEFAULT_CULTURE.to_string();
+    }
+
+    // Normalize to lowercase for consistent culture string output
+    let tag_lower = tag.to_ascii_lowercase();
+
+    // Split on '-' to separate language and country subtags.
+    // RFC 5646 format: language[-script][-region]
+    // e.g. "en-US", "de-DE", "zh-Hans-CN"
+    let parts: Vec<&str> = tag_lower.split('-').collect();
+    let language = parts[0];
+
+    // Find the region subtag (2-letter or 3-letter after optional script).
+    // RFC 5646: region subtag is 2 alpha (ISO 3166-1) or 3 digits.
+    // For simplicity, we take the last 2-alpha subtag as region.
+    let region = parts
+        .iter()
+        .rev()
+        .find(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic()));
+
+    let country = region.unwrap_or(&language);
+    format!("{}:{}", language, country)
 }
 
 pub fn extract_email_from_body_xml(body: &str) -> Option<String> {
@@ -150,10 +262,21 @@ pub fn handle_autodiscover_json(
 /// `AcceptableResponseSchema` element in the request body.
 /// This is critical for Outlook mobile/ActiveSync clients which
 /// expect the mobilesync schema, not the Outlook desktop schema.
-pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdResponse {
+///
+/// `accept_language` is the value of the Accept-Language request header,
+/// used to set the `<Culture>` element in the mobilesync response.
+/// Pass `None` to use the default ("en:us").
+pub fn handle_autodiscover_xml(
+    host: &str,
+    body: &str,
+    email: &str,
+    accept_language: Option<&str>,
+) -> AdResponse {
     let schema = detect_response_schema(body);
     match schema {
-        ResponseSchema::MobileSync => handle_mobilesync_xml(host, email),
+        ResponseSchema::MobileSync => {
+            handle_mobilesync_xml(host, email, accept_language)
+        }
         ResponseSchema::Outlook => handle_outlook_xml(host, email),
     }
 }
@@ -167,16 +290,24 @@ pub fn handle_autodiscover_xml(host: &str, body: &str, email: &str) -> AdRespons
 ///
 /// The response uses the `Action/Settings/Server` structure (not EXCH/EXPR Protocol)
 /// and returns the MobileSync (ActiveSync) endpoint URL.
-fn handle_mobilesync_xml(host: &str, email: &str) -> AdResponse {
+///
+/// `accept_language` is parsed per RFC 7231 §5.3.5 to set the `<Culture>` element.
+/// Pass `None` to use the default ("en:us").
+fn handle_mobilesync_xml(
+    host: &str,
+    email: &str,
+    accept_language: Option<&str>,
+) -> AdResponse {
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
     let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host_escaped);
+    let culture = parse_culture_from_accept_language(accept_language);
 
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
 <Response xmlns="{MOBILESYNC_RESPONSE_NS}">
-<Culture>en:us</Culture>
+<Culture>{culture}</Culture>
 <User>
 <DisplayName>Stalwart Mail</DisplayName>
 <EMailAddress>{email}</EMailAddress>
@@ -193,6 +324,7 @@ fn handle_mobilesync_xml(host: &str, email: &str) -> AdResponse {
 </Response>
 </Autodiscover>"#,
         MOBILESYNC_RESPONSE_NS = MOBILESYNC_RESPONSE_NS,
+        culture = culture,
         email = email_escaped,
         as_url = as_url,
     );
@@ -371,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_mobilesync_response_format() {
-        let (status, _hdrs, body) = handle_mobilesync_xml("mail.example.com", "user@example.com");
+        let (status, _hdrs, body) = handle_mobilesync_xml("mail.example.com", "user@example.com", None);
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("mobilesync/responseschema/2006"));
         assert!(body.contains("https://mail.example.com/Microsoft-Server-ActiveSync"));
@@ -401,7 +533,7 @@ mod tests {
 <EMailAddress>user@example.com</EMailAddress>
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
-        let (status, _, body_out) = handle_autodiscover_xml("mail.example.com", body, "user@example.com");
+        let (status, _, body_out) = handle_autodiscover_xml("mail.example.com", body, "user@example.com", None);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("mobilesync/responseschema/2006"));
         assert!(!body_out.contains("outlook/responseschema/2006a"));
@@ -413,7 +545,7 @@ mod tests {
 <EMailAddress>user@example.com</EMailAddress>
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
-        let (status, _, body_out) = handle_autodiscover_xml("mail.example.com", body, "user@example.com");
+        let (status, _, body_out) = handle_autodiscover_xml("mail.example.com", body, "user@example.com", None);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
         assert!(!body_out.contains("mobilesync/responseschema/2006"));
@@ -422,8 +554,91 @@ mod tests {
     #[test]
     fn test_autodiscover_xml_default_is_outlook() {
         let body = "<Autodiscover><Request><EMailAddress>user@example.com</EMailAddress></Request></Autodiscover>";
-        let (status, _, body_out) = handle_autodiscover_xml("mail.example.com", body, "user@example.com");
+        let (status, _, body_out) = handle_autodiscover_xml("mail.example.com", body, "user@example.com", None);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
     }
+
+    #[test]
+    fn test_detect_response_schema_namespaced_tag() {
+        let body = r#"<Autodiscover xmlns:a="http://schemas.microsoft.com/exchange/autodiscover/mobilesync/requestschema/2006">
+<a:Request>
+<a:EMailAddress>user@example.com</a:EMailAddress>
+<a:AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</a:AcceptableResponseSchema>
+</a:Request>
+</Autodiscover>"#;
+        assert_eq!(detect_response_schema(body), ResponseSchema::MobileSync);
+    }
+
+    #[test]
+    fn test_detect_response_schema_tag_with_attributes() {
+        let body = r#"<Autodiscover>
+<Request>
+<EMailAddress>user@example.com</EMailAddress>
+<AcceptableResponseSchema xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+</Request>
+</Autodiscover>"#;
+        assert_eq!(detect_response_schema(body), ResponseSchema::Outlook);
+    }
+
+    #[test]
+    fn test_detect_response_schema_namespaced_outlook() {
+        let body = r#"<a:Autodiscover xmlns:a="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+<a:Request>
+<a:EMailAddress>user@example.com</a:EMailAddress>
+<a:AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</a:AcceptableResponseSchema>
+</a:Request>
+</a:Autodiscover>"#;
+        assert_eq!(detect_response_schema(body), ResponseSchema::Outlook);
+    }
+
+    #[test]
+    fn test_parse_culture_default() {
+        assert_eq!(parse_culture_from_accept_language(None), "en:us");
+        assert_eq!(parse_culture_from_accept_language(Some("")), "en:us");
+    }
+
+    #[test]
+    fn test_parse_culture_from_header() {
+        assert_eq!(
+            parse_culture_from_accept_language(Some("de-DE, en-US;q=0.5")),
+            "de:de"
+        );
+        assert_eq!(
+            parse_culture_from_accept_language(Some("en-US")),
+            "en:us"
+        );
+        assert_eq!(
+            parse_culture_from_accept_language(Some("fr")),
+            "fr:fr"
+        );
+        assert_eq!(
+            parse_culture_from_accept_language(Some("ja")),
+            "ja:ja"
+        );
+        assert_eq!(
+            parse_culture_from_accept_language(Some("zh-CN")),
+            "zh:cn"
+        );
+        assert_eq!(
+            parse_culture_from_accept_language(Some("zh-Hans-CN")),
+            "zh:cn"
+        );
+        assert_eq!(
+            parse_culture_from_accept_language(Some("en-US;q=0.9, de-DE;q=0.8")),
+            "en:us"
+        );
+    }
+
+    #[test]
+    fn test_mobilesync_response_culture_from_header() {
+        let (status, _hdrs, body) = handle_mobilesync_xml(
+            "mail.example.com",
+            "user@example.com",
+            Some("de-DE, en-US;q=0.5"),
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<Culture>de:de</Culture>"));
+    }
+
 }

@@ -60,6 +60,7 @@ const REQUEST_TIMEOUT_SECS: u64 = 60;
 async fn autodiscover_xml(
     State(state): State<Arc<AppState>>,
     method: axum::http::Method,
+    headers: axum::http::HeaderMap,
     Query(params): Query<HashMap<String, String>>,
     body: String,
 ) -> Response {
@@ -79,6 +80,11 @@ async fn autodiscover_xml(
         autodiscover::extract_email_from_body_xml(&body).unwrap_or_default()
     };
 
+    // Extract Accept-Language header for culture in mobilesync response
+    let accept_language = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok());
+
     debug!(
         target: "http",
         method = %method,
@@ -88,7 +94,8 @@ async fn autodiscover_xml(
         "Autodiscover XML request received"
     );
 
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(host, &body, &email);
+    let (status, hdrs, body_out) =
+        autodiscover::handle_autodiscover_xml(host, &body, &email, accept_language);
 
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();
@@ -346,9 +353,12 @@ async fn main() -> anyhow::Result<()> {
         // Outlook for iOS/Android (MS-ASCMD §2.2.3.1).
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
-        // Autodiscover V2 JSON with email in path (used by some Outlook versions)
-        .route("/autodiscover/autodiscover.json/v1.0/{*email}", get(autodiscover_json_v1))
-        .route("/Autodiscover/autodiscover.json/v1.0/{*email}", get(autodiscover_json_v1))
+        // Autodiscover V2 JSON with email in path (used by some Outlook versions).
+        // Single-segment {email} match — email addresses must not contain '/',
+        // so a wildcard {*email} would incorrectly capture trailing path
+        // segments (e.g. /v1.0/user@example.com/extra).
+        .route("/autodiscover/autodiscover.json/v1.0/{email}", get(autodiscover_json_v1))
+        .route("/Autodiscover/autodiscover.json/v1.0/{email}", get(autodiscover_json_v1))
         .layer(
             ServiceBuilder::new()
                 .layer(SetSensitiveRequestHeadersLayer::new([
