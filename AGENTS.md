@@ -24,16 +24,19 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 120 tests (87 unit + 22 protocol fixture + 11 integration)
+- `cargo test` — 126 tests (93 unit + 22 protocol fixture + 11 integration)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 
 ## Autodiscover Protocol Dispatch
 - **AcceptableResponseSchema handling**: Per MS-ASCMD §2.2.3.1, the `<AcceptableResponseSchema>` element in the POST body specifies which response format the client expects. The server MUST return a matching schema or the client treats it as an error (MS-ASCMD §4.2.5, error code 601).
+- **detect_response_schema()**: Scans for the local name "AcceptableResponseSchema" in the XML body, then walks backward to verify it's inside an opening tag (not a closing tag or bare string). Handles namespace prefixes (e.g. `<a:AcceptableResponseSchema>`) and attributes (e.g. `<AcceptableResponseSchema xmlns="...">`). Builds the matching close tag with the same prefix.
 - **Outlook desktop**: requests `outlook/responseschema/2006a` → EXCH/EXPR Protocol response with EWS and ActiveSync URLs.
 - **ActiveSync mobile**: requests `mobilesync/responseschema/2006` → Action/Settings/Server response with ActiveSync URL. This includes the AutoDetect cloud service used by Outlook for iOS/Android.
 - **Autodiscover V2 JSON GET**: `/autodiscover/autodiscover.json?Protocol=ActiveSync` and `/autodiscover/autodiscover.json/v1.0/{email}?Protocol=ActiveSync` — returns JSON with protocol URLs.
+- **Culture from Accept-Language**: The `<Culture>` element in mobilesync responses is derived from the client's Accept-Language header (RFC 7231 §5.3.5) via `parse_culture_from_accept_language()`. Format: `{language}:{country}`. Falls back to "en:us" per MS-ASCMD §4.2.4 example.
 - **MobileSync Protocol block removed from Outlook response**: The `<Protocol><Type>MobileSync</Type>...</Protocol>` block is non-standard per MS-OXDSCLI §2.2.4 and was causing schema mismatch errors. MobileSync clients must use the dedicated mobilesync XML response.
 - **ServerExclusiveConnect=on for EXPR**: Per MS-OXDSCLI §3.1.5.4, setting this to "on" causes Outlook to prefer the EXPR (external) configuration.
 - **Case-insensitive autodiscover paths**: Both `/autodiscover/...` and `/Autodiscover/...` are registered per MS-OXDISCO §2.2.3.
 - **GET support on autodiscover.xml**: Per MS-OXDISCO §3.1.5.4, the client may send a GET request to verify the autodiscover endpoint exists before sending the POST. The GET handler extracts email from query parameters.
+- **Single-segment {email} in JSON V2 path**: `/autodiscover/autodiscover.json/v1.0/{email}` uses `{email}` (not `{*email}`) because email addresses never contain '/', and a wildcard would capture trailing path garbage.
