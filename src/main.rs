@@ -73,7 +73,9 @@ async fn autodiscover_xml(
     let email = if method == axum::http::Method::GET {
         params
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("emailaddress") || k.eq_ignore_ascii_case("email"))
+            .find(|(k, _)| {
+                k.eq_ignore_ascii_case("emailaddress") || k.eq_ignore_ascii_case("email")
+            })
             .map(|(_, v)| exchange_gateway::util::nfc(v.trim()))
             .unwrap_or_default()
     } else {
@@ -357,8 +359,14 @@ async fn main() -> anyhow::Result<()> {
         // Single-segment {email} match — email addresses must not contain '/',
         // so a wildcard {*email} would incorrectly capture trailing path
         // segments (e.g. /v1.0/user@example.com/extra).
-        .route("/autodiscover/autodiscover.json/v1.0/{email}", get(autodiscover_json_v1))
-        .route("/Autodiscover/autodiscover.json/v1.0/{email}", get(autodiscover_json_v1))
+        .route(
+            "/autodiscover/autodiscover.json/v1.0/{email}",
+            get(autodiscover_json_v1),
+        )
+        .route(
+            "/Autodiscover/autodiscover.json/v1.0/{email}",
+            get(autodiscover_json_v1),
+        )
         .layer(
             ServiceBuilder::new()
                 .layer(SetSensitiveRequestHeadersLayer::new([
