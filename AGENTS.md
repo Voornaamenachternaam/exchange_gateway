@@ -24,10 +24,12 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 148 tests (115 unit + 22 protocol fixture + 11 integration)
+- `cargo test` — 157 tests (124 unit + 22 protocol fixture + 11 integration)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
-- **Never set RUST_LOG in Dockerfile**: `EnvFilter::try_from_default_env()` reads RUST_LOG first and silently overrides GATEWAY_LOG_LEVEL. For example, `RUST_LOG=info` + `GATEWAY_LOG_LEVEL=trace` resulted in effective filter=info, hiding all trace/debug logs. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
+- **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
+- **build_env_filter() preserves complex directives**: `GATEWAY_LOG_LEVEL=trace,axum=info` passes the full directive string to `EnvFilter::try_new()`, preserving per-module overrides. The `parse_global_level()` helper extracts the first comma-separated segment (the ambient level) for auto-enable features like module targets — it does NOT replace the EnvFilter.
+- **Error handling in build_env_filter()**: Uses `match` on `EnvFilter::try_new()` result — errors are logged via `eprintln!` before returning `Err(String)`, never `.unwrap_or_default()`. Per repository pattern: all errors must be logged before being handled.
 
 ## Autodiscover Protocol Dispatch
 - **AcceptableResponseSchema handling**: Per MS-ASCMD §2.2.3.1, the `<AcceptableResponseSchema>` element in the POST body specifies which response format the client expects. The server MUST return a matching schema or the client treats it as an error (MS-ASCMD §4.2.5, error code 601).
