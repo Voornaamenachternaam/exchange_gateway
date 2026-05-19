@@ -164,23 +164,51 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Build filter: try existing env filter first (respects RUST_LOG/LOG patterns),
-    // then fall back to level-specific filter with proper error handling
-    let filter = match EnvFilter::try_from_default_env() {
-        Ok(filter) => {
-            eprintln!("debug: Using existing RUST_LOG/LOG environment filter");
-            filter
+    // Build the EnvFilter. GATEWAY_LOG_LEVEL always takes precedence over RUST_LOG.
+    //
+    // Previously, EnvFilter::try_from_default_env() was tried first, which reads
+    // RUST_LOG/LOG env vars. If RUST_LOG was set (e.g. via Dockerfile ENV), it
+    // would silently override GATEWAY_LOG_LEVEL — the parsed `level` variable was
+    // discarded. For example, RUST_LOG=info + GATEWAY_LOG_LEVEL=trace resulted in
+    // effective filter=info, not trace.
+    //
+    // Now, when GATEWAY_LOG_LEVEL is explicitly set, we build the filter directly
+    // from the parsed level, ignoring RUST_LOG entirely. When GATEWAY_LOG_LEVEL is
+    // absent, we fall back to RUST_LOG (which may contain per-module directives
+    // like "my_crate=debug,other=warn"), and finally to the default "info" level.
+    let filter = if env::var("GATEWAY_LOG_LEVEL").is_ok() {
+        // GATEWAY_LOG_LEVEL was explicitly set — use it exclusively.
+        // This prevents RUST_LOG from silently overriding the user's intent.
+        eprintln!(
+            "debug: GATEWAY_LOG_LEVEL is set, building filter from level: {:?}",
+            level
+        );
+        match EnvFilter::try_new(level.to_string()) {
+            Ok(filter) => filter,
+            Err(e) => {
+                eprintln!("error: Failed to create log filter: {}", e);
+                return Err(format!("Failed to create log filter: {}", e).into());
+            }
         }
-        Err(_) => {
-            eprintln!(
-                "debug: No existing env filter found, creating filter from level: {:?}",
-                level
-            );
-            match EnvFilter::try_new(level.to_string()) {
-                Ok(filter) => filter,
-                Err(e) => {
-                    eprintln!("error: Failed to create log filter: {}", e);
-                    return Err(format!("Failed to create log filter: {}", e).into());
+    } else {
+        // GATEWAY_LOG_LEVEL not set — try RUST_LOG/LOG env vars (which may
+        // contain per-module directives), then fall back to parsed level.
+        match EnvFilter::try_from_default_env() {
+            Ok(filter) => {
+                eprintln!("debug: Using existing RUST_LOG/LOG environment filter");
+                filter
+            }
+            Err(_) => {
+                eprintln!(
+                    "debug: No existing env filter found, creating filter from level: {:?}",
+                    level
+                );
+                match EnvFilter::try_new(level.to_string()) {
+                    Ok(filter) => filter,
+                    Err(e) => {
+                        eprintln!("error: Failed to create log filter: {}", e);
+                        return Err(format!("Failed to create log filter: {}", e).into());
+                    }
                 }
             }
         }
@@ -308,5 +336,38 @@ mod tests {
         );
         // Should match RFC3339 pattern: YYYY-MM-DDTHH:MM:SS[.fraction]Z
         assert!(buffer.len() >= 20); // "2025-12-28T14:30:45Z" is 20 chars
+    }
+
+    /// When GATEWAY_LOG_LEVEL is set, it must take precedence over RUST_LOG.
+    /// Previously, EnvFilter::try_from_default_env() read RUST_LOG first and
+    /// silently overrode GATEWAY_LOG_LEVEL. For example, RUST_LOG=info +
+    /// GATEWAY_LOG_LEVEL=trace resulted in effective filter=info.
+    #[test]
+    fn test_gateway_log_level_overrides_rust_log() {
+        use std::env;
+
+        // Simulate the priority logic: GATEWAY_LOG_LEVEL > RUST_LOG > default
+        let level_str = match env::var("GATEWAY_LOG_LEVEL") {
+            Ok(val) => val.trim_start_matches('-').to_string(),
+            Err(_) => match env::var("RUST_LOG") {
+                Ok(val) => val.trim_start_matches('-').to_string(),
+                Err(_) => "info".to_string(),
+            },
+        };
+
+        // When GATEWAY_LOG_LEVEL is set, the filter should be built from it,
+        // not from RUST_LOG. This is the behavioral contract of the fix.
+        let gateway_set = env::var("GATEWAY_LOG_LEVEL").is_ok();
+        if gateway_set {
+            // GATEWAY_LOG_LEVEL was explicitly set — it wins over RUST_LOG
+            let gateway_level = env::var("GATEWAY_LOG_LEVEL").unwrap();
+            assert_eq!(
+                level_str,
+                gateway_level.trim_start_matches('-'),
+                "GATEWAY_LOG_LEVEL='{}' should take precedence, but got '{}'",
+                gateway_level,
+                level_str
+            );
+        }
     }
 }

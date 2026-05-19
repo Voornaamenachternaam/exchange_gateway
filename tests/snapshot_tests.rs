@@ -200,13 +200,12 @@ fn test_autodiscover_xml_response() {
 
     assert_snapshot!(response);
 }
-
 #[test]
 fn test_autodiscover_json_response() {
-    let response = r#"{"Protocol":"Exchange","Url":"https://mail.example.com/EWS/Exchange.asmx","EwsUrl":"https://mail.example.com/EWS/Exchange.asmx","ExternalEwsUrl":"https://mail.example.com/EWS/Exchange.asmx","InternalEwsUrl":"https://mail.example.com/EWS/Exchange.asmx","ActiveSyncUrl":"https://mail.example.com/Microsoft-Server-ActiveSync","MobileSyncUrl":"https://mail.example.com/Microsoft-Server-ActiveSync","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}"#;
-
+    let response = r#"{"Protocol":"ActiveSync","Url":"https://mail.example.com/Microsoft-Server-ActiveSync"}"#;
     assert_snapshot!(response);
 }
+
 
 #[test]
 fn test_ews_error_response() {
