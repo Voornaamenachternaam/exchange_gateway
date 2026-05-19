@@ -2,7 +2,7 @@
 
 ## Architecture
 - Rust project (edition 2021) — EWS/ActiveSync gateway to Stalwart Mailserver CalDAV
-- Key files: `src/ews.rs` (EWS protocol), `src/caldav.rs` (CalDAV client), `src/ews_update.rs` (UpdateItem field parsing), `src/main.rs` (HTTP server + health check), `src/logging.rs` (log config)
+- Key files: `src/ews.rs` (EWS protocol), `src/caldav.rs` (CalDAV client), `src/ews_update.rs` (UpdateItem field parsing), `src/eas.rs` (ActiveSync/EAS protocol), `src/main.rs` (HTTP server + health check), `src/logging.rs` (log config)
 
 ## Stalwart v0.16.5 Quirks
 - **ETag on GET**: Stalwart v0.16.5 does NOT return ETag in GET response headers. Must use PROPFIND to obtain etags.
@@ -24,7 +24,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 126 tests (93 unit + 22 protocol fixture + 11 integration)
+- `cargo test` — 138 tests (105 unit + 22 protocol fixture + 11 integration)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 
@@ -40,3 +40,9 @@
 - **Case-insensitive autodiscover paths**: Both `/autodiscover/...` and `/Autodiscover/...` are registered per MS-OXDISCO §2.2.3.
 - **GET support on autodiscover.xml**: Per MS-OXDISCO §3.1.5.4, the client may send a GET request to verify the autodiscover endpoint exists before sending the POST. The GET handler extracts email from query parameters.
 - **Single-segment {email} in JSON V2 path**: `/autodiscover/autodiscover.json/v1.0/{email}` uses `{email}` (not `{*email}`) because email addresses never contain '/', and a wildcard would capture trailing path garbage.
+
+## ActiveSync AutoDetect Compatibility
+- **AutoDetect cloud service**: Outlook for iOS/Android uses Microsoft's AutoDetect cloud service (`prod-autodetect.outlookmobile.com`) to discover the ActiveSync endpoint. The flow is: (1) AutoDetect queries Autodiscover V2 JSON for the ActiveSync URL, (2) AutoDetect probes the ActiveSync endpoint with an empty Bearer challenge (`Authorization: Bearer`), (3) If the 401 response includes `WWW-Authenticate: Bearer`, the server is considered compatible with Outlook mobile.
+- **Dual WWW-Authenticate headers**: The EAS 401 response MUST include both `WWW-Authenticate: Bearer client_id="<EXCHANGE_ACTIVESYNC_CLIENT_ID>"` and `WWW-Authenticate: Basic realm="Microsoft-Server-ActiveSync"`. Without the Bearer header, AutoDetect considers the server incompatible and Outlook mobile falls back to IMAP, making the calendar unusable. The gateway only supports Basic authentication — the Bearer header is included solely for AutoDetect discovery compatibility.
+- **EXCHANGE_ACTIVESYNC_CLIENT_ID**: `00000002-0000-0ff1-ce00-000000000000` — the well-known Exchange ActiveSync application ID in Microsoft Entra ID. Must never change; it is the identifier AutoDetect expects.
+- **V1 XML autodiscover vs V2 JSON**: The V1 XML autodiscover fix (dispatching by AcceptableResponseSchema) helps direct ActiveSync clients but does NOT help Outlook mobile's AutoDetect flow, which uses the V2 JSON endpoint exclusively.

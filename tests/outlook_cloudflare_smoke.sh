@@ -82,6 +82,12 @@ log "Checking ActiveSync OPTIONS"
 curl -fsSI "${auth[@]}" "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/options.txt"
 require_contains "${TMP_DIR}/options.txt" "MS-ASProtocolVersions"
 
+log "Checking ActiveSync 401 Bearer header (AutoDetect compatibility)"
+# Unauthenticated request should return 401 with both Bearer and Basic
+curl -sSI "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/eas-401.txt"
+require_contains "${TMP_DIR}/eas-401.txt" "WWW-Authenticate: Bearer"
+require_contains "${TMP_DIR}/eas-401.txt" "WWW-Authenticate: Basic"
+
 log "Checking Autodiscover XML"
 curl -fsS \
   -H 'Content-Type: text/xml; charset=utf-8' \
