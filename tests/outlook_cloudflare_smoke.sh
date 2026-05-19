@@ -83,9 +83,13 @@ curl -fsSI "${auth[@]}" "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/optio
 require_contains "${TMP_DIR}/options.txt" "MS-ASProtocolVersions"
 
 log "Checking ActiveSync 401 Bearer header (AutoDetect compatibility)"
-# Unauthenticated request should return 401 with both Bearer and Basic
+# Unauthenticated request should return 401 with both Bearer and Basic.
+# Per MS-XOAUTH §4.1, the Bearer header must include authorization_uri —
+# without it, AutoDetect reports "missing authorization URL" and falls back to IMAP.
 curl -sSI "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/eas-401.txt"
 require_contains "${TMP_DIR}/eas-401.txt" "WWW-Authenticate: Bearer"
+require_contains "${TMP_DIR}/eas-401.txt" "authorization_uri"
+require_contains "${TMP_DIR}/eas-401.txt" "trusted_issuers"
 require_contains "${TMP_DIR}/eas-401.txt" "WWW-Authenticate: Basic"
 
 log "Checking Autodiscover XML"

@@ -650,16 +650,32 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
 /// per-request heap allocation and string parsing — the value is a compile-time
 /// constant that must never change.
 ///
-/// The client_id `00000002-0000-0ff1-ce00-000000000000` is the well-known
-/// Exchange ActiveSync application ID in Microsoft Entra ID. Per MS-ASHTTP
-/// and the Outlook for iOS/Android hybrid modern auth documentation,
-/// on-premises Exchange includes this client_id in the WWW-Authenticate: Bearer
-/// header so that Microsoft's AutoDetect cloud service recognises the endpoint
-/// as a valid ActiveSync server compatible with Outlook mobile.
+/// Per MS-XOAUTH §4.1 and the Outlook for iOS/Android hybrid modern auth
+/// documentation, on-premises Exchange Server returns a Bearer challenge with
+/// three parameters:
+///
+/// - `client_id`: The well-known Exchange ActiveSync application ID in
+///   Microsoft Entra ID (`00000002-0000-0ff1-ce00-000000000000`).
+/// - `trusted_issuers`: The well-known Microsoft STS issuer GUID with wildcard
+///   tenant (`00000001-0001-0000-c000-000000000000@*`), meaning "trust all
+///   Microsoft Entra ID tenants".
+/// - `authorization_uri`: The common Microsoft Entra ID OAuth 2.0
+///   authorization endpoint (`https://login.microsoftonline.com/common/oauth2/authorize`).
+///
+/// Microsoft's AutoDetect cloud service requires the `authorization_uri`
+/// parameter to recognise the endpoint as a valid ActiveSync server. Without
+/// it, AutoDetect reports "missing authorization URL" and falls back to IMAP,
+/// making the calendar unusable in Outlook for iOS/Android.
+///
+/// The gateway only supports Basic authentication. The Bearer header is
+/// included solely for AutoDetect discovery compatibility. When a client
+/// attempts Bearer auth, `parse_basic_auth()` rejects it and the client
+/// falls back to Basic.
 const BEARER_WWW_AUTHENTICATE: HeaderValue = HeaderValue::from_static(concat!(
-    "Bearer client_id=\"",
-    "00000002-0000-0ff1-ce00-000000000000",
-    "\""
+    "Bearer ",
+    "client_id=\"", "00000002-0000-0ff1-ce00-000000000000", "\", ",
+    "trusted_issuers=\"", "00000001-0001-0000-c000-000000000000@*", "\", ",
+    "authorization_uri=\"", "https://login.microsoftonline.com/common/oauth2/authorize", "\""
 ));
 
 /// The well-known Exchange ActiveSync application ID embedded in
@@ -667,18 +683,30 @@ const BEARER_WWW_AUTHENTICATE: HeaderValue = HeaderValue::from_static(concat!(
 #[cfg(test)]
 const EXCHANGE_ACTIVESYNC_CLIENT_ID: &str = "00000002-0000-0ff1-ce00-000000000000";
 
+/// The well-known Microsoft STS issuer embedded in
+/// [`BEARER_WWW_AUTHENTICATE`]. Exposed for test assertions only.
+#[cfg(test)]
+const TRUSTED_ISSUERS: &str = "00000001-0001-0000-c000-000000000000@*";
+
+/// The Microsoft Entra ID OAuth 2.0 authorization endpoint embedded in
+/// [`BEARER_WWW_AUTHENTICATE`]. Exposed for test assertions only.
+#[cfg(test)]
+const AUTHORIZATION_URI: &str = "https://login.microsoftonline.com/common/oauth2/authorize";
+
 fn unauth_response(request_id: &str) -> Response {
     // Return both Bearer and Basic WWW-Authenticate headers.
     //
     // Microsoft's AutoDetect cloud service (prod-autodetect.outlookmobile.com)
     // probes the ActiveSync endpoint with an empty Bearer challenge to determine
-    // whether the server is compatible with Outlook mobile. Without
-    // WWW-Authenticate: Bearer in the 401 response, AutoDetect considers the
-    // server incompatible and falls back to IMAP, making the calendar unusable
-    // in Outlook for iOS/Android.
+    // whether the server is compatible with Outlook mobile. The Bearer header
+    // MUST include `authorization_uri` — without it, AutoDetect reports
+    // "missing authorization URL" and falls back to IMAP, making the calendar
+    // unusable in Outlook for iOS/Android.
     //
-    // On-premises Exchange Server returns both headers:
-    //   WWW-Authenticate: Bearer client_id="00000002-0000-0ff1-ce00-000000000000"
+    // Per MS-XOAUTH §4.1, on-premises Exchange Server returns:
+    //   WWW-Authenticate: Bearer client_id="00000002-0000-0ff1-ce00-000000000000",
+    //     trusted_issuers="00000001-0001-0000-c000-000000000000@*",
+    //     authorization_uri="https://login.microsoftonline.com/common/oauth2/authorize"
     //   WWW-Authenticate: Basic realm="..."
     //
     // The gateway only supports Basic authentication. The Bearer header is
@@ -2259,12 +2287,20 @@ mod tests {
     }
 
     #[test]
-    fn test_exchange_activesync_client_id_is_well_known() {
-        // The well-known Exchange ActiveSync application ID in Microsoft Entra ID
-        // must never change — it is the identifier that AutoDetect expects.
+    fn test_bearer_challenge_constants_are_well_known() {
+        // Per MS-XOAUTH §4.1, these values must never change — they
+        // are the identifiers that Exchange Server and AutoDetect expect.
         assert_eq!(
             EXCHANGE_ACTIVESYNC_CLIENT_ID,
             "00000002-0000-0ff1-ce00-000000000000"
+        );
+        assert_eq!(
+            TRUSTED_ISSUERS,
+            "00000001-0001-0000-c000-000000000000@*"
+        );
+        assert_eq!(
+            AUTHORIZATION_URI,
+            "https://login.microsoftonline.com/common/oauth2/authorize"
         );
     }
 

@@ -42,7 +42,15 @@
 - **Single-segment {email} in JSON V2 path**: `/autodiscover/autodiscover.json/v1.0/{email}` uses `{email}` (not `{*email}`) because email addresses never contain '/', and a wildcard would capture trailing path garbage.
 
 ## ActiveSync AutoDetect Compatibility
-- **AutoDetect cloud service**: Outlook for iOS/Android uses Microsoft's AutoDetect cloud service (`prod-autodetect.outlookmobile.com`) to discover the ActiveSync endpoint. The flow is: (1) AutoDetect queries Autodiscover V2 JSON for the ActiveSync URL, (2) AutoDetect probes the ActiveSync endpoint with an empty Bearer challenge (`Authorization: Bearer`), (3) If the 401 response includes `WWW-Authenticate: Bearer`, the server is considered compatible with Outlook mobile.
-- **Dual WWW-Authenticate headers**: The EAS 401 response MUST include both `WWW-Authenticate: Bearer client_id="<EXCHANGE_ACTIVESYNC_CLIENT_ID>"` and `WWW-Authenticate: Basic realm="Microsoft-Server-ActiveSync"`. Without the Bearer header, AutoDetect considers the server incompatible and Outlook mobile falls back to IMAP, making the calendar unusable. The gateway only supports Basic authentication — the Bearer header is included solely for AutoDetect discovery compatibility.
-- **EXCHANGE_ACTIVESYNC_CLIENT_ID**: `00000002-0000-0ff1-ce00-000000000000` — the well-known Exchange ActiveSync application ID in Microsoft Entra ID. Must never change; it is the identifier AutoDetect expects.
+- **AutoDetect cloud service**: Outlook for iOS/Android uses Microsoft's AutoDetect cloud service (`prod-autodetect.outlookmobile.com`) to discover the ActiveSync endpoint. The flow is: (1) AutoDetect queries Autodiscover V2 JSON for the ActiveSync URL, (2) AutoDetect probes the ActiveSync endpoint with an empty Bearer challenge (`Authorization: Bearer`), (3) The 401 response MUST include `WWW-Authenticate: Bearer` with `authorization_uri` for AutoDetect to recognise the server as a valid ActiveSync endpoint.
+- **Bearer header format (per MS-XOAUTH §4.1)**: The EAS 401 response MUST include `WWW-Authenticate: Bearer` with three parameters: `client_id`, `trusted_issuers`, and `authorization_uri`. Without `authorization_uri`, AutoDetect reports "missing authorization URL" and falls back to IMAP, making the calendar unusable. The complete header is:
+  ```
+  WWW-Authenticate: Bearer client_id="00000002-0000-0ff1-ce00-000000000000", trusted_issuers="00000001-0001-0000-c000-000000000000@*", authorization_uri="https://login.microsoftonline.com/common/oauth2/authorize"
+  WWW-Authenticate: Basic realm="Microsoft-Server-ActiveSync"
+  ```
+- **BEARER_WWW_AUTHENTICATE**: Compile-time constant using `HeaderValue::from_static(concat!(...))` — zero per-request allocation. The three embedded values are exposed as `#[cfg(test)]` constants for test assertions:
+  - `EXCHANGE_ACTIVESYNC_CLIENT_ID`: `00000002-0000-0ff1-ce00-000000000000` — the well-known Exchange ActiveSync application ID in Microsoft Entra ID.
+  - `TRUSTED_ISSUERS`: `00000001-0001-0000-c000-000000000000@*` — the well-known Microsoft STS issuer GUID with wildcard tenant.
+  - `AUTHORIZATION_URI`: `https://login.microsoftonline.com/common/oauth2/authorize` — the common Microsoft Entra ID OAuth 2.0 authorization endpoint.
+- **Gateway auth model**: The gateway only supports Basic authentication. The Bearer header is included solely for AutoDetect discovery compatibility. When a client attempts Bearer auth, `parse_basic_auth()` rejects it and the client falls back to Basic.
 - **V1 XML autodiscover vs V2 JSON**: The V1 XML autodiscover fix (dispatching by AcceptableResponseSchema) helps direct ActiveSync clients but does NOT help Outlook mobile's AutoDetect flow, which uses the V2 JSON endpoint exclusively.
