@@ -687,7 +687,10 @@ fn unauth_response(request_id: &str) -> Response {
     // 401 is returned again; the client then falls back to Basic.
     let mut r = (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE.as_str(), "Basic realm=\"Microsoft-Server-ActiveSync\"")],
+        [(
+            header::WWW_AUTHENTICATE.as_str(),
+            "Basic realm=\"Microsoft-Server-ActiveSync\"",
+        )],
         "Unauthorized",
     )
         .into_response();
@@ -2185,15 +2188,14 @@ mod tests {
             .map(|v| v.to_str().unwrap_or(""))
             .collect();
 
-        let has_basic = www_auth_values
-            .iter()
-            .any(|v| v.starts_with("Basic "));
-        let has_bearer = www_auth_values
-            .iter()
-            .any(|v| v.starts_with("Bearer "));
+        let has_basic = www_auth_values.iter().any(|v| v.starts_with("Basic "));
+        let has_bearer = www_auth_values.iter().any(|v| v.starts_with("Bearer "));
 
         assert!(has_basic, "WWW-Authenticate must include Basic scheme");
-        assert!(has_bearer, "WWW-Authenticate must include Bearer scheme for AutoDetect compatibility");
+        assert!(
+            has_bearer,
+            "WWW-Authenticate must include Bearer scheme for AutoDetect compatibility"
+        );
     }
 
     #[test]
@@ -2273,7 +2275,9 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6Ik1rcE...")
+            HeaderValue::from_static(
+                "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6Ik1rcE...",
+            ),
         );
         assert!(
             parse_basic_auth(&headers).is_none(),
@@ -2360,6 +2364,9 @@ mod tests {
         assert_eq!(a, b, "Same inputs must produce same scoped collection ID");
 
         let c = scoped_collection_id("1", "device-xyz");
-        assert_ne!(a, c, "Different device IDs must produce different scoped IDs");
+        assert_ne!(
+            a, c,
+            "Different device IDs must produce different scoped IDs"
+        );
     }
 }
