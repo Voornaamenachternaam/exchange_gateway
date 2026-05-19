@@ -83,8 +83,7 @@ curl -fsSI "${auth[@]}" "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/optio
 require_contains "${TMP_DIR}/options.txt" "MS-ASProtocolVersions"
 
 log "Checking ActiveSync 401 Bearer header (AutoDetect compatibility)"
-curl -fsSI -o /dev/null -w "%{http_code}" "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/eas-status.txt"
-# Unauthenticated request should return 401
+# Unauthenticated request should return 401 with both Bearer and Basic
 curl -sSI "${base}/Microsoft-Server-ActiveSync" >"${TMP_DIR}/eas-401.txt"
 require_contains "${TMP_DIR}/eas-401.txt" "WWW-Authenticate: Bearer"
 require_contains "${TMP_DIR}/eas-401.txt" "WWW-Authenticate: Basic"

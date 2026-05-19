@@ -646,11 +646,25 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
     );
 }
 
-/// Well-known Exchange ActiveSync application ID in Microsoft Entra ID.
-/// Per MS-ASHTTP and the Outlook for iOS/Android hybrid modern auth documentation,
+/// Pre-validated Bearer challenge header value. Uses `from_static` to avoid
+/// per-request heap allocation and string parsing — the value is a compile-time
+/// constant that must never change.
+///
+/// The client_id `00000002-0000-0ff1-ce00-000000000000` is the well-known
+/// Exchange ActiveSync application ID in Microsoft Entra ID. Per MS-ASHTTP
+/// and the Outlook for iOS/Android hybrid modern auth documentation,
 /// on-premises Exchange includes this client_id in the WWW-Authenticate: Bearer
 /// header so that Microsoft's AutoDetect cloud service recognises the endpoint
 /// as a valid ActiveSync server compatible with Outlook mobile.
+const BEARER_WWW_AUTHENTICATE: HeaderValue = HeaderValue::from_static(concat!(
+    "Bearer client_id=\"",
+    "00000002-0000-0ff1-ce00-000000000000",
+    "\""
+));
+
+/// The well-known Exchange ActiveSync application ID embedded in
+/// [`BEARER_WWW_AUTHENTICATE`]. Exposed for test assertions only.
+#[cfg(test)]
 const EXCHANGE_ACTIVESYNC_CLIENT_ID: &str = "00000002-0000-0ff1-ce00-000000000000";
 
 fn unauth_response(request_id: &str) -> Response {
@@ -677,13 +691,8 @@ fn unauth_response(request_id: &str) -> Response {
         "Unauthorized",
     )
         .into_response();
-    let bearer_value = format!(
-        "Bearer client_id=\"{}\"",
-        EXCHANGE_ACTIVESYNC_CLIENT_ID
-    );
-    if let Ok(value) = HeaderValue::from_str(&bearer_value) {
-        r.headers_mut().append(header::WWW_AUTHENTICATE, value);
-    }
+    r.headers_mut()
+        .append(header::WWW_AUTHENTICATE, BEARER_WWW_AUTHENTICATE.clone());
     inject_common_headers(&mut r, request_id);
     r
 }
