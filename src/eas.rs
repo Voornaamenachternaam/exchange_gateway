@@ -646,16 +646,44 @@ fn inject_common_headers(resp: &mut Response, request_id: &str) {
     );
 }
 
+/// Well-known Exchange ActiveSync application ID in Microsoft Entra ID.
+/// Per MS-ASHTTP and the Outlook for iOS/Android hybrid modern auth documentation,
+/// on-premises Exchange includes this client_id in the WWW-Authenticate: Bearer
+/// header so that Microsoft's AutoDetect cloud service recognises the endpoint
+/// as a valid ActiveSync server compatible with Outlook mobile.
+const EXCHANGE_ACTIVESYNC_CLIENT_ID: &str = "00000002-0000-0ff1-ce00-000000000000";
+
 fn unauth_response(request_id: &str) -> Response {
+    // Return both Bearer and Basic WWW-Authenticate headers.
+    //
+    // Microsoft's AutoDetect cloud service (prod-autodetect.outlookmobile.com)
+    // probes the ActiveSync endpoint with an empty Bearer challenge to determine
+    // whether the server is compatible with Outlook mobile. Without
+    // WWW-Authenticate: Bearer in the 401 response, AutoDetect considers the
+    // server incompatible and falls back to IMAP, making the calendar unusable
+    // in Outlook for iOS/Android.
+    //
+    // On-premises Exchange Server returns both headers:
+    //   WWW-Authenticate: Bearer client_id="00000002-0000-0ff1-ce00-000000000000"
+    //   WWW-Authenticate: Basic realm="..."
+    //
+    // The gateway only supports Basic authentication. The Bearer header is
+    // included solely for AutoDetect discovery compatibility. When a client
+    // actually attempts Bearer auth, parse_basic_auth() rejects it and this
+    // 401 is returned again; the client then falls back to Basic.
     let mut r = (
         StatusCode::UNAUTHORIZED,
-        [(
-            header::WWW_AUTHENTICATE.as_str(),
-            "Basic realm=\"Microsoft-Server-ActiveSync\"",
-        )],
+        [(header::WWW_AUTHENTICATE.as_str(), "Basic realm=\"Microsoft-Server-ActiveSync\"")],
         "Unauthorized",
     )
         .into_response();
+    let bearer_value = format!(
+        "Bearer client_id=\"{}\"",
+        EXCHANGE_ACTIVESYNC_CLIENT_ID
+    );
+    if let Ok(value) = HeaderValue::from_str(&bearer_value) {
+        r.headers_mut().append(header::WWW_AUTHENTICATE, value);
+    }
     inject_common_headers(&mut r, request_id);
     r
 }
@@ -2128,5 +2156,201 @@ pub async fn handle(
             "MoveItems is not supported for this calendar-only mailbox surface",
         ),
         _ => unsupported_command_response(&req.command, &wbxml, wants_wbxml, &request_id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::WWW_AUTHENTICATE;
+
+    #[test]
+    fn test_unauth_response_includes_bearer_and_basic() {
+        let resp = unauth_response("test-req-1");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let www_auth_values: Vec<&str> = resp
+            .headers()
+            .get_all(WWW_AUTHENTICATE)
+            .iter()
+            .map(|v| v.to_str().unwrap_or(""))
+            .collect();
+
+        let has_basic = www_auth_values
+            .iter()
+            .any(|v| v.starts_with("Basic "));
+        let has_bearer = www_auth_values
+            .iter()
+            .any(|v| v.starts_with("Bearer "));
+
+        assert!(has_basic, "WWW-Authenticate must include Basic scheme");
+        assert!(has_bearer, "WWW-Authenticate must include Bearer scheme for AutoDetect compatibility");
+    }
+
+    #[test]
+    fn test_unauth_response_bearer_contains_exchange_client_id() {
+        let resp = unauth_response("test-req-2");
+
+        let bearer_value = resp
+            .headers()
+            .get_all(WWW_AUTHENTICATE)
+            .iter()
+            .find_map(|v| {
+                let s = v.to_str().ok()?;
+                if s.starts_with("Bearer ") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            });
+
+        let bearer = bearer_value.expect("Bearer WWW-Authenticate header must be present");
+        assert!(
+            bearer.contains(EXCHANGE_ACTIVESYNC_CLIENT_ID),
+            "Bearer header must contain Exchange ActiveSync client_id, got: {}",
+            bearer
+        );
+    }
+
+    #[test]
+    fn test_unauth_response_basic_realm() {
+        let resp = unauth_response("test-req-3");
+
+        let basic_value = resp
+            .headers()
+            .get_all(WWW_AUTHENTICATE)
+            .iter()
+            .find_map(|v| {
+                let s = v.to_str().ok()?;
+                if s.starts_with("Basic ") {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            });
+
+        let basic = basic_value.expect("Basic WWW-Authenticate header must be present");
+        assert!(
+            basic.contains("realm=\"Microsoft-Server-ActiveSync\""),
+            "Basic header must contain correct realm, got: {}",
+            basic
+        );
+    }
+
+    #[test]
+    fn test_unauth_response_includes_ms_server_activesync_header() {
+        let resp = unauth_response("test-req-4");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let ms_header = resp
+            .headers()
+            .get("MS-Server-ActiveSync")
+            .expect("MS-Server-ActiveSync header must be present");
+        assert_eq!(ms_header, "16.1");
+    }
+
+    #[test]
+    fn test_exchange_activesync_client_id_is_well_known() {
+        // The well-known Exchange ActiveSync application ID in Microsoft Entra ID
+        // must never change — it is the identifier that AutoDetect expects.
+        assert_eq!(
+            EXCHANGE_ACTIVESYNC_CLIENT_ID,
+            "00000002-0000-0ff1-ce00-000000000000"
+        );
+    }
+
+    #[test]
+    fn test_parse_basic_auth_rejects_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6Ik1rcE...")
+        );
+        assert!(
+            parse_basic_auth(&headers).is_none(),
+            "parse_basic_auth must reject Bearer auth — the gateway only supports Basic"
+        );
+    }
+
+    #[test]
+    fn test_parse_basic_auth_accepts_basic() {
+        let mut headers = HeaderMap::new();
+        // Base64("user:pass") = "dXNlcjpwYXNz"
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = parse_basic_auth(&headers);
+        assert!(result.is_some(), "parse_basic_auth must accept Basic auth");
+        let (user, _) = result.unwrap();
+        assert_eq!(user, "user");
+    }
+
+    #[tokio::test]
+    async fn test_options_response_includes_protocol_headers() {
+        let resp = options_response("test-req-5");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let allow = resp
+            .headers()
+            .get("Allow")
+            .expect("Allow header must be present");
+        assert!(allow.to_str().unwrap().contains("OPTIONS"));
+        assert!(allow.to_str().unwrap().contains("POST"));
+
+        let versions = resp
+            .headers()
+            .get("MS-ASProtocolVersions")
+            .expect("MS-ASProtocolVersions must be present");
+        let versions_str = versions.to_str().unwrap();
+        assert!(versions_str.contains("16.1"));
+
+        let commands = resp
+            .headers()
+            .get("MS-ASProtocolCommands")
+            .expect("MS-ASProtocolCommands must be present");
+        let commands_str = commands.to_str().unwrap();
+        assert!(commands_str.contains("Sync"));
+        assert!(commands_str.contains("FolderSync"));
+        assert!(commands_str.contains("Provision"));
+    }
+
+    #[test]
+    fn test_forwarded_https_enforced_absent_header_passes() {
+        let headers = HeaderMap::new();
+        assert!(
+            forwarded_https_enforced(&headers),
+            "Missing x-forwarded-proto must pass (direct HTTP access)"
+        );
+    }
+
+    #[test]
+    fn test_forwarded_https_enforced_https_passes() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        assert!(
+            forwarded_https_enforced(&headers),
+            "x-forwarded-proto: https must pass"
+        );
+    }
+
+    #[test]
+    fn test_forwarded_https_enforced_http_fails() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        assert!(
+            !forwarded_https_enforced(&headers),
+            "x-forwarded-proto: http must fail"
+        );
+    }
+
+    #[test]
+    fn test_scoped_collection_id_is_deterministic() {
+        let a = scoped_collection_id("1", "device-abc");
+        let b = scoped_collection_id("1", "device-abc");
+        assert_eq!(a, b, "Same inputs must produce same scoped collection ID");
+
+        let c = scoped_collection_id("1", "device-xyz");
+        assert_ne!(a, c, "Different device IDs must produce different scoped IDs");
     }
 }
