@@ -24,7 +24,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 159 tests (126 unit + 22 protocol fixture + 11 integration)
+- `cargo test` — 160 tests (127 unit + 22 protocol fixture + 11 integration)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
