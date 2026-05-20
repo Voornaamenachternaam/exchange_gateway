@@ -24,12 +24,14 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 157 tests (124 unit + 22 protocol fixture + 11 integration)
+- `cargo test` — 159 tests (126 unit + 22 protocol fixture + 11 integration)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
 - **build_env_filter() preserves complex directives**: `GATEWAY_LOG_LEVEL=trace,axum=info` passes the full directive string to `EnvFilter::try_new()`, preserving per-module overrides. The `parse_global_level()` helper extracts the first comma-separated segment (the ambient level) for auto-enable features like module targets — it does NOT replace the EnvFilter.
 - **Error handling in build_env_filter()**: Uses `match` on `EnvFilter::try_new()` result — errors are logged via `eprintln!` before returning `Err(String)`, never `.unwrap_or_default()`. Per repository pattern: all errors must be logged before being handled.
+
+- **No hardcoded example.com in production code**: `active_user_emails(username, mail_domain)` takes the mail domain as a parameter instead of hardcoding "example.com". The domain comes from `state.cfg.mail_domain` (set via `GATEWAY_MAIL_DOMAIN` env var). Test code may still use "example.com" per RFC 2606.
 
 ## Autodiscover Protocol Dispatch
 - **AcceptableResponseSchema handling**: Per MS-ASCMD §2.2.3.1, the `<AcceptableResponseSchema>` element in the POST body specifies which response format the client expects. The server MUST return a matching schema or the client treats it as an error (MS-ASCMD §4.2.5, error code 601).
