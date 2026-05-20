@@ -665,8 +665,7 @@ mod tests {
 
     #[test]
     fn test_json_ews_protocol() {
-        let (status, _hdrs, body) =
-            handle_autodiscover_json("mail.example.com", Some("Ews"), None);
+        let (status, _hdrs, body) = handle_autodiscover_json("mail.example.com", Some("Ews"), None);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body,
@@ -698,8 +697,7 @@ mod tests {
 
     #[test]
     fn test_json_default_is_activesync() {
-        let (status, _hdrs, body) =
-            handle_autodiscover_json("mail.example.com", None, None);
+        let (status, _hdrs, body) = handle_autodiscover_json("mail.example.com", None, None);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body,
@@ -742,8 +740,7 @@ mod tests {
 
     #[test]
     fn test_json_no_exchange_protocol_name() {
-        let (status, _hdrs, body) =
-            handle_autodiscover_json("mail.example.com", None, None);
+        let (status, _hdrs, body) = handle_autodiscover_json("mail.example.com", None, None);
         assert_eq!(status, StatusCode::OK);
         // "Exchange" is not a valid V2 Protocol name
         assert!(!body.contains(r#""Protocol":"Exchange""#));

@@ -79,9 +79,8 @@ pub fn build_env_filter(
                     )
                 })
             }
-            None => EnvFilter::try_new("info").map_err(|e| {
-                format!("Failed to create default log filter: {}", e)
-            }),
+            None => EnvFilter::try_new("info")
+                .map_err(|e| format!("Failed to create default log filter: {}", e)),
         },
     }
 }
@@ -390,19 +389,28 @@ mod tests {
         assert!(filter.is_ok(), "build_env_filter should succeed");
         // Verify the filter's max_level_hint includes TRACE
         let max = filter.unwrap().max_level_hint();
-        assert_eq!(max, Some(tracing::metadata::LevelFilter::TRACE),
-            "GATEWAY_LOG_LEVEL=trace should produce TRACE filter, not INFO");
+        assert_eq!(
+            max,
+            Some(tracing::metadata::LevelFilter::TRACE),
+            "GATEWAY_LOG_LEVEL=trace should produce TRACE filter, not INFO"
+        );
     }
 
     #[test]
     fn test_build_env_filter_complex_directive() {
         // Complex directives like "trace,axum=info" must be preserved
         let filter = build_env_filter(Some("trace,axum=info"), None);
-        assert!(filter.is_ok(), "build_env_filter should handle complex directives");
+        assert!(
+            filter.is_ok(),
+            "build_env_filter should handle complex directives"
+        );
         // The ambient/global level is TRACE
         let max = filter.unwrap().max_level_hint();
-        assert_eq!(max, Some(tracing::metadata::LevelFilter::TRACE),
-            "complex directive 'trace,axum=info' should have TRACE as max level");
+        assert_eq!(
+            max,
+            Some(tracing::metadata::LevelFilter::TRACE),
+            "complex directive 'trace,axum=info' should have TRACE as max level"
+        );
     }
 
     #[test]
@@ -411,8 +419,11 @@ mod tests {
         let filter = build_env_filter(None, Some("debug"));
         assert!(filter.is_ok());
         let max = filter.unwrap().max_level_hint();
-        assert_eq!(max, Some(tracing::metadata::LevelFilter::DEBUG),
-            "RUST_LOG=debug should produce DEBUG filter");
+        assert_eq!(
+            max,
+            Some(tracing::metadata::LevelFilter::DEBUG),
+            "RUST_LOG=debug should produce DEBUG filter"
+        );
     }
 
     #[test]
@@ -421,8 +432,11 @@ mod tests {
         let filter = build_env_filter(None, None);
         assert!(filter.is_ok());
         let max = filter.unwrap().max_level_hint();
-        assert_eq!(max, Some(tracing::metadata::LevelFilter::INFO),
-            "default filter should be INFO");
+        assert_eq!(
+            max,
+            Some(tracing::metadata::LevelFilter::INFO),
+            "default filter should be INFO"
+        );
     }
 
     #[test]
@@ -431,8 +445,11 @@ mod tests {
         let filter = build_env_filter(Some("-debug"), None);
         assert!(filter.is_ok());
         let max = filter.unwrap().max_level_hint();
-        assert_eq!(max, Some(tracing::metadata::LevelFilter::DEBUG),
-            "should accept DEBUG after stripping leading dash");
+        assert_eq!(
+            max,
+            Some(tracing::metadata::LevelFilter::DEBUG),
+            "should accept DEBUG after stripping leading dash"
+        );
     }
 
     #[test]
@@ -475,7 +492,10 @@ mod tests {
         // "trace,axum=info" → TRACE (first segment is the ambient level)
         assert_eq!(parse_global_level("trace,axum=info"), Level::TRACE);
         assert_eq!(parse_global_level("debug,hyper=warn"), Level::DEBUG);
-        assert_eq!(parse_global_level("info,exchange_gateway=trace"), Level::INFO);
+        assert_eq!(
+            parse_global_level("info,exchange_gateway=trace"),
+            Level::INFO
+        );
     }
 
     #[test]
