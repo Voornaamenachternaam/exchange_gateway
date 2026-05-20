@@ -233,22 +233,45 @@ pub fn handle_autodiscover_json(
     let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host);
     let v1_url = format!("https://{}/autodiscover/autodiscover.xml", host);
 
-    let body = match protocol.unwrap_or("Exchange").to_ascii_lowercase().as_str() {
-        "activesync" => format!(
-            r#"{{"Protocol":"ActiveSync","Url":"{as_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}"}}"#,
+    // Per MS-OXDSCLI, Autodiscover V2 returns a minimal JSON document with
+    // just the Protocol and Url for the service sought. Each protocol gets
+    // its own response — the fields are NOT interchangeable. Extra fields
+    // that belong to a different protocol (e.g. ActiveSyncUrl in an Ews
+    // response) must NOT be included; they violate the V2 design intent and
+    // can confuse strict clients like AutoDetect.
+    //
+    // Real Exchange Server V2 responses contain only Protocol + Url:
+    //   ?Protocol=ActiveSync     → {"Protocol":"ActiveSync","Url":"<as>"}
+    //   ?Protocol=Ews            → {"Protocol":"Ews","Url":"<ews>"}
+    //   ?Protocol=AutodiscoverV1 → {"Protocol":"AutodiscoverV1","Url":"<v1>"}
+    //
+    // "Exchange" is NOT a valid V2 Protocol name — it's a V1 XML concept.
+    // When no Protocol is specified, the gateway defaults to ActiveSync,
+    // which is what AutoDetect and Outlook mobile need. Real Exchange Server
+    // requires Protocol to be specified; the gateway's default is a
+    // convenience for browser/diagnostic access.
+
+    let body = match protocol.map(|p| p.to_ascii_lowercase()).as_deref() {
+        Some("activesync") => format!(
+            r#"{{"Protocol":"ActiveSync","Url":"{as_url}"}}"#,
             as_url = as_url
         ),
-        "ews" => format!(
-            r#"{{"Protocol":"Ews","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}"}}"#,
+        Some("ews") => format!(
+            r#"{{"Protocol":"Ews","Url":"{ews_url}"}}"#,
             ews_url = ews_url
         ),
-        "autodiscoverv1" => format!(
+        Some("autodiscoverv1") => format!(
             r#"{{"Protocol":"AutodiscoverV1","Url":"{v1_url}"}}"#,
             v1_url = v1_url
         ),
+        Some("rest") => format!(
+            r#"{{"Protocol":"Rest","Url":"{ews_url}"}}"#,
+            ews_url = ews_url
+        ),
+        // No Protocol or unrecognized — default to ActiveSync.
+        // This is what AutoDetect and Outlook mobile need.
         _ => format!(
-            r#"{{"Protocol":"Exchange","Url":"{ews_url}","EwsUrl":"{ews_url}","ExternalEwsUrl":"{ews_url}","InternalEwsUrl":"{ews_url}","ActiveSyncUrl":"{as_url}","MobileSyncUrl":"{as_url}","ExternalEwsVersion":"Exchange2016","EwsSupportedSchemas":"Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016"}}"#,
-            ews_url = ews_url,
+            r#"{{"Protocol":"ActiveSync","Url":"{as_url}"}}"#,
             as_url = as_url
         ),
     };
@@ -625,5 +648,104 @@ mod tests {
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("<Culture>de:de</Culture>"));
+    }
+
+    // --- V2 JSON tests ---
+
+    #[test]
+    fn test_json_activesync_protocol() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("ActiveSync"), None);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            r#"{"Protocol":"ActiveSync","Url":"https://mail.example.com/Microsoft-Server-ActiveSync"}"#
+        );
+    }
+
+    #[test]
+    fn test_json_ews_protocol() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("Ews"), None);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            r#"{"Protocol":"Ews","Url":"https://mail.example.com/EWS/Exchange.asmx"}"#
+        );
+    }
+
+    #[test]
+    fn test_json_autodiscoverv1_protocol() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("AutodiscoverV1"), None);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            r#"{"Protocol":"AutodiscoverV1","Url":"https://mail.example.com/autodiscover/autodiscover.xml"}"#
+        );
+    }
+
+    #[test]
+    fn test_json_rest_protocol() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("Rest"), None);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            r#"{"Protocol":"Rest","Url":"https://mail.example.com/EWS/Exchange.asmx"}"#
+        );
+    }
+
+    #[test]
+    fn test_json_default_is_activesync() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", None, None);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            r#"{"Protocol":"ActiveSync","Url":"https://mail.example.com/Microsoft-Server-ActiveSync"}"#
+        );
+    }
+
+    #[test]
+    fn test_json_unrecognized_protocol_defaults_activesync() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("Substrate"), None);
+        assert_eq!(status, StatusCode::OK);
+        // Unrecognized protocols default to ActiveSync
+        assert!(body.contains(r#""Protocol":"ActiveSync""#));
+    }
+
+    #[test]
+    fn test_json_protocol_case_insensitive() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("activesync"), None);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            r#"{"Protocol":"ActiveSync","Url":"https://mail.example.com/Microsoft-Server-ActiveSync"}"#
+        );
+    }
+
+    #[test]
+    fn test_json_no_extra_fields_in_activesync() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("ActiveSync"), None);
+        assert_eq!(status, StatusCode::OK);
+        // V2 JSON must NOT contain V1-XML-era fields like ActiveSyncUrl,
+        // MobileSyncUrl, EwsUrl, etc. — only Protocol + Url.
+        assert!(!body.contains("ActiveSyncUrl"));
+        assert!(!body.contains("MobileSyncUrl"));
+        assert!(!body.contains("EwsUrl"));
+        assert!(!body.contains("ExternalEwsUrl"));
+    }
+
+    #[test]
+    fn test_json_no_exchange_protocol_name() {
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", None, None);
+        assert_eq!(status, StatusCode::OK);
+        // "Exchange" is not a valid V2 Protocol name
+        assert!(!body.contains(r#""Protocol":"Exchange""#));
     }
 }

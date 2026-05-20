@@ -110,8 +110,8 @@ require_contains "${TMP_DIR}/autodiscover.soap.xml" "MobileSyncServer"
 
 log "Checking Autodiscover JSON"
 curl -fsS "${base}/autodiscover/autodiscover.json" >"${TMP_DIR}/autodiscover.json"
-require_contains "${TMP_DIR}/autodiscover.json" "\"EwsUrl\":\"${base}/EWS/Exchange.asmx\""
-require_contains "${TMP_DIR}/autodiscover.json" "\"ActiveSyncUrl\":\"${base}/Microsoft-Server-ActiveSync\""
+require_contains "${TMP_DIR}/autodiscover.json" "\"Protocol\":\"ActiveSync\""
+require_contains "${TMP_DIR}/autodiscover.json" "\"Url\":\"${base}/Microsoft-Server-ActiveSync\""
 
 log "Checking ActiveSync FolderSync bootstrap"
 curl -fsS "${auth[@]}" \

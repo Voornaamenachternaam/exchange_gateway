@@ -50,7 +50,11 @@ RUN groupadd --system --gid 10001 gateway && \
 COPY --from=builder --chown=root:root /app/target/release/exchange_gateway /usr/local/bin/exchange_gateway
 
 # Environment configuration
-ENV RUST_LOG="info"
+# Do NOT set RUST_LOG here — it takes priority over GATEWAY_LOG_LEVEL in
+# tracing_subscriber's EnvFilter::try_from_default_env(), silently
+# overriding the user's explicit log level. The gateway's logging.rs
+# already defaults to "info" when neither RUST_LOG nor GATEWAY_LOG_LEVEL
+# is set, so a baked-in RUST_LOG=info is redundant AND harmful.
 ENV TZ="UTC"
 
 # Switch to non-root user for security
