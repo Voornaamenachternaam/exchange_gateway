@@ -498,12 +498,12 @@ fn parse_search_request(xml: &str) -> SearchRequest {
     }
 }
 
-fn active_user_emails(username: &str) -> Vec<String> {
-    let mut emails = vec![username.to_string()];
-    if !username.contains('@') {
-        emails.push(format!("{username}@example.com"));
+fn active_user_emails(username: &str, mail_domain: &str) -> Vec<String> {
+    match username.rsplit_once('@') {
+        Some((_local, domain)) if !domain.is_empty() => vec![username.to_string()],
+        Some((local, _)) => vec![format!("{local}@{mail_domain}")],
+        None => vec![format!("{username}@{mail_domain}")],
     }
-    emails
 }
 
 fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> bool {
@@ -1171,7 +1171,8 @@ async fn handle_ping(
     }
 }
 
-async fn handle_settings(
+fn handle_settings(
+    state: &Arc<AppState>,
     username: &str,
     wbxml: &Wbxml,
     as_wbxml: bool,
@@ -1187,7 +1188,7 @@ async fn handle_settings(
         xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
 
     if has_user_info || (!has_oof && !has_device_password) {
-        let email_entries = active_user_emails(username)
+        let email_entries = active_user_emails(username, &state.cfg.mail_domain)
             .into_iter()
             .map(|email| {
                 format!(
@@ -2099,7 +2100,7 @@ pub async fn handle(
             )
             .await
         }
-        "Settings" => handle_settings(&username, &wbxml, wants_wbxml, &request_id, &xml).await,
+        "Settings" => handle_settings(&state, &username, &wbxml, wants_wbxml, &request_id, &xml),
         "ItemOperations" => {
             handle_item_operations(
                 &state,
@@ -2407,5 +2408,23 @@ mod tests {
             a, c,
             "Different device IDs must produce different scoped IDs"
         );
+    }
+
+    #[test]
+    fn test_active_user_emails_plain_username() {
+        let emails = active_user_emails("alice", "mail.example.com");
+        assert_eq!(emails, vec!["alice@mail.example.com"]);
+    }
+
+    #[test]
+    fn test_active_user_emails_email_username() {
+        let emails = active_user_emails("bob@example.org", "mail.example.com");
+        assert_eq!(emails, vec!["bob@example.org"]);
+    }
+
+    #[test]
+    fn test_active_user_emails_trailing_at() {
+        let emails = active_user_emails("carol@", "mail.example.com");
+        assert_eq!(emails, vec!["carol@mail.example.com"]);
     }
 }
