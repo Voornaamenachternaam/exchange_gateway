@@ -202,10 +202,10 @@ fn test_autodiscover_xml_response() {
 }
 #[test]
 fn test_autodiscover_json_response() {
-    let response = r#"{"Protocol":"ActiveSync","Url":"https://mail.example.com/Microsoft-Server-ActiveSync"}"#;
+    let response =
+        r#"{"Protocol":"ActiveSync","Url":"https://mail.example.com/Microsoft-Server-ActiveSync"}"#;
     assert_snapshot!(response);
 }
-
 
 #[test]
 fn test_ews_error_response() {
