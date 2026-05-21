@@ -91,6 +91,32 @@ pub fn normalize_username(username: &str) -> &str {
     }
 }
 
+/// Canonicalize a username's email domain to the configured mail domain.
+///
+/// Regardless of what domain the client supplies (e.g. `contact@exchange.com`),
+/// the gateway normalises it to `GATEWAY_MAIL_DOMAIN` (e.g. `contact@example.com`).
+/// This ensures:
+/// - Consistent DB owner keys across devices and sessions
+/// - CalDAV URL construction (`/cal/{canonical}/`) matches the Stalwart home set
+/// - `active_user_emails()` reports the correct primary SMTP address
+///
+/// # Examples
+/// ```
+/// use exchange_gateway::util::canonicalize_username;
+/// assert_eq!(canonicalize_username("contact@exchange.com", "example.com"), "contact@example.com");
+/// assert_eq!(canonicalize_username("contact", "example.com"), "contact@example.com");
+/// assert_eq!(canonicalize_username("contact@", "example.com"), "contact@example.com");
+/// assert_eq!(canonicalize_username("contact@example.com", "example.com"), "contact@example.com");
+/// ```
+pub fn canonicalize_username(username: &str, mail_domain: &str) -> String {
+    let local = match username.rsplit_once('@') {
+        Some((local, domain)) if !domain.is_empty() => local,
+        Some((local, _)) => local, // trailing @ or empty domain
+        None => username,          // no @ at all
+    };
+    format!("{}@{}", local, mail_domain)
+}
+
 /// Format datetime for EWS responses with proper UTC 'Z' suffix
 /// Converts from RFC3339 offset format (+00:00) to .NET expected format (Z)
 pub fn format_ews_datetime(dt: &chrono::DateTime<Utc>) -> String {
@@ -159,6 +185,39 @@ mod tests {
         assert_eq!(normalize_username("\\user"), "user"); // backslash at start
         assert_eq!(normalize_username("user\\"), "user"); // backslash at end
         assert_eq!(normalize_username("DOMAIN\\user\\extra"), "extra"); // multiple backslashes - last wins
+    }
+#[test]
+    fn test_canonicalize_username() {
+        // Domain replacement: non-canonical domain → canonical
+        assert_eq!(
+            canonicalize_username("contact@exchange.com", "example.com"),
+            "contact@example.com"
+        );
+        // Already canonical: no change
+        assert_eq!(
+            canonicalize_username("contact@example.com", "example.com"),
+            "contact@example.com"
+        );
+        // Plain username: append domain
+        assert_eq!(
+            canonicalize_username("alice", "example.com"),
+            "alice@example.com"
+        );
+        // Trailing @: append domain
+        assert_eq!(
+            canonicalize_username("carol@", "example.com"),
+            "carol@example.com"
+        );
+        // Subdomain: still replaced
+        assert_eq!(
+            canonicalize_username("bob@sub.example.com", "example.com"),
+            "bob@example.com"
+        );
+        // Local part with dots preserved
+        assert_eq!(
+            canonicalize_username("first.last@other.org", "example.com"),
+            "first.last@example.com"
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::room::{
 };
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
-use crate::util::{format_ews_datetime, nfc, normalize_username, xml_escape};
+use crate::util::{canonicalize_username, format_ews_datetime, nfc, normalize_username, xml_escape};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -213,10 +213,19 @@ pub async fn handle(
             StatusCode::BAD_REQUEST,
         );
     }
-    let auth = match parse_basic_auth(&headers) {
+    let mut auth = match parse_basic_auth(&headers) {
         Some(a) => a,
         None => return unauthorized(),
     };
+    let raw_username = auth.username.clone();
+    auth.username = canonicalize_username(&auth.username, &state.cfg.mail_domain);
+    if auth.username != raw_username {
+        tracing::info!(
+            raw_username = %raw_username,
+            canonical_username = %auth.username,
+            "Username domain canonicalized to GATEWAY_MAIL_DOMAIN"
+        );
+    }
     // Verify credentials early to avoid unnecessary processing
     if !state
         .auth_verifier
@@ -438,6 +447,12 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Extract the DB "owner" key from a username.
+///
+/// The username must already be canonicalized (domain normalized to
+/// `GATEWAY_MAIL_DOMAIN`) before this function is called. Canonicalization
+/// is performed at the EAS/EWS entry points so that all downstream code
+/// operates on a consistent identity.
 pub fn owner_from_username(username: &str) -> &str {
     username
 }
@@ -1154,17 +1169,28 @@ async fn merged_freebusy_for_mailbox(
             .await
     {
         let mut reader = Reader::from_str(&raw_events_xml);
-        reader.config_mut().trim_text(true);
+        reader.config_mut().trim_text(false);
         let mut buf = Vec::new();
         let mut in_calendar_data = false;
+        let mut caldata_buf = String::new();
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
                     in_calendar_data = true;
+                    caldata_buf.clear();
                 }
-                Ok(Event::Text(t)) if in_calendar_data => {
-                    if let Ok(ics) = t.decode()
-                        && let Some(item) = parse_ics_event(&ics)
+                Ok(Event::Text(ref t)) if in_calendar_data => {
+                    if let Ok(ics) = t.decode() {
+                        caldata_buf.push_str(&ics);
+                    }
+                }
+                Ok(Event::CData(ref t)) if in_calendar_data => {
+                    caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                }
+                Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    in_calendar_data = false;
+                    let ics = caldata_buf.trim();
+                    if let Some(item) = parse_ics_event(ics)
                     {
                         let sd = match item.busy_status.unwrap_or(2) {
                             0 => '0',
@@ -1190,9 +1216,6 @@ async fn merged_freebusy_for_mailbox(
                             format_ews_datetime(&item.start), format_ews_datetime(&item.end), busy_type, ews_calendar_event_details_xml(&item)
                         ));
                     }
-                }
-                Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
-                    in_calendar_data = false;
                 }
                 Ok(Event::Eof) => break,
                 _ => {}
@@ -1462,8 +1485,10 @@ async fn load_current_calendar_items(
         )
         .await?;
     let mut reader = Reader::from_str(&events_xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
+    let mut in_caldata = false;
+    let mut caldata_buf = String::new();
     let mut href = String::new();
     let mut etag = String::new();
     let mut ics = String::new();
@@ -1473,7 +1498,7 @@ async fn load_current_calendar_items(
             Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
                 b"href" => {
                     if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        href = t.decode().unwrap_or_default().to_string();
+                        href = t.decode().unwrap_or_default().trim().to_string();
                     }
                 }
                 b"getetag" => {
@@ -1482,13 +1507,26 @@ async fn load_current_calendar_items(
                     }
                 }
                 b"calendar-data" => {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        ics = t.decode().unwrap_or_default().to_string();
-                    }
+                    in_caldata = true;
+                    caldata_buf.clear();
                 }
                 _ => {}
             },
-            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
+            Ok(Event::Text(ref t)) if in_caldata => {
+                if let Ok(txt) = t.decode() {
+                    caldata_buf.push_str(&txt);
+                }
+            }
+            Ok(Event::CData(ref t)) if in_caldata => {
+                caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+            }
+            Ok(Event::End(ref e)) => {
+                match e.name().local_name().as_ref() {
+                    b"calendar-data" if in_caldata => {
+                        in_caldata = false;
+                        ics = caldata_buf.trim().to_string();
+                    }
+                    b"response" => {
                 if !href.is_empty()
                     && let Some(item) = parse_ics_event(&ics)
                 {
@@ -1542,6 +1580,9 @@ async fn load_current_calendar_items(
                 href.clear();
                 etag.clear();
                 ics.clear();
+                }
+                    _ => {}
+                }
             }
             Ok(Event::Eof) => break,
             _ => {}

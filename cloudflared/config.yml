@@ -18,13 +18,26 @@ tunnel: <YOUR-TUNNEL-UUID>
 credentials-file: ~/.cloudflared/<YOUR-TUNNEL-UUID>.json
 
 ingress:
-  - hostname: calendar.stalwart.example.com
+  # Autodiscover — Outlook and native Exchange clients look up this subdomain
+  # per MS-OXDSCLI §2.2.3. Handles V1 XML, V2 JSON, and mobilesync.
+  - hostname: autodiscover.example.com
     service: http://localhost:8134
     originRequest:
       noTLSVerify: false
       connectTimeout: 30s
       tlsTimeout: 10s
-      httpHostHeader: calendar.stalwart.example.com
-      originServerName: calendar.stalwart.example.com
+      httpHostHeader: autodiscover.example.com
 
+  # Calendar / ActiveSync / EWS — all protocol paths are served by the
+  # gateway on a single hostname.  Path routing is handled by the gateway's
+  # internal router, NOT by Cloudflare ingress rules.
+  - hostname: calendar.example.com
+    service: http://localhost:8134
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+      tlsTimeout: 10s
+      httpHostHeader: calendar.example.com
+
+  # Catch-all — required by cloudflared
   - service: http_status:404

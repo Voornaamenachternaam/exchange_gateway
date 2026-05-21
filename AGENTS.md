@@ -11,6 +11,12 @@
 - **412 on synthetic/weak etag**: If-Match with a synthetic etag (prefix "sgw-") causes 412. Per RFC 7232 §3.1, If-Match uses the strong comparison function — weak etags (W/...) are semantically invalid in If-Match for state-changing methods and cause 412/400 on strict servers. Always filter out both synthetic and weak etags via `is_synthetic_etag()` before sending If-Match.
 - **ETag normalization**: `normalize_etag_to_internal()` strips W/ prefix, trims surrounding DQUOTE from the opaque-tag, then re-attaches W/ if weak. All etag parse sites (PROPFIND XML, HTTP ETag headers) must use this instead of bare `trim_matches('"')` which mangles weak etags like `W/"123"` → `W/"123` (only trailing quote removed).
 - **Auth required on ALL /dav/ paths**: Unauthenticated requests to any /dav/ path produce "Missing Authorization header" auth failure logs. Even health checks must include Basic auth (dummy credentials are fine).
+- **CalDAV REPORT calendar-data parsing**: Stalwart may return `<C:calendar-data>` content using CDATA sections (`<![CDATA[...]]>`) or as multi-line XML text. The XML parser must: (1) set `trim_text(false)` to preserve ICS whitespace, (2) accumulate both `Event::Text` and `Event::CData` events inside a `in_caldata` flag, (3) flush the accumulated buffer on `Event::End(calendar-data)`. Single `Event::Text` reads miss CDATA content and multi-line ICS data, causing all events to fail `parse_ics_event()`. This pattern applies to ALL three calendar-data parse sites: `sync.rs` EAS Sync, `ews.rs` GetUserAvailability, and `ews.rs` load_current_calendar_items.
+
+## SQLite Configuration
+- **WAL mode**: `PRAGMA journal_mode = WAL` in `sqlite_schema.sql` — persistent across connections, set on first init. Enables concurrent reads while a write is in progress (critical for Sync operations that read during multi-step CalDAV fetches).
+- **busy_timeout**: `PRAGMA busy_timeout = 5000` — waits up to 5 seconds instead of failing immediately with SQLITE_BUSY. Prevents transient lock contention errors during concurrent sync.
+- **foreign_keys**: `PRAGMA foreign_keys = ON` in both `sqlite_schema.sql` and the Rust connection setup. Belt-and-suspenders: the schema SQL ensures ad-hoc sqlite3 CLI sessions also respect FK constraints.
 
 ## Key Patterns
 - **put_event etag flow**: get_event → (ics, Option<etag>) → if None, PROPFIND etag fallback → if still None, pass None (not synthetic) → put_event with 3-tier 412 retry
@@ -24,7 +30,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 160 tests (127 unit + 22 protocol fixture + 11 integration)
+- `cargo test` — 163 tests (129 unit + 22 protocol fixture + 11 integration + 1 doc)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
@@ -32,6 +38,8 @@
 - **Error handling in build_env_filter()**: Uses `match` on `EnvFilter::try_new()` result — errors are logged via `eprintln!` before returning `Err(String)`, never `.unwrap_or_default()`. Per repository pattern: all errors must be logged before being handled.
 
 - **No hardcoded example.com in production code**: `active_user_emails(username, mail_domain)` takes the mail domain as a parameter instead of hardcoding "example.com". The domain comes from `state.cfg.mail_domain` (set via `GATEWAY_MAIL_DOMAIN` env var). Test code may still use "example.com" per RFC 2606.
+- **Username domain canonicalization**: `canonicalize_username(username, mail_domain)` in `util.rs` replaces the domain in the username with `GATEWAY_MAIL_DOMAIN`, extracting only the local part. Applied at EAS and EWS entry points (after `parse_basic_auth`, before `verify`). Ensures: (1) consistent DB owner keys regardless of what domain the client supplies, (2) CalDAV URL `/cal/{canonical}/` matches Stalwart's home set, (3) `active_user_emails()` reports the correct primary SMTP. Example: `contact@exchange.com` → `contact@example.com`. The gateway logs when canonicalization changes the domain.
+- **active_user_emails always uses mail_domain**: Extracts only the local part from `username` and constructs the primary SMTP with `GATEWAY_MAIL_DOMAIN`. Defense-in-depth: even if a non-canonical username leaks through, the Settings response always reports the correct domain.
 
 ## Autodiscover Protocol Dispatch
 - **AcceptableResponseSchema handling**: Per MS-ASCMD §2.2.3.1, the `<AcceptableResponseSchema>` element in the POST body specifies which response format the client expects. The server MUST return a matching schema or the client treats it as an error (MS-ASCMD §4.2.5, error code 601).
@@ -59,3 +67,13 @@
   - `AUTHORIZATION_URI`: `https://login.microsoftonline.com/common/oauth2/authorize` — the common Microsoft Entra ID OAuth 2.0 authorization endpoint.
 - **Gateway auth model**: The gateway only supports Basic authentication. The Bearer header is included solely for AutoDetect discovery compatibility. When a client attempts Bearer auth, `parse_basic_auth()` rejects it and the client falls back to Basic.
 - **V1 XML autodiscover vs V2 JSON**: The V1 XML autodiscover fix (dispatching by AcceptableResponseSchema) helps direct ActiveSync clients but does NOT help Outlook mobile's AutoDetect flow, which uses the V2 JSON endpoint exclusively.
+
+## Outlook Mobile Architecture Limitation (CRITICAL)
+- **Outlook for iOS/Android app is cloud-backed**: ALL data flows through Microsoft's cloud middle tier (Exchange Online). The Outlook app does NOT connect directly to on-premises ActiveSync endpoints, even when using "Basic authentication" mode. Per Microsoft docs: "Outlook for iOS and Android is a cloud-backed application. This characteristic indicates that your experience consists of a locally installed app powered by a secure and scalable service running in the Microsoft Cloud."
+- **Basic auth mode still requires cloud**: Even in "Basic authentication" mode (non-hybrid), "The EAS connection between Exchange Online and the on-premises environment enables synchronization of the users' on-premises data." Exchange Online creates a "shard mailbox" to cache on-prem data.
+- **No M365 tenant = no ActiveSync via Outlook app**: Without an M365/O365 tenant, AutoDetect falls back to IMAP. Selecting "Exchange" account type manually in the Outlook app also fails because the app still routes through the cloud.
+- **Android native Exchange account works directly**: The built-in Android Exchange account (Settings → Accounts → Exchange) is a direct EAS client that connects to the server WITHOUT the cloud middle tier. This is how grommunio achieves Android EAS calendar sync — they use the native Android Exchange account, NOT the Outlook app. The exchange_gateway's EAS implementation is compatible with this path.
+- **grommunio comparison**: grommunio's documentation shows "Settings → Accounts → Exchange" (native Android), not the Outlook app. grommunio-sync README explicitly says "While Microsoft Outlook supports EAS, it is not recommended to use grommunio Sync due to a very small subset of features only supported" — confirming the Outlook app doesn't work well with non-Exchange EAS servers. grommunio recommends MAPI/HTTP for Outlook desktop.
+- **This is NOT a gateway code bug for native EAS clients**: The EAS protocol implementation is correct (OPTIONS, Bearer challenge, Provision, FolderSync, Sync, Settings all work). The limitation applies only to the Outlook app, not to direct EAS clients.
+- **Why Outlook Windows works**: New Outlook for Windows (and Classic Outlook) connect DIRECTLY to on-premises servers via EWS/ActiveSync without requiring the cloud middle tier.
+- **Android calendar via gateway**: Use Android's native Exchange account (Settings → Accounts → Exchange) with the gateway's ActiveSync URL. Calendar syncs to native Android calendar. For email, use any IMAP client including Outlook for email-only.

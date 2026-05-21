@@ -4,7 +4,7 @@ use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::{nfc, normalize_username, xml_escape};
+use crate::util::{canonicalize_username, nfc, normalize_username, xml_escape};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -498,12 +498,19 @@ fn parse_search_request(xml: &str) -> SearchRequest {
     }
 }
 
+/// Build the list of active email addresses for the given user.
+///
+/// Always uses `mail_domain` as the email domain, extracting only the local
+/// part from `username`. This ensures the primary SMTP address matches
+/// GATEWAY_MAIL_DOMAIN regardless of the domain the client supplied during
+/// authentication (e.g. `contact@exchange.com` → `contact@example.com`).
 fn active_user_emails(username: &str, mail_domain: &str) -> Vec<String> {
-    match username.rsplit_once('@') {
-        Some((_local, domain)) if !domain.is_empty() => vec![username.to_string()],
-        Some((local, _)) => vec![format!("{local}@{mail_domain}")],
-        None => vec![format!("{username}@{mail_domain}")],
-    }
+    let local = match username.rsplit_once('@') {
+        Some((local, domain)) if !domain.is_empty() => local,
+        Some((local, _)) => local,
+        None => username,
+    };
+    vec![format!("{}@{}", local, mail_domain)]
 }
 
 fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> bool {
@@ -1901,9 +1908,17 @@ pub async fn handle(
     if body.len() > MAX_BODY_SIZE {
         return bad_request_response(&request_id, "Request body too large");
     }
-    let Some((username, password)) = parse_basic_auth(&headers) else {
+    let Some((raw_username, password)) = parse_basic_auth(&headers) else {
         return unauth_response(&request_id);
     };
+    let username = canonicalize_username(&raw_username, &state.cfg.mail_domain);
+    if username != raw_username {
+        tracing::info!(
+            raw_username = %raw_username,
+            canonical_username = %username,
+            "Username domain canonicalized to GATEWAY_MAIL_DOMAIN"
+        );
+    }
     // Verify credentials early to avoid unnecessary processing
     if !state
         .auth_verifier
@@ -2418,13 +2433,21 @@ mod tests {
 
     #[test]
     fn test_active_user_emails_email_username() {
+        // Always uses mail_domain, not the username\'s domain
         let emails = active_user_emails("bob@example.org", "mail.example.com");
-        assert_eq!(emails, vec!["bob@example.org"]);
+        assert_eq!(emails, vec!["bob@mail.example.com"]);
     }
 
     #[test]
     fn test_active_user_emails_trailing_at() {
         let emails = active_user_emails("carol@", "mail.example.com");
         assert_eq!(emails, vec!["carol@mail.example.com"]);
+    }
+
+    #[test]
+    fn test_active_user_emails_non_canonical_domain() {
+        // Key use-case: user authenticated with wrong domain
+        let emails = active_user_emails("contact@exchange.com", "example.com");
+        assert_eq!(emails, vec!["contact@example.com"]);
     }
 }
