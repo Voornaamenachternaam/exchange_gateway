@@ -1527,60 +1527,60 @@ async fn load_current_calendar_items(
                         ics = caldata_buf.trim().to_string();
                     }
                     b"response" => {
-                if !href.is_empty()
-                    && let Some(item) = parse_ics_event(&ics)
-                {
-                    let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
-                    let safe_etag = if etag.is_empty() {
-                        caldav
-                            .get_etag(&href, owner, password)
+                        if !href.is_empty()
+                        && let Some(item) = parse_ics_event(&ics)
+                        {
+                        let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
+                        let safe_etag = if etag.is_empty() {
+                            caldav
+                                .get_etag(&href, owner, password)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "{}{}",
+                                        crate::caldav::CaldavClient::SYNTHETIC_ETAG_PREFIX,
+                                        const_hex::encode({
+                                            let mut h = Sha256::new();
+                                            h.update(server_id.as_bytes());
+                                            h.finalize()
+                                        })
+                                    )
+                                })
+                        } else {
+                            etag.clone()
+                        };
+                        if let Err(e) = state
+                            .storage
+                            .upsert_item_map(
+                                owner,
+                                &collection_href,
+                                &href,
+                                &server_id,
+                                &item.uid,
+                                &safe_etag,
+                            )
                             .await
-                            .ok()
-                            .flatten()
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "{}{}",
-                                    crate::caldav::CaldavClient::SYNTHETIC_ETAG_PREFIX,
-                                    const_hex::encode({
-                                        let mut h = Sha256::new();
-                                        h.update(server_id.as_bytes());
-                                        h.finalize()
-                                    })
-                                )
-                            })
-                    } else {
-                        etag.clone()
-                    };
-                    if let Err(e) = state
-                        .storage
-                        .upsert_item_map(
-                            owner,
-                            &collection_href,
-                            &href,
-                            &server_id,
-                            &item.uid,
-                            &safe_etag,
-                        )
-                        .await
-                    {
-                        tracing::warn!(server_id = %server_id, error = %e, "Failed to upsert item map in load_current_calendar_items");
+                        {
+                            tracing::warn!(server_id = %server_id, error = %e, "Failed to upsert item map in load_current_calendar_items");
+                        }
+                        out.push(CurrentCalendarItem {
+                            row: EwsItemRow {
+                                server_id,
+                                resource_href: href.clone(),
+                                uid: Some(item.uid.clone()),
+                                caldav_href: Some(collection_href.clone()),
+                                etag: Some(safe_etag),
+                                updated_at: None,
+                            },
+                            item,
+                        });
+                        }
+                        href.clear();
+                        etag.clear();
+                        ics.clear();
                     }
-                    out.push(CurrentCalendarItem {
-                        row: EwsItemRow {
-                            server_id,
-                            resource_href: href.clone(),
-                            uid: Some(item.uid.clone()),
-                            caldav_href: Some(collection_href.clone()),
-                            etag: Some(safe_etag),
-                            updated_at: None,
-                        },
-                        item,
-                    });
-                }
-                href.clear();
-                etag.clear();
-                ics.clear();
-                }
                     _ => {}
                 }
             }

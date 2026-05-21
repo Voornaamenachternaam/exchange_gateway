@@ -5,7 +5,7 @@ use crate::calendar::{
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
 use crate::models::AppState;
-use crate::util::{normalize_email, xml_escape};
+use crate::util::{normalize_email, truncate_string, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1386,11 +1386,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             continue;
         }
         let Some(item) = parse_ics_event(&ev.ics) else {
-            let preview = if ev.ics.len() > 200 {
-                format!("{}...", &ev.ics[..200])
-            } else {
-                ev.ics.clone()
-            };
+            let preview = truncate_string(&ev.ics, 200);
             tracing::warn!(
                 "sync: failed to parse ICS event for href: {} ics_preview={}",
                 ev.href,
