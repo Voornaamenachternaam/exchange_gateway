@@ -5,7 +5,7 @@ use crate::calendar::{
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
 use crate::models::AppState;
-use crate::util::{normalize_email, xml_escape};
+use crate::util::{normalize_email, truncate_string, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1290,7 +1290,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     let mut reader = Reader::from_str(&events_xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut events = Vec::new();
     let mut current = EventItem {
         href: String::new(),
@@ -1298,36 +1298,52 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         ics: String::new(),
     };
     let mut buf = Vec::new();
+    let mut in_caldata = false;
+    let mut caldata_buf = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
                 b"href" => {
                     if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                        current.href = e.decode().unwrap_or_default().to_string();
+                        current.href = e.decode().unwrap_or_default().trim().to_string();
                     }
                 }
                 b"getetag" => {
                     if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                        current.etag = e.decode().unwrap_or_default().to_string();
+                        current.etag = e.decode().unwrap_or_default().trim().to_string();
                     }
                 }
                 b"calendar-data" => {
-                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                        current.ics = e.decode().unwrap_or_default().to_string();
-                    }
+                    in_caldata = true;
+                    caldata_buf.clear();
                 }
                 _ => {}
             },
-            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
-                if !current.href.is_empty() {
-                    events.push(current.clone());
+            Ok(Event::Text(ref e)) if in_caldata => {
+                caldata_buf.push_str(&e.decode().unwrap_or_default());
+            }
+            Ok(Event::CData(ref e)) if in_caldata => {
+                caldata_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+            }
+            Ok(Event::End(ref e)) => {
+                match e.name().local_name().as_ref() {
+                    b"calendar-data" if in_caldata => {
+                        in_caldata = false;
+                        current.ics = caldata_buf.trim().to_string();
+                    }
+                    b"response" => {
+                        if !current.href.is_empty() {
+                            events.push(current.clone());
+                        }
+                        current = EventItem {
+                            href: String::new(),
+                            etag: String::new(),
+                            ics: String::new(),
+                        };
+                    }
+                    _ => {}
                 }
-                current = EventItem {
-                    href: String::new(),
-                    etag: String::new(),
-                    ics: String::new(),
-                };
             }
             Ok(Event::Eof) => break,
             _ => {}
@@ -1362,8 +1378,20 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         let server_id = generate_server_id(params.state.cfg.hmac_secret(), &ev.href);
         seen_ids.insert(server_id.clone());
         let etag = ev.etag.trim_matches('"').to_string();
+        if ev.ics.is_empty() {
+            tracing::warn!(
+                "sync: empty ICS data for href {} (calendar-data element missing or not parsed)",
+                ev.href
+            );
+            continue;
+        }
         let Some(item) = parse_ics_event(&ev.ics) else {
-            tracing::warn!("sync: failed to parse ICS event for href: {}", ev.href);
+            let preview = truncate_string(&ev.ics, 200);
+            tracing::warn!(
+                "sync: failed to parse ICS event for href: {} ics_preview={}",
+                ev.href,
+                preview
+            );
             continue;
         };
         let existing = existing_map.get(&server_id);

@@ -169,7 +169,7 @@ services:
     ports:
       - 8134:8134
     environment:
-      - RUST_LOG=${GATEWAY_RUST_LOG:-info}
+      - GATEWAY_LOG_LEVEL=${GATEWAY_LOG_LEVEL:-info}
       - TZ=${GATEWAY_TZ:-UTC}
       - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
       - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}
@@ -207,7 +207,7 @@ GATEWAY_HOST=calendar.example.com
 GATEWAY_MAIL_DOMAIN=example.com
 
 # Optional Exchange Gateway Settings
-GATEWAY_RUST_LOG=info
+GATEWAY_LOG_LEVEL=info
 GATEWAY_TZ=UTC
 GATEWAY_BIND=[::]:8134
 GATEWAY_DATABASE_PATH=/var/lib/exchange-gateway/gateway.db

@@ -1,6 +1,19 @@
 -- sqlite_schema.sql
 -- Idempotent schema for Exchange Gateway SQLite database
 
+-- WAL mode for concurrent reads during sync operations.
+-- journal_mode is persistent across connections — set once on first init.
+PRAGMA journal_mode = WAL;
+
+-- busy_timeout: wait up to 5 seconds if the database is locked by another
+-- writer, instead of failing immediately with SQLITE_BUSY.
+PRAGMA busy_timeout = 5000;
+
+-- foreign_keys must be enabled per-connection in SQLite.
+-- The gateway also sets this in Rust on each connection, but including it
+-- here ensures any ad-hoc sqlite3 CLI session also respects FK constraints.
+PRAGMA foreign_keys = ON;
+
 
 CREATE TABLE IF NOT EXISTS sync_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
