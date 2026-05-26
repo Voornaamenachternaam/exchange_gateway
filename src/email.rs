@@ -1,0 +1,572 @@
+// src/email.rs
+//
+// Email protocol operations for Exchange Gateway.
+//
+// Implements EWS and EAS email operations that translate between
+// Microsoft Exchange protocols and Stalwart Mailserver via:
+// - SMTP (port 465) for sending email
+// - JMAP for reading/syncing email
+// - CalDAV for calendar (unchanged)
+//
+// EWS Operations:
+// - SendItem (MS-OXWSCORE §3.1.4.8)
+// - CreateItem with MessageDisposition for email (MS-OXWSCORE §3.1.4.2)
+// - GetItem for MessageType (MS-OXWSCORE §3.1.4.4)
+// - FindItem for email folders
+// - SyncFolderItems for email folders
+//
+// EAS Operations:
+// - SendMail (MS-ASCMD §2.2.1.17)
+// - SmartReply (MS-ASCMD §2.2.1.20)
+// - SmartForward (MS-ASCMD §2.2.1.19)
+// - Email Sync class (MS-ASEMAIL)
+
+use crate::jmap::JmapEmail;
+use crate::models::AppState;
+use crate::util::xml_escape;
+use secrecy::SecretString;
+use std::sync::Arc;
+use tracing::info;
+
+/// EWS Message Disposition types per MS-OXWSCORE §3.1.4.2
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MessageDisposition {
+    SaveOnly,
+    SendOnly,
+    SendAndSaveCopy,
+}
+
+impl MessageDisposition {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "SaveOnly" => Some(Self::SaveOnly),
+            "SendOnly" => Some(Self::SendOnly),
+            "SendAndSaveCopy" => Some(Self::SendAndSaveCopy),
+            _ => None,
+        }
+    }
+}
+
+/// Parsed EWS MessageType from CreateItem/SendItem request.
+///
+/// Per MS-OXWSCORE §2.2.4.25, MessageType extends ItemType with
+/// email-specific fields like ToRecipients, From, etc.
+#[derive(Clone, Debug, Default)]
+pub struct EwsMessage {
+    pub subject: String,
+    pub body: String,
+    pub body_type: String, // "Text" or "HTML"
+    pub from: String,
+    pub to_recipients: Vec<String>,
+    pub cc_recipients: Vec<String>,
+    pub bcc_recipients: Vec<String>,
+    pub reply_to: Vec<String>,
+    pub importance: String,
+    pub item_id: Option<String>,
+    pub change_key: Option<String>,
+    /// For SmartReply/SmartForward — the original message reference
+    pub references: Option<String>,
+    pub in_reply_to: Option<String>,
+}
+
+/// Parse a MessageType from EWS SOAP XML body.
+///
+/// Extracts key email fields from the `<t:Message>` element within
+/// a CreateItem or SendItem request.
+pub fn parse_ews_message(body: &str) -> Option<EwsMessage> {
+    let subject = extract_ews_tag_text(body, b"Subject")?;
+
+    // Extract body — EWS Body element has attributes: <t:Body BodyType="Text">...</t:Body>
+    let mut body_content = String::new();
+    let mut body_type = "Text".to_string();
+    if let Some(body_start) = body.find("<t:Body") {
+        let gt_pos = body[body_start..].find('>').unwrap_or(0);
+        let content_start = body_start + gt_pos + 1;
+        if let Some(end) = body[content_start..].find("</t:Body>") {
+            body_content = body[content_start..content_start + end].to_string();
+            let opening_tag = &body[body_start..body_start + gt_pos + 1];
+            if let Some(bt_start) = opening_tag.find("BodyType=\"") {
+                let bt_val_start = bt_start + "BodyType=\"".len();
+                if let Some(bt_end) = opening_tag[bt_val_start..].find('"') {
+                    body_type = opening_tag[bt_val_start..bt_val_start + bt_end].to_string();
+                }
+            }
+        }
+    }
+
+    let from = extract_ews_email_address(body, b"From").unwrap_or_default();
+    let to_recipients = extract_ews_email_addresses(body, b"ToRecipients");
+    let cc_recipients = extract_ews_email_addresses(body, b"CcRecipients");
+    let bcc_recipients = extract_ews_email_addresses(body, b"BccRecipients");
+    let importance = extract_ews_tag_text(body, b"Importance").unwrap_or_else(|| "Normal".to_string());
+
+    Some(EwsMessage {
+        subject,
+        body: body_content,
+        body_type,
+        from,
+        to_recipients,
+        cc_recipients,
+        bcc_recipients,
+        importance,
+        ..Default::default()
+    })
+}
+
+/// Extract text content from an EWS XML tag.
+fn extract_ews_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
+    let open = format!("<t:{}>", std::str::from_utf8(tag).ok()?);
+    let close = format!("</t:{}>", std::str::from_utf8(tag).ok()?);
+
+    if let Some(start) = xml.find(&open) {
+        let content_start = start + open.len();
+        if let Some(end) = xml[content_start..].find(&close) {
+            return Some(xml[content_start..content_start + end].to_string());
+        }
+    }
+    None
+}
+
+/// Extract a single email address from an EWS Mailbox element.
+fn extract_ews_email_address(xml: &str, container: &[u8]) -> Option<String> {
+    let container_str = std::str::from_utf8(container).ok()?;
+    let open = format!("<t:{}>", container_str);
+    if let Some(start) = xml.find(&open) {
+        let rest = &xml[start..];
+        // Find EmailAddress within this container
+        if let Some(email_start) = rest.find("<t:EmailAddress>") {
+            let email_content_start = email_start + "<t:EmailAddress>".len();
+            if let Some(email_end) = rest[email_content_start..].find("</t:EmailAddress>") {
+                return Some(rest[email_content_start..email_content_start + email_end].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract multiple email addresses from an EWS container element.
+fn extract_ews_email_addresses(xml: &str, container: &[u8]) -> Vec<String> {
+    let mut emails = Vec::new();
+    let container_str = std::str::from_utf8(container).ok().unwrap_or("");
+    let open = format!("<t:{}>", container_str);
+    let close = format!("</t:{}>", container_str);
+
+    if let Some(start) = xml.find(&open) {
+        let end_pos = xml[start..].find(&close).map(|p| start + p).unwrap_or(xml.len());
+        let inner = &xml[start..end_pos];
+
+        // Find all <t:EmailAddress>...</t:EmailAddress> within
+        let mut search_from = 0;
+        while let Some(email_start) = inner[search_from..].find("<t:EmailAddress>") {
+            let abs_start = search_from + email_start + "<t:EmailAddress>".len();
+            if let Some(email_end) = inner[abs_start..].find("</t:EmailAddress>") {
+                emails.push(inner[abs_start..abs_start + email_end].to_string());
+                search_from = abs_start + email_end + "</t:EmailAddress>".len();
+            } else {
+                break;
+            }
+        }
+    }
+    emails
+}
+
+/// Render an EWS MessageType XML response for a created/sent email.
+///
+/// Per MS-OXWSCORE, the response includes ItemId and ChangeKey.
+pub fn render_ews_message_item_xml(server_id: &str, change_key: &str, msg: &EwsMessage) -> String {
+    format!(
+        r#"<t:Message><t:ItemId Id="{}" ChangeKey="{}" /><t:Subject>{}</t:Subject><t:Importance>{}</t:Importance></t:Message>"#,
+        xml_escape(server_id),
+        xml_escape(change_key),
+        xml_escape(&msg.subject),
+        xml_escape(&msg.importance),
+    )
+}
+
+/// Render a JMAP email as an EWS MessageType XML element.
+///
+/// Converts JMAP email fields to EWS Message XML for GetItem/FindItem responses.
+pub fn render_jmap_email_as_ews_message(
+    email: &JmapEmail,
+    server_id: &str,
+    change_key: &str,
+) -> String {
+    let subject = email.subject.as_deref().unwrap_or("(No Subject)");
+    let sender = email.from.as_ref().and_then(|v| v.first());
+    let sender_name = sender.as_ref().and_then(|s| s.name.as_deref()).unwrap_or("");
+    let sender_email = sender.as_ref().and_then(|s| s.email.as_deref()).unwrap_or("");
+
+    let to_xml = email.to.as_ref().map(|recipients| {
+        recipients.iter().map(|r| {
+            let name = xml_escape(r.name.as_deref().unwrap_or(""));
+            let addr = xml_escape(r.email.as_deref().unwrap_or(""));
+            format!("<t:Mailbox><t:Name>{name}</t:Name><t:EmailAddress>{addr}</t:EmailAddress></t:Mailbox>")
+        }).collect::<String>()
+    }).unwrap_or_default();
+
+    let cc_xml = email.cc.as_ref().map(|recipients| {
+        recipients.iter().map(|r| {
+            let name = xml_escape(r.name.as_deref().unwrap_or(""));
+            let addr = xml_escape(r.email.as_deref().unwrap_or(""));
+            format!("<t:Mailbox><t:Name>{name}</t:Name><t:EmailAddress>{addr}</t:EmailAddress></t:Mailbox>")
+        }).collect::<String>()
+    }).unwrap_or_default();
+
+    let body_preview = email.preview.as_deref().unwrap_or("");
+    let body_text = email.body_values.as_ref().and_then(|bv| {
+        bv.values().next().map(|v| v.value.as_str())
+    }).unwrap_or("");
+
+    let received_at = email.received_at.as_deref().unwrap_or("");
+    let sent_at = email.sent_at.as_deref().unwrap_or("");
+    let has_attachment = email.has_attachment.unwrap_or(false);
+    let is_read = email.keywords.as_ref().is_some_and(|k| k.contains_key("$seen"));
+
+    format!(
+        r#"<t:Message><t:ItemId Id="{server_id}" ChangeKey="{change_key}" /><t:Subject>{subject}</t:Subject><t:Sender><t:Mailbox><t:Name>{sender_name}</t:Name><t:EmailAddress>{sender_email}</t:EmailAddress></t:Mailbox></t:Sender><t:ToRecipients>{to_xml}</t:ToRecipients><t:CcRecipients>{cc_xml}</t:CcRecipients><t:DateTimeReceived>{received_at}</t:DateTimeReceived><t:DateTimeSent>{sent_at}</t:DateTimeSent><t:IsRead>{is_read}</t:IsRead><t:HasAttachments>{has_attachment}</t:HasAttachments><t:Preview>{body_preview}</t:Preview><t:Body BodyType="Text">{body_text}</t:Body></t:Message>"#,
+        server_id = xml_escape(server_id),
+        change_key = xml_escape(change_key),
+        subject = xml_escape(subject),
+        sender_name = xml_escape(sender_name),
+        sender_email = xml_escape(sender_email),
+        received_at = xml_escape(received_at),
+        sent_at = xml_escape(sent_at),
+        is_read = is_read,
+        has_attachment = has_attachment,
+        body_preview = xml_escape(body_preview),
+        body_text = xml_escape(body_text),
+    )
+}
+
+/// Render a JMAP email as an EAS ApplicationData XML element.
+///
+/// Per MS-ASEMAIL §2.2, the Email class includes elements like
+/// Subject, From, To, Body, etc.
+pub fn render_jmap_email_as_eas_application_data(
+    email: &JmapEmail,
+    server_id: &str,
+    _collection_id: &str,
+) -> String {
+    let subject = email.subject.as_deref().unwrap_or("");
+    let sender = email.from.as_ref().and_then(|v| v.first());
+    let sender_name: &str = sender.as_ref().and_then(|s| s.name.as_deref()).unwrap_or("");
+    let sender_email: &str = sender.as_ref().and_then(|s| s.email.as_deref()).unwrap_or("");
+
+    let to_xml = email.to.as_ref().map(|recipients| {
+        recipients.iter().map(|r| {
+            let name = xml_escape(r.name.as_deref().unwrap_or(""));
+            let addr = xml_escape(r.email.as_deref().unwrap_or(""));
+            format!("<Email2:To><Email2:Name>{name}</Email2:Name><Email2:EmailAddress>{addr}</Email2:EmailAddress></Email2:To>")
+        }).collect::<String>()
+    }).unwrap_or_default();
+
+    let body_text = email.body_values.as_ref().and_then(|bv| {
+        bv.values().next().map(|v| v.value.as_str())
+    }).unwrap_or("");
+
+    let received_at = email.received_at.as_deref().unwrap_or("");
+    let is_read = email.keywords.as_ref().is_some_and(|k| k.contains_key("$seen"));
+    let has_attachment = email.has_attachment.unwrap_or(false);
+    let importance = email.keywords.as_ref().map_or("1", |k| {
+        if k.contains_key("$important") { "2" } else { "1" }
+    });
+
+    format!(
+        r#"<AirSync:ApplicationData><AirSync:ServerId>{server_id}</AirSync:ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></AirSync:ApplicationData>"#,
+        server_id = xml_escape(server_id),
+        subject = xml_escape(subject),
+        sender_name = xml_escape(sender_name),
+        sender_email = xml_escape(sender_email),
+        received_at = xml_escape(received_at),
+        importance = importance,
+        is_read_int = if is_read { "1" } else { "0" },
+        has_attachment_int = if has_attachment { "1" } else { "0" },
+        body_text = xml_escape(body_text),
+    )
+}
+
+/// Send an email via SMTP on behalf of a user.
+///
+/// Used by both EWS SendItem/CreateItem and EAS SendMail.
+pub async fn send_email_smtp(
+    state: &Arc<AppState>,
+    msg: &EwsMessage,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    let smtp = state.smtp_client.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("SMTP is not configured; email sending is unavailable")
+    })?;
+
+    let from = if msg.from.is_empty() {
+        format!("{}@{}", username.split('@').next().unwrap_or(username), state.cfg.mail_domain)
+    } else {
+        msg.from.clone()
+    };
+
+    let html_body = if msg.body_type.eq_ignore_ascii_case("HTML") {
+        Some(msg.body.as_str())
+    } else {
+        None
+    };
+
+    let params = crate::smtp::SendEmailParams {
+        from: &from,
+        to: msg.to_recipients.clone(),
+        cc: msg.cc_recipients.clone(),
+        bcc: msg.bcc_recipients.clone(),
+        subject: &msg.subject,
+        text_body: &msg.body,
+        html_body,
+        username,
+        password,
+    };
+
+    let result = smtp.send_email(params).await?;
+
+    info!(
+        target: "email",
+        from = %from,
+        to_count = msg.to_recipients.len(),
+        subject_len = msg.subject.len(),
+        message_id = %result.message_id,
+        "Email sent via SMTP"
+    );
+
+    Ok(result.message_id)
+}
+
+/// Fetch emails from JMAP for a specific folder.
+///
+/// Used by EWS FindItem/GetItem and EAS Sync for email folders.
+pub async fn fetch_emails_jmap(
+    state: &Arc<AppState>,
+    account_id: &str,
+    mailbox_role: &str,
+    position: u64,
+    limit: u64,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<Vec<JmapEmail>> {
+    let jmap = state.jmap_client.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("JMAP is not configured; email reading is unavailable")
+    })?;
+
+    // Map mailbox role to JMAP filter
+    let filter = match mailbox_role.to_lowercase().as_str() {
+        "inbox" => Some(serde_json::json!({
+            "inMailboxRole": "inbox"
+        })),
+        "sentitems" | "sent" => Some(serde_json::json!({
+            "inMailboxRole": "sent"
+        })),
+        "drafts" | "draft" => Some(serde_json::json!({
+            "inMailboxRole": "drafts"
+        })),
+        "junkemail" | "junk" => Some(serde_json::json!({
+            "inMailboxRole": "junk"
+        })),
+        "deleteditems" | "trash" => Some(serde_json::json!({
+            "inMailboxRole": "trash"
+        })),
+        _ => None, // All mailboxes
+    };
+
+    let result = jmap
+        .query_emails(crate::jmap::QueryEmailsParams {
+            account_id,
+            filter,
+            sort: None,
+            position,
+            limit,
+            username,
+            password,
+        })
+        .await?;
+
+    Ok(result.emails)
+}
+
+/// EAS folder type constants per MS-ASCMD §2.2.3.41.
+/// These map to the Type element in FolderSync responses.
+pub mod eas_folder_type {
+    pub const CALENDAR: u8 = 8;
+    pub const CONTACTS: u8 = 9;
+    pub const EMAIL: u8 = 2;
+    pub const TASKS: u8 = 7;
+    pub const NOTES: u8 = 10;
+    pub const JOURNAL: u8 = 11;
+    // Generic folder types
+    pub const INBOX: u8 = 2;
+    pub const DRAFTS: u8 = 3;
+    pub const SENT_ITEMS: u8 = 4;
+    pub const DELETED_ITEMS: u8 = 5;
+    pub const OUTBOX: u8 = 6;
+    pub const JUNK_EMAIL: u8 = 7;
+}
+
+/// EAS FolderSync folder entries for email folders.
+///
+/// Per MS-ASCON §2.2.3.41.1, the Type element indicates the content class.
+/// These folders are returned alongside the Calendar folder in FolderSync.
+pub fn eas_email_folders_xml() -> String {
+    [
+        ("2", "0", "Inbox", eas_folder_type::INBOX),
+        ("3", "0", "Drafts", eas_folder_type::DRAFTS),
+        ("4", "0", "Sent Items", eas_folder_type::SENT_ITEMS),
+        ("5", "0", "Deleted Items", eas_folder_type::DELETED_ITEMS),
+        ("6", "0", "Outbox", eas_folder_type::OUTBOX),
+        ("7", "0", "Junk Email", eas_folder_type::JUNK_EMAIL),
+    ]
+    .iter()
+    .map(|(id, parent_id, display_name, folder_type)| {
+        format!(
+            r#"<Add><ServerId>{}</ServerId><ParentId>{}</ParentId><DisplayName>{}</DisplayName><Type>{}</Type></Add>"#,
+            id, parent_id, display_name, folder_type
+        )
+    })
+    .collect()
+}
+
+/// Extract text content from the first occurrence of an XML tag.
+/// Simple helper for EAS XML parsing - not namespace-aware.
+fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
+    let _tag_str = std::str::from_utf8(tag).ok()?;
+    let open_tag = format!("<{}>", std::str::from_utf8(tag).unwrap_or(""));
+    let close_tag = format!("</{}>", std::str::from_utf8(tag).unwrap_or(""));
+    if let Some(start) = xml.find(&open_tag) {
+        let content_start = start + open_tag.len();
+        if let Some(end) = xml[content_start..].find(&close_tag) {
+            return Some(xml[content_start..content_start + end].to_string());
+        }
+    }
+    None
+}
+
+/// Parse EAS SendMail request to extract MIME message and recipients.
+///
+/// Per MS-ASCMD §2.2.1.17, SendMail contains a ClientId and either
+/// a MIME message or individual email elements.
+pub fn parse_eas_sendmail(xml: &str) -> Option<EasSendMailRequest> {
+    let client_id = extract_first_tag_text(xml, b"ClientId");
+    let mime_data = extract_first_tag_text(xml, b"MIMEData");
+    let save_in_sent = xml.contains("<SaveInSentItems")
+        || xml.contains(":SaveInSentItems");
+
+    Some(EasSendMailRequest {
+        client_id,
+        mime_data,
+        save_in_sent,
+    })
+}
+
+/// EAS SendMail request structure.
+#[derive(Clone, Debug, Default)]
+pub struct EasSendMailRequest {
+    pub client_id: Option<String>,
+    pub mime_data: Option<String>,
+    pub save_in_sent: bool,
+}
+
+/// Generate a unique server ID for an email message.
+///
+/// Uses HMAC-SHA256 of the JMAP email ID (or message ID for sent items)
+/// to create a deterministic, tamper-resistant server ID.
+pub fn generate_email_server_id(hmac_secret: &str, jmap_id: &str) -> String {
+    use hmac::digest::KeyInit;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+
+    let mut mac = HmacSha256::new_from_slice(hmac_secret.as_bytes())
+        .expect("HMAC-SHA256 key must be non-empty");
+    mac.update(jmap_id.as_bytes());
+    mac.update(b":email");
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    base64::Engine::encode(&engine, mac.finalize().into_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ews_message_basic() {
+        let xml = r#"
+        <t:Message>
+            <t:Subject>Test Email</t:Subject>
+            <t:Body BodyType="Text">Hello World</t:Body>
+            <t:ToRecipients>
+                <t:Mailbox><t:EmailAddress>user@example.com</t:EmailAddress></t:Mailbox>
+            </t:ToRecipients>
+            <t:Importance>Normal</t:Importance>
+        </t:Message>"#;
+
+        let msg = parse_ews_message(xml).expect("Should parse message");
+        assert_eq!(msg.subject, "Test Email");
+        assert_eq!(msg.body, "Hello World");
+        assert_eq!(msg.body_type, "Text");
+        assert_eq!(msg.to_recipients, vec!["user@example.com"]);
+        assert_eq!(msg.importance, "Normal");
+    }
+
+    #[test]
+    fn test_parse_ews_message_with_cc_bcc() {
+        let xml = r#"
+        <t:Message>
+            <t:Subject>Multi-recipient</t:Subject>
+            <t:ToRecipients>
+                <t:Mailbox><t:EmailAddress>to1@example.com</t:EmailAddress></t:Mailbox>
+                <t:Mailbox><t:EmailAddress>to2@example.com</t:EmailAddress></t:Mailbox>
+            </t:ToRecipients>
+            <t:CcRecipients>
+                <t:Mailbox><t:EmailAddress>cc@example.com</t:EmailAddress></t:Mailbox>
+            </t:CcRecipients>
+            <t:BccRecipients>
+                <t:Mailbox><t:EmailAddress>bcc@example.com</t:EmailAddress></t:Mailbox>
+            </t:BccRecipients>
+        </t:Message>"#;
+
+        let msg = parse_ews_message(xml).expect("Should parse message");
+        assert_eq!(msg.to_recipients.len(), 2);
+        assert_eq!(msg.cc_recipients.len(), 1);
+        assert_eq!(msg.bcc_recipients.len(), 1);
+    }
+
+    #[test]
+    fn test_message_disposition_parsing() {
+        assert_eq!(MessageDisposition::parse("SaveOnly"), Some(MessageDisposition::SaveOnly));
+        assert_eq!(MessageDisposition::parse("SendOnly"), Some(MessageDisposition::SendOnly));
+        assert_eq!(MessageDisposition::parse("SendAndSaveCopy"), Some(MessageDisposition::SendAndSaveCopy));
+        assert_eq!(MessageDisposition::parse("Invalid"), None);
+    }
+
+    #[test]
+    fn test_render_ews_message_item_xml() {
+        let msg = EwsMessage { subject: "Hello".to_string(), importance: "Normal".to_string(), ..Default::default() };
+        let xml = render_ews_message_item_xml("id123", "ck456", &msg);
+        assert!(xml.contains("id123"));
+        assert!(xml.contains("ck456"));
+        assert!(xml.contains("Hello"));
+        assert!(xml.contains("<t:Message>"));
+    }
+
+    #[test]
+    fn test_generate_email_server_id_deterministic() {
+        let a = generate_email_server_id("secret", "email-1");
+        let b = generate_email_server_id("secret", "email-1");
+        assert_eq!(a, b, "Same inputs must produce same server ID");
+
+        let c = generate_email_server_id("secret", "email-2");
+        assert_ne!(a, c, "Different inputs must produce different server IDs");
+    }
+
+    #[test]
+    fn test_eas_email_folders_xml_contains_inbox() {
+        let xml = eas_email_folders_xml();
+        assert!(xml.contains("Inbox"), "Must include Inbox folder");
+        assert!(xml.contains("Sent Items"), "Must include Sent Items folder");
+        assert!(xml.contains("Drafts"), "Must include Drafts folder");
+        assert!(xml.contains("Junk Email"), "Must include Junk Email folder");
+    }
+}

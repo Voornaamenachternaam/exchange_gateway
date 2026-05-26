@@ -18,7 +18,18 @@ services:
       - RUST_LOG=${GATEWAY_RUST_LOG:-}
       - TZ=${GATEWAY_TZ:-UTC}
       - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
+      # CalDAV (calendar) backend — Stalwart
       - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}
+      # JMAP (email) backend — Stalwart
+      - GATEWAY_JMAP_BASE=${GATEWAY_JMAP_BASE:-}
+      # SMTP (email sending) backend — Stalwart
+      - GATEWAY_SMTP_HOST=${GATEWAY_SMTP_HOST:-}
+      - GATEWAY_SMTP_PORT=${GATEWAY_SMTP_PORT:-465}
+      # Email toggle
+      - GATEWAY_EMAIL_ENABLED=${GATEWAY_EMAIL_ENABLED:-true}
+      # Mail server hostname for autodiscover IMAP/SMTP settings
+      - GATEWAY_MAIL_HOST=${GATEWAY_MAIL_HOST:-}
+      # Core settings
       - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET}
       - GATEWAY_HOST=${GATEWAY_HOST}
       - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN}

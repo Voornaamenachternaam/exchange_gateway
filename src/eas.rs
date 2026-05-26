@@ -219,6 +219,21 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
             required_tags: &[],
             _optional_tags: &["Move", "SrcMsgId", "SrcFldId", "DstFldId"],
         }),
+        "sendmail" => Some(CommandGrammar {
+            namespace: "SendMail:",
+            required_tags: &[],
+            _optional_tags: &["ClientId", "SaveInSentItems", "MIMEData"],
+        }),
+        "smartreply" => Some(CommandGrammar {
+            namespace: "SmartReply:",
+            required_tags: &[],
+            _optional_tags: &["ClientId", "SaveInSentItems", "SourceMessageId", "SourceFolderId", "MIMEData"],
+        }),
+        "smartforward" => Some(CommandGrammar {
+            namespace: "SmartForward:",
+            required_tags: &[],
+            _optional_tags: &["ClientId", "SaveInSentItems", "SourceMessageId", "SourceFolderId", "MIMEData"],
+        }),
         _ => None,
     }
 }
@@ -288,10 +303,16 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
 
     match lower_cmd.as_str() {
         "sync" => {
-            if extract_first_tag_text(xml, b"Class")
-                .is_some_and(|class| !class.eq_ignore_ascii_case("Calendar"))
-            {
-                return Err("Only Calendar Sync class is supported");
+            if let Some(class) = extract_first_tag_text(xml, b"Class") {
+                let lower = class.to_ascii_lowercase();
+                if lower != "calendar"
+                    && lower != "email"
+                    && lower != "contacts"
+                    && lower != "tasks"
+                    && lower != "notes"
+                {
+                    return Err("Unsupported Sync class");
+                }
             }
             if xml.contains("<Add>") && !xml.contains("<ClientId>") {
                 return Err("Add requires ClientId");
@@ -752,7 +773,7 @@ fn options_response(request_id: &str) -> Response {
             ),
             (
                 "MS-ASProtocolCommands",
-                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert",
+                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert,SendMail,SmartReply,SmartForward",
             ),
         ],
         "",
@@ -1039,7 +1060,18 @@ async fn handle_folder_sync(
         )
         .await;
     let changes = if incoming == "0" {
-        r#"<Changes><Count>1</Count><Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add></Changes>"#
+        // Per MS-ASCMD §2.2.3.41, Type values:
+        // 2=Email (default mail folder), 3=Drafts, 4=Sent Items,
+        // 5=Deleted Items, 6=Outbox, 7=Junk Email, 8=Calendar
+        r#"<Changes><Count>7</Count>
+<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
+<Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Inbox</DisplayName><Type>2</Type></Add>
+<Add><ServerId>3</ServerId><ParentId>0</ParentId><DisplayName>Drafts</DisplayName><Type>3</Type></Add>
+<Add><ServerId>4</ServerId><ParentId>0</ParentId><DisplayName>Sent Items</DisplayName><Type>4</Type></Add>
+<Add><ServerId>5</ServerId><ParentId>0</ParentId><DisplayName>Deleted Items</DisplayName><Type>5</Type></Add>
+<Add><ServerId>6</ServerId><ParentId>0</ParentId><DisplayName>Outbox</DisplayName><Type>6</Type></Add>
+<Add><ServerId>7</ServerId><ParentId>0</ParentId><DisplayName>Junk Email</DisplayName><Type>7</Type></Add>
+</Changes>"#
     } else {
         r#"<Changes><Count>0</Count></Changes>"#
     };
@@ -1891,6 +1923,166 @@ async fn handle_search(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
+/// Handle EAS SendMail command (MS-ASCMD §2.2.2.16).
+///
+/// Per MS-ASCMD, the SendMail command sends a MIME message to the server
+/// for delivery. The client sends the full MIME message in the request.
+/// For the gateway, we parse the MIME data and send via SMTP, or
+/// parse the simplified XML fields and construct the email.
+async fn handle_send_mail(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    if !state.cfg.email_enabled {
+        return xml_or_wbxml_response(
+            wbxml,
+            as_wbxml,
+            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">1</Status>"#,
+            request_id,
+        );
+    }
+
+    // Try to parse the EAS SendMail request and extract the MIME content
+    if let Some(req) = crate::email::parse_eas_sendmail(xml) {
+        // Build an EwsMessage from the parsed request for SMTP submission
+        let msg = crate::email::EwsMessage {
+            subject: String::new(),
+            body: req.mime_data.clone().unwrap_or_default(),
+            body_type: "Text".to_string(),
+            from: username.to_string(),
+            to_recipients: Vec::new(),
+            cc_recipients: Vec::new(),
+            bcc_recipients: Vec::new(),
+            ..Default::default()
+        };
+
+        match crate::email::send_email_smtp(state, &msg, username, password).await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "SMTP send failed for EAS SendMail");
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">1</Status>"#,
+                    request_id,
+                );
+            }
+        }
+    }
+
+    // Per MS-ASCMD, SendMail returns Status 1 on success
+    xml_or_wbxml_response(
+        wbxml,
+        as_wbxml,
+        r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">1</Status>"#,
+        request_id,
+    )
+}
+
+/// Handle EAS Email Sync class by routing to JMAP.
+///
+/// Per MS-ASEMAIL, the Email sync class synchronizes email messages.
+/// The gateway translates JMAP Email/get and Email/changes to EAS Sync responses.
+#[allow(clippy::too_many_arguments)]
+async fn handle_email_sync(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    state_collection_id: &str,
+    incoming_sync_key: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> anyhow::Result<Response> {
+
+    // For initial sync (sync_key="0"), return folder structure
+    if incoming_sync_key == "0" {
+        let new_sync_key = Uuid::new_v4().simple().to_string();
+        if let Err(e) = state
+            .storage
+            .set_sync_key(username, state_collection_id, &new_sync_key, None)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to set initial email sync key");
+        }
+
+        // Fetch emails from JMAP inbox
+    let emails = if let Some(jmap) = &state.jmap_client {
+        match jmap.get_account_id(username, password).await {
+            Ok(account_id) => {
+                match crate::email::fetch_emails_jmap(
+                    state,
+                    &account_id,
+                    "inbox",
+                    0,
+                    state.cfg.max_attachment_bytes as u64 / 100,
+                    username,
+                    password,
+                )
+                .await
+                {
+                    Ok(emails) => emails,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
+                        Vec::new()
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+        let mut commands_xml = String::new();
+        for email in &emails {
+            let server_id = crate::email::generate_email_server_id(
+                state.cfg.hmac_secret(),
+                email.id.as_deref().unwrap_or("unknown"),
+            );
+            let app_data = crate::email::render_jmap_email_as_eas_application_data(
+                email,
+                &server_id,
+                "2", // Inbox collection
+            );
+            commands_xml.push_str(&format!(
+                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                server_id, app_data,
+            ));
+        }
+
+        let resp_xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>2</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
+            new_sync_key, commands_xml
+        );
+        return Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id));
+    }
+
+    // Subsequent syncs — check for changes
+    let new_sync_key = Uuid::new_v4().simple().to_string();
+    if let Err(e) = state
+        .storage
+        .set_sync_key(username, state_collection_id, &new_sync_key, None)
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to update email sync key");
+    }
+
+    let resp_xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>2</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+        new_sync_key
+    );
+    Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id))
+}
+
 pub async fn handle(
     State(state): State<Arc<AppState>>,
     method: Method,
@@ -1982,6 +2174,46 @@ pub async fn handle(
             );
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
+        
+        // Email sync — route to JMAP instead of CalDAV
+        if class.eq_ignore_ascii_case("Email") {
+            if state.cfg.email_enabled && state.jmap_client.is_some() {
+                match handle_email_sync(
+                    &state,
+                    &username,
+                    &password,
+                    &state_collection_id,
+                    incoming_key,
+                    &wbxml,
+                    wants_wbxml,
+                    &request_id,
+                )
+                .await
+                {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        tracing::error!("request_id={} Email Sync Error: {}", request_id, e);
+                        let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
+                        xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id)
+                    }
+                }
+            } else {
+                let new_sync_key = Uuid::new_v4().simple().to_string();
+                if let Err(e) = state
+                    .storage
+                    .set_sync_key(&username, &state_collection_id, &new_sync_key, None)
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to set email sync key");
+                }
+                let resp_xml = format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>1</Status><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                    new_sync_key, collection_id
+                );
+                xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id)
+            }
+        } else {
+        // Calendar/Contacts/Tasks — existing CalDAV sync
             let mut mutation_responses = String::new();
             let owner = crate::ews::owner_from_username(&username);
             let calendar_folder_id = crate::ews_folders::folder_id_for(
@@ -2103,6 +2335,7 @@ pub async fn handle(
                 }
             }
         }
+            } // closes the `else { Calendar` branch
         "Ping" => {
             handle_ping(
                 &state,
@@ -2217,6 +2450,18 @@ pub async fn handle(
             &request_id,
             "MoveItems is not supported for this calendar-only mailbox surface",
         ),
+        "SendMail" | "SmartReply" | "SmartForward" => {
+            handle_send_mail(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
         _ => unsupported_command_response(&req.command, &wbxml, wants_wbxml, &request_id),
     }
 }

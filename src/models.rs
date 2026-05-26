@@ -2,7 +2,9 @@
 use crate::attachment::AttachmentManager;
 use crate::auth::AuthVerifier;
 use crate::config::Config;
+use crate::jmap::JmapClient;
 use crate::room::RoomManager;
+use crate::smtp::SmtpClient;
 use crate::storage::Storage;
 use std::sync::Arc;
 
@@ -13,6 +15,10 @@ pub struct AppState {
     pub attachment_manager: Arc<AttachmentManager>,
     pub room_manager: Arc<RoomManager>,
     pub auth_verifier: Arc<AuthVerifier>,
+    /// SMTP client for sending email (None if email is disabled or SMTP not configured)
+    pub smtp_client: Option<Arc<SmtpClient>>,
+    /// JMAP client for reading/syncing email (None if email is disabled or JMAP not configured)
+    pub jmap_client: Option<Arc<JmapClient>>,
 }
 
 impl AppState {
@@ -24,12 +30,47 @@ impl AppState {
         ));
         let room_manager = Arc::new(RoomManager::new(storage.clone()));
         let auth_verifier = Arc::new(AuthVerifier::new(&cfg));
+
+        let smtp_client = if cfg.email_enabled && !cfg.smtp_host.is_empty() {
+            Some(Arc::new(SmtpClient::new(&cfg.smtp_host, cfg.smtp_port)))
+        } else {
+            None
+        };
+
+        let jmap_client = if cfg.email_enabled && !cfg.jmap_base.is_empty() {
+            match JmapClient::new(&cfg.jmap_base) {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "models",
+                        jmap_base = %cfg.jmap_base,
+                        error = %e,
+                        "Failed to create JMAP client; email sync will be unavailable"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if cfg.email_enabled {
+            tracing::info!(
+                target: "models",
+                smtp_configured = smtp_client.is_some(),
+                jmap_configured = jmap_client.is_some(),
+                "Email subsystem initialized"
+            );
+        }
+
         Self {
             cfg,
             storage,
             attachment_manager,
             room_manager,
             auth_verifier,
+            smtp_client,
+            jmap_client,
         }
     }
 
@@ -39,6 +80,22 @@ impl AppState {
 
     pub fn caldav_base(&self) -> &str {
         &self.cfg.caldav_base
+    }
+
+    /// Whether email functionality is available (enabled and configured)
+    pub fn email_available(&self) -> bool {
+        self.cfg.email_enabled
+            && (self.smtp_client.is_some() || self.jmap_client.is_some())
+    }
+
+    /// Whether email sending is available
+    pub fn can_send_email(&self) -> bool {
+        self.smtp_client.is_some()
+    }
+
+    /// Whether email reading/syncing is available
+    pub fn can_read_email(&self) -> bool {
+        self.jmap_client.is_some()
     }
 }
 

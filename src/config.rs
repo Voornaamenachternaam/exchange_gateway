@@ -7,6 +7,8 @@ use std::fs;
 const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
 const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
+const DEFAULT_SMTP_PORT: u16 = 465;
+const DEFAULT_IMAP_PORT: u16 = 993;
 
 const ENV_BIND: &str = "GATEWAY_BIND";
 const ENV_CALDAV_BASE: &str = "GATEWAY_CALDAV_BASE";
@@ -18,6 +20,13 @@ const ENV_MAX_ATTACHMENT_BYTES: &str = "GATEWAY_MAX_ATTACHMENT_BYTES";
 const ENV_ROOM_BOOKING_ENABLED: &str = "GATEWAY_ROOM_BOOKING_ENABLED";
 const ENV_AUTH_CACHE_TTL_SECS: &str = "GATEWAY_AUTH_CACHE_TTL_SECS";
 const ENV_AUTH_CACHE_MAX_ENTRIES: &str = "GATEWAY_AUTH_CACHE_MAX_ENTRIES";
+const ENV_SMTP_HOST: &str = "GATEWAY_SMTP_HOST";
+const ENV_SMTP_PORT: &str = "GATEWAY_SMTP_PORT";
+const ENV_IMAP_HOST: &str = "GATEWAY_IMAP_HOST";
+const ENV_IMAP_PORT: &str = "GATEWAY_IMAP_PORT";
+const ENV_JMAP_BASE: &str = "GATEWAY_JMAP_BASE";
+const ENV_EMAIL_ENABLED: &str = "GATEWAY_EMAIL_ENABLED";
+const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -38,6 +47,26 @@ pub struct Config {
     pub auth_cache_ttl_secs: u64,
     #[serde(default = "default_auth_cache_max_entries")]
     pub auth_cache_max_entries: usize,
+    // Email configuration — SMTP submission via Stalwart
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    // IMAP for legacy clients (informational — JMAP is preferred)
+    #[serde(default)]
+    pub imap_host: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    // JMAP base URL for email read/sync via Stalwart
+    #[serde(default)]
+    pub jmap_base: String,
+    // Master switch for email functionality
+    #[serde(default = "default_email_enabled")]
+    pub email_enabled: bool,
+    // Mail server hostname for autodiscover IMAP/SMTP settings
+    // (e.g., "mail.example.com"). Falls back to "mail.{mail_domain}".
+    #[serde(default)]
+    pub mail_host: String,
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -54,6 +83,18 @@ fn default_auth_cache_ttl_secs() -> u64 {
 
 fn default_auth_cache_max_entries() -> usize {
     DEFAULT_AUTH_CACHE_MAX_ENTRIES
+}
+
+fn default_smtp_port() -> u16 {
+    DEFAULT_SMTP_PORT
+}
+
+fn default_imap_port() -> u16 {
+    DEFAULT_IMAP_PORT
+}
+
+fn default_email_enabled() -> bool {
+    true
 }
 
 impl Config {
@@ -310,6 +351,71 @@ fn apply_environment_overrides(cfg: &mut Config) {
             }
         }
     }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_SMTP_HOST, None), |c, v| {
+        c.smtp_host = v;
+    });
+
+    if let Some(val) = env::var(ENV_SMTP_PORT)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u16>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_SMTP_PORT);
+                cfg.smtp_port = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_SMTP_PORT,
+                    val
+                );
+            }
+        }
+    }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_IMAP_HOST, None), |c, v| {
+        c.imap_host = v;
+    });
+
+    if let Some(val) = env::var(ENV_IMAP_PORT)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u16>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_IMAP_PORT);
+                cfg.imap_port = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_IMAP_PORT,
+                    val
+                );
+            }
+        }
+    }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_JMAP_BASE, None), |c, v| {
+        c.jmap_base = v;
+    });
+
+    if let Some(val) = get_env_with_fallback(ENV_EMAIL_ENABLED, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_EMAIL_ENABLED);
+        cfg.email_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_MAIL_HOST, None), |c, v| {
+        c.mail_host = v;
+    });
+
+    // Derive mail_host from mail_domain if not explicitly set
+    if cfg.mail_host.is_empty() && !cfg.mail_domain.is_empty() {
+        cfg.mail_host = format!("mail.{}", cfg.mail_domain);
+    }
 }
 
 fn extract_host_from_caldav(url_str: &str) -> Option<String> {
@@ -383,6 +489,13 @@ impl Default for Config {
             room_booking_enabled: true,
             auth_cache_ttl_secs: DEFAULT_AUTH_CACHE_TTL_SECS,
             auth_cache_max_entries: DEFAULT_AUTH_CACHE_MAX_ENTRIES,
+            smtp_host: String::new(),
+            smtp_port: DEFAULT_SMTP_PORT,
+            imap_host: String::new(),
+            imap_port: DEFAULT_IMAP_PORT,
+            jmap_base: String::new(),
+            email_enabled: true,
+        mail_host: String::new(),
         }
     }
 }

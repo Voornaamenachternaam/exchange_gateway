@@ -1,8 +1,8 @@
 # Exchange Gateway — Agent Memory
 
 ## Architecture
-- Rust project (edition 2021) — EWS/ActiveSync gateway to Stalwart Mailserver CalDAV
-- Key files: `src/ews.rs` (EWS protocol), `src/caldav.rs` (CalDAV client), `src/ews_update.rs` (UpdateItem field parsing), `src/eas.rs` (ActiveSync/EAS protocol), `src/main.rs` (HTTP server + health check), `src/logging.rs` (log config)
+- Rust project (edition 2021) — EWS/ActiveSync gateway to Stalwart Mailserver CalDAV + JMAP
+- Key files: `src/ews.rs` (EWS protocol), `src/caldav.rs` (CalDAV client), `src/jmap.rs` (JMAP client), `src/smtp.rs` (SMTP client), `src/email.rs` (email domain logic), `src/ews_update.rs` (UpdateItem field parsing), `src/eas.rs` (ActiveSync/EAS protocol), `src/main.rs` (HTTP server + health check), `src/logging.rs` (log config)
 
 ## Stalwart v0.16.5 Quirks
 - **ETag on GET**: Stalwart v0.16.5 does NOT return ETag in GET response headers. Must use PROPFIND to obtain etags.
@@ -30,7 +30,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 163 tests (129 unit + 22 protocol fixture + 11 integration + 1 doc)
+- `cargo test` — 177 tests (143 unit + 22 protocol fixture + 11 integration + 1 doc)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
@@ -77,3 +77,69 @@
 - **This is NOT a gateway code bug for native EAS clients**: The EAS protocol implementation is correct (OPTIONS, Bearer challenge, Provision, FolderSync, Sync, Settings all work). The limitation applies only to the Outlook app, not to direct EAS clients.
 - **Why Outlook Windows works**: New Outlook for Windows (and Classic Outlook) connect DIRECTLY to on-premises servers via EWS/ActiveSync without requiring the cloud middle tier.
 - **Android calendar via gateway**: Use Android's native Exchange account (Settings → Accounts → Exchange) with the gateway's ActiveSync URL. Calendar syncs to native Android calendar. For email, use any IMAP client including Outlook for email-only.
+
+## Email Architecture (JMAP + SMTP)
+
+### Overview
+- The gateway now supports sending and receiving email alongside calendar functionality
+- Email reading/sync uses **JMAP** (RFC 8621) via Stalwart's JMAP API
+- Email sending uses **SMTPS** (implicit TLS on port 465) via Stalwart's SMTP server
+- Calendar continues to use **CalDAV** as before
+
+### Key Files
+- `src/jmap.rs` — JMAP client (session discovery, Email/query, Email/get, Email/set, Email/changes, Mailbox/query)
+- `src/smtp.rs` — SMTP client (lettre with tokio1-rustls-tls, implicit TLS on port 465, STARTTLS on port 587)
+- `src/email.rs` — Email domain logic (EWS Message parsing, JMAP→EWS/EAS rendering, SMTP sending, EAS SendMail parsing)
+
+### Configuration
+- `GATEWAY_JMAP_BASE` — JMAP API base URL (e.g., `https://stalwart.example.com/jmap`)
+- `GATEWAY_SMTP_HOST` — SMTP server hostname (e.g., `stalwart`)
+- `GATEWAY_SMTP_PORT` — SMTP port (default: 465 for SMTPS, 587 for STARTTLS)
+- `GATEWAY_EMAIL_ENABLED` — Enable/disable email features (default: true)
+- `GATEWAY_MAIL_HOST` — Mail server hostname for autodiscover IMAP/SMTP settings
+
+### EWS Email Operations
+- **FindItem** (email folders) → JMAP Email/query with mailbox role filter
+- **GetItem** (Message class) → JMAP Email/get with properties
+- **SyncFolderItems** (email folders) → JMAP Email/changes + Email/get
+- **CreateItem** (MessageDisposition=SendOnly/SendAndSaveCopy) → SMTP send + optional JMAP save
+- **SendItem** → SMTP send
+- **UpdateItem** (IsRead, Importance) → JMAP Email/set (keywords: $seen, $important)
+- **DeleteItem** (email items) → JMAP Email/set (destroy)
+- **MoveItem** → JMAP Email/set (mailboxIds update) — currently returns success with pending JMAP mailbox mapping
+
+### EAS Email Operations
+- **Sync** (Email class) → JMAP Email/query for initial sync, Email/changes for subsequent
+- **SendMail** → Parse MIME/XML + SMTP send
+- **SmartReply/SmartForward** → SMTP send with original message reference
+
+### JMAP Client Details
+- **Session discovery**: `/.well-known/jmap` → `fetchSession` URL → GET session object
+- **Account ID**: Retrieved from session's `urn:ietf:params:jmap:mail` account
+- **Email/query**: Filters by `inMailboxRole` (inbox, sent, drafts, junk, trash)
+- **Email/get**: Properties include `id`, `blobId`, `threadId`, `mailboxIds`, `keywords`, `from`, `to`, `cc`, `bcc`, `subject`, `receivedAt`, `hasAttachment`, `bodyValues`
+- **Email/changes**: State-based change tracking for SyncFolderItems
+- **Email/set**: Update keywords ($seen, $important), destroy emails
+- **Mailbox/query**: List mailboxes by role
+
+### SMTP Client Details
+- Uses `lettre` 0.11 with `tokio1-rustls-tls`
+- Port 465: Implicit TLS (`AsyncSmtpTransport::relay()`)
+- Port 587: STARTTLS (`AsyncSmtpTransport::starttls_relay()`)
+- Credentials: Same username/password as CalDAV/JMAP auth
+- MIME construction: MultiPart (text + HTML) or single-part (text only)
+
+### Email Server ID Generation
+- `generate_email_server_id(hmac_secret, jmap_id)` — HMAC-based stable ID
+- Same pattern as calendar: SHA-256 HMAC of JMAP email ID with gateway secret
+- Used for both EWS ItemId and EAS ServerId
+
+### JMAP→EWS Message Rendering
+- `render_jmap_email_as_ews_message()` — Full EWS `<t:Message>` XML
+- Maps JMAP keywords to EWS: `$seen` → IsRead=true, `$important` → Importance=High
+- Includes: Subject, From, ToRecipients, CcRecipients, BccRecipients, DateTimeReceived, Body, etc.
+
+### JMAP→EAS Application Data Rendering
+- `render_jmap_email_as_eas_application_data()` — EAS Sync command format
+- Maps to AirSync namespace with Email: and AirSyncBase: namespaces
+- Includes: Subject, From, To, DateReceived, Importance, Read, HasAttachment, Body
