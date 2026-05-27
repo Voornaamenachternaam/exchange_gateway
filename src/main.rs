@@ -97,7 +97,7 @@ async fn autodiscover_xml(
     );
 
     let (status, hdrs, body_out) =
-        autodiscover::handle_autodiscover_xml(host, &body, &email, accept_language, &state.cfg.mail_host);
+        autodiscover::handle_autodiscover_xml(host, &body, &email, accept_language, &state.cfg.mail_host, state.smtp_client.is_some());
 
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();

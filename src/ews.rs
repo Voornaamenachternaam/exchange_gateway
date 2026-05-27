@@ -2663,7 +2663,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     StatusCode::FORBIDDEN,
                 );
             }
-            match crate::email::send_email_smtp(state, &msg, &auth.username, &auth.password).await {
+            match crate::email::send_email(state, &msg, &auth.username, &auth.password).await {
                 Ok(message_id) => {
                     let server_id = crate::email::generate_email_server_id(
                         state.cfg.hmac_secret(),
@@ -3489,7 +3489,7 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 
     // Check if there's a <t:Message> element in the body (inline send)
     if let Some(msg) = crate::email::parse_ews_message(body) {
-        match crate::email::send_email_smtp(state, &msg, &auth.username, &auth.password).await {
+        match crate::email::send_email(state, &msg, &auth.username, &auth.password).await {
             Ok(_message_id) => {}
             Err(e) => {
                 tracing::error!(error = %e, "SMTP send failed for SendItem");

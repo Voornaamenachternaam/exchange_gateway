@@ -88,9 +88,9 @@ impl AppState {
             && (self.smtp_client.is_some() || self.jmap_client.is_some())
     }
 
-    /// Whether email sending is available
+    /// Whether email sending is available (JMAP submission or SMTP)
     pub fn can_send_email(&self) -> bool {
-        self.smtp_client.is_some()
+        self.jmap_client.is_some() || self.smtp_client.is_some()
     }
 
     /// Whether email reading/syncing is available

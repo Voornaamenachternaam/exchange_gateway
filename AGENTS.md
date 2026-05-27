@@ -30,7 +30,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 177 tests (143 unit + 22 protocol fixture + 11 integration + 1 doc)
+- `cargo test` — 177+ tests (143+ unit + 22 protocol fixture + 11 integration + 1 doc)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
@@ -83,35 +83,36 @@
 ### Overview
 - The gateway now supports sending and receiving email alongside calendar functionality
 - Email reading/sync uses **JMAP** (RFC 8621) via Stalwart's JMAP API
-- Email sending uses **SMTPS** (implicit TLS on port 465) via Stalwart's SMTP server
+- Email sending prefers **JMAP EmailSubmission** (RFC 8621 §2.7) via Stalwart, with **SMTP** as fallback
 - Calendar continues to use **CalDAV** as before
+- When JMAP submission is available, Stalwart ports 465 (SMTPS) and 993 (IMAPS) are optional
 
 ### Key Files
-- `src/jmap.rs` — JMAP client (session discovery, Email/query, Email/get, Email/set, Email/changes, Mailbox/query)
+- `src/jmap.rs` — JMAP client (session discovery, Email/query, Email/get, Email/set, Email/changes, Mailbox/query, EmailSubmission/set)
 - `src/smtp.rs` — SMTP client (lettre with tokio1-rustls-tls, implicit TLS on port 465, STARTTLS on port 587)
-- `src/email.rs` — Email domain logic (EWS Message parsing, JMAP→EWS/EAS rendering, SMTP sending, EAS SendMail parsing)
+- `src/email.rs` — Email domain logic (EWS Message parsing, JMAP→EWS/EAS rendering, JMAP/SMTP sending, EAS SendMail parsing)
 
 ### Configuration
 - `GATEWAY_JMAP_BASE` — JMAP API base URL (e.g., `https://stalwart.example.com/jmap`)
-- `GATEWAY_SMTP_HOST` — SMTP server hostname (e.g., `stalwart`)
+- `GATEWAY_SMTP_HOST` — SMTP server hostname (optional if JMAP submission is available; e.g., `stalwart`)
 - `GATEWAY_SMTP_PORT` — SMTP port (default: 465 for SMTPS, 587 for STARTTLS)
 - `GATEWAY_EMAIL_ENABLED` — Enable/disable email features (default: true)
-- `GATEWAY_MAIL_HOST` — Mail server hostname for autodiscover IMAP/SMTP settings
+- `GATEWAY_MAIL_HOST` — Mail server hostname for autodiscover IMAP/SMTP settings (only used when SMTP is configured)
 
 ### EWS Email Operations
 - **FindItem** (email folders) → JMAP Email/query with mailbox role filter
 - **GetItem** (Message class) → JMAP Email/get with properties
 - **SyncFolderItems** (email folders) → JMAP Email/changes + Email/get
-- **CreateItem** (MessageDisposition=SendOnly/SendAndSaveCopy) → SMTP send + optional JMAP save
-- **SendItem** → SMTP send
+- **CreateItem** (MessageDisposition=SendOnly/SendAndSaveCopy) → JMAP EmailSubmission (or SMTP) + optional JMAP save
+- **SendItem** → JMAP EmailSubmission (or SMTP)
 - **UpdateItem** (IsRead, Importance) → JMAP Email/set (keywords: $seen, $important)
 - **DeleteItem** (email items) → JMAP Email/set (destroy)
 - **MoveItem** → JMAP Email/set (mailboxIds update) — currently returns success with pending JMAP mailbox mapping
 
 ### EAS Email Operations
 - **Sync** (Email class) → JMAP Email/query for initial sync, Email/changes for subsequent
-- **SendMail** → Parse MIME/XML + SMTP send
-- **SmartReply/SmartForward** → SMTP send with original message reference
+- **SendMail** → Parse MIME/XML + JMAP EmailSubmission (or SMTP fallback)
+- **SmartReply/SmartForward** → JMAP EmailSubmission (or SMTP) with original message reference
 
 ### JMAP Client Details
 - **Session discovery**: `/.well-known/jmap` → `fetchSession` URL → GET session object
@@ -120,14 +121,16 @@
 - **Email/get**: Properties include `id`, `blobId`, `threadId`, `mailboxIds`, `keywords`, `from`, `to`, `cc`, `bcc`, `subject`, `receivedAt`, `hasAttachment`, `bodyValues`
 - **Email/changes**: State-based change tracking for SyncFolderItems
 - **Email/set**: Update keywords ($seen, $important), destroy emails
-- **Mailbox/query**: List mailboxes by role
+- **EmailSubmission/set** (RFC 8621 §2.7): Create email via Email/set, then submit via EmailSubmission/set with `emailId: "#e0"` back-reference. Uses capability `urn:ietf:params:jmap:submission`. Stalwart v0.16.5 fully supports this.
+- **Mailbox/query**: List mailboxes by role, find "sent" mailbox for EmailSubmission
 
-### SMTP Client Details
+### SMTP Client Details (fallback when JMAP submission unavailable)
 - Uses `lettre` 0.11 with `tokio1-rustls-tls`
 - Port 465: Implicit TLS (`AsyncSmtpTransport::relay()`)
 - Port 587: STARTTLS (`AsyncSmtpTransport::starttls_relay()`)
 - Credentials: Same username/password as CalDAV/JMAP auth
 - MIME construction: MultiPart (text + HTML) or single-part (text only)
+- **Optional**: When JMAP EmailSubmission is available, SMTP is not needed between gateway and Stalwart
 
 ### Email Server ID Generation
 - `generate_email_server_id(hmac_secret, jmap_id)` — HMAC-based stable ID
@@ -143,3 +146,19 @@
 - `render_jmap_email_as_eas_application_data()` — EAS Sync command format
 - Maps to AirSync namespace with Email: and AirSyncBase: namespaces
 - Includes: Subject, From, To, DateReceived, Importance, Read, HasAttachment, Body
+
+### Port Elimination Architecture
+- **Port 993 (IMAPS)**: NOT used by the gateway. JMAP (HTTP) handles all email reading. Port 993 only needed for standalone IMAP clients connecting directly to Stalwart.
+- **Port 465 (SMTPS)**: Optional when JMAP EmailSubmission is available. The gateway's `send_email()` function prefers JMAP `EmailSubmission/set`, falling back to SMTP only if JMAP submission fails or is not configured.
+- **Port 25 (SMTP MX)**: Always required for receiving inbound email from external MTAs. This is MTA-to-MTA traffic, unrelated to the gateway.
+- **Port 8080 (HTTP)**: Used for ALL gateway-to-Stalwart communication (JMAP + CalDAV). When JMAP EmailSubmission is used, this single port handles calendar AND email read/write/send.
+- **Autodiscover IMAP/SMTP blocks**: Only included in Outlook XML autodiscover response when `smtp_client.is_some()` (i.e., SMTP is explicitly configured). When JMAP-only, these blocks are omitted since Outlook uses EWS/ActiveSync directly.
+
+### Email Submission Flow (JMAP)
+1. `email::send_email()` checks for `jmap_client`
+2. If JMAP available: calls `send_email_jmap()` → `JmapClient::submit_email()`
+3. `submit_email()` sends batched JMAP request:
+   - `Email/set` with `create: { e0: { mailboxIds, from, to, cc, bcc, subject, bodyValues } }`
+   - `EmailSubmission/set` with `create: { s0: { emailId: "#e0", envelope: { mailFrom, rcptTo } } }`
+4. Both methods use `urn:ietf:params:jmap:submission` capability
+5. If JMAP fails, falls back to `send_email_smtp()` via lettre

@@ -1961,7 +1961,7 @@ async fn handle_send_mail(
             ..Default::default()
         };
 
-        match crate::email::send_email_smtp(state, &msg, username, password).await {
+        match crate::email::send_email(state, &msg, username, password).await {
             Ok(_) => {}
             Err(e) => {
                 tracing::error!(error = %e, "SMTP send failed for EAS SendMail");

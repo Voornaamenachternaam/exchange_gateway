@@ -285,9 +285,90 @@ pub fn render_jmap_email_as_eas_application_data(
     )
 }
 
+/// Send an email on behalf of a user.
+///
+/// Prefers JMAP EmailSubmission/set (RFC 8621 §2.7) when available,
+/// falling back to SMTP when JMAP submission is not configured.
+/// Used by both EWS SendItem/CreateItem and EAS SendMail.
+pub async fn send_email(
+    state: &Arc<AppState>,
+    msg: &EwsMessage,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    // Prefer JMAP EmailSubmission when available
+    if let Some(jmap) = &state.jmap_client {
+        match send_email_jmap(state, jmap, msg, username, password).await {
+            Ok(id) => return Ok(id),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "JMAP EmailSubmission failed, falling back to SMTP"
+                );
+            }
+        }
+    }
+
+    // Fallback to SMTP
+    send_email_smtp(state, msg, username, password).await
+}
+
+/// Send an email via JMAP EmailSubmission/set (RFC 8621 §2.7).
+async fn send_email_jmap(
+    state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    msg: &EwsMessage,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    let account_id = jmap.get_account_id(username, password).await?;
+
+    let from = if msg.from.is_empty() {
+        format!(
+            "{}@{}",
+            username.split('@').next().unwrap_or(username),
+            state.cfg.mail_domain
+        )
+    } else {
+        msg.from.clone()
+    };
+
+    let html_body = if msg.body_type.eq_ignore_ascii_case("HTML") {
+        Some(msg.body.as_str())
+    } else {
+        None
+    };
+
+    let email_id = jmap
+        .submit_email(crate::jmap::SubmitEmailParams {
+            account_id: &account_id,
+            from: &from,
+            to: &msg.to_recipients,
+            cc: &msg.cc_recipients,
+            bcc: &msg.bcc_recipients,
+            subject: &msg.subject,
+            text_body: &msg.body,
+            html_body,
+            username,
+            password,
+        })
+        .await?;
+
+    info!(
+        target: "email",
+        from = %from,
+        to_count = msg.to_recipients.len(),
+        subject_len = msg.subject.len(),
+        email_id = %email_id,
+        "Email sent via JMAP EmailSubmission"
+    );
+
+    Ok(email_id)
+}
+
 /// Send an email via SMTP on behalf of a user.
 ///
-/// Used by both EWS SendItem/CreateItem and EAS SendMail.
+/// Used as fallback when JMAP submission is unavailable.
 pub async fn send_email_smtp(
     state: &Arc<AppState>,
     msg: &EwsMessage,
@@ -295,7 +376,9 @@ pub async fn send_email_smtp(
     password: &SecretString,
 ) -> anyhow::Result<String> {
     let smtp = state.smtp_client.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("SMTP is not configured; email sending is unavailable")
+        anyhow::anyhow!(
+            "Neither JMAP submission nor SMTP is configured; email sending is unavailable"
+        )
     })?;
 
     let from = if msg.from.is_empty() {

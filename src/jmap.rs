@@ -11,10 +11,12 @@
 // - Email query (search/list emails in a mailbox)
 // - Email get (fetch full email content)
 // - Email sync (delta updates via state tokens)
+// - Email submission (send email via EmailSubmission/set, RFC 8621 §2.7)
 // - Mailbox query/get (list email folders)
 //
-// The gateway uses JMAP for email reading/syncing while keeping
-// CalDAV for calendar operations. SMTP is used for email sending.
+// The gateway uses JMAP for email reading/syncing AND email submission,
+// eliminating the need for SMTP between gateway and Stalwart.
+// CalDAV is used for calendar operations.
 
 use anyhow::{anyhow, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -214,6 +216,20 @@ pub struct QueryEmailsParams<'a> {
     pub sort: Option<Vec<Value>>,
     pub position: u64,
     pub limit: u64,
+    pub username: &'a str,
+    pub password: &'a SecretString,
+}
+
+/// Parameters for submitting an email via JMAP EmailSubmission/set (RFC 8621 §2.7).
+pub struct SubmitEmailParams<'a> {
+    pub account_id: &'a str,
+    pub from: &'a str,
+    pub to: &'a [String],
+    pub cc: &'a [String],
+    pub bcc: &'a [String],
+    pub subject: &'a str,
+    pub text_body: &'a str,
+    pub html_body: Option<&'a str>,
     pub username: &'a str,
     pub password: &'a SecretString,
 }
@@ -673,6 +689,194 @@ pub async fn destroy_emails(
 
     Ok(())
 }
+/// Submit an email via JMAP EmailSubmission/set (RFC 8621 §2.7).
+    ///
+    /// This replaces SMTP submission. The flow per RFC 8621 is:
+    /// 1. Create the Email via Email/set with mailboxIds including the sent folder
+    /// 2. Create an EmailSubmission via EmailSubmission/set referencing the email
+    /// 3. The server processes the submission and delivers the email
+    ///
+    /// Returns the created email ID on success.
+    pub async fn submit_email(&self, params: SubmitEmailParams<'_>) -> Result<String> {
+        let session = self.get_session(params.username, params.password).await?;
+        let api_url = &session.api_url;
+
+        // Build the mailboxIds — put in "sent" mailbox for SendAndSaveCopy semantics.
+        let mailbox_ids = self
+            .get_sent_mailbox_id(params.account_id, params.username, params.password)
+            .await
+            .unwrap_or_else(|_| "sent".to_string());
+
+        // Build the email object per RFC 8621 §4.1
+        let mut email_obj = json!({
+            "mailboxIds": { mailbox_ids: true },
+            "from": [{ "email": params.from }],
+            "to": params.to.iter().map(|addr| json!({ "email": addr })).collect::<Vec<_>>(),
+            "subject": params.subject,
+        });
+
+        if !params.cc.is_empty() {
+            email_obj["cc"] = json!(
+                params.cc.iter().map(|addr| json!({ "email": addr })).collect::<Vec<_>>()
+            );
+        }
+        if !params.bcc.is_empty() {
+            email_obj["bcc"] = json!(
+                params.bcc.iter().map(|addr| json!({ "email": addr })).collect::<Vec<_>>()
+            );
+        }
+
+        // Set body per RFC 8621 §4.1.4 — bodyValues
+        email_obj["bodyValues"] = json!({
+            "text": {
+                "value": params.text_body,
+                "isEncodingProblem": false,
+                "isTruncated": false,
+            }
+        });
+
+        // If HTML body provided, add it
+        if let Some(html) = params.html_body {
+            email_obj["bodyValues"]["html"] = json!({
+                "value": html,
+                "isEncodingProblem": false,
+                "isTruncated": false,
+            });
+            email_obj["htmlBody"] = json!({
+                "partId": "html",
+                "type": "text/html"
+            });
+        }
+
+        // Step 1: Create the Email via Email/set
+        // Step 2: Create EmailSubmission referencing the created email
+        // Both calls are batched in a single JMAP request for atomicity.
+        let method_calls = vec![
+            (
+                "Email/set",
+                json!({
+                    "accountId": params.account_id,
+                    "create": {
+                        "e0": email_obj,
+                    },
+                }),
+                "es0",
+            ),
+            (
+                "EmailSubmission/set",
+                json!({
+                    "accountId": params.account_id,
+                    "create": {
+                        "s0": {
+                            "emailId": "#e0",
+                            "envelope": {
+                                "mailFrom": { "email": params.from },
+                                "rcptTo": params.to.iter()
+                                    .chain(params.cc.iter())
+                                    .chain(params.bcc.iter())
+                                    .map(|addr| json!({ "email": addr }))
+                                    .collect::<Vec<_>>(),
+                            },
+                        },
+                    },
+                }),
+                "ess0",
+            ),
+        ];
+
+        let response = self
+            .api_call(
+                api_url,
+                &[
+                    "urn:ietf:params:jmap:core",
+                    "urn:ietf:params:jmap:mail",
+                    "urn:ietf:params:jmap:submission",
+                ],
+                method_calls,
+                params.username,
+                params.password,
+            )
+            .await?;
+
+        // Check for errors in Email/set and EmailSubmission/set
+        let mut email_id = String::new();
+        for (method, data, _) in &response.method_responses {
+            if method == "Email/set" {
+            if let Some(not_created) = data.get("notCreated")
+                && !not_created.is_null()
+                && not_created.as_object().is_none_or(|o| !o.is_empty())
+            {
+                return Err(anyhow!("Email/set failed: {}", not_created));
+            }
+                if let Some(created) = data.get("created")
+                    && let Some(e0) = created.get("e0")
+                {
+                    email_id = e0
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                }
+        }
+        if method == "EmailSubmission/set"
+            && let Some(not_created) = data.get("notCreated")
+            && !not_created.is_null()
+            && not_created.as_object().is_none_or(|o| !o.is_empty())
+        {
+            return Err(anyhow!(
+                "EmailSubmission/set failed: {}",
+                not_created
+            ));
+        }
+        }
+
+        if email_id.is_empty() {
+            warn!("JMAP Email/set succeeded but no email ID returned");
+        }
+
+        Ok(email_id)
+    }
+
+    /// Get the mailbox ID for the "sent" role.
+    async fn get_sent_mailbox_id(
+        &self,
+        account_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "Mailbox/query",
+            json!({
+                "accountId": account_id,
+                "filter": { "role": "sent" },
+            }),
+            "mq0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Mailbox/query"
+                && let Some(ids) = data.get("ids").and_then(|v| v.as_array())
+                && let Some(first_id) = ids.first().and_then(|v| v.as_str())
+            {
+                return Ok(first_id.to_string());
+            }
+        }
+
+        Err(anyhow!("No 'sent' mailbox found"))
+    }
 /// Query mailboxes for an account.
     ///
     /// Maps to `Mailbox/query` (RFC 8621 §5.3).
