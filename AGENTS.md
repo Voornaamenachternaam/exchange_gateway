@@ -1,10 +1,23 @@
 # Exchange Gateway — Agent Memory
 
 ## Architecture
-- Rust project (edition 2021) — EWS/ActiveSync gateway to Stalwart Mailserver CalDAV + JMAP
-- Key files: `src/ews.rs` (EWS protocol), `src/caldav.rs` (CalDAV client), `src/jmap.rs` (JMAP client), `src/smtp.rs` (SMTP client), `src/email.rs` (email domain logic), `src/ews_update.rs` (UpdateItem field parsing), `src/eas.rs` (ActiveSync/EAS protocol), `src/main.rs` (HTTP server + health check), `src/logging.rs` (log config)
+- Rust project (edition 2024) — EWS/ActiveSync gateway to Stalwart Mailserver JMAP + CalDAV
+- Key files: `src/ews.rs` (EWS protocol), `src/caldav.rs` (CalDAV client, fallback), `src/jmap.rs` (JMAP client — email + calendar), `src/smtp.rs` (SMTP client), `src/email.rs` (email domain logic), `src/ews_update.rs` (UpdateItem field parsing), `src/eas.rs` (ActiveSync/EAS protocol), `src/main.rs` (HTTP server + health check), `src/logging.rs` (log config)
+- **JMAP Calendar (urn:ietf:params:jmap:calendars)**: Stalwart v0.16.6+ supports `draft-ietf-jmap-calendars-26` (RFC 8984 precursor). The gateway uses JMAP Calendar as the primary calendar backend when `urn:ietf:params:jmap:calendars` appears in the JMAP session capabilities. CalDAV is the fallback.
+- **JMAP Calendar operation mapping**: `find_user_calendars` → `Calendar/get`, `query_events` → `CalendarEvent/query` + `CalendarEvent/get`, `get_event` → `CalendarEvent/get` (with `iCalendar` property), `put_event` → `CalendarEvent/set` (with `iCalendar` property), `delete_event` → `CalendarEvent/set` (destroy), `get_freebusy` → `Principal/getAvailability`, `verify_credentials` → JMAP session fetch
+- **JMAP Calendar eliminates ETag complexity**: JMAP uses state-based change tracking instead of HTTP ETags. No more If-Match/412/SYNTHETIC_ETAG_PREFIX when using JMAP Calendar.
+- **JMAP auto-derive**: When `GATEWAY_JMAP_BASE` is not explicitly set, it is auto-derived from `GATEWAY_CALDAV_BASE` by replacing `/dav` with `/jmap`.
 
-## Stalwart v0.16.5 Quirks
+## Stalwart v0.16.6 JMAP Calendar Support
+- **Capability URN**: `urn:ietf:params:jmap:calendars` — check via `JmapClient::supports_calendar()`
+- **Calendar/get**: Returns list of Calendar objects (id, name, color, timeZone, etc.)
+- **CalendarEvent/get with iCalendar property**: Stalwart returns the raw ICS data in the `iCalendar` property when requested. This is critical for EWS/EAS rendering which needs iCalendar format.
+- **CalendarEvent/set with iCalendar property**: Stalwart accepts raw ICS data in the `iCalendar` property for create/update operations. This eliminates the need for CalendarEvent/parse + blob upload.
+- **CalendarEvent/query**: Filter by time range (`after`/`before`), calendar (`inCalendarIds`). Supports sorting and pagination.
+- **CalendarEvent/set (destroy)**: Destroy events by ID. No ETag/If-Match needed — JMAP uses state-based concurrency.
+- **Principal/getAvailability**: Replaces CalDAV free-busy-query. Capability URN: `urn:ietf:params:jmap:principals:availability`
+
+## Stalwart v0.16.x Quirks
 - **ETag on GET**: Stalwart v0.16.5 does NOT return ETag in GET response headers. Must use PROPFIND to obtain etags.
 - **ETag in PROPFIND/REPORT**: Stalwart always includes `<D:getetag>` in multistatus responses (Depth:0 PROPFIND and calendar-query REPORT). ETags are returned double-quoted: `"1419368738"`.
 - **412 on unquoted If-Match**: Per RFC 7232 §2.3, `If-Match` requires double-quoted entity-tags (`If-Match: "etag"` not `If-Match: etag`). Stalwart rejects unquoted etags with 412 Precondition Failed. Use `CaldavClient::format_etag_for_if_match()` to wrap etags in DQUOTE before sending.
@@ -19,7 +32,10 @@
 - **foreign_keys**: `PRAGMA foreign_keys = ON` in both `sqlite_schema.sql` and the Rust connection setup. Belt-and-suspenders: the schema SQL ensures ad-hoc sqlite3 CLI sessions also respect FK constraints.
 
 ## Key Patterns
-- **put_event etag flow**: get_event → (ics, Option<etag>) → if None, PROPFIND etag fallback → if still None, pass None (not synthetic) → put_event with 3-tier 412 retry
+- **Auth verification priority**: JMAP first, CalDAV fallback. `AuthVerifier::verify()` tries JMAP session fetch first (when `GATEWAY_JMAP_BASE` is set), then falls back to CalDAV PROPFIND. This unifies auth for email + calendar via a single HTTP endpoint.
+- **Health check priority**: JMAP first, CalDAV fallback. `health_check()` tries JMAP `/session` endpoint first (when `GATEWAY_JMAP_BASE` is set), then falls back to CalDAV OPTIONS. If JMAP fails but CalDAV succeeds, returns "degraded" mode.
+- **JMAP Calendar operation map**: `Calendar/get` → find calendars, `CalendarEvent/query + /get` → query events, `CalendarEvent/get (iCalendar)` → get event ICS, `CalendarEvent/set (iCalendar)` → create/update event, `CalendarEvent/set (destroy)` → delete event, `Principal/getAvailability` → free-busy
+- **put_event etag flow (CalDAV fallback)**: get_event → (ics, Option<etag>) → if None, PROPFIND etag fallback → if still None, pass None (not synthetic) → put_event with 3-tier 412 retry
 - **Synthetic etag prefix**: All synthetic etags use `CaldavClient::SYNTHETIC_ETAG_PREFIX` ("sgw-"). Filter: `is_synthetic_etag()` checks for "sgw-" prefix or "W/" (weak etag). Never use `e.len() < 64` — legitimate server etags can be 64+ chars. Both synthetic AND weak etags are filtered from If-Match headers per RFC 7232 §3.1 (strong comparison required).
 - **CaldavClient reuse**: Create CaldavClient outside loops. CaldavClient::new allocates a reqwest::Client (connection pool) — creating it per iteration causes socket exhaustion.
 - **SyncFolderItems journal**: Journal items not in current_map are NOT skipped. They go through: DB lookup → CalDAV fetch → emit Create/Update/Delete

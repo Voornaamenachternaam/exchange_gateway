@@ -1,10 +1,10 @@
 // src/jmap.rs
 //
-// JMAP (JSON Meta Application Protocol) client for email operations
-// with Stalwart Mailserver v0.16.5.
+// JMAP (JSON Meta Application Protocol) client for email and calendar
+// operations with Stalwart Mailserver v0.16.6.
 //
 // JMAP (RFC 8621) provides efficient email query/get/sync operations
-// via a single HTTP endpoint. Stalwart v0.16.5 supports JMAP natively
+// via a single HTTP endpoint. Stalwart v0.16.6 supports JMAP natively
 // at the /jmap/ path with Basic authentication.
 //
 // This module implements:
@@ -13,10 +13,15 @@
 // - Email sync (delta updates via state tokens)
 // - Email submission (send email via EmailSubmission/set, RFC 8621 §2.7)
 // - Mailbox query/get (list email folders)
+// - Calendar query/get (list calendars, draft-ietf-jmap-calendars-26)
+// - CalendarEvent query/get/set/destroy (calendar CRUD)
+// - CalendarEvent/parse (iCalendar → JSCalendar conversion)
+// - Free-busy via Principal/getAvailability
 //
 // The gateway uses JMAP for email reading/syncing AND email submission,
 // eliminating the need for SMTP between gateway and Stalwart.
-// CalDAV is used for calendar operations.
+// JMAP Calendar (urn:ietf:params:jmap:calendars) replaces CalDAV for
+// calendar operations when available, with CalDAV as fallback.
 
 use anyhow::{anyhow, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -28,6 +33,7 @@ use tracing::{debug, trace, warn};
 
 /// JMAP session object (RFC 8621 §2.1)
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapSession {
     pub api_url: String,
     pub download_url: String,
@@ -41,6 +47,7 @@ pub struct JmapSession {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapAccount {
     pub name: String,
     pub is_personal: bool,
@@ -50,12 +57,14 @@ pub struct JmapAccount {
 
 /// JMAP API request (RFC 8621 §3.1)
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapRequest {
     pub using: Vec<String>,
     pub method_calls: Vec<JmapMethodCall>,
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapMethodCall {
     pub name: String,
     pub arguments: Value,
@@ -64,6 +73,7 @@ pub struct JmapMethodCall {
 
 /// JMAP API response
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapResponse {
     pub method_responses: Vec<(String, Value, String)>,
     #[serde(default)]
@@ -73,6 +83,7 @@ pub struct JmapResponse {
 
 /// JMAP Email object (RFC 8621 §4.1)
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapEmail {
     pub id: Option<String>,
     #[serde(default)]
@@ -124,6 +135,7 @@ pub struct JmapEmailAddress {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapBodyValue {
     pub value: String,
     #[serde(default)]
@@ -131,6 +143,7 @@ pub struct JmapBodyValue {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapBodyPart {
     pub part_id: String,
     #[serde(default)]
@@ -145,6 +158,7 @@ pub struct JmapBodyPart {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapAttachment {
     #[serde(default)]
     pub id: Option<String>,
@@ -161,6 +175,7 @@ pub struct JmapAttachment {
 
 /// JMAP Mailbox object (RFC 8621 §5.1)
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapMailbox {
     pub id: Option<String>,
     #[serde(default)]
@@ -234,7 +249,154 @@ pub struct SubmitEmailParams<'a> {
     pub password: &'a SecretString,
 }
 
-/// JMAP client for email operations via Stalwart Mailserver.
+// ---------------------------------------------------------------------------
+// JMAP Calendar data types (draft-ietf-jmap-calendars-26)
+// ---------------------------------------------------------------------------
+
+/// JMAP capability URN for calendar operations (draft-ietf-jmap-calendars §1.5.1).
+pub const JMAP_CAL_CAPABILITY: &str = "urn:ietf:params:jmap:calendars";
+
+/// JMAP capability URN for availability/free-busy (draft-ietf-jmap-calendars §1.5.2).
+pub const JMAP_CAL_AVAILABILITY_CAPABILITY: &str = "urn:ietf:params:jmap:principals:availability";
+
+/// JMAP Calendar object (draft-ietf-jmap-calendars §4).
+/// Represents a named collection of CalendarEvents.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JmapCalendar {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub sort_order: Option<u64>,
+    #[serde(default)]
+    pub is_subscribed: Option<bool>,
+    #[serde(default)]
+    pub is_visible: Option<bool>,
+    #[serde(default)]
+    pub href: Option<String>,
+    #[serde(default)]
+    pub default_alerts: Option<Value>,
+    #[serde(default)]
+    pub default_is_all_day: Option<bool>,
+    #[serde(default)]
+    pub default_uses_default_alerts: Option<bool>,
+    #[serde(default, rename = "type")]
+    pub calendar_type: Option<String>,
+    #[serde(default)]
+    pub scale: Option<String>,
+    #[serde(default)]
+    pub time_zone: Option<String>,
+}
+
+/// JMAP CalendarEvent object (draft-ietf-jmap-calendars §5).
+/// Represents a calendar event in JSCalendar format.
+/// The `iCalendar` property is requested for gateway compatibility —
+/// the gateway needs ICS data to render EWS/EAS calendar items.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JmapCalendarEvent {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub uid: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub start: Option<Value>,
+    #[serde(default)]
+    pub end: Option<Value>,
+    #[serde(default)]
+    pub duration: Option<String>,
+    #[serde(default)]
+    pub location: Option<Value>,
+    #[serde(default)]
+    pub participants: Option<Value>,
+    #[serde(default)]
+    pub alerts: Option<Value>,
+    #[serde(default)]
+    pub calendar_ids: Option<HashMap<String, bool>>,
+    #[serde(default)]
+    pub is_all_day: Option<bool>,
+    #[serde(default)]
+    pub recurrence_rules: Option<Vec<Value>>,
+    #[serde(default)]
+    pub recurrence_overrides: Option<Value>,
+    #[serde(default)]
+    pub excluded: Option<Value>,
+    #[serde(default)]
+    pub sequence: Option<u64>,
+    #[serde(default)]
+    pub priority: Option<u64>,
+    #[serde(default)]
+    pub privacy: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub time_zone: Option<String>,
+    #[serde(default)]
+    pub created: Option<String>,
+    #[serde(default)]
+    pub updated: Option<String>,
+    /// The iCalendar representation of this event.
+    /// Requested via CalendarEvent/get with `properties: ["iCalendar"]`.
+    /// Stalwart returns the original iCalendar data in this property.
+    #[serde(default)]
+    pub i_calendar: Option<String>,
+}
+
+/// Result of a Calendar/get call.
+#[derive(Clone, Debug)]
+pub struct CalendarListResult {
+    pub calendars: Vec<JmapCalendar>,
+    pub total: u64,
+}
+
+/// Result of a CalendarEvent/query + CalendarEvent/get call.
+#[derive(Clone, Debug)]
+pub struct CalendarEventListResult {
+    pub events: Vec<JmapCalendarEvent>,
+    pub total: u64,
+    pub query_state: String,
+}
+
+/// Result of a CalendarEvent/changes call.
+#[derive(Clone, Debug)]
+pub struct CalendarEventChangesResult {
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    pub destroyed: Vec<String>,
+    pub new_state: String,
+    pub has_more_changes: bool,
+}
+
+/// Parameters for querying calendar events via JMAP.
+pub struct QueryCalendarEventsParams<'a> {
+    pub account_id: &'a str,
+    pub calendar_id: Option<&'a str>,
+    pub start: &'a str,
+    pub end: &'a str,
+    pub limit: u64,
+    pub username: &'a str,
+    pub password: &'a SecretString,
+}
+
+/// Parameters for creating/updating a calendar event via JMAP.
+pub struct SetCalendarEventParams<'a> {
+    pub account_id: &'a str,
+    pub ics: &'a str,
+    pub event_id: Option<&'a str>,
+    pub calendar_id: &'a str,
+    pub username: &'a str,
+    pub password: &'a SecretString,
+}
+
+/// JMAP client for email and calendar operations via Stalwart Mailserver.
 #[derive(Clone)]
 pub struct JmapClient {
     base_url: String,
@@ -994,6 +1156,489 @@ pub async fn destroy_emails(
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // JMAP Calendar methods (draft-ietf-jmap-calendars-26)
+    // -----------------------------------------------------------------------
+
+    /// Get the primary calendar account ID from the JMAP session.
+    ///
+    /// Per draft-ietf-jmap-calendars §1.5.1, the capability URN is
+    /// `urn:ietf:params:jmap:calendars`. The primary_accounts map in
+    /// the session object maps this URN to the account ID.
+    pub async fn get_calendar_account_id(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        session
+            .primary_accounts
+            .get(JMAP_CAL_CAPABILITY)
+            .cloned()
+            .ok_or_else(|| anyhow!("No primary calendar account found in JMAP session"))
+    }
+
+    /// Check whether the JMAP server supports calendar operations.
+    ///
+    /// Returns true if `urn:ietf:params:jmap:calendars` appears in
+    /// the session's top-level capabilities.
+    pub async fn supports_calendar(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> bool {
+        match self.get_session(username, password).await {
+            Ok(session) => session.capabilities.contains_key(JMAP_CAL_CAPABILITY),
+            Err(_) => false,
+        }
+    }
+
+    /// List calendars for the user via Calendar/get
+    /// (draft-ietf-jmap-calendars §4.1).
+    ///
+    /// Replaces CalDAV `find_user_calendars` (PROPFIND).
+    /// Returns the list of Calendar objects with their IDs and names.
+    pub async fn query_calendars(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<CalendarListResult> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CAL_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary calendar account found in JMAP session"))?;
+
+        let method_calls = vec![
+            (
+                "Calendar/get",
+                json!({
+                    "accountId": account_id,
+                    "properties": [
+                        "id", "name", "color", "description", "sortOrder",
+                        "isSubscribed", "isVisible", "href", "timeZone"
+                    ],
+                }),
+                "cg0",
+            ),
+        ];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Calendar/get" {
+                let list: Vec<JmapCalendar> = data
+                    .get("list")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let total = list.len() as u64;
+                return Ok(CalendarListResult { calendars: list, total });
+            }
+        }
+
+        Err(anyhow!("Unexpected JMAP response structure for Calendar/get"))
+    }
+
+    /// Query calendar events in a time range via CalendarEvent/query
+    /// + CalendarEvent/get (draft-ietf-jmap-calendars §5.11, §5.7).
+    ///
+    /// Replaces CalDAV `query_events` (REPORT calendar-query).
+    /// The `start`/`end` parameters are iCalendar UTC datetime strings
+    /// (e.g. "20260101T000000Z").
+    ///
+    /// Events are fetched with the `iCalendar` property so the gateway
+    /// can use the ICS data directly for EWS/EAS rendering.
+    pub async fn query_calendar_events(
+        &self,
+        params: QueryCalendarEventsParams<'_>,
+    ) -> Result<CalendarEventListResult> {
+        let session = self.get_session(params.username, params.password).await?;
+        let api_url = &session.api_url;
+
+        // Build filter per draft-ietf-jmap-calendars §5.11.1
+        let mut filter = json!({
+            "after": params.start,
+            "before": params.end,
+        });
+        if let Some(cal_id) = params.calendar_id {
+            filter["inCalendarIds"] = json!([cal_id]);
+        }
+
+        let method_calls = vec![
+            (
+                "CalendarEvent/query",
+                json!({
+                    "accountId": params.account_id,
+                    "filter": filter,
+                    "sort": [{ "property": "start", "isAscending": true }],
+                    "limit": params.limit,
+                    "calculateTotal": true,
+                }),
+                "eq0",
+            ),
+            (
+                "CalendarEvent/get",
+                json!({
+                    "accountId": params.account_id,
+                    "#ids": {
+                        "resultOf": "eq0",
+                        "name": "CalendarEvent/query",
+                        "path": "/ids",
+                    },
+                    "properties": [
+                        "id", "uid", "title", "start", "end", "duration",
+                        "location", "participants", "alerts", "calendarIds",
+                        "isAllDay", "recurrenceRules", "recurrenceOverrides",
+                        "excluded", "sequence", "priority", "privacy",
+                        "status", "timeZone", "created", "updated",
+                        "iCalendar"
+                    ],
+                }),
+                "eg0",
+            ),
+        ];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                params.username,
+                params.password,
+            )
+            .await?;
+
+        let mut events = Vec::new();
+        let mut total: u64 = 0;
+        let mut query_state = String::new();
+
+        for (method, data, _) in response.method_responses {
+            if method == "CalendarEvent/query" {
+                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                query_state = data
+                    .get("queryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+            }
+            if method == "CalendarEvent/get" {
+                events = data
+                    .get("list")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+            }
+        }
+
+        Ok(CalendarEventListResult {
+            events,
+            total,
+            query_state,
+        })
+    }
+
+    /// Get a single calendar event by ID via CalendarEvent/get
+    /// (draft-ietf-jmap-calendars §5.7).
+    ///
+    /// Replaces CalDAV `get_event` (GET).
+    /// Returns the ICS data and the JMAP event ID.
+    /// The ICS data comes from the `iCalendar` property returned by
+    /// Stalwart when requested.
+    pub async fn get_calendar_event(
+        &self,
+        account_id: &str,
+        event_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<(String, String)> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "CalendarEvent/get",
+            json!({
+                "accountId": account_id,
+                "ids": [event_id],
+                "properties": [
+                    "id", "uid", "title", "iCalendar"
+                ],
+            }),
+            "eg0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "CalendarEvent/get"
+                && let Some(list) = data.get("list").and_then(|v| v.as_array())
+                && let Some(event) = list.first()
+            {
+                let ics = event
+                    .get("iCalendar")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let id = event
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                return Ok((ics, id));
+            }
+            if method == "CalendarEvent/get"
+                && let Some(not_found) = data.get("notFound")
+                && !not_found.is_null()
+                && not_found.as_array().is_none_or(|a| !a.is_empty())
+            {
+                return Err(anyhow!("CalendarEvent not found: {}", event_id));
+            }
+        }
+
+        Err(anyhow!("CalendarEvent/get returned no data for ID {}", event_id))
+    }
+
+    /// Create or update a calendar event via CalendarEvent/set
+    /// (draft-ietf-jmap-calendars §5.9).
+    ///
+    /// Replaces CalDAV `put_event` (PUT).
+    /// Stalwart supports creating events from iCalendar data by posting
+    /// the raw ICS in CalendarEvent/set via the "iCalendar" property.
+    /// This eliminates the need for CalendarEvent/parse + blob upload.
+    ///
+    /// For creates (event_id is None), the event is placed in the
+    /// specified calendar_id.
+    /// For updates (event_id is Some), the existing event is patched.
+    ///
+    /// Returns (jmap_event_id, uid) on success.
+    pub async fn set_calendar_event(
+        &self,
+        params: SetCalendarEventParams<'_>,
+    ) -> Result<(String, String)> {
+        let session = self.get_session(params.username, params.password).await?;
+        let api_url = &session.api_url;
+
+        let create_obj = json!({
+            "iCalendar": params.ics,
+            "calendarIds": { params.calendar_id: true },
+        });
+
+        if let Some(existing_id) = params.event_id {
+            // Update existing event — use /set update with the new ICS
+            let method_calls = vec![(
+                "CalendarEvent/set",
+                json!({
+                    "accountId": params.account_id,
+                    "update": {
+                        existing_id: {
+                            "iCalendar": params.ics,
+                        },
+                    },
+                }),
+                "es0",
+            )];
+
+            let response = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                    method_calls,
+                    params.username,
+                    params.password,
+                )
+                .await?;
+
+            for (method, data, _) in &response.method_responses {
+                if method == "CalendarEvent/set" {
+                    if let Some(not_updated) = data.get("notUpdated")
+                        && !not_updated.is_null()
+                        && not_updated.as_object().is_none_or(|o| !o.is_empty())
+                    {
+                        return Err(anyhow!("CalendarEvent/set update failed: {}", not_updated));
+                    }
+                    if let Some(updated) = data.get("updated")
+                        && let Some(obj) = updated.get(existing_id)
+                    {
+                        let id = existing_id.to_string();
+                        let uid = obj
+                            .get("uid")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        return Ok((id, uid));
+                    }
+                }
+            }
+
+            Ok((existing_id.to_string(), String::new()))
+        } else {
+            // Create new event
+            let method_calls = vec![(
+                "CalendarEvent/set",
+                json!({
+                    "accountId": params.account_id,
+                    "create": {
+                        "e0": create_obj,
+                    },
+                }),
+                "es0",
+            )];
+
+            let response = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                    method_calls,
+                    params.username,
+                    params.password,
+                )
+                .await?;
+
+            for (method, data, _) in &response.method_responses {
+                if method == "CalendarEvent/set" {
+                    if let Some(not_created) = data.get("notCreated")
+                        && !not_created.is_null()
+                        && not_created.as_object().is_none_or(|o| !o.is_empty())
+                    {
+                        return Err(anyhow!("CalendarEvent/set create failed: {}", not_created));
+                    }
+                    if let Some(created) = data.get("created")
+                        && let Some(e0) = created.get("e0")
+                    {
+                        let id = e0
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let uid = e0
+                            .get("uid")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        return Ok((id, uid));
+                    }
+                }
+            }
+
+            Err(anyhow!("CalendarEvent/set create returned no created event"))
+        }
+    }
+
+    /// Destroy calendar events via CalendarEvent/set
+    /// (draft-ietf-jmap-calendars §5.9).
+    ///
+    /// Replaces CalDAV `delete_event` (DELETE).
+    /// JMAP uses state-based concurrency, so there is no
+    /// If-Match/ETag requirement — optimistic concurrency is
+    /// handled by the state token.
+    pub async fn destroy_calendar_events(
+        &self,
+        account_id: &str,
+        event_ids: &[String],
+        username: &str,
+        password: &SecretString,
+    ) -> Result<()> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "CalendarEvent/set",
+            json!({
+                "accountId": account_id,
+                "destroy": event_ids,
+            }),
+            "es0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in &response.method_responses {
+            if method == "CalendarEvent/set"
+                && let Some(not_destroyed) = data.get("notDestroyed")
+                && !not_destroyed.is_null()
+                && not_destroyed.as_object().is_none_or(|o| !o.is_empty())
+            {
+                return Err(anyhow!("CalendarEvent/set destroy failed: {}", not_destroyed));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get free-busy availability via Principal/getAvailability
+    /// (draft-ietf-jmap-calendars §2.2).
+    ///
+    /// Replaces CalDAV `get_freebusy` (REPORT free-busy-query).
+    /// Returns the raw JSON response for the caller to parse.
+    pub async fn get_availability(
+        &self,
+        account_id: &str,
+        start: &str,
+        end: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Value> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "Principal/getAvailability",
+            json!({
+                "accountId": account_id,
+                "principalIds": [account_id],
+                "duration": {
+                    "start": start,
+                    "end": end,
+                },
+            }),
+            "pa0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &[
+                    "urn:ietf:params:jmap:core",
+                    JMAP_CAL_AVAILABILITY_CAPABILITY,
+                ],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Principal/getAvailability" {
+                return Ok(data);
+            }
+        }
+
+        Err(anyhow!("Principal/getAvailability returned no data"))
+    }
 }
 
 #[cfg(test)]
@@ -1036,5 +1681,123 @@ mod tests {
         let expected_b64 = base64::engine::general_purpose::STANDARD
             .encode("user@example.com:pass123");
         assert_eq!(auth, format!("Basic {}", expected_b64));
+    }
+
+    #[test]
+    fn test_jmap_cal_capability_urn() {
+        assert_eq!(
+            JMAP_CAL_CAPABILITY,
+            "urn:ietf:params:jmap:calendars"
+        );
+    }
+
+    #[test]
+    fn test_jmap_cal_availability_capability_urn() {
+        assert_eq!(
+            JMAP_CAL_AVAILABILITY_CAPABILITY,
+            "urn:ietf:params:jmap:principals:availability"
+        );
+    }
+
+    #[test]
+    fn test_jmap_calendar_deserialization() {
+        let cal_json = json!({
+            "id": "cal-abc123",
+            "name": "Personal",
+            "color": "#FF0000",
+            "description": "My calendar",
+            "sortOrder": 1,
+            "isSubscribed": true,
+            "isVisible": true,
+            "timeZone": "America/New_York"
+        });
+        let cal: JmapCalendar = serde_json::from_value(cal_json).unwrap();
+        assert_eq!(cal.id.as_deref(), Some("cal-abc123"));
+        assert_eq!(cal.name.as_deref(), Some("Personal"));
+        assert_eq!(cal.color.as_deref(), Some("#FF0000"));
+        assert!(cal.is_subscribed.unwrap());
+        assert_eq!(cal.sort_order.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_jmap_calendar_event_deserialization() {
+        let event_json = json!({
+            "id": "evt-xyz789",
+            "uid": "19970901T130000Z-123401@example.com",
+            "title": "Team Meeting",
+            "iCalendar": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:19970901T130000Z-123401@example.com\r\nSUMMARY:Team Meeting\r\nEND:VEVENT\r\nEND:VCALENDAR",
+            "isAllDay": false,
+            "calendarIds": {"cal-abc123": true}
+        });
+        let event: JmapCalendarEvent = serde_json::from_value(event_json).unwrap();
+        assert_eq!(event.id.as_deref(), Some("evt-xyz789"));
+        assert_eq!(event.uid.as_deref(), Some("19970901T130000Z-123401@example.com"));
+        assert_eq!(event.title.as_deref(), Some("Team Meeting"));
+        assert!(event.i_calendar.is_some());
+        assert!(!event.is_all_day.unwrap());
+    }
+
+    #[test]
+    fn test_jmap_calendar_event_minimal() {
+        // Minimal event with just id — all other fields should default to None
+        let event_json = json!({"id": "evt-minimal"});
+        let event: JmapCalendarEvent = serde_json::from_value(event_json).unwrap();
+        assert_eq!(event.id.as_deref(), Some("evt-minimal"));
+        assert!(event.uid.is_none());
+        assert!(event.title.is_none());
+        assert!(event.i_calendar.is_none());
+        assert!(event.calendar_ids.is_none());
+    }
+
+    #[test]
+    fn test_jmap_session_calendar_capability_detection() {
+        let session_json = json!({
+            "username": "test@example.com",
+            "apiUrl": "https://stalwart.example.com/jmap/api/",
+            "downloadUrl": "https://stalwart.example.com/jmap/download/{blobId}",
+            "uploadUrl": "https://stalwart.example.com/jmap/upload/{accountId}",
+            "eventSourceUrl": "https://stalwart.example.com/jmap/eventsource",
+            "state": "state-1",
+            "primaryAccounts": {
+                "urn:ietf:params:jmap:mail": "acct-mail-123",
+                "urn:ietf:params:jmap:calendars": "acct-cal-456"
+            },
+            "capabilities": {
+                "urn:ietf:params:jmap:core": {},
+                "urn:ietf:params:jmap:mail": {},
+                "urn:ietf:params:jmap:calendars": {},
+                "urn:ietf:params:jmap:submission": {}
+            },
+            "accounts": {}
+        });
+        let session: JmapSession = serde_json::from_value(session_json).unwrap();
+        assert!(session.capabilities.contains_key(JMAP_CAL_CAPABILITY));
+        assert_eq!(
+            session.primary_accounts.get(JMAP_CAL_CAPABILITY),
+            Some(&"acct-cal-456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_jmap_session_no_calendar_capability() {
+        let session_json = json!({
+            "username": "test@example.com",
+            "apiUrl": "https://stalwart.example.com/jmap/api/",
+            "downloadUrl": "https://stalwart.example.com/jmap/download/{blobId}",
+            "uploadUrl": "https://stalwart.example.com/jmap/upload/{accountId}",
+            "eventSourceUrl": "https://stalwart.example.com/jmap/eventsource",
+            "state": "state-1",
+            "primaryAccounts": {
+                "urn:ietf:params:jmap:mail": "acct-mail-123"
+            },
+            "capabilities": {
+                "urn:ietf:params:jmap:core": {},
+                "urn:ietf:params:jmap:mail": {}
+            },
+            "accounts": {}
+        });
+        let session: JmapSession = serde_json::from_value(session_json).unwrap();
+        assert!(!session.capabilities.contains_key(JMAP_CAL_CAPABILITY));
+        assert!(!session.primary_accounts.contains_key(JMAP_CAL_CAPABILITY));
     }
 }

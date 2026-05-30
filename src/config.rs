@@ -157,8 +157,23 @@ impl Config {
         }
         cfg.validate()?;
 
+    // Auto-derive jmap_base from caldav_base if JMAP not explicitly set.
+    // Stalwart serves JMAP at the same host as CalDAV: replace /dav with /jmap.
+    if cfg.jmap_base.is_empty() && !cfg.caldav_base.is_empty() {
+        let derived = crate::jmap::JmapClient::derive_from_caldav(&cfg.caldav_base);
+        tracing::info!(
+            target: "config",
+            caldav_base = %cfg.caldav_base,
+            derived_jmap_base = %derived,
+            "Auto-derived jmap_base from caldav_base"
+        );
+        cfg.jmap_base = derived;
+    }
+
+
         // Sanitize caldav_base to avoid logging embedded credentials
         let sanitized_caldav_base = sanitize_url_for_logging(&cfg.caldav_base);
+    let sanitized_jmap_base = sanitize_url_for_logging(&cfg.jmap_base);
 
         tracing::info!(
             target: "config",
@@ -166,6 +181,7 @@ impl Config {
             gateway_host = cfg.gateway_host,
             mail_domain = cfg.mail_domain,
             caldav_base_sanitized = sanitized_caldav_base,
+        jmap_base_sanitized = sanitized_jmap_base,
             database_path = redact_path(&cfg.database_path),
             max_attachment_bytes = cfg.max_attachment_bytes,
             auth_cache_ttl_secs = cfg.auth_cache_ttl_secs,
@@ -201,15 +217,27 @@ impl Config {
                 ENV_MAIL_DOMAIN
             ));
         }
-        validate_url(&self.caldav_base, "caldav_base")?;
-        // Ensure caldav_base uses http(s) and ends with /dav or /dav/
-        let caldav_parsed = url::Url::parse(&self.caldav_base)
-            .map_err(|e| anyhow::anyhow!("Config: 'caldav_base' is not a valid URL: {}", e))?;
-        let path = caldav_parsed.path().trim_end_matches('/');
-        if !path.ends_with("dav") {
+        // At least one backend (CalDAV or JMAP) must be configured.
+        // CalDAV is still required as the primary calendar backend path
+        // for Stalwart, even when JMAP Calendar is used for operations.
+        if self.caldav_base.is_empty() && self.jmap_base.is_empty() {
             return Err(anyhow::anyhow!(
-                "Config: 'caldav_base' must end with '/dav' (e.g., http://stalwart:8080/dav)"
+                "Config: at least one of 'caldav_base' or 'jmap_base' must be configured"
             ));
+        }
+        if !self.caldav_base.is_empty() {
+            validate_url(&self.caldav_base, "caldav_base")?;
+            let caldav_parsed = url::Url::parse(&self.caldav_base)
+                .map_err(|e| anyhow::anyhow!("Config: 'caldav_base' is not a valid URL: {}", e))?;
+            let path = caldav_parsed.path().trim_end_matches('/');
+            if !path.ends_with("dav") {
+                return Err(anyhow::anyhow!(
+                    "Config: 'caldav_base' must end with '/dav' (e.g., http://stalwart:8080/dav)"
+                ));
+            }
+        }
+        if !self.jmap_base.is_empty() {
+            validate_url(&self.jmap_base, "jmap_base")?;
         }
         if self.database_path.is_empty() {
             return Err(anyhow::anyhow!(

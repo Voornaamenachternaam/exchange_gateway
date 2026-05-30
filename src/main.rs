@@ -461,6 +461,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
 
     debug!(
         target: "health",
+        jmap_configured = !state.cfg.jmap_base.is_empty(),
         caldav_configured = !state.cfg.caldav_base.is_empty(),
         "Health check started"
     );
@@ -483,16 +484,85 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
             .into_response();
     }
 
-    // Optionally check CalDAV if configured (lightweight PROPFIND)
-    if !state.cfg.caldav_base.is_empty() {
+    // Optionally check JMAP and/or CalDAV backend health.
+    // JMAP is preferred (single endpoint for email + calendar).
+    // CalDAV is checked as a fallback when JMAP is not configured.
+    let jmap_configured = !state.cfg.jmap_base.is_empty();
+    let caldav_configured = !state.cfg.caldav_base.is_empty();
+
+    if jmap_configured {
+        match verify_jmap_health(&state).await {
+            Ok(_) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                info!(
+                    target: "health",
+                    status = "healthy",
+                    check = "jmap",
+                    elapsed_ms = elapsed_ms,
+                    "Health check passed (JMAP)"
+                );
+                (StatusCode::OK, "OK").into_response()
+            }
+            Err(e) => {
+                // JMAP failed — try CalDAV as fallback
+                if caldav_configured {
+                    match verify_caldav_health(&state).await {
+                        Ok(_) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            warn!(
+                                target: "health",
+                                status = "degraded",
+                                jmap_error = %e,
+                                elapsed_ms = elapsed_ms,
+                                "JMAP unhealthy but CalDAV OK — degraded mode"
+                            );
+                            (StatusCode::OK, "OK (degraded: JMAP unavailable)").into_response()
+                        }
+                        Err(caldav_err) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            warn!(
+                                target: "health",
+                                status = "unhealthy",
+                                jmap_error = %e,
+                                caldav_error = %caldav_err,
+                                elapsed_ms = elapsed_ms,
+                                "Both JMAP and CalDAV backends unavailable"
+                            );
+                            (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                format!("Backends unavailable: JMAP={}, CalDAV={}", e, caldav_err),
+                            )
+                                .into_response()
+                        }
+                    }
+                } else {
+                    let elapsed_ms = start.elapsed().as_millis();
+                    warn!(
+                        target: "health",
+                        status = "unhealthy",
+                        check = "jmap",
+                        elapsed_ms = elapsed_ms,
+                        error = %e,
+                        "Health check failed - JMAP backend unavailable"
+                    );
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("JMAP backend unavailable: {}", e),
+                    )
+                        .into_response()
+                }
+            }
+        }
+    } else if caldav_configured {
         match verify_caldav_health(&state).await {
             Ok(_) => {
                 let elapsed_ms = start.elapsed().as_millis();
                 info!(
                     target: "health",
                     status = "healthy",
+                    check = "caldav",
                     elapsed_ms = elapsed_ms,
-                    "Health check passed"
+                    "Health check passed (CalDAV)"
                 );
                 (StatusCode::OK, "OK").into_response()
             }
@@ -518,12 +588,17 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         info!(
             target: "health",
             status = "healthy",
-            caldav_check = "skipped",
             elapsed_ms = elapsed_ms,
-            "Health check passed (CalDAV not configured)"
+            "Health check passed (no backend configured)"
         );
         (StatusCode::OK, "OK").into_response()
     }
+}
+
+async fn verify_jmap_health(state: &Arc<AppState>) -> Result<()> {
+    use exchange_gateway::jmap::JmapClient;
+    let jmap = JmapClient::new(&state.cfg.jmap_base)?;
+    jmap.health_check().await
 }
 
 async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
