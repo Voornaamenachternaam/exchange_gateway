@@ -36,7 +36,7 @@ tower-http = { version = "^0.6.11", features = ["trace", "cors", "limit", "timeo
 parking_lot = { version = "^0.12.5", features = ["send_guard"] }
 futures-util = "^0.3.32"
 futures-core = "^0.3.32"
-compact_str = { version = "^0.9.0", features = ["serde", "bytes"] }
+compact_str = { version = "^0.9.1", features = ["serde", "bytes"] }
 headers = "^0.4.1"
 flate2 = "^1.1.9"
 tokio-util = { version = "^0.7.18", features = ["codec", "io", "compat", "rt"] }
