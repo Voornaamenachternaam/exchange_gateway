@@ -37,6 +37,9 @@ const MAX_BODY_SIZE: usize = 1_048_576;
 const CALDAV_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
 const MAX_DEVICE_WINDOW_ENTRIES: usize = 100_000;
+/// Maximum number of emails to fetch in a single JMAP Email/query for EAS initial sync.
+/// Matches sync::DEFAULT_WINDOW_SIZE; keeps requests fast and memory-bounded.
+const EMAIL_SYNC_PAGE_SIZE: u64 = 100;
 
 type DeviceWindowCache = LruCache<String, Vec<Instant>>;
 type PingCache = LruCache<String, PingCacheEntry>;
@@ -2020,7 +2023,7 @@ async fn handle_email_sync(
                     &account_id,
                     "inbox",
                     0,
-                    state.cfg.max_attachment_bytes as u64 / 100,
+                    EMAIL_SYNC_PAGE_SIZE,
                     username,
                     password,
                 )
