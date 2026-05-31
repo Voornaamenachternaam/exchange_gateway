@@ -872,7 +872,7 @@ pub async fn destroy_emails(
 
         // Build the email object per RFC 8621 §4.1
         let mut email_obj = json!({
-            "mailboxIds": { mailbox_ids: true },
+            "mailboxIds": { (mailbox_ids): true },
             "from": [{ "email": params.from }],
             "to": params.to.iter().map(|addr| json!({ "email": addr })).collect::<Vec<_>>(),
             "subject": params.subject,
@@ -1437,7 +1437,7 @@ pub async fn destroy_emails(
 
         let create_obj = json!({
             "iCalendar": params.ics,
-            "calendarIds": { params.calendar_id: true },
+            "calendarIds": { (params.calendar_id): true },
         });
 
         if let Some(existing_id) = params.event_id {
@@ -1447,7 +1447,7 @@ pub async fn destroy_emails(
                 json!({
                     "accountId": params.account_id,
                     "update": {
-                        existing_id: {
+                        (existing_id): {
                             "iCalendar": params.ics,
                         },
                     },

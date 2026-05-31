@@ -2921,7 +2921,7 @@ async fn handle_update_email_item(
 
     if !keywords_update.is_empty() {
         let update = serde_json::json!({
-            item_id: {
+            (item_id): {
                 "keywords": keywords_update
             }
         });
