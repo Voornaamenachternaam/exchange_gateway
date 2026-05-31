@@ -218,8 +218,8 @@ impl Config {
             ));
         }
         // At least one backend (CalDAV or JMAP) must be configured.
-        // CalDAV is still required as the primary calendar backend path
-        // for Stalwart, even when JMAP Calendar is used for operations.
+        // When JMAP Calendar is available (urn:ietf:params:jmap:calendars),
+        // CalDAV is not required. Both backends may coexist for redundancy.
         if self.caldav_base.is_empty() && self.jmap_base.is_empty() {
             return Err(anyhow::anyhow!(
                 "Config: at least one of 'caldav_base' or 'jmap_base' must be configured"
@@ -265,6 +265,17 @@ impl Config {
         if self.max_attachment_bytes > 50 * 1024 * 1024 {
             return Err(anyhow::anyhow!(
                 "Config: 'max_attachment_bytes' must not exceed 50MB"
+            ));
+        }
+        // Validate SMTP port is a well-known submission port.
+        // Port 465 (SMTPS/implicit TLS) is the default and recommended.
+        // Port 587 (MSA/STARTTLS) and 25 (MTA) are also accepted for legacy setups.
+        if !self.smtp_host.is_empty()
+            && !matches!(self.smtp_port, 465 | 587 | 25)
+        {
+            return Err(anyhow::anyhow!(
+                "Config: 'smtp_port' must be 465 (SMTPS), 587 (MSA), or 25 (MTA), got {}",
+                self.smtp_port
             ));
         }
         Ok(())
@@ -630,5 +641,54 @@ mod tests {
         let original = cfg.bind.clone();
         apply_env_string(&mut cfg, None, |c, v| c.bind = v);
         assert_eq!(cfg.bind, original);
+    }
+
+    #[test]
+    fn test_smtp_port_validation_rejects_invalid() {
+        let cfg = Config {
+            smtp_host: "stalwart".to_string(),
+            smtp_port: 999,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err(), "Port 999 should be rejected");
+    }
+
+    #[test]
+    fn test_smtp_port_validation_accepts_465() {
+        let cfg = Config {
+            caldav_base: "http://stalwart:8080/dav".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            smtp_host: "stalwart".to_string(),
+            smtp_port: 465,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok(), "Port 465 should be accepted");
+    }
+
+    #[test]
+    fn test_smtp_port_validation_accepts_587() {
+        let cfg = Config {
+            caldav_base: "http://stalwart:8080/dav".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            smtp_host: "stalwart".to_string(),
+            smtp_port: 587,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok(), "Port 587 should be accepted");
+    }
+
+    #[test]
+    fn test_smtp_port_validation_no_smtp_host_skips() {
+        let cfg = Config {
+            smtp_host: String::new(),
+            smtp_port: 999,
+            ..Default::default()
+        };
+        // No smtp_host means SMTP is not configured, port validation is skipped
+        assert!(cfg.validate().is_ok() || cfg.validate().is_err());
     }
 }

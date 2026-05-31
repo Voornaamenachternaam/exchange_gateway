@@ -479,7 +479,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            format!("Database unavailable: {}", e),
+            "Database unavailable",
         )
             .into_response();
     }
@@ -530,7 +530,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
                             );
                             (
                                 StatusCode::SERVICE_UNAVAILABLE,
-                                format!("Backends unavailable: JMAP={}, CalDAV={}", e, caldav_err),
+                                "Backends unavailable",
                             )
                                 .into_response()
                         }
@@ -547,7 +547,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
                     );
                     (
                         StatusCode::SERVICE_UNAVAILABLE,
-                        format!("JMAP backend unavailable: {}", e),
+                        "JMAP backend unavailable",
                     )
                         .into_response()
                 }
@@ -578,7 +578,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
                 );
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
-                    format!("CalDAV backend unavailable: {}", e),
+                    "CalDAV backend unavailable",
                 )
                     .into_response()
             }

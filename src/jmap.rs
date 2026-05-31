@@ -127,6 +127,7 @@ pub struct JmapEmail {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JmapEmailAddress {
     #[serde(default)]
     pub name: Option<String>,
@@ -1799,5 +1800,25 @@ mod tests {
         let session: JmapSession = serde_json::from_value(session_json).unwrap();
         assert!(!session.capabilities.contains_key(JMAP_CAL_CAPABILITY));
         assert!(!session.primary_accounts.contains_key(JMAP_CAL_CAPABILITY));
+    }
+
+    #[test]
+    fn test_jmap_email_address_camel_case_serde() {
+        // Verify that JmapEmailAddress uses camelCase serialization
+        let addr = JmapEmailAddress {
+            name: Some("John Doe".to_string()),
+            email: Some("john@example.com".to_string()),
+        };
+        let json = serde_json::to_value(&addr).unwrap();
+        // Fields "name" and "email" are already lowercase in camelCase,
+        // but the struct must have rename_all = "camelCase" for consistency
+        // with all other JMAP structs and for future fields that may differ.
+        assert_eq!(json["name"], "John Doe");
+        assert_eq!(json["email"], "john@example.com");
+
+        // Roundtrip: serialize then deserialize
+        let roundtrip: JmapEmailAddress = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtrip.name, Some("John Doe".to_string()));
+        assert_eq!(roundtrip.email, Some("john@example.com".to_string()));
     }
 }

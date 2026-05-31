@@ -8,6 +8,11 @@
 - **JMAP Calendar eliminates ETag complexity**: JMAP uses state-based change tracking instead of HTTP ETags. No more If-Match/412/SYNTHETIC_ETAG_PREFIX when using JMAP Calendar.
 - **JMAP auto-derive**: When `GATEWAY_JMAP_BASE` is not explicitly set, it is auto-derived from `GATEWAY_CALDAV_BASE` by replacing `/dav` with `/jmap`.
 
+## Dependency Decisions (May 2026)
+- **jmap-client v0.4.1 (Stalwart Labs)**: REJECTED — No Calendar support, reqwest 0.13 conflicts with our 0.12, single-user Client model incompatible with multi-tenant gateway
+- **jmap_proto v0.16.7 (Stalwart internal)**: REJECTED — NOT on crates.io (workspace-internal), AGPL-3.0-only license (viral), 4 path dependencies (utils/types/trc/registry — also not on crates.io), server-side architecture (we need client-side), reqwest 0.13 conflict. Its sub-crate `calcard` (0.3.4, Apache-2.0/MIT) and `jmap-tools` (0.1.5, Apache-2.0/MIT) ARE on crates.io but don't add enough value vs our existing `icalendar` crate
+- **Custom JmapClient retained**: Our `src/jmap.rs` (1802 LOC) is the correct approach — full control, zero version conflicts, minimal binary size, multi-tenant compatible
+
 ## Stalwart v0.16.6 JMAP Calendar Support
 - **Capability URN**: `urn:ietf:params:jmap:calendars` — check via `JmapClient::supports_calendar()`
 - **Calendar/get**: Returns list of Calendar objects (id, name, color, timeZone, etc.)
