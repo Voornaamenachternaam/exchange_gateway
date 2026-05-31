@@ -551,22 +551,36 @@ pub struct EasSendMailRequest {
     pub save_in_sent: bool,
 }
 
-/// Generate a unique server ID for an email message.
+/// Prefix for email item IDs to distinguish them from calendar HMAC-based IDs.
 ///
-/// Uses HMAC-SHA256 of the JMAP email ID (or message ID for sent items)
-/// to create a deterministic, tamper-resistant server ID.
-pub fn generate_email_server_id(hmac_secret: &str, jmap_id: &str) -> String {
-    use hmac::digest::KeyInit;
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type HmacSha256 = Hmac<Sha256>;
+/// Calendar items use HMAC-SHA256 server IDs (base64, no prefix). Email items
+/// use the `"em-"` prefix followed by the raw JMAP email ID, making the mapping
+/// reversible without a database lookup. This is essential because EWS GetItem,
+/// UpdateItem, and DeleteItem receive the gateway's server ID from the client
+/// and must translate it back to a JMAP ID to query the JMAP server.
+pub const EMAIL_ID_PREFIX: &str = "em-";
 
-    let mut mac = HmacSha256::new_from_slice(hmac_secret.as_bytes())
-        .expect("HMAC-SHA256 key must be non-empty");
-    mac.update(jmap_id.as_bytes());
-    mac.update(b":email");
-    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    base64::Engine::encode(&engine, mac.finalize().into_bytes())
+/// Create a reversible email server ID from a JMAP email ID.
+///
+/// Format: `"em-{jmap_id}"` (e.g. `"em-Mbe4a2b"`).
+///
+/// The `"em-"` prefix distinguishes email IDs from calendar HMAC IDs and
+/// allows reversing the mapping via [`jmap_id_from_email_server_id`].
+pub fn email_server_id_from_jmap_id(jmap_id: &str) -> String {
+    format!("{}{}", EMAIL_ID_PREFIX, jmap_id)
+}
+
+/// Extract the JMAP email ID from a gateway email server ID.
+///
+/// Returns `None` if the ID doesn't have the `"em-"` prefix (e.g. it's a
+/// calendar HMAC ID or malformed).
+pub fn jmap_id_from_email_server_id(server_id: &str) -> Option<&str> {
+    server_id.strip_prefix(EMAIL_ID_PREFIX)
+}
+
+/// Check whether a server ID belongs to an email item (has `"em-"` prefix).
+pub fn is_email_server_id(id: &str) -> bool {
+    id.starts_with(EMAIL_ID_PREFIX)
 }
 
 #[cfg(test)]
@@ -635,13 +649,30 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_email_server_id_deterministic() {
-        let a = generate_email_server_id("secret", "email-1");
-        let b = generate_email_server_id("secret", "email-1");
+    fn test_email_server_id_round_trip() {
+        let jmap_id = "Mbe4a2b";
+        let server_id = email_server_id_from_jmap_id(jmap_id);
+        assert!(server_id.starts_with("em-"), "Must have em- prefix");
+        assert_eq!(jmap_id_from_email_server_id(&server_id), Some(jmap_id));
+        assert!(is_email_server_id(&server_id));
+    }
+
+    #[test]
+    fn test_email_server_id_deterministic() {
+        let a = email_server_id_from_jmap_id("email-1");
+        let b = email_server_id_from_jmap_id("email-1");
         assert_eq!(a, b, "Same inputs must produce same server ID");
 
-        let c = generate_email_server_id("secret", "email-2");
+        let c = email_server_id_from_jmap_id("email-2");
         assert_ne!(a, c, "Different inputs must produce different server IDs");
+    }
+
+    #[test]
+    fn test_jmap_id_from_non_email_server_id() {
+        // Calendar HMAC IDs don't have the em- prefix
+        assert_eq!(jmap_id_from_email_server_id("abc123xyz"), None);
+        assert!(!is_email_server_id("abc123xyz"));
+        assert!(!is_email_server_id(""));
     }
 
     #[test]

@@ -2047,10 +2047,8 @@ async fn handle_email_sync(
 
         let mut commands_xml = String::new();
         for email in &emails {
-            let server_id = crate::email::generate_email_server_id(
-                state.cfg.hmac_secret(),
-                email.id.as_deref().unwrap_or("unknown"),
-            );
+            let jmap_id = email.id.as_deref().unwrap_or("unknown");
+            let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
             let app_data = crate::email::render_jmap_email_as_eas_application_data(
                 email,
                 &server_id,

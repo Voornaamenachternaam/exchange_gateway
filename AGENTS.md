@@ -47,7 +47,7 @@
 - **IndexedFieldURI format**: Parsed as "FieldURI:FieldIndex" (e.g. "contacts:EmailAddress:EmailAddress1"). ExtendedFieldURI as "extended:PropertyTag" or "extended:DistinguishedPropertySetId:PropertyId"
 - **Storage error handling**: All `state.storage` calls use `if let Err(e) = ... { tracing::warn!(...) }` — never `let _ =`
 - **Health check fail-fast**: OPTIONS to CalDAV base URL with dummy auth. Reachable statuses (2xx, 401, 403, 404, 405) → healthy. Any 5xx → fail immediately, no GET fallback. A GET fallback would (1) double latency on failure, (2) risk masking a genuinely unhealthy server if GET returns 2xx after OPTIONS 5xx.
-- **ChangeKey = sha256(server_id + etag)**: Per MS-OXWSCORE §2.2.4.25, ChangeKey identifies a specific content version. Never include `updated_at` in the hash — it's a DB admin timestamp that changes on every upsert_item_map, making ChangeKey unstable and causing ErrorIrresolvableConflict. The etag alone captures content version from CalDAV.
+- **ChangeKey = sha256(server_id + etag)**: Per MS-OXWSCORE §2.2.4.25, ChangeKey identifies a specific content version. Never include `updated_at` in the hash — it's a DB admin timestamp that changes on every upsert_item_map, making ChangeKey unstable and causing ErrorIrresolvableConflict. The etag alone captures content version from CalDAV. **For email items**, ChangeKey equals the `em-` prefixed server_id (no separate hash), since OneCalendar uses `ConflictResolution="AlwaysOverwrite"` which skips ChangeKey validation.
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
@@ -154,9 +154,11 @@
 - **Optional**: When JMAP EmailSubmission is available, SMTP is not needed between gateway and Stalwart
 
 ### Email Server ID Generation
-- `generate_email_server_id(hmac_secret, jmap_id)` — HMAC-based stable ID
-- Same pattern as calendar: SHA-256 HMAC of JMAP email ID with gateway secret
-- Used for both EWS ItemId and EAS ServerId
+- `email_server_id_from_jmap_id(jmap_id)` — prefix-based reversible ID: `"em-{jmap_id}"`
+- `jmap_id_from_email_server_id(server_id)` — strips `"em-"` prefix to recover JMAP ID
+- `is_email_server_id(id)` — checks for `"em-"` prefix to distinguish from calendar HMAC IDs
+- Email IDs use prefix encoding (not HMAC) because EWS GetItem/UpdateItem/DeleteItem receive the server ID from the client and must reverse it to query JMAP
+- Calendar IDs continue to use HMAC-SHA256 (they're resolved via DB lookup, not reversal)
 
 ### JMAP→EWS Message Rendering
 - `render_jmap_email_as_ews_message()` — Full EWS `<t:Message>` XML

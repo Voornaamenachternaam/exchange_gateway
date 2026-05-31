@@ -1717,14 +1717,9 @@ async fn handle_find_email_item(
             let total_items = emails.len();
             let mut item_xml = String::new();
             for email in &emails {
-                let server_id = crate::email::generate_email_server_id(
-                    state.cfg.hmac_secret(),
-                    email.id.as_deref().unwrap_or("unknown"),
-                );
-                let change_key = crate::email::generate_email_server_id(
-                    state.cfg.hmac_secret(),
-                    &format!("{}:ck", server_id),
-                );
+                let jmap_id = email.id.as_deref().unwrap_or("unknown");
+                let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
+                let change_key = server_id.clone();
                 item_xml.push_str(&crate::email::render_jmap_email_as_ews_message(
                     email, &server_id, &change_key,
                 ));
@@ -1888,19 +1883,22 @@ async fn handle_get_email_item(
         }
     };
 
-    // The item_id is our generated server ID which is an HMAC of the JMAP email ID.
-    // We can't reverse it, so we fetch the email list and match.
-    // For efficiency, we use the JMAP Email/get endpoint directly.
-    match jmap.get_email(&account_id, item_id, &auth.username, &auth.password).await {
-        Ok(Some(email)) => {
-            let server_id = crate::email::generate_email_server_id(
-                state.cfg.hmac_secret(),
-                email.id.as_deref().unwrap_or("unknown"),
-            );
-            let change_key = crate::email::generate_email_server_id(
-                state.cfg.hmac_secret(),
-                &format!("{}:ck", server_id),
-            );
+                // Extract JMAP ID from the prefix-based email server ID
+                let jmap_id = match crate::email::jmap_id_from_email_server_id(item_id) {
+                    Some(id) => id.to_string(),
+                    None => {
+                        return operation_error_response(
+                            &EwsAction::GetItem,
+                            "ErrorItemNotFound",
+                            "Invalid email item ID format",
+                            StatusCode::OK,
+                        );
+                    }
+                };
+                match jmap.get_email(&account_id, &jmap_id, &auth.username, &auth.password).await {
+                    Ok(Some(email)) => {
+                        let server_id = crate::email::email_server_id_from_jmap_id(&jmap_id);
+                        let change_key = server_id.clone();
             let item_xml = crate::email::render_jmap_email_as_ews_message(
                 &email, &server_id, &change_key,
             );
@@ -1959,6 +1957,11 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
             );
         }
     };
+
+    // Fast path: if the item ID has the email prefix, route directly to JMAP
+    if crate::email::is_email_server_id(&item_id) && state.email_available() {
+        return handle_get_email_item(state, auth, &item_id).await;
+    }
 
     // If item not found in calendar DB and email is enabled, try JMAP
     if item_owner.is_none() && state.cfg.email_enabled && state.jmap_client.is_some() {
@@ -2139,8 +2142,7 @@ async fn handle_sync_email_folder_items(
     body: &str,
     folder: &DistinguishedFolder,
 ) -> Response {
-    use crate::email::{generate_email_server_id, render_jmap_email_as_ews_message};
-    use secrecy::ExposeSecret;
+    use crate::email::{email_server_id_from_jmap_id, render_jmap_email_as_ews_message};
 
     let owner = owner_from_username(&auth.username);
     let folder_id = folder_id_for(owner, *folder);
@@ -2221,13 +2223,8 @@ async fn handle_sync_email_folder_items(
             .await
         {
             let server_id =
-                generate_email_server_id(state.cfg.hmac_secret.expose_secret(), email_id);
-            let change_key =
-                generate_email_server_id(state.cfg.hmac_secret.expose_secret(), &format!(
-                    "{}:{}",
-                    email_id,
-                    email.received_at.as_deref().unwrap_or("")
-                ));
+                email_server_id_from_jmap_id(email_id);
+            let change_key = server_id.clone();
             changes_xml.push_str(&format!(
                 r#"<t:Create>{}</t:Create>"#,
                 render_jmap_email_as_ews_message(&email, &server_id, &change_key)
@@ -2242,13 +2239,8 @@ async fn handle_sync_email_folder_items(
             .await
         {
             let server_id =
-                generate_email_server_id(state.cfg.hmac_secret.expose_secret(), email_id);
-            let change_key =
-                generate_email_server_id(state.cfg.hmac_secret.expose_secret(), &format!(
-                    "{}:{}",
-                    email_id,
-                    email.received_at.as_deref().unwrap_or("")
-                ));
+                email_server_id_from_jmap_id(email_id);
+            let change_key = server_id.clone();
             changes_xml.push_str(&format!(
                 r#"<t:Update>{}</t:Update>"#,
                 render_jmap_email_as_ews_message(&email, &server_id, &change_key)
@@ -2259,7 +2251,7 @@ async fn handle_sync_email_folder_items(
     // Render deleted emails
     for email_id in &changes.destroyed {
         let server_id =
-            generate_email_server_id(state.cfg.hmac_secret.expose_secret(), email_id);
+            email_server_id_from_jmap_id(email_id);
         changes_xml.push_str(&format!(
             r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
             xml_escape(&server_id)
@@ -2665,19 +2657,8 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             }
             match crate::email::send_email(state, &msg, &auth.username, &auth.password).await {
                 Ok(message_id) => {
-                    let server_id = crate::email::generate_email_server_id(
-                        state.cfg.hmac_secret(),
-                        &message_id,
-                    );
-                    let change_key =
-                        crate::ews::changekey_for_item(&crate::ews::EwsItemRow {
-                            server_id: server_id.clone(),
-                            resource_href: String::new(),
-                            uid: None,
-                            caldav_href: None,
-                            etag: None,
-                            updated_at: None,
-                        });
+                    let server_id = crate::email::email_server_id_from_jmap_id(&message_id);
+                    let change_key = server_id.clone();
                     let items_xml = crate::email::render_ews_message_item_xml(
                         &server_id,
                         &change_key,
@@ -2701,8 +2682,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             }
         }
         // SaveOnly — return success with a synthetic ItemId
-        let server_id = crate::email::generate_email_server_id(
-            state.cfg.hmac_secret(),
+        let server_id = crate::email::email_server_id_from_jmap_id(
             &format!("draft-{}", chrono::Utc::now().timestamp_millis()),
         );
         let items_xml = crate::email::render_ews_message_item_xml(
@@ -2919,9 +2899,22 @@ async fn handle_update_email_item(
         keywords_update.insert("$important".to_string(), serde_json::Value::Null);
     }
 
+    // Extract JMAP ID from the prefix-based email server ID
+    let jmap_id = match crate::email::jmap_id_from_email_server_id(item_id) {
+        Some(id) => id.to_string(),
+        None => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorItemNotFound",
+                "Invalid email item ID format",
+                StatusCode::OK,
+            );
+        }
+    };
+
     if !keywords_update.is_empty() {
         let update = serde_json::json!({
-            (item_id): {
+            (jmap_id): {
                 "keywords": keywords_update
             }
         });
@@ -2934,10 +2927,7 @@ async fn handle_update_email_item(
         }
     }
 
-    let change_key = crate::email::generate_email_server_id(
-        state.cfg.hmac_secret.expose_secret(),
-        &format!("{}:updated", item_id),
-    );
+    let change_key = item_id.to_string();
 
     let response = format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
@@ -2952,6 +2942,11 @@ async fn handle_update_email_item(
 async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
+
+    // Fast path: if the item ID has the email prefix, route directly to email update
+    if crate::email::is_email_server_id(&item_id) && state.email_available() {
+        return handle_update_email_item(state, auth, &item_id, body).await;
+    }
 
     // Check if this is an email update (IsRead, flag changes, etc.)
     if (body.contains("<t:IsRead>") || body.contains("<t:Message"))
@@ -3295,7 +3290,7 @@ async fn handle_delete_email_item(
         }
     };
 
-    let _account_id = match jmap
+    let account_id = match jmap
         .get_account_id(&auth.username, &auth.password)
         .await
     {
@@ -3311,11 +3306,28 @@ async fn handle_delete_email_item(
         }
     };
 
-    // We'd need to reverse the HMAC to get the JMAP email ID, which isn't feasible.
-    // Instead, use JMAP Email/query to find the email by its server_id mapping.
-    // For now, return success — the email may have already been deleted from JMAP.
-    // A full implementation would maintain a DB mapping of gateway_id → jmap_id.
-    tracing::info!(item_id = %item_id, "DeleteItem for email — returning success (JMAP delete best-effort)");
+    // Extract JMAP ID from the prefix-based email server ID
+    let jmap_id = match crate::email::jmap_id_from_email_server_id(item_id) {
+        Some(id) => id.to_string(),
+        None => {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorItemNotFound",
+                "Invalid email item ID format",
+                StatusCode::OK,
+            );
+        }
+    };
+
+    // Destroy the email via JMAP Email/set
+    if let Err(e) = jmap
+        .destroy_emails(&account_id, &[jmap_id], &auth.username, &auth.password)
+        .await
+    {
+        tracing::warn!(error = %e, item_id = %item_id, "JMAP Email/set destroy failed for DeleteItem");
+        // Still return success — the client may retry, and the email may have
+        // already been deleted from JMAP by another path.
+    }
 
     let response = format!(
         r#"<m:DeleteItemResponse xmlns:m="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
@@ -3330,7 +3342,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     // Check if this is an email item (by prefix or by looking up the item)
     // Email item IDs are HMAC-derived from JMAP email IDs
-    let is_email = item_id.starts_with("em-")
+    let is_email = crate::email::is_email_server_id(&item_id)
         || state.storage.get_ews_item_by_server_id(owner, &item_id).await.ok().flatten().is_none()
             && state.email_available()
             && !item_id.is_empty();
@@ -3516,7 +3528,7 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 ///
 /// Moves an email item between folders. For the gateway, this maps to
 /// JMAP Email/set updating the `mailboxIds` property.
-async fn handle_move_item(state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
+async fn handle_move_item(_state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
     let _to_folder_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .or_else(|| extract_first_attr(body, b"FolderId", b"Id"))
@@ -3540,10 +3552,7 @@ async fn handle_move_item(state: &Arc<AppState>, _auth: &AuthContext, body: &str
         "MoveItem — returning success (JMAP mailbox mapping pending)"
     );
 
-    let change_key = crate::email::generate_email_server_id(
-        state.cfg.hmac_secret.expose_secret(),
-        &format!("{}:moved", item_id),
-    );
+    let change_key = item_id.to_string();
 
     let response = format!(
         r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
