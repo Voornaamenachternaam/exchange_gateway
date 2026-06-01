@@ -852,6 +852,59 @@ pub async fn destroy_emails(
 
     Ok(())
 }
+
+/// Get the current JMAP Email data state token.
+///
+/// Per RFC 8621 §4.1, `Email/get` with `ids: []` returns the current
+/// `state` property without fetching any email data. This state token
+/// is required as `sinceState` for subsequent `Email/changes` calls.
+///
+/// Returns the state string on success.
+pub async fn get_email_state(
+    &self,
+    account_id: &str,
+    username: &str,
+    password: &SecretString,
+) -> Result<String> {
+    let session = self.get_session(username, password).await?;
+    let api_url = &session.api_url;
+
+    // Per RFC 8621 §4.1, Email/get with empty ids returns just the state
+    let method_calls = vec![(
+        "Email/get",
+        json!({
+            "accountId": account_id,
+            "ids": [],
+        }),
+        "g0",
+    )];
+
+    let response = self
+        .api_call(
+            api_url,
+            &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+            method_calls,
+            username,
+            password,
+        )
+        .await?;
+
+    for (method, data, _) in response.method_responses {
+        if method == "Email/get" {
+            let state = data
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if state.is_empty() {
+                return Err(anyhow!("JMAP Email/get returned empty state token"));
+            }
+            return Ok(state);
+        }
+    }
+
+    Err(anyhow!("Unexpected JMAP response structure for Email/get state"))
+}
 /// Submit an email via JMAP EmailSubmission/set (RFC 8621 §2.7).
     ///
     /// This replaces SMTP submission. The flow per RFC 8621 is:
