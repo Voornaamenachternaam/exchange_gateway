@@ -82,7 +82,7 @@ pub struct JmapResponse {
 }
 
 /// JMAP Email object (RFC 8621 §4.1)
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JmapEmail {
     pub id: Option<String>,

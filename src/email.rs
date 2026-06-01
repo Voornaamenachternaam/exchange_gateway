@@ -28,6 +28,44 @@ use secrecy::SecretString;
 use std::sync::Arc;
 use tracing::info;
 
+/// Deterministically extract the email body content and its type from a JMAP email.
+///
+/// Per RFC 8621 §4.1.4, `bodyValues` is keyed by `partId` from `textBody`/`htmlBody`.
+/// Using `HashMap::values().next()` is non-deterministic (Rust randomizes HashMap
+/// iteration order) — it could return HTML instead of plain text, an empty part,
+/// or even an attachment body value.
+///
+/// This function resolves the body deterministically:
+/// 1. Look up `textBody[0].partId` in `bodyValues` → plain text body
+/// 2. If no text body, look up `htmlBody[0].partId` in `bodyValues` → HTML body
+/// 3. Fall back to empty string with Text type
+///
+/// Returns `(body_content: &str, is_html: bool)`.
+fn extract_jmap_body(email: &JmapEmail) -> (&str, bool) {
+    let bv = match email.body_values.as_ref() {
+        Some(bv) => bv,
+        None => return ("", false),
+    };
+
+    // Try plain text body first — per RFC 8621, textBody[].partId maps into bodyValues
+    if let Some(text_parts) = email.text_body.as_ref()
+        && let Some(first_part) = text_parts.first()
+        && let Some(bv_entry) = bv.get(&first_part.part_id)
+    {
+        return (bv_entry.value.as_str(), false);
+    }
+
+    // Fall back to HTML body
+    if let Some(html_parts) = email.html_body.as_ref()
+        && let Some(first_part) = html_parts.first()
+        && let Some(bv_entry) = bv.get(&first_part.part_id)
+    {
+        return (bv_entry.value.as_str(), true);
+    }
+
+    ("", false)
+}
+
 /// EWS Message Disposition types per MS-OXWSCORE §3.1.4.2
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MessageDisposition {
@@ -218,9 +256,8 @@ pub fn render_jmap_email_as_ews_message(
     }).unwrap_or_default();
 
     let body_preview = email.preview.as_deref().unwrap_or("");
-    let body_text = email.body_values.as_ref().and_then(|bv| {
-        bv.values().next().map(|v| v.value.as_str())
-    }).unwrap_or("");
+    let (body_text, is_html) = extract_jmap_body(email);
+    let body_type = if is_html { "HTML" } else { "Text" };
 
     let received_at = email.received_at.as_deref().unwrap_or("");
     let sent_at = email.sent_at.as_deref().unwrap_or("");
@@ -228,7 +265,7 @@ pub fn render_jmap_email_as_ews_message(
     let is_read = email.keywords.as_ref().is_some_and(|k| k.contains_key("$seen"));
 
     format!(
-        r#"<t:Message><t:ItemId Id="{server_id}" ChangeKey="{change_key}" /><t:Subject>{subject}</t:Subject><t:Sender><t:Mailbox><t:Name>{sender_name}</t:Name><t:EmailAddress>{sender_email}</t:EmailAddress></t:Mailbox></t:Sender><t:ToRecipients>{to_xml}</t:ToRecipients><t:CcRecipients>{cc_xml}</t:CcRecipients><t:DateTimeReceived>{received_at}</t:DateTimeReceived><t:DateTimeSent>{sent_at}</t:DateTimeSent><t:IsRead>{is_read}</t:IsRead><t:HasAttachments>{has_attachment}</t:HasAttachments><t:Preview>{body_preview}</t:Preview><t:Body BodyType="Text">{body_text}</t:Body></t:Message>"#,
+        r#"<t:Message><t:ItemId Id="{server_id}" ChangeKey="{change_key}" /><t:Subject>{subject}</t:Subject><t:Sender><t:Mailbox><t:Name>{sender_name}</t:Name><t:EmailAddress>{sender_email}</t:EmailAddress></t:Mailbox></t:Sender><t:ToRecipients>{to_xml}</t:ToRecipients><t:CcRecipients>{cc_xml}</t:CcRecipients><t:DateTimeReceived>{received_at}</t:DateTimeReceived><t:DateTimeSent>{sent_at}</t:DateTimeSent><t:IsRead>{is_read}</t:IsRead><t:HasAttachments>{has_attachment}</t:HasAttachments><t:Preview>{body_preview}</t:Preview><t:Body BodyType="{body_type}">{body_text}</t:Body></t:Message>"#,
         server_id = xml_escape(server_id),
         change_key = xml_escape(change_key),
         subject = xml_escape(subject),
@@ -265,9 +302,9 @@ pub fn render_jmap_email_as_eas_application_data(
         }).collect::<String>()
     }).unwrap_or_default();
 
-    let body_text = email.body_values.as_ref().and_then(|bv| {
-        bv.values().next().map(|v| v.value.as_str())
-    }).unwrap_or("");
+    let (body_text, is_html) = extract_jmap_body(email);
+    // Per MS-ASAIRS §2.2.2.6, Type values: 1=plain text, 2=HTML
+    let body_type_num = if is_html { "2" } else { "1" };
 
     let received_at = email.received_at.as_deref().unwrap_or("");
     let is_read = email.keywords.as_ref().is_some_and(|k| k.contains_key("$seen"));
@@ -277,7 +314,7 @@ pub fn render_jmap_email_as_eas_application_data(
     });
 
     format!(
-        r#"<AirSync:ApplicationData><AirSync:ServerId>{server_id}</AirSync:ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></AirSync:ApplicationData>"#,
+        r#"<AirSync:ApplicationData><AirSync:ServerId>{server_id}</AirSync:ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></AirSync:ApplicationData>"#,
         server_id = xml_escape(server_id),
         subject = xml_escape(subject),
         sender_name = xml_escape(sender_name),
@@ -707,5 +744,79 @@ mod tests {
         assert!(xml.contains("Sent Items"), "Must include Sent Items folder");
         assert!(xml.contains("Drafts"), "Must include Drafts folder");
         assert!(xml.contains("Junk Email"), "Must include Junk Email folder");
+    }
+
+    #[test]
+    fn test_extract_jmap_body_prefers_text_over_html() {
+        use crate::jmap::{JmapBodyPart, JmapBodyValue, JmapEmail};
+        use std::collections::HashMap;
+
+        let email = JmapEmail {
+            id: Some("test".to_string()),
+            text_body: Some(vec![JmapBodyPart {
+                part_id: "text-part".to_string(),
+                blob_id: None,
+                size: None,
+                content_type: Some("text/plain".to_string()),
+                charset: None,
+            }]),
+            html_body: Some(vec![JmapBodyPart {
+                part_id: "html-part".to_string(),
+                blob_id: None,
+                size: None,
+                content_type: Some("text/html".to_string()),
+                charset: None,
+            }]),
+            body_values: Some(HashMap::from([
+                ("text-part".to_string(), JmapBodyValue { value: "Plain text body".to_string(), is_encoding_problem: None }),
+                ("html-part".to_string(), JmapBodyValue { value: "<p>HTML body</p>".to_string(), is_encoding_problem: None }),
+            ])),
+            ..Default::default()
+        };
+
+        let (body, is_html) = extract_jmap_body(&email);
+        assert_eq!(body, "Plain text body");
+        assert!(!is_html, "Should prefer plain text over HTML");
+    }
+
+    #[test]
+    fn test_extract_jmap_body_falls_back_to_html() {
+        use crate::jmap::{JmapBodyPart, JmapBodyValue, JmapEmail};
+        use std::collections::HashMap;
+
+        let email = JmapEmail {
+            id: Some("test".to_string()),
+            text_body: None,
+            html_body: Some(vec![JmapBodyPart {
+                part_id: "html-part".to_string(),
+                blob_id: None,
+                size: None,
+                content_type: Some("text/html".to_string()),
+                charset: None,
+            }]),
+            body_values: Some(HashMap::from([
+                ("html-part".to_string(), JmapBodyValue { value: "<p>HTML only</p>".to_string(), is_encoding_problem: None }),
+            ])),
+            ..Default::default()
+        };
+
+        let (body, is_html) = extract_jmap_body(&email);
+        assert_eq!(body, "<p>HTML only</p>");
+        assert!(is_html, "Should report HTML when falling back to htmlBody");
+    }
+
+    #[test]
+    fn test_extract_jmap_body_empty_when_no_bodies() {
+        use crate::jmap::JmapEmail;
+
+        let email = JmapEmail {
+            id: Some("test".to_string()),
+            body_values: None,
+            ..Default::default()
+        };
+
+        let (body, is_html) = extract_jmap_body(&email);
+        assert_eq!(body, "");
+        assert!(!is_html);
     }
 }
