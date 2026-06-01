@@ -3340,8 +3340,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
 
-    // Check if this is an email item (by prefix or by looking up the item)
-    // Email item IDs are HMAC-derived from JMAP email IDs
+    // Check if this is an email item (by em- prefix or by looking up the item)
     let is_email = crate::email::is_email_server_id(&item_id)
         || state.storage.get_ews_item_by_server_id(owner, &item_id).await.ok().flatten().is_none()
             && state.email_available()
