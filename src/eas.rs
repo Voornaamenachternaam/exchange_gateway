@@ -1066,17 +1066,27 @@ async fn handle_folder_sync(
         // Per MS-ASCMD §2.2.3.41, Type values:
         // 2=Email (default mail folder), 3=Drafts, 4=Sent Items,
         // 5=Deleted Items, 6=Outbox, 7=Junk Email, 8=Calendar
-        r#"<Changes><Count>7</Count>
-<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
-<Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Inbox</DisplayName><Type>2</Type></Add>
+        // Only include email folders when email is actually available,
+        // otherwise clients will attempt to sync them and hit errors.
+        let email_folders = if state.email_available() {
+            r#"<Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Inbox</DisplayName><Type>2</Type></Add>
 <Add><ServerId>3</ServerId><ParentId>0</ParentId><DisplayName>Drafts</DisplayName><Type>3</Type></Add>
 <Add><ServerId>4</ServerId><ParentId>0</ParentId><DisplayName>Sent Items</DisplayName><Type>4</Type></Add>
 <Add><ServerId>5</ServerId><ParentId>0</ParentId><DisplayName>Deleted Items</DisplayName><Type>5</Type></Add>
 <Add><ServerId>6</ServerId><ParentId>0</ParentId><DisplayName>Outbox</DisplayName><Type>6</Type></Add>
-<Add><ServerId>7</ServerId><ParentId>0</ParentId><DisplayName>Junk Email</DisplayName><Type>7</Type></Add>
+<Add><ServerId>7</ServerId><ParentId>0</ParentId><DisplayName>Junk Email</DisplayName><Type>7</Type></Add>"#
+        } else {
+            ""
+        };
+        let count = if state.email_available() { 7 } else { 1 };
+        format!(
+            r#"<Changes><Count>{count}</Count>
+<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
+{email_folders}
 </Changes>"#
+        )
     } else {
-        r#"<Changes><Count>0</Count></Changes>"#
+        r#"<Changes><Count>0</Count></Changes>"#.to_string()
     };
     let resp_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>{}</SyncKey>{}</FolderSync>"#,
