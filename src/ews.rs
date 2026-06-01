@@ -3484,10 +3484,13 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
 /// Handle EWS SendItem operation (MS-OXWSCORE §3.1.4.7).
 ///
-/// Sends an email message that was previously saved as a draft,
-/// or sends a message directly if no ItemId is provided.
-/// For the gateway, we parse the embedded Message XML, extract
-/// recipients/subject/body, and send via SMTP through Stalwart.
+/// Sends an email message. Two modes exist per MS-OXWSCORE:
+/// 1. **Inline send**: the request body contains a `<t:Message>` element
+///    with the full message content — parsed and sent via SMTP/JMAP.
+/// 2. **Draft send**: the request references a previously saved draft by
+///    ItemId only (no inline Message). Since the gateway does not store
+///    drafts, this mode returns `ErrorItemNotFound` to prevent silent
+///    email loss (the client must be told the operation cannot succeed).
 async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     // Check if email is enabled
     if !state.cfg.email_enabled {
@@ -3513,9 +3516,20 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 );
             }
         }
+    } else {
+        // No inline <t:Message> — the client is referencing a saved draft by ItemId.
+        // Since the gateway does not store drafts, we cannot retrieve or send the
+        // message. Returning success here would cause silent email loss (Outlook
+        // believes the draft was sent, but no email is actually delivered).
+        // Return ErrorItemNotFound per MS-OXWSCORE to inform the client.
+        tracing::warn!("SendItem without inline Message — draft send is not supported (drafts are not stored on the gateway)");
+        return operation_error_response(
+            &EwsAction::SendItem,
+            "ErrorItemNotFound",
+            "Sending saved drafts is not supported — drafts are not stored on this server",
+            StatusCode::OK,
+        );
     }
-    // If no inline Message, the item was already a draft — just return success
-    // (drafts are sent by their ItemId, but we don't store drafts on the gateway)
 
     let response = format!(
         r#"<m:SendItemResponse xmlns:m="{}"><m:ResponseMessages><m:SendItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:SendItemResponseMessage></m:ResponseMessages></m:SendItemResponse>"#,
