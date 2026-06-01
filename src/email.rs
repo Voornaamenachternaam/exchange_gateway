@@ -74,7 +74,12 @@ pub struct EwsMessage {
 /// Extracts key email fields from the `<t:Message>` element within
 /// a CreateItem or SendItem request.
 pub fn parse_ews_message(body: &str) -> Option<EwsMessage> {
-    let subject = extract_ews_tag_text(body, b"Subject")?;
+    // Subject is optional — emails without a subject are valid per RFC 5322 §3.6.5.
+    // If missing, default to empty string. Previously, a missing <t:Subject> caused
+    // this function to return None, making CreateItem fall through to calendar item
+    // handling (silent misdispatch) and SendItem return ErrorItemNotFound (false
+    // error for a valid no-subject email).
+    let subject = extract_ews_tag_text(body, b"Subject").unwrap_or_default();
 
     // Extract body — EWS Body element has attributes: <t:Body BodyType="Text">...</t:Body>
     let mut body_content = String::new();
@@ -628,6 +633,26 @@ mod tests {
         assert_eq!(msg.to_recipients.len(), 2);
         assert_eq!(msg.cc_recipients.len(), 1);
         assert_eq!(msg.bcc_recipients.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_ews_message_no_subject() {
+        // Per RFC 5322 §3.6.5, Subject is optional. A missing <t:Subject>
+        // must not cause parse_ews_message to return None — that would make
+        // CreateItem fall through to calendar handling (silent misdispatch)
+        // or SendItem return a false error.
+        let xml = r#"
+<t:Message>
+    <t:Body BodyType="Text">No subject email</t:Body>
+    <t:ToRecipients>
+        <t:Mailbox><t:EmailAddress>user@example.com</t:EmailAddress></t:Mailbox>
+    </t:ToRecipients>
+</t:Message>"#;
+
+        let msg = parse_ews_message(xml).expect("Should parse message without Subject");
+        assert_eq!(msg.subject, "");
+        assert_eq!(msg.body, "No subject email");
+        assert_eq!(msg.to_recipients, vec!["user@example.com"]);
     }
 
     #[test]
