@@ -51,7 +51,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 197+ tests (163+ unit + 22 protocol fixture + 11 integration + 1 doc)
+- `cargo test` — 203+ tests (169+ unit + 22 protocol fixture + 11 integration + 1 doc)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
@@ -187,3 +187,13 @@
    - `EmailSubmission/set` with `create: { s0: { emailId: "#e0", envelope: { mailFrom, rcptTo } } }`
 4. Both methods use `urn:ietf:params:jmap:submission` capability
 5. If JMAP fails, falls back to `send_email_smtp()` via lettre
+
+### EAS Email Sync — CollectionId Mapping
+- **CollectionId → JMAP mailbox role**: `eas_collection_id_to_mailbox_role()` maps EAS folder IDs to JMAP roles: "2" → inbox, "3" → drafts, "4" → sent, "5" → trash, "6" → None (outbox, no JMAP equivalent), "7" → junk. Unknown IDs default to inbox.
+- **Outbox returns empty**: CollectionId "6" (Outbox) has no JMAP mailbox equivalent — outbound email is handled via `EmailSubmission/set`, not a mailbox. Both `eas_collection_id_to_mailbox_role()` returning `None` and `fetch_emails_jmap("outbox")` return empty results, preventing a privacy bug where "outbox" fell through to the catch-all filter (returning ALL emails in the account).
+- **EAS Sync uses actual CollectionId**: The Sync response includes the real `state_collection_id` from the request, not hardcoded "2". Previously, syncing any non-inbox folder (Sent Items, Drafts, Junk) would incorrectly return Inbox emails under CollectionId "2".
+- **EAS SendMail error status**: Per MS-ASCMD §2.2.1.17, SendMail returns Status 1 (success) or Status 4 (mailbox server error — transient). Previously, send failures returned Status 1, causing silent email loss where the client thought the email was sent.
+
+### EWS Email — Pagination and Entity Unescaping
+- **FindItem total_items**: Uses `result.total` from JMAP `calculateTotal:true` (total matching items across all pages), not `emails.len()` (items in the current page). Previously, `total_items = emails.len()` made `includes_last` always true, preventing the client from paginating beyond the first page.
+- **XML entity unescaping in parse_ews_message**: All text extracted from EWS XML (Subject, Body, EmailAddress) is passed through `unescape_xml_text()` which uses `quick_xml::escape::unescape()` to resolve `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, and numeric character references. On unescape failure (malformed entity), returns the original text unchanged rather than dropping the email. Previously, raw XML entities were passed through to the email content, resulting in subjects like `Q&amp;A` instead of `Q&A`.

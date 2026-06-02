@@ -126,7 +126,7 @@ pub fn parse_ews_message(body: &str) -> Option<EwsMessage> {
         let gt_pos = body[body_start..].find('>').unwrap_or(0);
         let content_start = body_start + gt_pos + 1;
         if let Some(end) = body[content_start..].find("</t:Body>") {
-            body_content = body[content_start..content_start + end].to_string();
+            body_content = unescape_xml_text(&body[content_start..content_start + end]);
             let opening_tag = &body[body_start..body_start + gt_pos + 1];
             if let Some(bt_start) = opening_tag.find("BodyType=\"") {
                 let bt_val_start = bt_start + "BodyType=\"".len();
@@ -156,7 +156,11 @@ pub fn parse_ews_message(body: &str) -> Option<EwsMessage> {
     })
 }
 
-/// Extract text content from an EWS XML tag.
+/// Extract text content from an EWS XML tag, unescaping XML entities.
+///
+/// Per the XML specification, predefined entities `&amp;`, `&lt;`, `&gt;`,
+/// `&quot;`, and `&apos;` must be resolved. Without unescaping, sent emails
+/// contain raw entities like `&amp;` instead of `&`.
 fn extract_ews_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     let open = format!("<t:{}>", std::str::from_utf8(tag).ok()?);
     let close = format!("</t:{}>", std::str::from_utf8(tag).ok()?);
@@ -164,10 +168,27 @@ fn extract_ews_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     if let Some(start) = xml.find(&open) {
         let content_start = start + open.len();
         if let Some(end) = xml[content_start..].find(&close) {
-            return Some(xml[content_start..content_start + end].to_string());
+            let raw = &xml[content_start..content_start + end];
+            return Some(unescape_xml_text(raw));
         }
     }
     None
+}
+
+/// Unescape XML predefined entities in text content.
+///
+/// Uses `quick_xml::escape::unescape()` to resolve `&amp;`, `&lt;`, `&gt;`,
+/// `&quot;`, `&apos;`, and numeric character references. On unescape failure
+/// (malformed entity), returns the original text unchanged — this is safer
+/// than dropping the email entirely.
+fn unescape_xml_text(raw: &str) -> String {
+    match quick_xml::escape::unescape(raw) {
+        Ok(cow) => cow.into_owned(),
+        Err(e) => {
+            tracing::warn!(error = %e, text = raw, "XML entity unescape failed; using raw text");
+            raw.to_string()
+        }
+    }
 }
 
 /// Extract a single email address from an EWS Mailbox element.
@@ -180,7 +201,8 @@ fn extract_ews_email_address(xml: &str, container: &[u8]) -> Option<String> {
         if let Some(email_start) = rest.find("<t:EmailAddress>") {
             let email_content_start = email_start + "<t:EmailAddress>".len();
             if let Some(email_end) = rest[email_content_start..].find("</t:EmailAddress>") {
-                return Some(rest[email_content_start..email_content_start + email_end].to_string());
+                let raw = &rest[email_content_start..email_content_start + email_end];
+                return Some(unescape_xml_text(raw));
             }
         }
     }
@@ -203,7 +225,8 @@ fn extract_ews_email_addresses(xml: &str, container: &[u8]) -> Vec<String> {
         while let Some(email_start) = inner[search_from..].find("<t:EmailAddress>") {
             let abs_start = search_from + email_start + "<t:EmailAddress>".len();
             if let Some(email_end) = inner[abs_start..].find("</t:EmailAddress>") {
-                emails.push(inner[abs_start..abs_start + email_end].to_string());
+                let raw = &inner[abs_start..abs_start + email_end];
+                emails.push(unescape_xml_text(raw));
                 search_from = abs_start + email_end + "</t:EmailAddress>".len();
             } else {
                 break;
@@ -479,8 +502,22 @@ pub async fn fetch_emails_jmap(
         anyhow::anyhow!("JMAP is not configured; email reading is unavailable")
     })?;
 
-    // Map mailbox role to JMAP filter
-    let filter = match mailbox_role.to_lowercase().as_str() {
+    // Map mailbox role to JMAP filter.
+    // "outbox" returns None (empty filter) which would match ALL emails —
+    // a privacy/correctness bug. JMAP has no outbox role; outbound email
+    // is handled via EmailSubmission/set. Return early with empty result.
+    let mailbox_role_lower = mailbox_role.to_lowercase();
+    if mailbox_role_lower == "outbox" {
+        return Ok(crate::jmap::EmailListResult {
+            emails: Vec::new(),
+            total: 0,
+            can_calculate_changes: false,
+            query_state: String::new(),
+            state: String::new(),
+        });
+    }
+
+    let filter = match mailbox_role_lower.as_str() {
         "inbox" => Some(serde_json::json!({
             "inMailboxRole": "inbox"
         })),
@@ -496,7 +533,7 @@ pub async fn fetch_emails_jmap(
         "deleteditems" | "trash" => Some(serde_json::json!({
             "inMailboxRole": "trash"
         })),
-        _ => None, // All mailboxes
+        _ => None, // All mailboxes (only for unrecognised roles)
     };
 
     let result = jmap
@@ -530,6 +567,24 @@ pub mod eas_folder_type {
     pub const DELETED_ITEMS: u8 = 5;
     pub const OUTBOX: u8 = 6;
     pub const JUNK_EMAIL: u8 = 7;
+}
+
+/// Map an EAS CollectionId to the JMAP mailbox role used for filtering.
+///
+/// Returns `None` for the Outbox (CollectionId "6") because JMAP has no
+/// outbox role — outbound email is handled via `EmailSubmission/set`, not
+/// a mailbox. Returning `None` here signals the caller to return an empty
+/// result rather than querying all mailboxes.
+pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static str> {
+    match collection_id {
+        "2" => Some("inbox"),
+        "3" => Some("drafts"),
+        "4" => Some("sent"),
+        "5" => Some("trash"),
+        "6" => None, // Outbox — no JMAP equivalent; handled via EmailSubmission
+        "7" => Some("junk"),
+        _ => Some("inbox"), // Unknown collection ID defaults to inbox
+    }
 }
 
 /// EAS FolderSync folder entries for email folders.
@@ -857,4 +912,57 @@ mod tests {
         assert_eq!(body, "");
         assert!(!is_html);
     }
+
+#[test]
+fn test_unescape_xml_text_basic_entities() {
+    // &amp; → &, &lt; → <, &gt; → >, &quot; → ", &apos; → '
+    assert_eq!(unescape_xml_text("&amp;"), "&");
+    assert_eq!(unescape_xml_text("&lt;"), "<");
+    assert_eq!(unescape_xml_text("&gt;"), ">");
+    assert_eq!(unescape_xml_text("&quot;"), "\"");
+    assert_eq!(unescape_xml_text("&apos;"), "'");
+}
+
+#[test]
+fn test_unescape_xml_text_multiple_entities() {
+    assert_eq!(unescape_xml_text("Tom &amp; Jerry"), "Tom & Jerry");
+    assert_eq!(unescape_xml_text("&lt;b&gt;bold&lt;/b&gt;"), "<b>bold</b>");
+}
+
+#[test]
+fn test_unescape_xml_text_no_entities() {
+    assert_eq!(unescape_xml_text("Hello World"), "Hello World");
+    assert_eq!(unescape_xml_text(""), "");
+}
+
+#[test]
+fn test_parse_ews_message_unescapes_xml_entities() {
+    let xml = r#"
+<t:Message>
+ <t:Subject>Q&amp;A: &lt;Important&gt;</t:Subject>
+ <t:Body BodyType="Text">A &amp; B &lt; C &gt; D</t:Body>
+ <t:ToRecipients>
+  <t:Mailbox><t:EmailAddress>user&amp;tag@example.com</t:EmailAddress></t:Mailbox>
+ </t:ToRecipients>
+</t:Message>"#;
+    let msg = parse_ews_message(xml).expect("Should parse message");
+    assert_eq!(msg.subject, "Q&A: <Important>");
+    assert_eq!(msg.body, "A & B < C > D");
+    assert_eq!(msg.to_recipients, vec!["user&tag@example.com"]);
+}
+
+#[test]
+fn test_eas_collection_id_to_mailbox_role_mapping() {
+    assert_eq!(eas_collection_id_to_mailbox_role("2"), Some("inbox"));
+    assert_eq!(eas_collection_id_to_mailbox_role("3"), Some("drafts"));
+    assert_eq!(eas_collection_id_to_mailbox_role("4"), Some("sent"));
+    assert_eq!(eas_collection_id_to_mailbox_role("5"), Some("trash"));
+    assert_eq!(eas_collection_id_to_mailbox_role("6"), None); // Outbox
+    assert_eq!(eas_collection_id_to_mailbox_role("7"), Some("junk"));
+}
+
+#[test]
+fn test_eas_collection_id_to_mailbox_role_unknown_defaults_inbox() {
+    assert_eq!(eas_collection_id_to_mailbox_role("99"), Some("inbox"));
+}
 }

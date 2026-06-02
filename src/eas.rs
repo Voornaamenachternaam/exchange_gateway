@@ -1981,7 +1981,7 @@ async fn handle_send_mail(
                 return xml_or_wbxml_response(
                     wbxml,
                     as_wbxml,
-                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">1</Status>"#,
+                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">4</Status>"#,
                     request_id,
                 );
             }
@@ -2013,6 +2013,31 @@ async fn handle_email_sync(
     request_id: &str,
 ) -> anyhow::Result<Response> {
 
+ // Map CollectionId to JMAP mailbox role.
+ // Previously hardcoded "inbox" and "2", meaning syncing any other folder
+ // (Sent Items, Drafts, etc.) would incorrectly fetch Inbox emails and
+ // return them under CollectionId "2", violating the ActiveSync protocol.
+ let mailbox_role = match crate::email::eas_collection_id_to_mailbox_role(state_collection_id) {
+ Some(role) => role,
+ None => {
+ // CollectionId has no JMAP mailbox (e.g. Outbox "6").
+ // Return empty sync response — no emails to sync.
+ let new_sync_key = Uuid::new_v4().simple().to_string();
+ if let Err(e) = state
+ .storage
+ .set_sync_key(username, state_collection_id, &new_sync_key, None)
+ .await
+ {
+ tracing::warn!(error = %e, "Failed to set email sync key");
+ }
+ let resp_xml = format!(
+ r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+ new_sync_key, state_collection_id
+ );
+ return Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id));
+ }
+ };
+
     // For initial sync (sync_key="0"), return folder structure
     if incoming_sync_key == "0" {
         let new_sync_key = Uuid::new_v4().simple().to_string();
@@ -2024,14 +2049,14 @@ async fn handle_email_sync(
             tracing::warn!(error = %e, "Failed to set initial email sync key");
         }
 
-        // Fetch emails from JMAP inbox
+        // Fetch emails from JMAP for the requested mailbox
     let emails = if let Some(jmap) = &state.jmap_client {
         match jmap.get_account_id(username, password).await {
             Ok(account_id) => {
                 match crate::email::fetch_emails_jmap(
                     state,
                     &account_id,
-                    "inbox",
+                    mailbox_role,
                     0,
                     EMAIL_SYNC_PAGE_SIZE,
                     username,
@@ -2062,7 +2087,7 @@ async fn handle_email_sync(
             let app_data = crate::email::render_jmap_email_as_eas_application_data(
                 email,
                 &server_id,
-                "2", // Inbox collection
+                state_collection_id,
             );
             commands_xml.push_str(&format!(
                 "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
@@ -2071,8 +2096,8 @@ async fn handle_email_sync(
         }
 
         let resp_xml = format!(
-            r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>2</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
-            new_sync_key, commands_xml
+            r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
+            new_sync_key, state_collection_id, commands_xml
         );
         return Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id));
     }
@@ -2088,8 +2113,8 @@ async fn handle_email_sync(
     }
 
     let resp_xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>2</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-        new_sync_key
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+        new_sync_key, state_collection_id
     );
     Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id))
 }

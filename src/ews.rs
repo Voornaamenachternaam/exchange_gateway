@@ -1715,7 +1715,7 @@ async fn handle_find_email_item(
     {
         Ok(result) => {
                 let emails = result.emails;
-            let total_items = emails.len();
+            let total_items = result.total; // JMAP calculateTotal, not page length
             let mut item_xml = String::new();
             for email in &emails {
                 let jmap_id = email.id.as_deref().unwrap_or("unknown");
@@ -1725,7 +1725,7 @@ async fn handle_find_email_item(
                     email, &server_id, &change_key,
                 ));
             }
-            let includes_last = if offset + emails.len() >= total_items {
+            let includes_last = if offset as u64 + emails.len() as u64 >= total_items {
                 "true"
             } else {
                 "false"
