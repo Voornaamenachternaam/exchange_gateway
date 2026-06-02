@@ -51,7 +51,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 177+ tests (143+ unit + 22 protocol fixture + 11 integration + 1 doc)
+- `cargo test` — 197+ tests (163+ unit + 22 protocol fixture + 11 integration + 1 doc)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
@@ -138,7 +138,7 @@
 ### JMAP Client Details
 - **Session discovery**: `/.well-known/jmap` → `fetchSession` URL → GET session object
 - **Account ID**: Retrieved from session's `urn:ietf:params:jmap:mail` account
-- **Email/query**: Filters by `inMailboxRole` (inbox, sent, drafts, junk, trash)
+- **Email/query + Email/get**: Batched in a single JMAP request using RFC 8621 §3.6 back-references. Filters by `inMailboxRole` (inbox, sent, drafts, junk, trash). Also returns the Email data type `state` token for subsequent `Email/changes` calls, eliminating the need for a separate `get_email_state()` round-trip
 - **Email/get**: Properties include `id`, `blobId`, `threadId`, `mailboxIds`, `keywords`, `from`, `to`, `cc`, `bcc`, `subject`, `receivedAt`, `hasAttachment`, `bodyValues`
 - **Email/changes**: State-based change tracking for SyncFolderItems
 - **Email/set**: Update keywords ($seen, $important), destroy emails
@@ -146,15 +146,17 @@
 - **Mailbox/query**: List mailboxes by role, find "sent" mailbox for EmailSubmission
 
 ### SMTP Client Details (fallback when JMAP submission unavailable)
-- Uses `lettre` 0.11 with `tokio1-rustls-tls`
+- Uses `lettre` 0.11.22 with `tokio1-rustls-tls`
 - Port 465: Implicit TLS (`AsyncSmtpTransport::relay()`)
 - Port 587: STARTTLS (`AsyncSmtpTransport::starttls_relay()`)
 - Credentials: Same username/password as CalDAV/JMAP auth
 - MIME construction: MultiPart (text + HTML) or single-part (text only)
+- **Message-ID extraction**: Before `transport.send()` takes ownership of the `Message`, the lettre-generated `Message-ID` header is extracted via `message.headers().get::<MessageId>()`. This returns the actual RFC 5322 Message-ID (e.g. `<1717012345.abc@host>`), enabling correlation with the copy in the Sent Items folder. Falls back to a synthetic timestamp-UUID ID only if lettre didn't generate one.
 - **Optional**: When JMAP EmailSubmission is available, SMTP is not needed between gateway and Stalwart
 
 ### Email Server ID Generation
-- `email_server_id_from_jmap_id(jmap_id)` — prefix-based reversible ID: `"em-{jmap_id}"`
+- `email_server_id_from_jmap_id(jmap_id)` — prefix-based reversible ID: `"em-{jmap_id}"` (for JMAP-sourced IDs)
+- `email_server_id_from_send_result(id)` — normalizes both JMAP IDs and RFC 5322 Message-IDs into server IDs. Strips angle brackets from RFC 5322 Message-IDs before prefixing with `"em-"`. Used by CreateItem handler which receives IDs from both JMAP EmailSubmission and SMTP fallback paths.
 - `jmap_id_from_email_server_id(server_id)` — strips `"em-"` prefix to recover JMAP ID
 - `is_email_server_id(id)` — checks for `"em-"` prefix to distinguish from calendar HMAC IDs
 - Email IDs use prefix encoding (not HMAC) because EWS GetItem/UpdateItem/DeleteItem receive the server ID from the client and must reverse it to query JMAP

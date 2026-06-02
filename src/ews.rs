@@ -1713,7 +1713,8 @@ async fn handle_find_email_item(
     )
     .await
     {
-        Ok(emails) => {
+        Ok(result) => {
+                let emails = result.emails;
             let total_items = emails.len();
             let mut item_xml = String::new();
             for email in &emails {
@@ -2192,73 +2193,78 @@ async fn handle_sync_email_folder_items(
         _ => "inbox",
     };
 
-    if is_initial {
-        // Initial sync: JMAP Email/changes requires a valid sinceState token.
-        // Use Email/query + Email/get to fetch current emails, then get the
-        // current data state token for subsequent /changes calls.
-        let emails = match crate::email::fetch_emails_jmap(
-            state,
-            &account_id,
-            mailbox_role,
-            0,
-            _max_changes as u64,
-            &auth.username,
-            &auth.password,
-        )
-        .await
-        {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::error!(error = %e, "JMAP Email/query failed for initial sync");
-                return operation_error_response(
-                    &EwsAction::SyncFolderItems,
-                    "ErrorInternalServerError",
-                    "Failed to fetch emails for initial sync",
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                );
-            }
-        };
-
-        let mut changes_xml = String::new();
-        for email in &emails {
-            let jmap_id = email.id.as_deref().unwrap_or("unknown");
-            let server_id = email_server_id_from_jmap_id(jmap_id);
-            let change_key = server_id.clone();
-            changes_xml.push_str(&format!(
-                r#"<t:Create>{}</t:Create>"#,
-                render_jmap_email_as_ews_message(email, &server_id, &change_key)
-            ));
-        }
-
-        // Get the current email data state token for future /changes calls
-        let new_state = match jmap
-            .get_email_state(&account_id, &auth.username, &auth.password)
+        if is_initial {
+            // Initial sync: JMAP Email/changes requires a valid sinceState token.
+            // Use Email/query + Email/get (batched) to fetch current emails and
+            // obtain the current data state token for subsequent /changes calls.
+            let result = match crate::email::fetch_emails_jmap(
+                state,
+                &account_id,
+                mailbox_role,
+                0,
+                _max_changes as u64,
+                &auth.username,
+                &auth.password,
+            )
             .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to get JMAP email state token; using empty state");
-                String::new()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(error = %e, "JMAP Email/query failed for initial sync");
+                    return operation_error_response(
+                        &EwsAction::SyncFolderItems,
+                        "ErrorInternalServerError",
+                        "Failed to fetch emails for initial sync",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
+                }
+            };
+
+            let emails = result.emails;
+            let new_state = if result.state.is_empty() {
+                // Fallback: fetch state token separately if batched get didn't return it
+                match jmap
+                    .get_email_state(&account_id, &auth.username, &auth.password)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to get JMAP email state token; using empty state");
+                        String::new()
+                    }
+                }
+            } else {
+                result.state
+            };
+
+            let mut changes_xml = String::new();
+            for email in &emails {
+                let jmap_id = email.id.as_deref().unwrap_or("unknown");
+                let server_id = email_server_id_from_jmap_id(jmap_id);
+                let change_key = server_id.clone();
+                changes_xml.push_str(&format!(
+                    r#"<t:Create>{}</t:Create>"#,
+                    render_jmap_email_as_ews_message(email, &server_id, &change_key)
+                ));
             }
-        };
 
-        if let Err(e) = state
-            .storage
-            .set_ews_sync_state(owner, &folder_id, &new_state)
-            .await
-        {
-            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state");
+            if let Err(e) = state
+                .storage
+                .set_ews_sync_state(owner, &folder_id, &new_state)
+                .await
+            {
+                tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state");
+            }
+
+            let response = format!(
+                r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
+                EWS_MSG_NS,
+                EWS_TYPE_NS,
+                xml_escape(&new_state),
+                changes_xml
+            );
+            return soap_ok(response);
         }
-
-        let response = format!(
-            r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
-            EWS_MSG_NS,
-            EWS_TYPE_NS,
-            xml_escape(&new_state),
-            changes_xml
-        );
-        return soap_ok(response);
-    }
 
     // Subsequent sync: call JMAP Email/changes with the stored state token
     let changes_result = jmap
@@ -2726,7 +2732,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             }
             match crate::email::send_email(state, &msg, &auth.username, &auth.password).await {
                 Ok(message_id) => {
-                    let server_id = crate::email::email_server_id_from_jmap_id(&message_id);
+                    let server_id = crate::email::email_server_id_from_send_result(&message_id);
                     let change_key = server_id.clone();
                     let items_xml = crate::email::render_ews_message_item_xml(
                         &server_id,

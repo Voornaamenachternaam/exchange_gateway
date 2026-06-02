@@ -2039,7 +2039,7 @@ async fn handle_email_sync(
                 )
                 .await
                 {
-                    Ok(emails) => emails,
+                    Ok(result) => result.emails,
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
                         Vec::new()

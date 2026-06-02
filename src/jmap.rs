@@ -206,6 +206,9 @@ pub struct EmailListResult {
     pub total: u64,
     pub can_calculate_changes: bool,
     pub query_state: String,
+    /// Current state of the Email data type (from Email/get response).
+    /// Used as `sinceState` for subsequent `Email/changes` calls.
+    pub state: String,
 }
 
 /// Result of an Email/changes call
@@ -527,7 +530,9 @@ impl JmapClient {
 
     /// Query emails in a mailbox.
     ///
-    /// Maps to `Email/query` (RFC 8621 §4.3).
+    /// Maps to `Email/query` (RFC 8621 §4.3). Batches Email/query and
+    /// Email/get in a single JMAP request using back-references (RFC 8621 §3.6)
+    /// to avoid two separate network round-trips.
     pub async fn query_emails(&self, params: QueryEmailsParams<'_>) -> Result<EmailListResult> {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
@@ -537,18 +542,44 @@ impl JmapClient {
             vec![json!({"property": "receivedAt", "isAscending": false})]
         });
 
-        let method_calls = vec![(
-            "Email/query",
-            json!({
-                "accountId": params.account_id,
-                "filter": filter_val,
-                "sort": sort_val,
-                "position": params.position,
-                "limit": params.limit,
-                "calculateTotal": true,
-            }),
-            "q0",
-        )];
+        let properties = json!([
+            "id", "blobId", "threadId", "mailboxIds", "keywords",
+            "size", "receivedAt", "sentAt", "hasAttachment",
+            "from", "to", "cc", "bcc", "replyTo",
+            "subject", "preview", "bodyValues", "textBody", "htmlBody",
+            "attachments"
+        ]);
+
+        // Batch Email/query + Email/get in a single request (RFC 8621 §3.6).
+        // The Email/get ids are a back-reference to Email/query's /ids result.
+        let method_calls = vec![
+            (
+                "Email/query",
+                json!({
+                    "accountId": params.account_id,
+                    "filter": filter_val,
+                    "sort": sort_val,
+                    "position": params.position,
+                    "limit": params.limit,
+                    "calculateTotal": true,
+                }),
+                "q0",
+            ),
+            (
+                "Email/get",
+                json!({
+                    "accountId": params.account_id,
+                    "#ids": {
+                        "resultOf": "q0",
+                        "name": "Email/query",
+                        "path": "/ids",
+                    },
+                    "properties": properties,
+                    "bodyProperties": ["partId", "blobId", "size", "type", "charset"],
+                }),
+                "g0",
+            ),
+        ];
 
         let response = self
             .api_call(
@@ -560,54 +591,44 @@ impl JmapClient {
             )
             .await?;
 
-        // Parse the query response
+        let mut query_state = String::new();
+        let mut total: u64 = 0;
+        let mut can_calc = false;
+        let mut emails: Vec<JmapEmail> = Vec::new();
+        let mut state = String::new();
+
         for (method, data, _) in response.method_responses {
             if method == "Email/query" {
-                let ids: Vec<String> = data
-                    .get("ids")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
-                let total: u64 = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-                let can_calc: bool = data
+                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                can_calc = data
                     .get("canCalculateChanges")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let query_state: String = data
+                query_state = data
                     .get("queryState")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-
-                // Fetch the actual email objects for the IDs
-                let emails = if !ids.is_empty() {
-                    self.get_emails(
-                        params.account_id,
-                        &ids,
-                        Some(json!([
-                            "id", "blobId", "threadId", "mailboxIds", "keywords",
-                            "size", "receivedAt", "sentAt", "hasAttachment",
-                            "from", "to", "cc", "bcc", "replyTo",
-                            "subject", "preview", "bodyValues", "textBody", "htmlBody",
-                            "attachments"
-                        ])),
-                        params.username,
-                        params.password,
-                    )
-                    .await?
-                } else {
-                    Vec::new()
-                };
-
-                return Ok(EmailListResult {
-                    emails,
-                    total,
-                    can_calculate_changes: can_calc,
-                    query_state,
-                });
+            } else if method == "Email/get" {
+                emails = data
+                    .get("list")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                state = data
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
             }
         }
 
-        Err(anyhow!("Unexpected JMAP response structure for Email/query"))
+        Ok(EmailListResult {
+            emails,
+            total,
+            can_calculate_changes: can_calc,
+            query_state,
+            state,
+        })
     }
 
     /// Get specific emails by ID.

@@ -162,6 +162,21 @@ impl SmtpClient {
 
         let transport = self.build_transport(params.username, params.password)?;
 
+        // Extract the lettre-generated Message-ID before sending (send takes ownership).
+        // Per RFC 5322 §3.6.4, the Message-ID is the universal identifier for the
+        // email, enabling correlation with the copy in the Sent Items folder.
+        let message_id = message
+            .headers()
+            .get::<lettre::message::header::MessageId>()
+            .map(|h| h.as_ref().to_string())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}-{}",
+                    chrono::Utc::now().timestamp_millis(),
+                    uuid::Uuid::new_v4().simple()
+                )
+            });
+
         debug!(
             target: "smtp",
             host = %self.host,
@@ -174,11 +189,6 @@ impl SmtpClient {
 
         match transport.send(message).await {
             Ok(response) => {
-                let message_id = format!(
-                    "{}-{}",
-                    chrono::Utc::now().timestamp_millis(),
-                    uuid::Uuid::new_v4().simple()
-                );
                 info!(
                     target: "smtp",
                     host = %self.host,

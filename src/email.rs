@@ -464,6 +464,8 @@ pub async fn send_email_smtp(
 /// Fetch emails from JMAP for a specific folder.
 ///
 /// Used by EWS FindItem/GetItem and EAS Sync for email folders.
+/// Returns the full [`EmailListResult`] including the Email data type `state`
+/// token for subsequent `Email/changes` calls.
 pub async fn fetch_emails_jmap(
     state: &Arc<AppState>,
     account_id: &str,
@@ -472,7 +474,7 @@ pub async fn fetch_emails_jmap(
     limit: u64,
     username: &str,
     password: &SecretString,
-) -> anyhow::Result<Vec<JmapEmail>> {
+) -> anyhow::Result<crate::jmap::EmailListResult> {
     let jmap = state.jmap_client.as_ref().ok_or_else(|| {
         anyhow::anyhow!("JMAP is not configured; email reading is unavailable")
     })?;
@@ -509,7 +511,7 @@ pub async fn fetch_emails_jmap(
         })
         .await?;
 
-    Ok(result.emails)
+    Ok(result)
 }
 
 /// EAS folder type constants per MS-ASCMD §2.2.3.41.
@@ -610,6 +612,23 @@ pub const EMAIL_ID_PREFIX: &str = "em-";
 /// allows reversing the mapping via [`jmap_id_from_email_server_id`].
 pub fn email_server_id_from_jmap_id(jmap_id: &str) -> String {
     format!("{}{}", EMAIL_ID_PREFIX, jmap_id)
+}
+
+/// Create a reversible email server ID from a send result.
+///
+/// `send_email()` returns either a JMAP email ID (e.g. `"e50"`) or an RFC 5322
+/// Message-ID (e.g. `"<1717012345.abc@host>"`). This function normalises both
+/// into a valid gateway server ID:
+///
+/// - **JMAP ID**: passed through to [`email_server_id_from_jmap_id`] → `"em-e50"`.
+/// - **RFC 5322 Message-ID**: angle brackets are stripped, yielding
+///   `"em-1717012345.abc@host"`. The bare Message-ID (without `<>`) is a valid
+///   opaque identifier per RFC 5322 §3.6.4 and is safe for embedding in XML.
+pub fn email_server_id_from_send_result(id: &str) -> String {
+    // Strip RFC 5322 angle-bracket delimiters if present.
+    // A JMAP email ID never contains '<' or '>', so this is a no-op for JMAP.
+    let stripped = id.trim_start_matches('<').trim_end_matches('>');
+    format!("{}{}", EMAIL_ID_PREFIX, stripped)
 }
 
 /// Extract the JMAP email ID from a gateway email server ID.
@@ -735,6 +754,25 @@ mod tests {
         assert_eq!(jmap_id_from_email_server_id("abc123xyz"), None);
         assert!(!is_email_server_id("abc123xyz"));
         assert!(!is_email_server_id(""));
+    }
+
+    #[test]
+    fn test_email_server_id_from_send_result_jmap() {
+        // JMAP IDs pass through without angle brackets
+        let server_id = email_server_id_from_send_result("e50");
+        assert_eq!(server_id, "em-e50");
+        assert!(is_email_server_id(&server_id));
+    }
+
+    #[test]
+    fn test_email_server_id_from_send_result_smtp() {
+        // RFC 5322 Message-IDs have angle brackets stripped
+        let server_id = email_server_id_from_send_result("<1717012345.abc@host>");
+        assert_eq!(server_id, "em-1717012345.abc@host");
+        assert!(is_email_server_id(&server_id));
+        // Must not contain raw angle brackets (breaks XML)
+        assert!(!server_id.contains('<'));
+        assert!(!server_id.contains('>'));
     }
 
     #[test]
