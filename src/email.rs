@@ -533,7 +533,18 @@ pub async fn fetch_emails_jmap(
         "deleteditems" | "trash" => Some(serde_json::json!({
             "inMailboxRole": "trash"
         })),
-        _ => None, // All mailboxes (only for unrecognised roles)
+        _ => {
+            // Unrecognised role — returning no filter would match ALL emails
+            // in the account (privacy/correctness bug). Return empty instead.
+            tracing::warn!(role = %mailbox_role, "Unrecognised mailbox role; returning empty email list");
+            return Ok(crate::jmap::EmailListResult {
+                emails: Vec::new(),
+                total: 0,
+                can_calculate_changes: false,
+                query_state: String::new(),
+                state: String::new(),
+            });
+        }
     };
 
     let result = jmap
@@ -551,30 +562,31 @@ pub async fn fetch_emails_jmap(
     Ok(result)
 }
 
-/// EAS folder type constants per MS-ASCMD §2.2.3.41.
+/// EAS folder type constants per MS-ASCMD §2.2.3.186.3.
 /// These map to the Type element in FolderSync responses.
 pub mod eas_folder_type {
     pub const CALENDAR: u8 = 8;
     pub const CONTACTS: u8 = 9;
-    pub const EMAIL: u8 = 2;
+    pub const EMAIL: u8 = 2; // Alias for INBOX
     pub const TASKS: u8 = 7;
     pub const NOTES: u8 = 10;
     pub const JOURNAL: u8 = 11;
-    // Generic folder types
-    pub const INBOX: u8 = 2;
-    pub const DRAFTS: u8 = 3;
-    pub const SENT_ITEMS: u8 = 4;
-    pub const DELETED_ITEMS: u8 = 5;
-    pub const OUTBOX: u8 = 6;
-    pub const JUNK_EMAIL: u8 = 7;
+    // Specific email folder types per MS-ASCMD §2.2.3.186.3
+    pub const INBOX: u8 = 2;         // Default Inbox folder
+    pub const DRAFTS: u8 = 3;        // Default Drafts folder
+    pub const DELETED_ITEMS: u8 = 4; // Default Deleted Items folder
+    pub const SENT_ITEMS: u8 = 5;    // Default Sent Items folder
+    pub const OUTBOX: u8 = 6;        // Default Outbox folder
+    // No dedicated Junk Email type in the spec — use 12 (User-created Mail folder)
+    pub const JUNK_EMAIL: u8 = 12;   // User-created Mail folder
 }
 
 /// Map an EAS CollectionId to the JMAP mailbox role used for filtering.
 ///
-/// Returns `None` for the Outbox (CollectionId "6") because JMAP has no
-/// outbox role — outbound email is handled via `EmailSubmission/set`, not
-/// a mailbox. Returning `None` here signals the caller to return an empty
-/// result rather than querying all mailboxes.
+/// Returns `None` for the Outbox (CollectionId "6") and any unrecognised
+/// CollectionId because JMAP has no outbox role and unknown IDs have no
+/// JMAP mailbox mapping. Returning `None` signals the caller to return an
+/// empty result rather than querying all mailboxes.
 pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static str> {
     match collection_id {
         "2" => Some("inbox"),
@@ -583,7 +595,10 @@ pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static
         "5" => Some("trash"),
         "6" => None, // Outbox — no JMAP equivalent; handled via EmailSubmission
         "7" => Some("junk"),
-        _ => Some("inbox"), // Unknown collection ID defaults to inbox
+        _ => {
+            tracing::warn!(collection_id, "Unrecognised EAS CollectionId; returning empty");
+            None
+        }
     }
 }
 
@@ -840,6 +855,34 @@ mod tests {
     }
 
     #[test]
+    fn test_eas_folder_type_values_per_ms_ascmd() {
+        // Per MS-ASCMD §2.2.3.186.3
+        assert_eq!(eas_folder_type::INBOX, 2, "Inbox = Default Inbox folder");
+        assert_eq!(eas_folder_type::DRAFTS, 3, "Drafts = Default Drafts folder");
+        assert_eq!(eas_folder_type::DELETED_ITEMS, 4, "Deleted Items = Default Deleted Items folder");
+        assert_eq!(eas_folder_type::SENT_ITEMS, 5, "Sent Items = Default Sent Items folder");
+        assert_eq!(eas_folder_type::OUTBOX, 6, "Outbox = Default Outbox folder");
+        assert_eq!(eas_folder_type::JUNK_EMAIL, 12, "Junk Email = User-created Mail folder");
+        assert_eq!(eas_folder_type::CALENDAR, 8, "Calendar = Default Calendar folder");
+        assert_eq!(eas_folder_type::CONTACTS, 9, "Contacts = Default Contacts folder");
+        assert_eq!(eas_folder_type::TASKS, 7, "Tasks = Default Tasks folder");
+    }
+
+    #[test]
+    fn test_eas_email_folders_xml_type_values() {
+        let xml = eas_email_folders_xml();
+        // Verify correct Type values are emitted in the XML
+        assert!(xml.contains("<Type>2</Type>"), "Inbox must have Type=2");
+        assert!(xml.contains("<Type>3</Type>"), "Drafts must have Type=3");
+        assert!(xml.contains("<Type>4</Type>"), "Deleted Items must have Type=4");
+        assert!(xml.contains("<Type>5</Type>"), "Sent Items must have Type=5");
+        assert!(xml.contains("<Type>6</Type>"), "Outbox must have Type=6");
+        assert!(xml.contains("<Type>12</Type>"), "Junk Email must have Type=12");
+        // Ensure old incorrect values are NOT present
+        assert!(!xml.contains("<Type>7</Type>"), "Type=7 is Tasks, not Junk Email");
+    }
+
+    #[test]
     fn test_extract_jmap_body_prefers_text_over_html() {
         use crate::jmap::{JmapBodyPart, JmapBodyValue, JmapEmail};
         use std::collections::HashMap;
@@ -962,7 +1005,7 @@ fn test_eas_collection_id_to_mailbox_role_mapping() {
 }
 
 #[test]
-fn test_eas_collection_id_to_mailbox_role_unknown_defaults_inbox() {
-    assert_eq!(eas_collection_id_to_mailbox_role("99"), Some("inbox"));
+fn test_eas_collection_id_to_mailbox_role_unknown_returns_none() {
+    assert_eq!(eas_collection_id_to_mailbox_role("99"), None);
 }
 }

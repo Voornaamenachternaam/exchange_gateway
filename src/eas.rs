@@ -1066,25 +1066,22 @@ async fn handle_folder_sync(
         // Per MS-ASCMD §2.2.3.41, Type values:
         // 2=Email (default mail folder), 3=Drafts, 4=Sent Items,
         // 5=Deleted Items, 6=Outbox, 7=Junk Email, 8=Calendar
-        // Only include email folders when email is actually available,
-        // otherwise clients will attempt to sync them and hit errors.
-        let email_folders = if state.email_available() {
-            r#"<Add><ServerId>2</ServerId><ParentId>0</ParentId><DisplayName>Inbox</DisplayName><Type>2</Type></Add>
-<Add><ServerId>3</ServerId><ParentId>0</ParentId><DisplayName>Drafts</DisplayName><Type>3</Type></Add>
-<Add><ServerId>4</ServerId><ParentId>0</ParentId><DisplayName>Sent Items</DisplayName><Type>4</Type></Add>
-<Add><ServerId>5</ServerId><ParentId>0</ParentId><DisplayName>Deleted Items</DisplayName><Type>5</Type></Add>
-<Add><ServerId>6</ServerId><ParentId>0</ParentId><DisplayName>Outbox</DisplayName><Type>6</Type></Add>
-<Add><ServerId>7</ServerId><ParentId>0</ParentId><DisplayName>Junk Email</DisplayName><Type>7</Type></Add>"#
-        } else {
-            ""
-        };
-        let count = if state.email_available() { 7 } else { 1 };
-        format!(
-            r#"<Changes><Count>{count}</Count>
+    // Only include email folders when email is actually available,
+    // otherwise clients will attempt to sync them and hit errors.
+    // Uses eas_email_folders_xml() which emits correct Type values per
+    // MS-ASCMD §2.2.3.186.3 (e.g. SentItems=5, DeletedItems=4, JunkEmail=12).
+    let email_folders = if state.email_available() {
+        crate::email::eas_email_folders_xml()
+    } else {
+        String::new()
+    };
+    let count = if state.email_available() { 7 } else { 1 };
+    format!(
+        r#"<Changes><Count>{count}</Count>
 <Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
 {email_folders}
 </Changes>"#
-        )
+    )
     } else {
         r#"<Changes><Count>0</Count></Changes>"#.to_string()
     };
@@ -1955,7 +1952,10 @@ async fn handle_send_mail(
         return xml_or_wbxml_response(
             wbxml,
             as_wbxml,
-            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">1</Status>"#,
+            // Per MS-ASCMD §2.2.1.17, Status 4 = "Mailbox server error".
+            // Returning Status 1 (Success) when email is disabled would cause
+            // the client to believe the email was sent — silent email loss.
+            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">4</Status>"#,
             request_id,
         );
     }
@@ -1986,6 +1986,17 @@ async fn handle_send_mail(
                 );
             }
         }
+    } else {
+        // Per MS-ASCMD §2.2.1.17, Status 2 = "Protocol error" — the request
+        // XML was malformed or missing required MIME content. Returning
+        // Status 1 (Success) here would cause silent email loss.
+        tracing::warn!("EAS SendMail: failed to parse MIME content from request");
+        return xml_or_wbxml_response(
+            wbxml,
+            as_wbxml,
+            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">2</Status>"#,
+            request_id,
+        );
     }
 
     // Per MS-ASCMD, SendMail returns Status 1 on success

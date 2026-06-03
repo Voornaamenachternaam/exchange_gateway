@@ -1674,7 +1674,15 @@ async fn handle_find_email_item(
         DistinguishedFolder::Drafts => "drafts",
         DistinguishedFolder::DeletedItems => "deleteditems",
         DistinguishedFolder::JunkEmail => "junkemail",
-        _ => "inbox",
+        DistinguishedFolder::Outbox => "outbox",
+        // MsgFolderRoot is the email root — not a specific mailbox.
+        // Returning "inbox" here is a safe fallback since the client
+        // is querying the top-level email folder.
+        DistinguishedFolder::MsgFolderRoot => "inbox",
+        _ => {
+            tracing::warn!(?folder, "Unrecognised EWS folder for email FindItem; returning empty");
+            "outbox" // fetch_emails_jmap returns empty for outbox
+        }
     };
 
     let jmap = match state.jmap_client.as_ref() {
@@ -2190,7 +2198,14 @@ async fn handle_sync_email_folder_items(
         DistinguishedFolder::JunkEmail => "junk",
         DistinguishedFolder::DeletedItems => "trash",
         DistinguishedFolder::Outbox => "outbox",
-        _ => "inbox",
+        // MsgFolderRoot is the email root — not a specific mailbox.
+        // Returning "inbox" here is a safe fallback since the client
+        // is syncing the top-level email folder.
+        DistinguishedFolder::MsgFolderRoot => "inbox",
+        _ => {
+            tracing::warn!(?folder, "Unrecognised EWS folder for email SyncFolderItems; returning empty");
+            "outbox" // fetch_emails_jmap returns empty for outbox
+        }
     };
 
         if is_initial {
