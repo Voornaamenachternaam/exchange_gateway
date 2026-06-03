@@ -51,7 +51,7 @@
 - **ConflictResolution on UpdateItem**: Per MS-OXWSCORE §3.1.4.9.4.1, ChangeKey validation is only enforced for `NeverOverwrite`. `AlwaysOverwrite` and `AutoResolve` skip ChangeKey validation and proceed with the update. OneCalendar always sends `ConflictResolution="AlwaysOverwrite"`. DeleteItem has no ConflictResolution — always validates ChangeKey.
 
 ## Build & Test
-- `cargo test` — 203+ tests (169+ unit + 22 protocol fixture + 11 integration + 1 doc)
+- `cargo test` — 205+ tests (171+ unit + 22 protocol fixture + 11 integration + 1 doc)
 - `cargo clippy --all-targets -- -D warnings` — zero warnings required
 - `cargo build --release` — release build
 - **Never set RUST_LOG in Dockerfile**: `build_env_filter()` gives GATEWAY_LOG_LEVEL priority over RUST_LOG. The Dockerfile must NOT set RUST_LOG; logging.rs defaults to "info" when neither env var is set.
@@ -189,7 +189,8 @@
 5. If JMAP fails, falls back to `send_email_smtp()` via lettre
 
 ### EAS Email Sync — CollectionId Mapping
-- **CollectionId → JMAP mailbox role**: `eas_collection_id_to_mailbox_role()` maps EAS folder IDs to JMAP roles: "2" → inbox, "3" → drafts, "4" → sent, "5" → trash, "6" → None (outbox, no JMAP equivalent), "7" → junk. Unknown IDs default to inbox.
+- **CollectionId → JMAP mailbox role**: `eas_collection_id_to_mailbox_role()` maps EAS folder IDs to JMAP roles: "2" → inbox, "3" → drafts, "4" → sent, "5" → trash, "6" → None (outbox, no JMAP equivalent), "7" → junk. Unknown IDs return `None` (empty result), NOT "inbox" (privacy fix — prevents returning Inbox emails for unrecognised CollectionIds).
+- **EAS folder Type values per MS-ASCMD §2.2.3.186.3**: Inbox=2, Drafts=3, DeletedItems=4, SentItems=5, Outbox=6, JunkEmail=12 (User-created Mail folder). **NOT** 7 (which is Tasks). Previously, SENT_ITEMS and DELETED_ITEMS were swapped (4/5 reversed), and JUNK_EMAIL was 7 (Tasks) instead of 12. This caused Outlook/ActiveSync clients to misinterpret folder types.
 - **Outbox returns empty**: CollectionId "6" (Outbox) has no JMAP mailbox equivalent — outbound email is handled via `EmailSubmission/set`, not a mailbox. Both `eas_collection_id_to_mailbox_role()` returning `None` and `fetch_emails_jmap("outbox")` return empty results, preventing a privacy bug where "outbox" fell through to the catch-all filter (returning ALL emails in the account).
 - **EAS Sync uses actual CollectionId**: The Sync response includes the real `state_collection_id` from the request, not hardcoded "2". Previously, syncing any non-inbox folder (Sent Items, Drafts, Junk) would incorrectly return Inbox emails under CollectionId "2".
 - **EAS SendMail error status**: Per MS-ASCMD §2.2.1.17, SendMail returns Status 1 (success) or Status 4 (mailbox server error — transient). Previously, send failures returned Status 1, causing silent email loss where the client thought the email was sent.
