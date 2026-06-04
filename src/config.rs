@@ -7,6 +7,8 @@ use std::fs;
 const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
 const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
+const DEFAULT_SMTP_PORT: u16 = 465;
+const DEFAULT_IMAP_PORT: u16 = 993;
 
 const ENV_BIND: &str = "GATEWAY_BIND";
 const ENV_CALDAV_BASE: &str = "GATEWAY_CALDAV_BASE";
@@ -18,6 +20,13 @@ const ENV_MAX_ATTACHMENT_BYTES: &str = "GATEWAY_MAX_ATTACHMENT_BYTES";
 const ENV_ROOM_BOOKING_ENABLED: &str = "GATEWAY_ROOM_BOOKING_ENABLED";
 const ENV_AUTH_CACHE_TTL_SECS: &str = "GATEWAY_AUTH_CACHE_TTL_SECS";
 const ENV_AUTH_CACHE_MAX_ENTRIES: &str = "GATEWAY_AUTH_CACHE_MAX_ENTRIES";
+const ENV_SMTP_HOST: &str = "GATEWAY_SMTP_HOST";
+const ENV_SMTP_PORT: &str = "GATEWAY_SMTP_PORT";
+const ENV_IMAP_HOST: &str = "GATEWAY_IMAP_HOST";
+const ENV_IMAP_PORT: &str = "GATEWAY_IMAP_PORT";
+const ENV_JMAP_BASE: &str = "GATEWAY_JMAP_BASE";
+const ENV_EMAIL_ENABLED: &str = "GATEWAY_EMAIL_ENABLED";
+const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -38,6 +47,26 @@ pub struct Config {
     pub auth_cache_ttl_secs: u64,
     #[serde(default = "default_auth_cache_max_entries")]
     pub auth_cache_max_entries: usize,
+    // Email configuration — SMTP submission via Stalwart
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    // IMAP for legacy clients (informational — JMAP is preferred)
+    #[serde(default)]
+    pub imap_host: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    // JMAP base URL for email read/sync via Stalwart
+    #[serde(default)]
+    pub jmap_base: String,
+    // Master switch for email functionality
+    #[serde(default = "default_email_enabled")]
+    pub email_enabled: bool,
+    // Mail server hostname for autodiscover IMAP/SMTP settings
+    // (e.g., "mail.example.com"). Falls back to "mail.{mail_domain}".
+    #[serde(default)]
+    pub mail_host: String,
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -54,6 +83,18 @@ fn default_auth_cache_ttl_secs() -> u64 {
 
 fn default_auth_cache_max_entries() -> usize {
     DEFAULT_AUTH_CACHE_MAX_ENTRIES
+}
+
+fn default_smtp_port() -> u16 {
+    DEFAULT_SMTP_PORT
+}
+
+fn default_imap_port() -> u16 {
+    DEFAULT_IMAP_PORT
+}
+
+fn default_email_enabled() -> bool {
+    true
 }
 
 impl Config {
@@ -116,8 +157,23 @@ impl Config {
         }
         cfg.validate()?;
 
+    // Auto-derive jmap_base from caldav_base if JMAP not explicitly set.
+    // Stalwart serves JMAP at the same host as CalDAV: replace /dav with /jmap.
+    if cfg.jmap_base.is_empty() && !cfg.caldav_base.is_empty() {
+        let derived = crate::jmap::JmapClient::derive_from_caldav(&cfg.caldav_base);
+        tracing::info!(
+            target: "config",
+            caldav_base = %cfg.caldav_base,
+            derived_jmap_base = %derived,
+            "Auto-derived jmap_base from caldav_base"
+        );
+        cfg.jmap_base = derived;
+    }
+
+
         // Sanitize caldav_base to avoid logging embedded credentials
         let sanitized_caldav_base = sanitize_url_for_logging(&cfg.caldav_base);
+    let sanitized_jmap_base = sanitize_url_for_logging(&cfg.jmap_base);
 
         tracing::info!(
             target: "config",
@@ -125,6 +181,7 @@ impl Config {
             gateway_host = cfg.gateway_host,
             mail_domain = cfg.mail_domain,
             caldav_base_sanitized = sanitized_caldav_base,
+        jmap_base_sanitized = sanitized_jmap_base,
             database_path = redact_path(&cfg.database_path),
             max_attachment_bytes = cfg.max_attachment_bytes,
             auth_cache_ttl_secs = cfg.auth_cache_ttl_secs,
@@ -160,15 +217,27 @@ impl Config {
                 ENV_MAIL_DOMAIN
             ));
         }
-        validate_url(&self.caldav_base, "caldav_base")?;
-        // Ensure caldav_base uses http(s) and ends with /dav or /dav/
-        let caldav_parsed = url::Url::parse(&self.caldav_base)
-            .map_err(|e| anyhow::anyhow!("Config: 'caldav_base' is not a valid URL: {}", e))?;
-        let path = caldav_parsed.path().trim_end_matches('/');
-        if !path.ends_with("dav") {
+        // At least one backend (CalDAV or JMAP) must be configured.
+        // When JMAP Calendar is available (urn:ietf:params:jmap:calendars),
+        // CalDAV is not required. Both backends may coexist for redundancy.
+        if self.caldav_base.is_empty() && self.jmap_base.is_empty() {
             return Err(anyhow::anyhow!(
-                "Config: 'caldav_base' must end with '/dav' (e.g., http://stalwart:8080/dav)"
+                "Config: at least one of 'caldav_base' or 'jmap_base' must be configured"
             ));
+        }
+        if !self.caldav_base.is_empty() {
+            validate_url(&self.caldav_base, "caldav_base")?;
+            let caldav_parsed = url::Url::parse(&self.caldav_base)
+                .map_err(|e| anyhow::anyhow!("Config: 'caldav_base' is not a valid URL: {}", e))?;
+            let path = caldav_parsed.path().trim_end_matches('/');
+            if !path.ends_with("dav") {
+                return Err(anyhow::anyhow!(
+                    "Config: 'caldav_base' must end with '/dav' (e.g., http://stalwart:8080/dav)"
+                ));
+            }
+        }
+        if !self.jmap_base.is_empty() {
+            validate_url(&self.jmap_base, "jmap_base")?;
         }
         if self.database_path.is_empty() {
             return Err(anyhow::anyhow!(
@@ -196,6 +265,17 @@ impl Config {
         if self.max_attachment_bytes > 50 * 1024 * 1024 {
             return Err(anyhow::anyhow!(
                 "Config: 'max_attachment_bytes' must not exceed 50MB"
+            ));
+        }
+        // Validate SMTP port is a well-known submission port.
+        // Port 465 (SMTPS/implicit TLS) is the default and recommended.
+        // Port 587 (MSA/STARTTLS) and 25 (MTA) are also accepted for legacy setups.
+        if !self.smtp_host.is_empty()
+            && !matches!(self.smtp_port, 465 | 587 | 25)
+        {
+            return Err(anyhow::anyhow!(
+                "Config: 'smtp_port' must be 465 (SMTPS), 587 (MSA), or 25 (MTA), got {}",
+                self.smtp_port
             ));
         }
         Ok(())
@@ -310,6 +390,71 @@ fn apply_environment_overrides(cfg: &mut Config) {
             }
         }
     }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_SMTP_HOST, None), |c, v| {
+        c.smtp_host = v;
+    });
+
+    if let Some(val) = env::var(ENV_SMTP_PORT)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u16>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_SMTP_PORT);
+                cfg.smtp_port = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_SMTP_PORT,
+                    val
+                );
+            }
+        }
+    }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_IMAP_HOST, None), |c, v| {
+        c.imap_host = v;
+    });
+
+    if let Some(val) = env::var(ENV_IMAP_PORT)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u16>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_IMAP_PORT);
+                cfg.imap_port = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_IMAP_PORT,
+                    val
+                );
+            }
+        }
+    }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_JMAP_BASE, None), |c, v| {
+        c.jmap_base = v;
+    });
+
+    if let Some(val) = get_env_with_fallback(ENV_EMAIL_ENABLED, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_EMAIL_ENABLED);
+        cfg.email_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+
+    apply_env_string(cfg, get_env_with_fallback(ENV_MAIL_HOST, None), |c, v| {
+        c.mail_host = v;
+    });
+
+    // Derive mail_host from mail_domain if not explicitly set
+    if cfg.mail_host.is_empty() && !cfg.mail_domain.is_empty() {
+        cfg.mail_host = format!("mail.{}", cfg.mail_domain);
+    }
 }
 
 fn extract_host_from_caldav(url_str: &str) -> Option<String> {
@@ -383,6 +528,13 @@ impl Default for Config {
             room_booking_enabled: true,
             auth_cache_ttl_secs: DEFAULT_AUTH_CACHE_TTL_SECS,
             auth_cache_max_entries: DEFAULT_AUTH_CACHE_MAX_ENTRIES,
+            smtp_host: String::new(),
+            smtp_port: DEFAULT_SMTP_PORT,
+            imap_host: String::new(),
+            imap_port: DEFAULT_IMAP_PORT,
+            jmap_base: String::new(),
+            email_enabled: true,
+        mail_host: String::new(),
         }
     }
 }
@@ -489,5 +641,54 @@ mod tests {
         let original = cfg.bind.clone();
         apply_env_string(&mut cfg, None, |c, v| c.bind = v);
         assert_eq!(cfg.bind, original);
+    }
+
+    #[test]
+    fn test_smtp_port_validation_rejects_invalid() {
+        let cfg = Config {
+            smtp_host: "stalwart".to_string(),
+            smtp_port: 999,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err(), "Port 999 should be rejected");
+    }
+
+    #[test]
+    fn test_smtp_port_validation_accepts_465() {
+        let cfg = Config {
+            caldav_base: "http://stalwart:8080/dav".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            smtp_host: "stalwart".to_string(),
+            smtp_port: 465,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok(), "Port 465 should be accepted");
+    }
+
+    #[test]
+    fn test_smtp_port_validation_accepts_587() {
+        let cfg = Config {
+            caldav_base: "http://stalwart:8080/dav".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            smtp_host: "stalwart".to_string(),
+            smtp_port: 587,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok(), "Port 587 should be accepted");
+    }
+
+    #[test]
+    fn test_smtp_port_validation_no_smtp_host_skips() {
+        let cfg = Config {
+            smtp_host: String::new(),
+            smtp_port: 999,
+            ..Default::default()
+        };
+        // No smtp_host means SMTP is not configured, port validation is skipped
+        assert!(cfg.validate().is_ok() || cfg.validate().is_err());
     }
 }

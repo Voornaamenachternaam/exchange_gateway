@@ -2,7 +2,7 @@
 # Multi-stage build with proper layer caching and BuildKit optimizations
 
 # Build stage with rustup for toolchain management
-FROM rust:1.95.0-slim AS builder
+FROM rust:1.96.0-slim AS builder
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ COPY sqlite_schema.sql ./
 RUN cargo build --release --bin exchange_gateway
 
 # Runtime stage - ultra-minimal and secure
-FROM debian:trixie-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

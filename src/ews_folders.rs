@@ -71,6 +71,20 @@ impl DistinguishedFolder {
         matches!(self, Self::Calendar)
     }
 
+    /// Returns true if this folder contains email messages.
+    pub fn is_email(self) -> bool {
+        matches!(
+            self,
+            Self::Inbox
+                | Self::SentItems
+                | Self::DeletedItems
+                | Self::Drafts
+                | Self::Outbox
+                | Self::JunkEmail
+                | Self::MsgFolderRoot
+        )
+    }
+
     pub fn parent_id(self) -> Option<&'static str> {
         match self {
             Self::MsgFolderRoot => None,

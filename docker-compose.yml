@@ -18,7 +18,26 @@ services:
       - RUST_LOG=${GATEWAY_RUST_LOG:-}
       - TZ=${GATEWAY_TZ:-UTC}
       - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
+      # CalDAV (calendar) backend — Stalwart
+      # Required for calendar operations. When JMAP Calendar is also
+      # configured, JMAP is preferred for calendar ops with CalDAV fallback.
       - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}
+      # JMAP (email + calendar) backend — Stalwart
+      # When set, JMAP is used for: auth verification, email read/sync,
+      # email submission (EmailSubmission/set), and calendar operations
+      # (urn:ietf:params:jmap:calendars). Auto-derived from CALDAV_BASE
+      # if not explicitly set (replaces /dav with /jmap).
+      - GATEWAY_JMAP_BASE=${GATEWAY_JMAP_BASE:-}
+      # SMTP (email sending) backend — Stalwart
+      # Only needed as fallback when JMAP EmailSubmission is unavailable.
+      # Port 465 (SMTPS/implicit TLS) is the default and recommended.
+      - GATEWAY_SMTP_HOST=${GATEWAY_SMTP_HOST:-}
+      - GATEWAY_SMTP_PORT=${GATEWAY_SMTP_PORT:-465}
+      # Email toggle
+      - GATEWAY_EMAIL_ENABLED=${GATEWAY_EMAIL_ENABLED:-true}
+      # Mail server hostname for autodiscover IMAP/SMTP settings
+      - GATEWAY_MAIL_HOST=${GATEWAY_MAIL_HOST:-}
+      # Core settings
       - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET}
       - GATEWAY_HOST=${GATEWAY_HOST}
       - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN}

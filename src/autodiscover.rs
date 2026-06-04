@@ -294,11 +294,13 @@ pub fn handle_autodiscover_xml(
     body: &str,
     email: &str,
     accept_language: Option<&str>,
+    mail_host: &str,
+    include_imap_smtp: bool,
 ) -> AdResponse {
     let schema = detect_response_schema(body);
     match schema {
         ResponseSchema::MobileSync => handle_mobilesync_xml(host, email, accept_language),
-        ResponseSchema::Outlook => handle_outlook_xml(host, email),
+        ResponseSchema::Outlook => handle_outlook_xml(host, email, mail_host, include_imap_smtp),
     }
 }
 
@@ -355,67 +357,97 @@ fn handle_mobilesync_xml(host: &str, email: &str, accept_language: Option<&str>)
 ///
 /// Note: `<ServerExclusiveConnect>` is set to "on" for EXPR so that
 /// Outlook clients prioritise this configuration per MS-OXDSCLI §3.1.5.4.
-fn handle_outlook_xml(host: &str, email: &str) -> AdResponse {
+fn handle_outlook_xml(host: &str, email: &str, mail_host: &str, include_imap_smtp: bool) -> AdResponse {
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
+    let mail_host_escaped = xml_escape(mail_host);
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
-  <Response xmlns="{OUTLOOK_RESPONSE_NS}">
-    <User>
-      <DisplayName>Stalwart Mail</DisplayName>
-      <EMailAddress>{email}</EMailAddress>
-      <DeploymentId>00000000-0000-0000-0000-000000000000</DeploymentId>
-    </User>
-    <Account>
-      <AccountType>email</AccountType>
-      <Action>settings</Action>
-      <Protocol>
-        <Type>EXCH</Type>
-        <Server>{host}</Server>
-        <ServerDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}</ServerDN>
-        <ServerVersion>15.20.0.0</ServerVersion>
-        <MdbDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}/cn=Microsoft Private MDB</MdbDN>
-        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
-        <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
-        <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
-        <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
-        <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
-        <UMUrl>https://{host}/EWS/Exchange.asmx</UMUrl>
-        <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
-        <LoginName>{email}</LoginName>
-        <DomainRequired>off</DomainRequired>
-        <SPA>off</SPA>
-        <AuthPackage>Basic</AuthPackage>
-        <CertPrincipalName>None</CertPrincipalName>
-        <SSL>on</SSL>
-        <AuthRequired>on</AuthRequired>
-      </Protocol>
-      <Protocol>
-        <Type>EXPR</Type>
-        <Server>{host}</Server>
-        <SSL>on</SSL>
-        <SPA>off</SPA>
-        <CertPrincipalName>None</CertPrincipalName>
-        <AuthPackage>Basic</AuthPackage>
-        <LoginName>{email}</LoginName>
-        <ServerExclusiveConnect>on</ServerExclusiveConnect>
-        <TTL>1</TTL>
-        <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
-        <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
-        <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
-        <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
-        <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
-        <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
-      </Protocol>
-    </Account>
-  </Response>
+<Response xmlns="{OUTLOOK_RESPONSE_NS}">
+<User>
+<DisplayName>Stalwart Mail</DisplayName>
+<EMailAddress>{email}</EMailAddress>
+<DeploymentId>00000000-0000-0000-0000-000000000000</DeploymentId>
+</User>
+<Account>
+<AccountType>email</AccountType>
+<Action>settings</Action>
+<Protocol>
+<Type>EXCH</Type>
+<Server>{host}</Server>
+<ServerDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}</ServerDN>
+<ServerVersion>15.20.0.0</ServerVersion>
+<MdbDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}/cn=Microsoft Private MDB</MdbDN>
+<ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+<EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
+<EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
+<EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+<OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
+<UMUrl>https://{host}/EWS/Exchange.asmx</UMUrl>
+<EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
+<LoginName>{email}</LoginName>
+<DomainRequired>off</DomainRequired>
+<SPA>off</SPA>
+<AuthPackage>Basic</AuthPackage>
+<CertPrincipalName>None</CertPrincipalName>
+<SSL>on</SSL>
+<AuthRequired>on</AuthRequired>
+</Protocol>
+<Protocol>
+<Type>EXPR</Type>
+<Server>{host}</Server>
+<SSL>on</SSL>
+<SPA>off</SPA>
+<CertPrincipalName>None</CertPrincipalName>
+<AuthPackage>Basic</AuthPackage>
+<LoginName>{email}</LoginName>
+<ServerExclusiveConnect>on</ServerExclusiveConnect>
+<TTL>1</TTL>
+<ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+<EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
+<EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
+<EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+<OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
+<EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
+</Protocol>
+{imap_smtp_protocols}
+</Account>
+</Response>
 </Autodiscover>"#,
-        OUTLOOK_RESPONSE_NS = OUTLOOK_RESPONSE_NS,
-        host = host_escaped,
+OUTLOOK_RESPONSE_NS = OUTLOOK_RESPONSE_NS,
+host = host_escaped,
+email = email_escaped,
+imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
+    format!(
+        r#"<Protocol>
+<Type>IMAP</Type>
+<Server>{mail_host}</Server>
+<Port>993</Port>
+<LoginName>{email}</LoginName>
+<SSL>on</SSL>
+<AuthRequired>on</AuthRequired>
+<SPA>off</SPA>
+<DomainRequired>off</DomainRequired>
+</Protocol>
+<Protocol>
+<Type>SMTP</Type>
+<Server>{mail_host}</Server>
+<Port>465</Port>
+<LoginName>{email}</LoginName>
+<SSL>on</SSL>
+<AuthRequired>on</AuthRequired>
+<SPA>off</SPA>
+<DomainRequired>off</DomainRequired>
+</Protocol>"#,
+        mail_host = mail_host_escaped,
         email = email_escaped,
-    );
-    (StatusCode::OK, content_type_xml(), xml)
+    )
+} else {
+    String::new()
+},
+);
+(StatusCode::OK, content_type_xml(), xml)
 }
 
 pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
@@ -535,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_outlook_response_format() {
-        let (status, _hdrs, body) = handle_outlook_xml("mail.example.com", "user@example.com");
+        let (status, _hdrs, body) = handle_outlook_xml("mail.example.com", "user@example.com", "mail.example.com", true);
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("outlook/responseschema/2006a"));
         assert!(body.contains("https://mail.example.com/EWS/Exchange.asmx"));
@@ -552,7 +584,7 @@ mod tests {
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
         let (status, _, body_out) =
-            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None);
+            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None, "mail.example.com", true);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("mobilesync/responseschema/2006"));
         assert!(!body_out.contains("outlook/responseschema/2006a"));
@@ -565,7 +597,7 @@ mod tests {
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
         let (status, _, body_out) =
-            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None);
+            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None, "mail.example.com", true);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
         assert!(!body_out.contains("mobilesync/responseschema/2006"));
@@ -575,7 +607,7 @@ mod tests {
     fn test_autodiscover_xml_default_is_outlook() {
         let body = "<Autodiscover><Request><EMailAddress>user@example.com</EMailAddress></Request></Autodiscover>";
         let (status, _, body_out) =
-            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None);
+            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None, "mail.example.com", true);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
     }
