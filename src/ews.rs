@@ -4,6 +4,7 @@ use crate::attachment::{
     render_create_attachment_response, render_file_attachment_xml, render_get_attachment_response,
 };
 use crate::caldav::CaldavClient;
+use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
@@ -1144,6 +1145,82 @@ fn render_ews_calendar_item_xml(
     )
 }
 
+/// Fetch free-busy information via JMAP Calendar (urn:ietf:params:jmap:calendars).
+///
+/// Uses `CalendarEvent/query` + `CalendarEvent/get` with the `iCalendar` property
+/// to obtain ICS data, then renders the merged free-busy string and events XML
+/// using the same logic as the CalDAV path.
+///
+/// Returns `Ok((merged_freebusy, events_xml))` on success, `Err` to fall back to CalDAV.
+async fn fetch_freebusy_jmap(
+    jmap: &Arc<JmapClient>,
+    mailbox: &str,
+    password: &str,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<(String, String)> {
+    let secret_password = SecretString::from(password.to_string());
+
+    // Check if JMAP Calendar is supported
+    if !jmap.supports_calendar(mailbox, &secret_password).await {
+        return Err(anyhow::anyhow!("JMAP Calendar not supported by server"));
+    }
+
+    let account_id = jmap.get_calendar_account_id(mailbox, &secret_password).await?;
+    let safe_interval = 30i64; // Default interval for free-busy
+    let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
+        / (safe_interval * 60)) as usize;
+    let mut merged = vec!['0'; slot_count];
+    let mut events_xml_out = String::new();
+
+    let result = jmap
+        .query_calendar_events(QueryCalendarEventsParams {
+            account_id: &account_id,
+            calendar_id: None,
+            start: &start.format("%Y%m%dT%H%M%SZ").to_string(),
+            end: &end.format("%Y%m%dT%H%M%SZ").to_string(),
+            limit: 1000,
+            username: mailbox,
+            password: &secret_password,
+        })
+        .await?;
+
+    for event in &result.events {
+        if let Some(ref ics) = event.i_calendar
+            && let Some(item) = parse_ics_event(ics)
+        {
+            let sd = match item.busy_status.unwrap_or(2) {
+                    0 => '0',
+                    1 => '1',
+                    3 => '3',
+                    _ => '2',
+                };
+                for (i, slot) in merged.iter_mut().enumerate() {
+                    let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
+                    let se = ss + chrono::Duration::minutes(safe_interval);
+                    if item.start < se && item.end > ss && sd > *slot {
+                        *slot = sd;
+                    }
+                }
+                let busy_type = match item.busy_status.unwrap_or(2) {
+                    0 => "Free",
+                    1 => "Tentative",
+                    3 => "OOF",
+                    _ => "Busy",
+                };
+                events_xml_out.push_str(&format!(
+                    "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
+                    format_ews_datetime(&item.start),
+                    format_ews_datetime(&item.end),
+                    busy_type,
+                    ews_calendar_event_details_xml(&item)
+                ));
+        }
+    }
+
+    Ok((merged.into_iter().collect(), events_xml_out))
+}
+
 async fn merged_freebusy_for_mailbox(
     state: &Arc<AppState>,
     mailbox: &str,
@@ -1157,6 +1234,19 @@ async fn merged_freebusy_for_mailbox(
         / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
     let mut events_xml_out = String::new();
+
+    // Try JMAP Calendar first (urn:ietf:params:jmap:calendars).
+    // JMAP eliminates ETag complexity and uses a single HTTP endpoint.
+    // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
+    if let Some(jmap) = &state.jmap_client {
+        if let Ok(jmap_result) = fetch_freebusy_jmap(
+            jmap, mailbox, password, start, end,
+        ).await {
+            return jmap_result;
+        }
+        tracing::debug!(target: "ews", "JMAP Calendar free-busy failed, falling back to CalDAV");
+    }
+
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
         Err(_) => {

@@ -24,11 +24,14 @@
 // calendar operations when available, with CalDAV as fallback.
 
 use anyhow::{anyhow, Result};
+use dashmap::DashMap;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 use tracing::{debug, trace, warn};
 
 /// JMAP session object (RFC 8621 §2.1)
@@ -400,11 +403,19 @@ pub struct SetCalendarEventParams<'a> {
     pub password: &'a SecretString,
 }
 
+/// Duration for which a cached JMAP session is considered valid.
+/// Per RFC 8621 §2.1, the session state changes when capabilities or
+/// accounts change, which is rare. A 5-minute TTL avoids stale sessions
+/// while eliminating redundant HTTP GETs per method call.
+const SESSION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// JMAP client for email and calendar operations via Stalwart Mailserver.
 #[derive(Clone)]
 pub struct JmapClient {
     base_url: String,
     client: reqwest::Client,
+    /// Cached sessions keyed by username, with expiry time.
+    session_cache: Arc<DashMap<String, (Instant, JmapSession)>>,
 }
 
 impl JmapClient {
@@ -418,6 +429,7 @@ impl JmapClient {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
+            session_cache: Arc::new(DashMap::new()),
         })
     }
 
@@ -448,11 +460,20 @@ impl JmapClient {
     /// Fetch the JMAP session object (RFC 8621 §2.1).
     ///
     /// The session provides the API URL, account IDs, and capabilities.
+    /// Results are cached per-username for `SESSION_CACHE_TTL` (5 minutes)
+    /// to avoid redundant HTTP GETs on every method call.
     pub async fn get_session(
         &self,
         username: &str,
         password: &SecretString,
     ) -> Result<JmapSession> {
+        // Check the cache first — return if not expired.
+        if let Some(entry) = self.session_cache.get(username)
+            && entry.key().as_str() == username && entry.value().0 > Instant::now()
+        {
+            return Ok(entry.value().1.clone());
+        }
+
         let url = format!("{}/session", self.base_url);
         let auth = Self::basic_auth_header(username, password);
 
@@ -472,9 +493,16 @@ impl JmapClient {
             return Err(anyhow!("JMAP session request returned {}: {}", status, body));
         }
 
-        resp.json::<JmapSession>()
+        let session: JmapSession = resp
+            .json()
             .await
-            .map_err(|e| anyhow!("Failed to parse JMAP session: {}", e))
+            .map_err(|e| anyhow!("Failed to parse JMAP session: {}", e))?;
+
+        // Cache the session with expiry
+        let expires = Instant::now() + SESSION_CACHE_TTL;
+        self.session_cache.insert(username.to_string(), (expires, session.clone()));
+
+        Ok(session)
     }
 
     /// Make a JMAP API call (RFC 8621 §3.2).

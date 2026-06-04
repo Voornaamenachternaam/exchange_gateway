@@ -1,5 +1,6 @@
 // src/eas.rs
 use crate::caldav::CaldavClient;
+use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
@@ -1606,6 +1607,80 @@ async fn handle_item_operations(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
+/// Fetch free-busy information via JMAP Calendar (urn:ietf:params:jmap:calendars).
+///
+/// Uses `CalendarEvent/query` + `CalendarEvent/get` with the `iCalendar` property
+/// to obtain ICS data, then renders the merged free-busy string using the same
+/// logic as the CalDAV path.
+///
+/// Returns `Some(merged_freebusy_string)` on success, `None` to fall back to CalDAV.
+async fn fetch_freebusy_jmap_eas(
+    jmap: &Arc<JmapClient>,
+    mailbox: &str,
+    password: &SecretString,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+    safe_interval: i64,
+) -> Option<String> {
+    // Check if JMAP Calendar is supported
+    if !jmap.supports_calendar(mailbox, password).await {
+        return None;
+    }
+
+    let account_id = match jmap.get_calendar_account_id(mailbox, password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::debug!(target: "eas", error = %e, "JMAP Calendar account ID lookup failed");
+            return None;
+        }
+    };
+
+    let result = match jmap
+        .query_calendar_events(QueryCalendarEventsParams {
+            account_id: &account_id,
+            calendar_id: None,
+            start: &start.format("%Y%m%dT%H%M%SZ").to_string(),
+            end: &end.format("%Y%m%dT%H%M%SZ").to_string(),
+            limit: 1000,
+            username: mailbox,
+            password,
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(target: "eas", error = %e, "JMAP Calendar event query failed");
+            return None;
+        }
+    };
+
+    let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
+        / (safe_interval * 60)) as usize;
+    let mut merged = vec!['0'; slot_count];
+
+    for event in &result.events {
+        if let Some(ref ics) = event.i_calendar
+            && let Some(item) = parse_ics_event(ics)
+        {
+            let sd = match item.busy_status.unwrap_or(2) {
+                    0 => '0',
+                    1 => '1',
+                    3 => '3',
+                    _ => '2',
+                };
+                for (i, slot) in merged.iter_mut().enumerate() {
+                    let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
+                    let se = ss + chrono::Duration::minutes(safe_interval);
+                    if item.start < se && item.end > ss && sd > *slot {
+                        *slot = sd;
+                    }
+            }
+        }
+    }
+
+    Some(merged.into_iter().collect())
+}
+
 async fn merged_freebusy_for_mailbox(
     state: &Arc<AppState>,
     mailbox: &str,
@@ -1621,6 +1696,18 @@ async fn merged_freebusy_for_mailbox(
         return "4".to_string();
     }
     let mut merged = vec!['0'; slot_count];
+
+    // Try JMAP Calendar first (urn:ietf:params:jmap:calendars).
+    // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
+    if let Some(jmap) = &state.jmap_client {
+        if let Some(result) = fetch_freebusy_jmap_eas(
+            jmap, mailbox, password, start, end, safe_interval,
+        ).await {
+            return result;
+        }
+        tracing::debug!(target: "eas", "JMAP Calendar free-busy failed, falling back to CalDAV");
+    }
+
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
         Err(_) => {
@@ -1653,17 +1740,28 @@ async fn merged_freebusy_for_mailbox(
         .and_then(|r| r.ok());
         if let Some(events_xml) = query_result {
             let mut reader = Reader::from_str(&events_xml);
-            reader.config_mut().trim_text(true);
+            reader.config_mut().trim_text(false);
             let mut buf = Vec::new();
             let mut in_cal_data = false;
+            let mut caldata_buf = String::new();
             loop {
                 match reader.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
                         in_cal_data = true;
+                        caldata_buf.clear();
                     }
-                    Ok(Event::Text(t)) if in_cal_data => {
-                        if let Ok(ics) = t.decode()
-                            && let Some(item) = parse_ics_event(&ics)
+                    Ok(Event::Text(ref t)) if in_cal_data => {
+                        if let Ok(ics) = t.decode() {
+                            caldata_buf.push_str(&ics);
+                        }
+                    }
+                    Ok(Event::CData(ref t)) if in_cal_data => {
+                        caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                    }
+                    Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                        in_cal_data = false;
+                        let ics = caldata_buf.trim();
+                        if let Some(item) = parse_ics_event(ics)
                         {
                             let sd = match item.busy_status.unwrap_or(2) {
                                 0 => '0',
@@ -1680,9 +1778,6 @@ async fn merged_freebusy_for_mailbox(
                                 }
                             }
                         }
-                    }
-                    Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
-                        in_cal_data = false;
                     }
                     Ok(Event::Eof) => break,
                     _ => {}
@@ -1819,10 +1914,11 @@ async fn load_calendar_events(
     )
     .await??;
     let mut reader = Reader::from_str(&events_xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut href = String::new();
-    let mut ics = String::new();
+    let mut caldata_buf = String::new();
+    let mut in_cal_data = false;
     let mut out = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1833,21 +1929,34 @@ async fn load_calendar_events(
                     }
                 }
                 b"calendar-data" => {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        ics = t.decode().unwrap_or_default().to_string();
-                    }
+                    in_cal_data = true;
+                    caldata_buf.clear();
                 }
                 _ => {}
             },
-            Ok(Event::End(ref e)) if e.name().local_name().as_ref() == b"response" => {
-                if !href.is_empty()
-                    && let Some(item) = parse_ics_event(&ics)
-                {
-                    let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
-                    out.push((server_id, href.clone(), item));
+            Ok(Event::Text(ref t)) if in_cal_data => {
+                if let Ok(text) = t.decode() {
+                    caldata_buf.push_str(&text);
                 }
-                href.clear();
-                ics.clear();
+            }
+            Ok(Event::CData(ref t)) if in_cal_data => {
+                caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+            }
+            Ok(Event::End(ref e)) => {
+                if e.name().local_name().as_ref() == b"calendar-data" {
+                    in_cal_data = false;
+                }
+                if e.name().local_name().as_ref() == b"response" {
+                    let ics = caldata_buf.trim();
+                    if !href.is_empty()
+                        && let Some(item) = parse_ics_event(ics)
+                    {
+                        let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
+                        out.push((server_id, href.clone(), item));
+                    }
+                    href.clear();
+                    caldata_buf.clear();
+                }
             }
             Ok(Event::Eof) => break,
             _ => {}
