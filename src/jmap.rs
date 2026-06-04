@@ -23,12 +23,12 @@
 // JMAP Calendar (urn:ietf:params:jmap:calendars) replaces CalDAV for
 // calendar operations when available, with CalDAV as fallback.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -452,8 +452,11 @@ impl JmapClient {
     /// Build the Basic Authorization header value.
     fn basic_auth_header(username: &str, password: &SecretString) -> String {
         use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", username, password.expose_secret()));
+        let encoded = base64::engine::general_purpose::STANDARD.encode(format!(
+            "{}:{}",
+            username,
+            password.expose_secret()
+        ));
         format!("Basic {}", encoded)
     }
 
@@ -469,7 +472,8 @@ impl JmapClient {
     ) -> Result<JmapSession> {
         // Check the cache first — return if not expired.
         if let Some(entry) = self.session_cache.get(username)
-            && entry.key().as_str() == username && entry.value().0 > Instant::now()
+            && entry.key().as_str() == username
+            && entry.value().0 > Instant::now()
         {
             return Ok(entry.value().1.clone());
         }
@@ -490,7 +494,11 @@ impl JmapClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("JMAP session request returned {}: {}", status, body));
+            return Err(anyhow!(
+                "JMAP session request returned {}: {}",
+                status,
+                body
+            ));
         }
 
         let session: JmapSession = resp
@@ -500,7 +508,8 @@ impl JmapClient {
 
         // Cache the session with expiry
         let expires = Instant::now() + SESSION_CACHE_TTL;
-        self.session_cache.insert(username.to_string(), (expires, session.clone()));
+        self.session_cache
+            .insert(username.to_string(), (expires, session.clone()));
 
         Ok(session)
     }
@@ -566,15 +575,30 @@ impl JmapClient {
         let api_url = &session.api_url;
 
         let filter_val = params.filter.unwrap_or_else(|| json!({}));
-        let sort_val = params.sort.unwrap_or_else(|| {
-            vec![json!({"property": "receivedAt", "isAscending": false})]
-        });
+        let sort_val = params
+            .sort
+            .unwrap_or_else(|| vec![json!({"property": "receivedAt", "isAscending": false})]);
 
         let properties = json!([
-            "id", "blobId", "threadId", "mailboxIds", "keywords",
-            "size", "receivedAt", "sentAt", "hasAttachment",
-            "from", "to", "cc", "bcc", "replyTo",
-            "subject", "preview", "bodyValues", "textBody", "htmlBody",
+            "id",
+            "blobId",
+            "threadId",
+            "mailboxIds",
+            "keywords",
+            "size",
+            "receivedAt",
+            "sentAt",
+            "hasAttachment",
+            "from",
+            "to",
+            "cc",
+            "bcc",
+            "replyTo",
+            "subject",
+            "preview",
+            "bodyValues",
+            "textBody",
+            "htmlBody",
             "attachments"
         ]);
 
@@ -675,10 +699,22 @@ impl JmapClient {
 
         let props = properties.unwrap_or_else(|| {
             json!([
-                "id", "blobId", "threadId", "mailboxIds", "keywords",
-                "size", "receivedAt", "sentAt", "hasAttachment",
-                "from", "to", "cc", "bcc", "replyTo",
-                "subject", "preview"
+                "id",
+                "blobId",
+                "threadId",
+                "mailboxIds",
+                "keywords",
+                "size",
+                "receivedAt",
+                "sentAt",
+                "hasAttachment",
+                "from",
+                "to",
+                "cc",
+                "bcc",
+                "replyTo",
+                "subject",
+                "preview"
             ])
         });
 
@@ -729,10 +765,25 @@ impl JmapClient {
                 account_id,
                 &[email_id.to_string()],
                 Some(json!([
-                    "id", "blobId", "threadId", "mailboxIds", "keywords",
-                    "size", "receivedAt", "sentAt", "hasAttachment",
-                    "from", "to", "cc", "bcc", "replyTo",
-                    "subject", "preview", "bodyValues", "textBody", "htmlBody",
+                    "id",
+                    "blobId",
+                    "threadId",
+                    "mailboxIds",
+                    "keywords",
+                    "size",
+                    "receivedAt",
+                    "sentAt",
+                    "hasAttachment",
+                    "from",
+                    "to",
+                    "cc",
+                    "bcc",
+                    "replyTo",
+                    "subject",
+                    "preview",
+                    "bodyValues",
+                    "textBody",
+                    "htmlBody",
                     "attachments"
                 ])),
                 username,
@@ -830,131 +881,132 @@ impl JmapClient {
         ))
     }
 
-    
-/// Update email properties via JMAP Email/set (RFC 8621 §4.5).
-///
-/// `update` is a JSON object mapping email IDs to patch objects.
-/// Example: `{"email-123": {"keywords": {"$seen": true}}}`
-pub async fn update_email(
-    &self,
-    account_id: &str,
-    update: &serde_json::Value,
-    username: &str,
-    password: &SecretString,
-) -> Result<()> {
-    let session = self.get_session(username, password).await?;
-    let api_url = &session.api_url;
+    /// Update email properties via JMAP Email/set (RFC 8621 §4.5).
+    ///
+    /// `update` is a JSON object mapping email IDs to patch objects.
+    /// Example: `{"email-123": {"keywords": {"$seen": true}}}`
+    pub async fn update_email(
+        &self,
+        account_id: &str,
+        update: &serde_json::Value,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<()> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
 
-    let method_calls = vec![(
-        "Email/set",
-        serde_json::json!({
-            "accountId": account_id,
-            "update": update,
-        }),
-        "es0",
-    )];
+        let method_calls = vec![(
+            "Email/set",
+            serde_json::json!({
+                "accountId": account_id,
+                "update": update,
+            }),
+            "es0",
+        )];
 
-    let _resp = self
-        .api_call(
-            api_url,
-            &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-            method_calls,
-            username,
-            password,
-        )
-        .await?;
+        let _resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
 
-    Ok(())
-}
-
-/// Destroy emails via JMAP Email/set (RFC 8621 §4.5).
-///
-/// `destroy` is a list of email IDs to permanently delete.
-pub async fn destroy_emails(
-    &self,
-    account_id: &str,
-    destroy: &[String],
-    username: &str,
-    password: &SecretString,
-) -> Result<()> {
-    let session = self.get_session(username, password).await?;
-    let api_url = &session.api_url;
-
-    let method_calls = vec![(
-        "Email/set",
-        serde_json::json!({
-            "accountId": account_id,
-            "destroy": destroy,
-        }),
-        "es0",
-    )];
-
-    let _resp = self
-        .api_call(
-            api_url,
-            &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-            method_calls,
-            username,
-            password,
-        )
-        .await?;
-
-    Ok(())
-}
-
-/// Get the current JMAP Email data state token.
-///
-/// Per RFC 8621 §4.1, `Email/get` with `ids: []` returns the current
-/// `state` property without fetching any email data. This state token
-/// is required as `sinceState` for subsequent `Email/changes` calls.
-///
-/// Returns the state string on success.
-pub async fn get_email_state(
-    &self,
-    account_id: &str,
-    username: &str,
-    password: &SecretString,
-) -> Result<String> {
-    let session = self.get_session(username, password).await?;
-    let api_url = &session.api_url;
-
-    // Per RFC 8621 §4.1, Email/get with empty ids returns just the state
-    let method_calls = vec![(
-        "Email/get",
-        json!({
-            "accountId": account_id,
-            "ids": [],
-        }),
-        "g0",
-    )];
-
-    let response = self
-        .api_call(
-            api_url,
-            &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-            method_calls,
-            username,
-            password,
-        )
-        .await?;
-
-    for (method, data, _) in response.method_responses {
-        if method == "Email/get" {
-            let state = data
-                .get("state")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if state.is_empty() {
-                return Err(anyhow!("JMAP Email/get returned empty state token"));
-            }
-            return Ok(state);
-        }
+        Ok(())
     }
 
-    Err(anyhow!("Unexpected JMAP response structure for Email/get state"))
-}
-/// Submit an email via JMAP EmailSubmission/set (RFC 8621 §2.7).
+    /// Destroy emails via JMAP Email/set (RFC 8621 §4.5).
+    ///
+    /// `destroy` is a list of email IDs to permanently delete.
+    pub async fn destroy_emails(
+        &self,
+        account_id: &str,
+        destroy: &[String],
+        username: &str,
+        password: &SecretString,
+    ) -> Result<()> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "Email/set",
+            serde_json::json!({
+                "accountId": account_id,
+                "destroy": destroy,
+            }),
+            "es0",
+        )];
+
+        let _resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Get the current JMAP Email data state token.
+    ///
+    /// Per RFC 8621 §4.1, `Email/get` with `ids: []` returns the current
+    /// `state` property without fetching any email data. This state token
+    /// is required as `sinceState` for subsequent `Email/changes` calls.
+    ///
+    /// Returns the state string on success.
+    pub async fn get_email_state(
+        &self,
+        account_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        // Per RFC 8621 §4.1, Email/get with empty ids returns just the state
+        let method_calls = vec![(
+            "Email/get",
+            json!({
+                "accountId": account_id,
+                "ids": [],
+            }),
+            "g0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Email/get" {
+                let state = data
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if state.is_empty() {
+                    return Err(anyhow!("JMAP Email/get returned empty state token"));
+                }
+                return Ok(state);
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for Email/get state"
+        ))
+    }
+    /// Submit an email via JMAP EmailSubmission/set (RFC 8621 §2.7).
     ///
     /// This replaces SMTP submission. The flow per RFC 8621 is:
     /// 1. Create the Email via Email/set with mailboxIds including the sent folder
@@ -982,12 +1034,20 @@ pub async fn get_email_state(
 
         if !params.cc.is_empty() {
             email_obj["cc"] = json!(
-                params.cc.iter().map(|addr| json!({ "email": addr })).collect::<Vec<_>>()
+                params
+                    .cc
+                    .iter()
+                    .map(|addr| json!({ "email": addr }))
+                    .collect::<Vec<_>>()
             );
         }
         if !params.bcc.is_empty() {
             email_obj["bcc"] = json!(
-                params.bcc.iter().map(|addr| json!({ "email": addr })).collect::<Vec<_>>()
+                params
+                    .bcc
+                    .iter()
+                    .map(|addr| json!({ "email": addr }))
+                    .collect::<Vec<_>>()
             );
         }
 
@@ -1067,12 +1127,12 @@ pub async fn get_email_state(
         let mut email_id = String::new();
         for (method, data, _) in &response.method_responses {
             if method == "Email/set" {
-            if let Some(not_created) = data.get("notCreated")
-                && !not_created.is_null()
-                && not_created.as_object().is_none_or(|o| !o.is_empty())
-            {
-                return Err(anyhow!("Email/set failed: {}", not_created));
-            }
+                if let Some(not_created) = data.get("notCreated")
+                    && !not_created.is_null()
+                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    return Err(anyhow!("Email/set failed: {}", not_created));
+                }
                 if let Some(created) = data.get("created")
                     && let Some(e0) = created.get("e0")
                 {
@@ -1082,17 +1142,14 @@ pub async fn get_email_state(
                         .unwrap_or("")
                         .to_string();
                 }
-        }
-        if method == "EmailSubmission/set"
-            && let Some(not_created) = data.get("notCreated")
-            && !not_created.is_null()
-            && not_created.as_object().is_none_or(|o| !o.is_empty())
-        {
-            return Err(anyhow!(
-                "EmailSubmission/set failed: {}",
-                not_created
-            ));
-        }
+            }
+            if method == "EmailSubmission/set"
+                && let Some(not_created) = data.get("notCreated")
+                && !not_created.is_null()
+                && not_created.as_object().is_none_or(|o| !o.is_empty())
+            {
+                return Err(anyhow!("EmailSubmission/set failed: {}", not_created));
+            }
         }
 
         if email_id.is_empty() {
@@ -1142,7 +1199,7 @@ pub async fn get_email_state(
 
         Err(anyhow!("No 'sent' mailbox found"))
     }
-/// Query mailboxes for an account.
+    /// Query mailboxes for an account.
     ///
     /// Maps to `Mailbox/query` (RFC 8621 §5.3).
     pub async fn query_mailboxes(
@@ -1204,7 +1261,10 @@ pub async fn get_email_state(
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
                 let total: u64 = list.len() as u64;
-                return Ok(MailboxListResult { mailboxes: list, total });
+                return Ok(MailboxListResult {
+                    mailboxes: list,
+                    total,
+                });
             }
         }
 
@@ -1214,11 +1274,7 @@ pub async fn get_email_state(
     }
 
     /// Get the primary mail account ID from the JMAP session.
-    pub async fn get_account_id(
-        &self,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<String> {
+    pub async fn get_account_id(&self, username: &str, password: &SecretString) -> Result<String> {
         let session = self.get_session(username, password).await?;
         session
             .primary_accounts
@@ -1228,11 +1284,7 @@ pub async fn get_email_state(
     }
 
     /// Verify JMAP credentials by fetching the session.
-    pub async fn verify_credentials(
-        &self,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<()> {
+    pub async fn verify_credentials(&self, username: &str, password: &SecretString) -> Result<()> {
         self.get_session(username, password).await?;
         Ok(())
     }
@@ -1286,11 +1338,7 @@ pub async fn get_email_state(
     ///
     /// Returns true if `urn:ietf:params:jmap:calendars` appears in
     /// the session's top-level capabilities.
-    pub async fn supports_calendar(
-        &self,
-        username: &str,
-        password: &SecretString,
-    ) -> bool {
+    pub async fn supports_calendar(&self, username: &str, password: &SecretString) -> bool {
         match self.get_session(username, password).await {
             Ok(session) => session.capabilities.contains_key(JMAP_CAL_CAPABILITY),
             Err(_) => false,
@@ -1314,19 +1362,17 @@ pub async fn get_email_state(
             .get(JMAP_CAL_CAPABILITY)
             .ok_or_else(|| anyhow!("No primary calendar account found in JMAP session"))?;
 
-        let method_calls = vec![
-            (
-                "Calendar/get",
-                json!({
-                    "accountId": account_id,
-                    "properties": [
-                        "id", "name", "color", "description", "sortOrder",
-                        "isSubscribed", "isVisible", "href", "timeZone"
-                    ],
-                }),
-                "cg0",
-            ),
-        ];
+        let method_calls = vec![(
+            "Calendar/get",
+            json!({
+                "accountId": account_id,
+                "properties": [
+                    "id", "name", "color", "description", "sortOrder",
+                    "isSubscribed", "isVisible", "href", "timeZone"
+                ],
+            }),
+            "cg0",
+        )];
 
         let response = self
             .api_call(
@@ -1345,11 +1391,16 @@ pub async fn get_email_state(
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
                 let total = list.len() as u64;
-                return Ok(CalendarListResult { calendars: list, total });
+                return Ok(CalendarListResult {
+                    calendars: list,
+                    total,
+                });
             }
         }
 
-        Err(anyhow!("Unexpected JMAP response structure for Calendar/get"))
+        Err(anyhow!(
+            "Unexpected JMAP response structure for Calendar/get"
+        ))
     }
 
     /// Query calendar events in a time range via CalendarEvent/query
@@ -1514,7 +1565,10 @@ pub async fn get_email_state(
             }
         }
 
-        Err(anyhow!("CalendarEvent/get returned no data for ID {}", event_id))
+        Err(anyhow!(
+            "CalendarEvent/get returned no data for ID {}",
+            event_id
+        ))
     }
 
     /// Create or update a calendar event via CalendarEvent/set
@@ -1639,7 +1693,9 @@ pub async fn get_email_state(
                 }
             }
 
-            Err(anyhow!("CalendarEvent/set create returned no created event"))
+            Err(anyhow!(
+                "CalendarEvent/set create returned no created event"
+            ))
         }
     }
 
@@ -1685,7 +1741,10 @@ pub async fn get_email_state(
                 && !not_destroyed.is_null()
                 && not_destroyed.as_object().is_none_or(|o| !o.is_empty())
             {
-                return Err(anyhow!("CalendarEvent/set destroy failed: {}", not_destroyed));
+                return Err(anyhow!(
+                    "CalendarEvent/set destroy failed: {}",
+                    not_destroyed
+                ));
             }
         }
 
@@ -1775,23 +1834,18 @@ mod tests {
 
     #[test]
     fn test_basic_auth_header_format() {
-        let auth = JmapClient::basic_auth_header(
-            "user@example.com",
-            &SecretString::from("pass123"),
-        );
+        let auth =
+            JmapClient::basic_auth_header("user@example.com", &SecretString::from("pass123"));
         assert!(auth.starts_with("Basic "));
         // Base64 of "user@example.com:pass123"
-        let expected_b64 = base64::engine::general_purpose::STANDARD
-            .encode("user@example.com:pass123");
+        let expected_b64 =
+            base64::engine::general_purpose::STANDARD.encode("user@example.com:pass123");
         assert_eq!(auth, format!("Basic {}", expected_b64));
     }
 
     #[test]
     fn test_jmap_cal_capability_urn() {
-        assert_eq!(
-            JMAP_CAL_CAPABILITY,
-            "urn:ietf:params:jmap:calendars"
-        );
+        assert_eq!(JMAP_CAL_CAPABILITY, "urn:ietf:params:jmap:calendars");
     }
 
     #[test]
@@ -1834,7 +1888,10 @@ mod tests {
         });
         let event: JmapCalendarEvent = serde_json::from_value(event_json).unwrap();
         assert_eq!(event.id.as_deref(), Some("evt-xyz789"));
-        assert_eq!(event.uid.as_deref(), Some("19970901T130000Z-123401@example.com"));
+        assert_eq!(
+            event.uid.as_deref(),
+            Some("19970901T130000Z-123401@example.com")
+        );
         assert_eq!(event.title.as_deref(), Some("Team Meeting"));
         assert!(event.i_calendar.is_some());
         assert!(!event.is_all_day.unwrap());

@@ -357,7 +357,12 @@ fn handle_mobilesync_xml(host: &str, email: &str, accept_language: Option<&str>)
 ///
 /// Note: `<ServerExclusiveConnect>` is set to "on" for EXPR so that
 /// Outlook clients prioritise this configuration per MS-OXDSCLI §3.1.5.4.
-fn handle_outlook_xml(host: &str, email: &str, mail_host: &str, include_imap_smtp: bool) -> AdResponse {
+fn handle_outlook_xml(
+    host: &str,
+    email: &str,
+    mail_host: &str,
+    include_imap_smtp: bool,
+) -> AdResponse {
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
     let mail_host_escaped = xml_escape(mail_host);
@@ -415,12 +420,12 @@ fn handle_outlook_xml(host: &str, email: &str, mail_host: &str, include_imap_smt
 </Account>
 </Response>
 </Autodiscover>"#,
-OUTLOOK_RESPONSE_NS = OUTLOOK_RESPONSE_NS,
-host = host_escaped,
-email = email_escaped,
-imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
-    format!(
-        r#"<Protocol>
+        OUTLOOK_RESPONSE_NS = OUTLOOK_RESPONSE_NS,
+        host = host_escaped,
+        email = email_escaped,
+        imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
+            format!(
+                r#"<Protocol>
 <Type>IMAP</Type>
 <Server>{mail_host}</Server>
 <Port>993</Port>
@@ -440,14 +445,14 @@ imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
 <SPA>off</SPA>
 <DomainRequired>off</DomainRequired>
 </Protocol>"#,
-        mail_host = mail_host_escaped,
-        email = email_escaped,
-    )
-} else {
-    String::new()
-},
-);
-(StatusCode::OK, content_type_xml(), xml)
+                mail_host = mail_host_escaped,
+                email = email_escaped,
+            )
+        } else {
+            String::new()
+        },
+    );
+    (StatusCode::OK, content_type_xml(), xml)
 }
 
 pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
@@ -567,7 +572,12 @@ mod tests {
 
     #[test]
     fn test_outlook_response_format() {
-        let (status, _hdrs, body) = handle_outlook_xml("mail.example.com", "user@example.com", "mail.example.com", true);
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            true,
+        );
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("outlook/responseschema/2006a"));
         assert!(body.contains("https://mail.example.com/EWS/Exchange.asmx"));
@@ -583,8 +593,14 @@ mod tests {
 <EMailAddress>user@example.com</EMailAddress>
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
-        let (status, _, body_out) =
-            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None, "mail.example.com", true);
+        let (status, _, body_out) = handle_autodiscover_xml(
+            "mail.example.com",
+            body,
+            "user@example.com",
+            None,
+            "mail.example.com",
+            true,
+        );
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("mobilesync/responseschema/2006"));
         assert!(!body_out.contains("outlook/responseschema/2006a"));
@@ -596,8 +612,14 @@ mod tests {
 <EMailAddress>user@example.com</EMailAddress>
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
-        let (status, _, body_out) =
-            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None, "mail.example.com", true);
+        let (status, _, body_out) = handle_autodiscover_xml(
+            "mail.example.com",
+            body,
+            "user@example.com",
+            None,
+            "mail.example.com",
+            true,
+        );
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
         assert!(!body_out.contains("mobilesync/responseschema/2006"));
@@ -606,8 +628,14 @@ mod tests {
     #[test]
     fn test_autodiscover_xml_default_is_outlook() {
         let body = "<Autodiscover><Request><EMailAddress>user@example.com</EMailAddress></Request></Autodiscover>";
-        let (status, _, body_out) =
-            handle_autodiscover_xml("mail.example.com", body, "user@example.com", None, "mail.example.com", true);
+        let (status, _, body_out) = handle_autodiscover_xml(
+            "mail.example.com",
+            body,
+            "user@example.com",
+            None,
+            "mail.example.com",
+            true,
+        );
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
     }

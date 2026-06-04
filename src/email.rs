@@ -141,7 +141,8 @@ pub fn parse_ews_message(body: &str) -> Option<EwsMessage> {
     let to_recipients = extract_ews_email_addresses(body, b"ToRecipients");
     let cc_recipients = extract_ews_email_addresses(body, b"CcRecipients");
     let bcc_recipients = extract_ews_email_addresses(body, b"BccRecipients");
-    let importance = extract_ews_tag_text(body, b"Importance").unwrap_or_else(|| "Normal".to_string());
+    let importance =
+        extract_ews_tag_text(body, b"Importance").unwrap_or_else(|| "Normal".to_string());
 
     Some(EwsMessage {
         subject,
@@ -217,7 +218,10 @@ fn extract_ews_email_addresses(xml: &str, container: &[u8]) -> Vec<String> {
     let close = format!("</t:{}>", container_str);
 
     if let Some(start) = xml.find(&open) {
-        let end_pos = xml[start..].find(&close).map(|p| start + p).unwrap_or(xml.len());
+        let end_pos = xml[start..]
+            .find(&close)
+            .map(|p| start + p)
+            .unwrap_or(xml.len());
         let inner = &xml[start..end_pos];
 
         // Find all <t:EmailAddress>...</t:EmailAddress> within
@@ -259,8 +263,14 @@ pub fn render_jmap_email_as_ews_message(
 ) -> String {
     let subject = email.subject.as_deref().unwrap_or("(No Subject)");
     let sender = email.from.as_ref().and_then(|v| v.first());
-    let sender_name = sender.as_ref().and_then(|s| s.name.as_deref()).unwrap_or("");
-    let sender_email = sender.as_ref().and_then(|s| s.email.as_deref()).unwrap_or("");
+    let sender_name = sender
+        .as_ref()
+        .and_then(|s| s.name.as_deref())
+        .unwrap_or("");
+    let sender_email = sender
+        .as_ref()
+        .and_then(|s| s.email.as_deref())
+        .unwrap_or("");
 
     let to_xml = email.to.as_ref().map(|recipients| {
         recipients.iter().map(|r| {
@@ -285,7 +295,10 @@ pub fn render_jmap_email_as_ews_message(
     let received_at = email.received_at.as_deref().unwrap_or("");
     let sent_at = email.sent_at.as_deref().unwrap_or("");
     let has_attachment = email.has_attachment.unwrap_or(false);
-    let is_read = email.keywords.as_ref().is_some_and(|k| k.contains_key("$seen"));
+    let is_read = email
+        .keywords
+        .as_ref()
+        .is_some_and(|k| k.contains_key("$seen"));
 
     format!(
         r#"<t:Message><t:ItemId Id="{server_id}" ChangeKey="{change_key}" /><t:Subject>{subject}</t:Subject><t:Sender><t:Mailbox><t:Name>{sender_name}</t:Name><t:EmailAddress>{sender_email}</t:EmailAddress></t:Mailbox></t:Sender><t:ToRecipients>{to_xml}</t:ToRecipients><t:CcRecipients>{cc_xml}</t:CcRecipients><t:DateTimeReceived>{received_at}</t:DateTimeReceived><t:DateTimeSent>{sent_at}</t:DateTimeSent><t:IsRead>{is_read}</t:IsRead><t:HasAttachments>{has_attachment}</t:HasAttachments><t:Preview>{body_preview}</t:Preview><t:Body BodyType="{body_type}">{body_text}</t:Body></t:Message>"#,
@@ -314,8 +327,14 @@ pub fn render_jmap_email_as_eas_application_data(
 ) -> String {
     let subject = email.subject.as_deref().unwrap_or("");
     let sender = email.from.as_ref().and_then(|v| v.first());
-    let sender_name: &str = sender.as_ref().and_then(|s| s.name.as_deref()).unwrap_or("");
-    let sender_email: &str = sender.as_ref().and_then(|s| s.email.as_deref()).unwrap_or("");
+    let sender_name: &str = sender
+        .as_ref()
+        .and_then(|s| s.name.as_deref())
+        .unwrap_or("");
+    let sender_email: &str = sender
+        .as_ref()
+        .and_then(|s| s.email.as_deref())
+        .unwrap_or("");
 
     let to_xml = email.to.as_ref().map(|recipients| {
         recipients.iter().map(|r| {
@@ -330,10 +349,17 @@ pub fn render_jmap_email_as_eas_application_data(
     let body_type_num = if is_html { "2" } else { "1" };
 
     let received_at = email.received_at.as_deref().unwrap_or("");
-    let is_read = email.keywords.as_ref().is_some_and(|k| k.contains_key("$seen"));
+    let is_read = email
+        .keywords
+        .as_ref()
+        .is_some_and(|k| k.contains_key("$seen"));
     let has_attachment = email.has_attachment.unwrap_or(false);
     let importance = email.keywords.as_ref().map_or("1", |k| {
-        if k.contains_key("$important") { "2" } else { "1" }
+        if k.contains_key("$important") {
+            "2"
+        } else {
+            "1"
+        }
     });
 
     format!(
@@ -447,7 +473,11 @@ pub async fn send_email_smtp(
     })?;
 
     let from = if msg.from.is_empty() {
-        format!("{}@{}", username.split('@').next().unwrap_or(username), state.cfg.mail_domain)
+        format!(
+            "{}@{}",
+            username.split('@').next().unwrap_or(username),
+            state.cfg.mail_domain
+        )
     } else {
         msg.from.clone()
     };
@@ -498,9 +528,10 @@ pub async fn fetch_emails_jmap(
     username: &str,
     password: &SecretString,
 ) -> anyhow::Result<crate::jmap::EmailListResult> {
-    let jmap = state.jmap_client.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("JMAP is not configured; email reading is unavailable")
-    })?;
+    let jmap = state
+        .jmap_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("JMAP is not configured; email reading is unavailable"))?;
 
     // Map mailbox role to JMAP filter.
     // "outbox" returns None (empty filter) which would match ALL emails —
@@ -572,13 +603,13 @@ pub mod eas_folder_type {
     pub const NOTES: u8 = 10;
     pub const JOURNAL: u8 = 11;
     // Specific email folder types per MS-ASCMD §2.2.3.186.3
-    pub const INBOX: u8 = 2;         // Default Inbox folder
-    pub const DRAFTS: u8 = 3;        // Default Drafts folder
+    pub const INBOX: u8 = 2; // Default Inbox folder
+    pub const DRAFTS: u8 = 3; // Default Drafts folder
     pub const DELETED_ITEMS: u8 = 4; // Default Deleted Items folder
-    pub const SENT_ITEMS: u8 = 5;    // Default Sent Items folder
-    pub const OUTBOX: u8 = 6;        // Default Outbox folder
+    pub const SENT_ITEMS: u8 = 5; // Default Sent Items folder
+    pub const OUTBOX: u8 = 6; // Default Outbox folder
     // No dedicated Junk Email type in the spec — use 12 (User-created Mail folder)
-    pub const JUNK_EMAIL: u8 = 12;   // User-created Mail folder
+    pub const JUNK_EMAIL: u8 = 12; // User-created Mail folder
 }
 
 /// Map an EAS CollectionId to the JMAP mailbox role used for filtering.
@@ -596,7 +627,10 @@ pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static
         "6" => None, // Outbox — no JMAP equivalent; handled via EmailSubmission
         "7" => Some("junk"),
         _ => {
-            tracing::warn!(collection_id, "Unrecognised EAS CollectionId; returning empty");
+            tracing::warn!(
+                collection_id,
+                "Unrecognised EAS CollectionId; returning empty"
+            );
             None
         }
     }
@@ -647,8 +681,7 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
 pub fn parse_eas_sendmail(xml: &str) -> Option<EasSendMailRequest> {
     let client_id = extract_first_tag_text(xml, b"ClientId");
     let mime_data = extract_first_tag_text(xml, b"MIMEData");
-    let save_in_sent = xml.contains("<SaveInSentItems")
-        || xml.contains(":SaveInSentItems");
+    let save_in_sent = xml.contains("<SaveInSentItems") || xml.contains(":SaveInSentItems");
 
     Some(EasSendMailRequest {
         client_id,
@@ -783,15 +816,28 @@ mod tests {
 
     #[test]
     fn test_message_disposition_parsing() {
-        assert_eq!(MessageDisposition::parse("SaveOnly"), Some(MessageDisposition::SaveOnly));
-        assert_eq!(MessageDisposition::parse("SendOnly"), Some(MessageDisposition::SendOnly));
-        assert_eq!(MessageDisposition::parse("SendAndSaveCopy"), Some(MessageDisposition::SendAndSaveCopy));
+        assert_eq!(
+            MessageDisposition::parse("SaveOnly"),
+            Some(MessageDisposition::SaveOnly)
+        );
+        assert_eq!(
+            MessageDisposition::parse("SendOnly"),
+            Some(MessageDisposition::SendOnly)
+        );
+        assert_eq!(
+            MessageDisposition::parse("SendAndSaveCopy"),
+            Some(MessageDisposition::SendAndSaveCopy)
+        );
         assert_eq!(MessageDisposition::parse("Invalid"), None);
     }
 
     #[test]
     fn test_render_ews_message_item_xml() {
-        let msg = EwsMessage { subject: "Hello".to_string(), importance: "Normal".to_string(), ..Default::default() };
+        let msg = EwsMessage {
+            subject: "Hello".to_string(),
+            importance: "Normal".to_string(),
+            ..Default::default()
+        };
         let xml = render_ews_message_item_xml("id123", "ck456", &msg);
         assert!(xml.contains("id123"));
         assert!(xml.contains("ck456"));
@@ -859,12 +905,32 @@ mod tests {
         // Per MS-ASCMD §2.2.3.186.3
         assert_eq!(eas_folder_type::INBOX, 2, "Inbox = Default Inbox folder");
         assert_eq!(eas_folder_type::DRAFTS, 3, "Drafts = Default Drafts folder");
-        assert_eq!(eas_folder_type::DELETED_ITEMS, 4, "Deleted Items = Default Deleted Items folder");
-        assert_eq!(eas_folder_type::SENT_ITEMS, 5, "Sent Items = Default Sent Items folder");
+        assert_eq!(
+            eas_folder_type::DELETED_ITEMS,
+            4,
+            "Deleted Items = Default Deleted Items folder"
+        );
+        assert_eq!(
+            eas_folder_type::SENT_ITEMS,
+            5,
+            "Sent Items = Default Sent Items folder"
+        );
         assert_eq!(eas_folder_type::OUTBOX, 6, "Outbox = Default Outbox folder");
-        assert_eq!(eas_folder_type::JUNK_EMAIL, 12, "Junk Email = User-created Mail folder");
-        assert_eq!(eas_folder_type::CALENDAR, 8, "Calendar = Default Calendar folder");
-        assert_eq!(eas_folder_type::CONTACTS, 9, "Contacts = Default Contacts folder");
+        assert_eq!(
+            eas_folder_type::JUNK_EMAIL,
+            12,
+            "Junk Email = User-created Mail folder"
+        );
+        assert_eq!(
+            eas_folder_type::CALENDAR,
+            8,
+            "Calendar = Default Calendar folder"
+        );
+        assert_eq!(
+            eas_folder_type::CONTACTS,
+            9,
+            "Contacts = Default Contacts folder"
+        );
         assert_eq!(eas_folder_type::TASKS, 7, "Tasks = Default Tasks folder");
     }
 
@@ -874,12 +940,24 @@ mod tests {
         // Verify correct Type values are emitted in the XML
         assert!(xml.contains("<Type>2</Type>"), "Inbox must have Type=2");
         assert!(xml.contains("<Type>3</Type>"), "Drafts must have Type=3");
-        assert!(xml.contains("<Type>4</Type>"), "Deleted Items must have Type=4");
-        assert!(xml.contains("<Type>5</Type>"), "Sent Items must have Type=5");
+        assert!(
+            xml.contains("<Type>4</Type>"),
+            "Deleted Items must have Type=4"
+        );
+        assert!(
+            xml.contains("<Type>5</Type>"),
+            "Sent Items must have Type=5"
+        );
         assert!(xml.contains("<Type>6</Type>"), "Outbox must have Type=6");
-        assert!(xml.contains("<Type>12</Type>"), "Junk Email must have Type=12");
+        assert!(
+            xml.contains("<Type>12</Type>"),
+            "Junk Email must have Type=12"
+        );
         // Ensure old incorrect values are NOT present
-        assert!(!xml.contains("<Type>7</Type>"), "Type=7 is Tasks, not Junk Email");
+        assert!(
+            !xml.contains("<Type>7</Type>"),
+            "Type=7 is Tasks, not Junk Email"
+        );
     }
 
     #[test]
@@ -904,8 +982,20 @@ mod tests {
                 charset: None,
             }]),
             body_values: Some(HashMap::from([
-                ("text-part".to_string(), JmapBodyValue { value: "Plain text body".to_string(), is_encoding_problem: None }),
-                ("html-part".to_string(), JmapBodyValue { value: "<p>HTML body</p>".to_string(), is_encoding_problem: None }),
+                (
+                    "text-part".to_string(),
+                    JmapBodyValue {
+                        value: "Plain text body".to_string(),
+                        is_encoding_problem: None,
+                    },
+                ),
+                (
+                    "html-part".to_string(),
+                    JmapBodyValue {
+                        value: "<p>HTML body</p>".to_string(),
+                        is_encoding_problem: None,
+                    },
+                ),
             ])),
             ..Default::default()
         };
@@ -930,9 +1020,13 @@ mod tests {
                 content_type: Some("text/html".to_string()),
                 charset: None,
             }]),
-            body_values: Some(HashMap::from([
-                ("html-part".to_string(), JmapBodyValue { value: "<p>HTML only</p>".to_string(), is_encoding_problem: None }),
-            ])),
+            body_values: Some(HashMap::from([(
+                "html-part".to_string(),
+                JmapBodyValue {
+                    value: "<p>HTML only</p>".to_string(),
+                    is_encoding_problem: None,
+                },
+            )])),
             ..Default::default()
         };
 
@@ -956,31 +1050,31 @@ mod tests {
         assert!(!is_html);
     }
 
-#[test]
-fn test_unescape_xml_text_basic_entities() {
-    // &amp; → &, &lt; → <, &gt; → >, &quot; → ", &apos; → '
-    assert_eq!(unescape_xml_text("&amp;"), "&");
-    assert_eq!(unescape_xml_text("&lt;"), "<");
-    assert_eq!(unescape_xml_text("&gt;"), ">");
-    assert_eq!(unescape_xml_text("&quot;"), "\"");
-    assert_eq!(unescape_xml_text("&apos;"), "'");
-}
+    #[test]
+    fn test_unescape_xml_text_basic_entities() {
+        // &amp; → &, &lt; → <, &gt; → >, &quot; → ", &apos; → '
+        assert_eq!(unescape_xml_text("&amp;"), "&");
+        assert_eq!(unescape_xml_text("&lt;"), "<");
+        assert_eq!(unescape_xml_text("&gt;"), ">");
+        assert_eq!(unescape_xml_text("&quot;"), "\"");
+        assert_eq!(unescape_xml_text("&apos;"), "'");
+    }
 
-#[test]
-fn test_unescape_xml_text_multiple_entities() {
-    assert_eq!(unescape_xml_text("Tom &amp; Jerry"), "Tom & Jerry");
-    assert_eq!(unescape_xml_text("&lt;b&gt;bold&lt;/b&gt;"), "<b>bold</b>");
-}
+    #[test]
+    fn test_unescape_xml_text_multiple_entities() {
+        assert_eq!(unescape_xml_text("Tom &amp; Jerry"), "Tom & Jerry");
+        assert_eq!(unescape_xml_text("&lt;b&gt;bold&lt;/b&gt;"), "<b>bold</b>");
+    }
 
-#[test]
-fn test_unescape_xml_text_no_entities() {
-    assert_eq!(unescape_xml_text("Hello World"), "Hello World");
-    assert_eq!(unescape_xml_text(""), "");
-}
+    #[test]
+    fn test_unescape_xml_text_no_entities() {
+        assert_eq!(unescape_xml_text("Hello World"), "Hello World");
+        assert_eq!(unescape_xml_text(""), "");
+    }
 
-#[test]
-fn test_parse_ews_message_unescapes_xml_entities() {
-    let xml = r#"
+    #[test]
+    fn test_parse_ews_message_unescapes_xml_entities() {
+        let xml = r#"
 <t:Message>
  <t:Subject>Q&amp;A: &lt;Important&gt;</t:Subject>
  <t:Body BodyType="Text">A &amp; B &lt; C &gt; D</t:Body>
@@ -988,24 +1082,24 @@ fn test_parse_ews_message_unescapes_xml_entities() {
   <t:Mailbox><t:EmailAddress>user&amp;tag@example.com</t:EmailAddress></t:Mailbox>
  </t:ToRecipients>
 </t:Message>"#;
-    let msg = parse_ews_message(xml).expect("Should parse message");
-    assert_eq!(msg.subject, "Q&A: <Important>");
-    assert_eq!(msg.body, "A & B < C > D");
-    assert_eq!(msg.to_recipients, vec!["user&tag@example.com"]);
-}
+        let msg = parse_ews_message(xml).expect("Should parse message");
+        assert_eq!(msg.subject, "Q&A: <Important>");
+        assert_eq!(msg.body, "A & B < C > D");
+        assert_eq!(msg.to_recipients, vec!["user&tag@example.com"]);
+    }
 
-#[test]
-fn test_eas_collection_id_to_mailbox_role_mapping() {
-    assert_eq!(eas_collection_id_to_mailbox_role("2"), Some("inbox"));
-    assert_eq!(eas_collection_id_to_mailbox_role("3"), Some("drafts"));
-    assert_eq!(eas_collection_id_to_mailbox_role("4"), Some("sent"));
-    assert_eq!(eas_collection_id_to_mailbox_role("5"), Some("trash"));
-    assert_eq!(eas_collection_id_to_mailbox_role("6"), None); // Outbox
-    assert_eq!(eas_collection_id_to_mailbox_role("7"), Some("junk"));
-}
+    #[test]
+    fn test_eas_collection_id_to_mailbox_role_mapping() {
+        assert_eq!(eas_collection_id_to_mailbox_role("2"), Some("inbox"));
+        assert_eq!(eas_collection_id_to_mailbox_role("3"), Some("drafts"));
+        assert_eq!(eas_collection_id_to_mailbox_role("4"), Some("sent"));
+        assert_eq!(eas_collection_id_to_mailbox_role("5"), Some("trash"));
+        assert_eq!(eas_collection_id_to_mailbox_role("6"), None); // Outbox
+        assert_eq!(eas_collection_id_to_mailbox_role("7"), Some("junk"));
+    }
 
-#[test]
-fn test_eas_collection_id_to_mailbox_role_unknown_returns_none() {
-    assert_eq!(eas_collection_id_to_mailbox_role("99"), None);
-}
+    #[test]
+    fn test_eas_collection_id_to_mailbox_role_unknown_returns_none() {
+        assert_eq!(eas_collection_id_to_mailbox_role("99"), None);
+    }
 }

@@ -96,8 +96,14 @@ async fn autodiscover_xml(
         "Autodiscover XML request received"
     );
 
-    let (status, hdrs, body_out) =
-        autodiscover::handle_autodiscover_xml(host, &body, &email, accept_language, &state.cfg.mail_host, state.smtp_client.is_some());
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(
+        host,
+        &body,
+        &email,
+        accept_language,
+        &state.cfg.mail_host,
+        state.smtp_client.is_some(),
+    );
 
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();
@@ -477,11 +483,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
             error = %e,
             "Health check failed - database unavailable"
         );
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Database unavailable",
-        )
-            .into_response();
+        return (StatusCode::SERVICE_UNAVAILABLE, "Database unavailable").into_response();
     }
 
     // Optionally check JMAP and/or CalDAV backend health.
@@ -528,10 +530,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
                                 elapsed_ms = elapsed_ms,
                                 "Both JMAP and CalDAV backends unavailable"
                             );
-                            (
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "Backends unavailable",
-                            )
+                            (StatusCode::SERVICE_UNAVAILABLE, "Backends unavailable")
                                 .into_response()
                         }
                     }
@@ -545,11 +544,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
                         error = %e,
                         "Health check failed - JMAP backend unavailable"
                     );
-                    (
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "JMAP backend unavailable",
-                    )
-                        .into_response()
+                    (StatusCode::SERVICE_UNAVAILABLE, "JMAP backend unavailable").into_response()
                 }
             }
         }

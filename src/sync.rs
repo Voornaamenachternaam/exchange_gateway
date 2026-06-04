@@ -1326,25 +1326,23 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             Ok(Event::CData(ref e)) if in_caldata => {
                 caldata_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
-            Ok(Event::End(ref e)) => {
-                match e.name().local_name().as_ref() {
-                    b"calendar-data" if in_caldata => {
-                        in_caldata = false;
-                        current.ics = caldata_buf.trim().to_string();
-                    }
-                    b"response" => {
-                        if !current.href.is_empty() {
-                            events.push(current.clone());
-                        }
-                        current = EventItem {
-                            href: String::new(),
-                            etag: String::new(),
-                            ics: String::new(),
-                        };
-                    }
-                    _ => {}
+            Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
+                b"calendar-data" if in_caldata => {
+                    in_caldata = false;
+                    current.ics = caldata_buf.trim().to_string();
                 }
-            }
+                b"response" => {
+                    if !current.href.is_empty() {
+                        events.push(current.clone());
+                    }
+                    current = EventItem {
+                        href: String::new(),
+                        etag: String::new(),
+                        ics: String::new(),
+                    };
+                }
+                _ => {}
+            },
             Ok(Event::Eof) => break,
             _ => {}
         }
