@@ -1,7 +1,7 @@
 // src/eas.rs
 use crate::caldav::CaldavClient;
-use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::calendar::{parse_datetime, parse_ics_event};
+use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
@@ -231,12 +231,24 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
         "smartreply" => Some(CommandGrammar {
             namespace: "SmartReply:",
             required_tags: &[],
-            _optional_tags: &["ClientId", "SaveInSentItems", "SourceMessageId", "SourceFolderId", "MIMEData"],
+            _optional_tags: &[
+                "ClientId",
+                "SaveInSentItems",
+                "SourceMessageId",
+                "SourceFolderId",
+                "MIMEData",
+            ],
         }),
         "smartforward" => Some(CommandGrammar {
             namespace: "SmartForward:",
             required_tags: &[],
-            _optional_tags: &["ClientId", "SaveInSentItems", "SourceMessageId", "SourceFolderId", "MIMEData"],
+            _optional_tags: &[
+                "ClientId",
+                "SaveInSentItems",
+                "SourceMessageId",
+                "SourceFolderId",
+                "MIMEData",
+            ],
         }),
         _ => None,
     }
@@ -1067,22 +1079,22 @@ async fn handle_folder_sync(
         // Per MS-ASCMD §2.2.3.41, Type values:
         // 2=Email (default mail folder), 3=Drafts, 4=Sent Items,
         // 5=Deleted Items, 6=Outbox, 7=Junk Email, 8=Calendar
-    // Only include email folders when email is actually available,
-    // otherwise clients will attempt to sync them and hit errors.
-    // Uses eas_email_folders_xml() which emits correct Type values per
-    // MS-ASCMD §2.2.3.186.3 (e.g. SentItems=5, DeletedItems=4, JunkEmail=12).
-    let email_folders = if state.email_available() {
-        crate::email::eas_email_folders_xml()
-    } else {
-        String::new()
-    };
-    let count = if state.email_available() { 7 } else { 1 };
-    format!(
-        r#"<Changes><Count>{count}</Count>
+        // Only include email folders when email is actually available,
+        // otherwise clients will attempt to sync them and hit errors.
+        // Uses eas_email_folders_xml() which emits correct Type values per
+        // MS-ASCMD §2.2.3.186.3 (e.g. SentItems=5, DeletedItems=4, JunkEmail=12).
+        let email_folders = if state.email_available() {
+            crate::email::eas_email_folders_xml()
+        } else {
+            String::new()
+        };
+        let count = if state.email_available() { 7 } else { 1 };
+        format!(
+            r#"<Changes><Count>{count}</Count>
 <Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
 {email_folders}
 </Changes>"#
-    )
+        )
     } else {
         r#"<Changes><Count>0</Count></Changes>"#.to_string()
     };
@@ -1663,17 +1675,17 @@ async fn fetch_freebusy_jmap_eas(
             && let Some(item) = parse_ics_event(ics)
         {
             let sd = match item.busy_status.unwrap_or(2) {
-                    0 => '0',
-                    1 => '1',
-                    3 => '3',
-                    _ => '2',
-                };
-                for (i, slot) in merged.iter_mut().enumerate() {
-                    let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
-                    let se = ss + chrono::Duration::minutes(safe_interval);
-                    if item.start < se && item.end > ss && sd > *slot {
-                        *slot = sd;
-                    }
+                0 => '0',
+                1 => '1',
+                3 => '3',
+                _ => '2',
+            };
+            for (i, slot) in merged.iter_mut().enumerate() {
+                let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
+                let se = ss + chrono::Duration::minutes(safe_interval);
+                if item.start < se && item.end > ss && sd > *slot {
+                    *slot = sd;
+                }
             }
         }
     }
@@ -1700,9 +1712,9 @@ async fn merged_freebusy_for_mailbox(
     // Try JMAP Calendar first (urn:ietf:params:jmap:calendars).
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     if let Some(jmap) = &state.jmap_client {
-        if let Some(result) = fetch_freebusy_jmap_eas(
-            jmap, mailbox, password, start, end, safe_interval,
-        ).await {
+        if let Some(result) =
+            fetch_freebusy_jmap_eas(jmap, mailbox, password, start, end, safe_interval).await
+        {
             return result;
         }
         tracing::debug!(target: "eas", "JMAP Calendar free-busy failed, falling back to CalDAV");
@@ -1761,8 +1773,7 @@ async fn merged_freebusy_for_mailbox(
                     Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
                         in_cal_data = false;
                         let ics = caldata_buf.trim();
-                        if let Some(item) = parse_ics_event(ics)
-                        {
+                        if let Some(item) = parse_ics_event(ics) {
                             let sd = match item.busy_status.unwrap_or(2) {
                                 0 => '0',
                                 1 => '1',
@@ -2132,31 +2143,32 @@ async fn handle_email_sync(
     as_wbxml: bool,
     request_id: &str,
 ) -> anyhow::Result<Response> {
-
- // Map CollectionId to JMAP mailbox role.
- // Previously hardcoded "inbox" and "2", meaning syncing any other folder
- // (Sent Items, Drafts, etc.) would incorrectly fetch Inbox emails and
- // return them under CollectionId "2", violating the ActiveSync protocol.
- let mailbox_role = match crate::email::eas_collection_id_to_mailbox_role(state_collection_id) {
- Some(role) => role,
- None => {
- // CollectionId has no JMAP mailbox (e.g. Outbox "6").
- // Return empty sync response — no emails to sync.
- let new_sync_key = Uuid::new_v4().simple().to_string();
- if let Err(e) = state
- .storage
- .set_sync_key(username, state_collection_id, &new_sync_key, None)
- .await
- {
- tracing::warn!(error = %e, "Failed to set email sync key");
- }
- let resp_xml = format!(
- r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
- new_sync_key, state_collection_id
- );
- return Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id));
- }
- };
+    // Map CollectionId to JMAP mailbox role.
+    // Previously hardcoded "inbox" and "2", meaning syncing any other folder
+    // (Sent Items, Drafts, etc.) would incorrectly fetch Inbox emails and
+    // return them under CollectionId "2", violating the ActiveSync protocol.
+    let mailbox_role = match crate::email::eas_collection_id_to_mailbox_role(state_collection_id) {
+        Some(role) => role,
+        None => {
+            // CollectionId has no JMAP mailbox (e.g. Outbox "6").
+            // Return empty sync response — no emails to sync.
+            let new_sync_key = Uuid::new_v4().simple().to_string();
+            if let Err(e) = state
+                .storage
+                .set_sync_key(username, state_collection_id, &new_sync_key, None)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to set email sync key");
+            }
+            let resp_xml = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                new_sync_key, state_collection_id
+            );
+            return Ok(xml_or_wbxml_response(
+                wbxml, as_wbxml, &resp_xml, request_id,
+            ));
+        }
+    };
 
     // For initial sync (sync_key="0"), return folder structure
     if incoming_sync_key == "0" {
@@ -2170,35 +2182,35 @@ async fn handle_email_sync(
         }
 
         // Fetch emails from JMAP for the requested mailbox
-    let emails = if let Some(jmap) = &state.jmap_client {
-        match jmap.get_account_id(username, password).await {
-            Ok(account_id) => {
-                match crate::email::fetch_emails_jmap(
-                    state,
-                    &account_id,
-                    mailbox_role,
-                    0,
-                    EMAIL_SYNC_PAGE_SIZE,
-                    username,
-                    password,
-                )
-                .await
-                {
-                    Ok(result) => result.emails,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
-                        Vec::new()
+        let emails = if let Some(jmap) = &state.jmap_client {
+            match jmap.get_account_id(username, password).await {
+                Ok(account_id) => {
+                    match crate::email::fetch_emails_jmap(
+                        state,
+                        &account_id,
+                        mailbox_role,
+                        0,
+                        EMAIL_SYNC_PAGE_SIZE,
+                        username,
+                        password,
+                    )
+                    .await
+                    {
+                        Ok(result) => result.emails,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
+                            Vec::new()
+                        }
                     }
                 }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync");
+                    Vec::new()
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync");
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
+        } else {
+            Vec::new()
+        };
 
         let mut commands_xml = String::new();
         for email in &emails {
@@ -2219,7 +2231,9 @@ async fn handle_email_sync(
             r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
             new_sync_key, state_collection_id, commands_xml
         );
-        return Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id));
+        return Ok(xml_or_wbxml_response(
+            wbxml, as_wbxml, &resp_xml, request_id,
+        ));
     }
 
     // Subsequent syncs — check for changes
@@ -2236,7 +2250,9 @@ async fn handle_email_sync(
         r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
         new_sync_key, state_collection_id
     );
-    Ok(xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id))
+    Ok(xml_or_wbxml_response(
+        wbxml, as_wbxml, &resp_xml, request_id,
+    ))
 }
 
 pub async fn handle(
@@ -2330,168 +2346,205 @@ pub async fn handle(
             );
             let incoming_key = req.sync_key.as_deref().unwrap_or("0");
             let class = req.class.as_deref().unwrap_or("Calendar");
-        
-        // Email sync — route to JMAP instead of CalDAV
-        if class.eq_ignore_ascii_case("Email") {
-            if state.cfg.email_enabled && state.jmap_client.is_some() {
-                match handle_email_sync(
-                    &state,
-                    &username,
-                    &password,
-                    &state_collection_id,
-                    incoming_key,
-                    &wbxml,
-                    wants_wbxml,
-                    &request_id,
-                )
+
+            // Email sync — route to JMAP instead of CalDAV
+            if class.eq_ignore_ascii_case("Email") {
+                if state.cfg.email_enabled && state.jmap_client.is_some() {
+                    match handle_email_sync(
+                        &state,
+                        &username,
+                        &password,
+                        &state_collection_id,
+                        incoming_key,
+                        &wbxml,
+                        wants_wbxml,
+                        &request_id,
+                    )
+                    .await
+                    {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            tracing::error!("request_id={} Email Sync Error: {}", request_id, e);
+                            let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
+                            xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id)
+                        }
+                    }
+                } else {
+                    let new_sync_key = Uuid::new_v4().simple().to_string();
+                    if let Err(e) = state
+                        .storage
+                        .set_sync_key(&username, &state_collection_id, &new_sync_key, None)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "Failed to set email sync key");
+                    }
+                    let resp_xml = format!(
+                        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>1</Status><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                        new_sync_key, collection_id
+                    );
+                    xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id)
+                }
+            } else {
+                // Calendar/Contacts/Tasks — existing CalDAV sync
+                let mut mutation_responses = String::new();
+                let owner = crate::ews::owner_from_username(&username);
+                let calendar_folder_id = crate::ews_folders::folder_id_for(
+                    owner,
+                    crate::ews_folders::DistinguishedFolder::Calendar,
+                );
+                let enforcement = PermissionEnforcement::new(&state.storage);
+                let perm_ctx = PermissionContext::new(
+                    username.clone(),
+                    owner.to_string(),
+                    calendar_folder_id.clone(),
+                );
+                if xml.contains("<Add") || xml.contains(":Add") {
+                    match enforcement.can_create_item(&perm_ctx).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                            return xml_or_wbxml_response(
+                                &wbxml,
+                                wants_wbxml,
+                                err_xml,
+                                &request_id,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Create operation");
+                            let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                            return xml_or_wbxml_response(
+                                &wbxml,
+                                wants_wbxml,
+                                err_xml,
+                                &request_id,
+                            );
+                        }
+                    }
+                }
+                if xml.contains("<Change") || xml.contains(":Change") {
+                    match enforcement.can_edit_item(&perm_ctx).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                            return xml_or_wbxml_response(
+                                &wbxml,
+                                wants_wbxml,
+                                err_xml,
+                                &request_id,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Edit operation");
+                            let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                            return xml_or_wbxml_response(
+                                &wbxml,
+                                wants_wbxml,
+                                err_xml,
+                                &request_id,
+                            );
+                        }
+                    }
+                }
+                if xml.contains("<Delete") || xml.contains(":Delete") {
+                    match enforcement.can_delete_item(&perm_ctx).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                            return xml_or_wbxml_response(
+                                &wbxml,
+                                wants_wbxml,
+                                err_xml,
+                                &request_id,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Delete operation");
+                            let err_xml = r#"
+<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
+                            return xml_or_wbxml_response(
+                                &wbxml,
+                                wants_wbxml,
+                                err_xml,
+                                &request_id,
+                            );
+                        }
+                    }
+                }
+                if xml.contains("<Add")
+                    || xml.contains("<Change")
+                    || xml.contains("<Delete")
+                    || xml.contains(":Add")
+                    || xml.contains(":Change")
+                    || xml.contains(":Delete")
+                {
+                    match sync::apply_client_sync_mutations(
+                        state.clone(),
+                        &username,
+                        &state_collection_id,
+                        &username,
+                        password.expose_secret(),
+                        &xml,
+                    )
+                    .await
+                    {
+                        Ok(results) => {
+                            mutation_responses = sync::render_client_mutation_responses(&results);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "request_id={} failed applying Sync mutations: {}",
+                                request_id,
+                                e
+                            );
+                            let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
+                            return xml_or_wbxml_response(
+                                &wbxml,
+                                wants_wbxml,
+                                err_xml,
+                                &request_id,
+                            );
+                        }
+                    }
+                }
+                let opts = SyncOptions {
+                    window_size: req.window_size.unwrap_or(100),
+                    get_changes: req.get_changes,
+                    filter_start: req
+                        .filter_type
+                        .map(filter_type_to_start)
+                        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
+                };
+                match sync::perform_sync(&sync::PerformSyncParams {
+                    state: state.clone(),
+                    owner: &username,
+                    collection_id,
+                    state_collection_id: &state_collection_id,
+                    incoming_sync_key: incoming_key,
+                    content_class: class,
+                    opts,
+                    username: &username,
+                    password: password.expose_secret(),
+                    client_mutation_responses: &mutation_responses,
+                })
                 .await
                 {
-                    Ok(resp) => resp,
+                    Ok(resp_xml) => {
+                        xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id)
+                    }
                     Err(e) => {
-                        tracing::error!("request_id={} Email Sync Error: {}", request_id, e);
+                        tracing::error!("request_id={} Sync Error: {}", request_id, e);
                         let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
                         xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id)
                     }
                 }
-            } else {
-                let new_sync_key = Uuid::new_v4().simple().to_string();
-                if let Err(e) = state
-                    .storage
-                    .set_sync_key(&username, &state_collection_id, &new_sync_key, None)
-                    .await
-                {
-                    tracing::warn!(error = %e, "Failed to set email sync key");
-                }
-                let resp_xml = format!(
-                    r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>1</Status><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-                    new_sync_key, collection_id
-                );
-                xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id)
             }
-        } else {
-        // Calendar/Contacts/Tasks — existing CalDAV sync
-            let mut mutation_responses = String::new();
-            let owner = crate::ews::owner_from_username(&username);
-            let calendar_folder_id = crate::ews_folders::folder_id_for(
-                owner,
-                crate::ews_folders::DistinguishedFolder::Calendar,
-            );
-            let enforcement = PermissionEnforcement::new(&state.storage);
-            let perm_ctx = PermissionContext::new(
-                username.clone(),
-                owner.to_string(),
-                calendar_folder_id.clone(),
-            );
-            if xml.contains("<Add") || xml.contains(":Add") {
-                match enforcement.can_create_item(&perm_ctx).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                    }
-                    Err(e) => {
-                        tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Create operation");
-                        let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                    }
-                }
-            }
-            if xml.contains("<Change") || xml.contains(":Change") {
-                match enforcement.can_edit_item(&perm_ctx).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                    }
-                    Err(e) => {
-                        tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Edit operation");
-                        let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                    }
-                }
-            }
-            if xml.contains("<Delete") || xml.contains(":Delete") {
-                match enforcement.can_delete_item(&perm_ctx).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                    }
-                    Err(e) => {
-                        tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Delete operation");
-                        let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                    }
-                }
-            }
-            if xml.contains("<Add")
-                || xml.contains("<Change")
-                || xml.contains("<Delete")
-                || xml.contains(":Add")
-                || xml.contains(":Change")
-                || xml.contains(":Delete")
-            {
-                match sync::apply_client_sync_mutations(
-                    state.clone(),
-                    &username,
-                    &state_collection_id,
-                    &username,
-                    password.expose_secret(),
-                    &xml,
-                )
-                .await
-                {
-                    Ok(results) => {
-                        mutation_responses = sync::render_client_mutation_responses(&results);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "request_id={} failed applying Sync mutations: {}",
-                            request_id,
-                            e
-                        );
-                        let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
-                        return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                    }
-                }
-            }
-            let opts = SyncOptions {
-                window_size: req.window_size.unwrap_or(100),
-                get_changes: req.get_changes,
-                filter_start: req
-                    .filter_type
-                    .map(filter_type_to_start)
-                    .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
-            };
-            match sync::perform_sync(&sync::PerformSyncParams {
-                state: state.clone(),
-                owner: &username,
-                collection_id,
-                state_collection_id: &state_collection_id,
-                incoming_sync_key: incoming_key,
-                content_class: class,
-                opts,
-                username: &username,
-                password: password.expose_secret(),
-                client_mutation_responses: &mutation_responses,
-            })
-            .await
-            {
-                Ok(resp_xml) => xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id),
-                Err(e) => {
-                    tracing::error!("request_id={} Sync Error: {}", request_id, e);
-                    let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
-                    xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id)
-                }
-            }
-        }
-            } // closes the `else { Calendar` branch
+        } // closes the `else { Calendar` branch
         "Ping" => {
             handle_ping(
                 &state,

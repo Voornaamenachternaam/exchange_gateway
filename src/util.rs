@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(normalize_username("user\\"), "user"); // backslash at end
         assert_eq!(normalize_username("DOMAIN\\user\\extra"), "extra"); // multiple backslashes - last wins
     }
-#[test]
+    #[test]
     fn test_canonicalize_username() {
         // Domain replacement: non-canonical domain → canonical
         assert_eq!(

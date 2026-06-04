@@ -4,7 +4,6 @@ use crate::attachment::{
     render_create_attachment_response, render_file_attachment_xml, render_get_attachment_response,
 };
 use crate::caldav::CaldavClient;
-use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
@@ -14,6 +13,7 @@ use crate::ews_folders::{
     DistinguishedFolder, folder_id_for, render_folder_xml, validate_folder_request,
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};
+use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
@@ -22,7 +22,9 @@ use crate::room::{
 };
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
-use crate::util::{canonicalize_username, format_ews_datetime, nfc, normalize_username, xml_escape};
+use crate::util::{
+    canonicalize_username, format_ews_datetime, nfc, normalize_username, xml_escape,
+};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -268,8 +270,8 @@ pub async fn handle(
         EwsAction::CreateItem => handle_create_item(&state, &auth, &body).await,
         EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
         EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
-            EwsAction::SendItem => handle_send_item(&state, &auth, &body).await,
-            EwsAction::MoveItem => handle_move_item(&state, &auth, &body).await,
+        EwsAction::SendItem => handle_send_item(&state, &auth, &body).await,
+        EwsAction::MoveItem => handle_move_item(&state, &auth, &body).await,
         EwsAction::ResolveNames => handle_resolve_names(&auth, &body).await,
         EwsAction::GetUserOofSettings => handle_get_user_oof_settings(&auth, &body).await,
         EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&auth, &body).await,
@@ -358,7 +360,7 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"CreateItem" => EwsAction::CreateItem,
                     b"UpdateItem" => EwsAction::UpdateItem,
                     b"DeleteItem" => EwsAction::DeleteItem,
-            b"SendItem" => EwsAction::SendItem,
+                    b"SendItem" => EwsAction::SendItem,
                     b"MoveItem" => EwsAction::MoveItem,
                     b"ResolveNames" => EwsAction::ResolveNames,
                     b"GetUserOofSettingsRequest" => EwsAction::GetUserOofSettings,
@@ -1166,7 +1168,9 @@ async fn fetch_freebusy_jmap(
         return Err(anyhow::anyhow!("JMAP Calendar not supported by server"));
     }
 
-    let account_id = jmap.get_calendar_account_id(mailbox, &secret_password).await?;
+    let account_id = jmap
+        .get_calendar_account_id(mailbox, &secret_password)
+        .await?;
     let safe_interval = 30i64; // Default interval for free-busy
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
         / (safe_interval * 60)) as usize;
@@ -1190,25 +1194,25 @@ async fn fetch_freebusy_jmap(
             && let Some(item) = parse_ics_event(ics)
         {
             let sd = match item.busy_status.unwrap_or(2) {
-                    0 => '0',
-                    1 => '1',
-                    3 => '3',
-                    _ => '2',
-                };
-                for (i, slot) in merged.iter_mut().enumerate() {
-                    let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
-                    let se = ss + chrono::Duration::minutes(safe_interval);
-                    if item.start < se && item.end > ss && sd > *slot {
-                        *slot = sd;
-                    }
+                0 => '0',
+                1 => '1',
+                3 => '3',
+                _ => '2',
+            };
+            for (i, slot) in merged.iter_mut().enumerate() {
+                let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
+                let se = ss + chrono::Duration::minutes(safe_interval);
+                if item.start < se && item.end > ss && sd > *slot {
+                    *slot = sd;
                 }
-                let busy_type = match item.busy_status.unwrap_or(2) {
-                    0 => "Free",
-                    1 => "Tentative",
-                    3 => "OOF",
-                    _ => "Busy",
-                };
-                events_xml_out.push_str(&format!(
+            }
+            let busy_type = match item.busy_status.unwrap_or(2) {
+                0 => "Free",
+                1 => "Tentative",
+                3 => "OOF",
+                _ => "Busy",
+            };
+            events_xml_out.push_str(&format!(
                     "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
                     format_ews_datetime(&item.start),
                     format_ews_datetime(&item.end),
@@ -1239,9 +1243,7 @@ async fn merged_freebusy_for_mailbox(
     // JMAP eliminates ETag complexity and uses a single HTTP endpoint.
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     if let Some(jmap) = &state.jmap_client {
-        if let Ok(jmap_result) = fetch_freebusy_jmap(
-            jmap, mailbox, password, start, end,
-        ).await {
+        if let Ok(jmap_result) = fetch_freebusy_jmap(jmap, mailbox, password, start, end).await {
             return jmap_result;
         }
         tracing::debug!(target: "ews", "JMAP Calendar free-busy failed, falling back to CalDAV");
@@ -1288,8 +1290,7 @@ async fn merged_freebusy_for_mailbox(
                 Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
                     in_calendar_data = false;
                     let ics = caldata_buf.trim();
-                    if let Some(item) = parse_ics_event(ics)
-                    {
+                    if let Some(item) = parse_ics_event(ics) {
                         let sd = match item.busy_status.unwrap_or(2) {
                             0 => '0',
                             1 => '1',
@@ -1618,16 +1619,15 @@ async fn load_current_calendar_items(
             Ok(Event::CData(ref t)) if in_caldata => {
                 caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
             }
-            Ok(Event::End(ref e)) => {
-                match e.name().local_name().as_ref() {
-                    b"calendar-data" if in_caldata => {
-                        in_caldata = false;
-                        ics = caldata_buf.trim().to_string();
-                    }
-                    b"response" => {
-                        if !href.is_empty()
+            Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
+                b"calendar-data" if in_caldata => {
+                    in_caldata = false;
+                    ics = caldata_buf.trim().to_string();
+                }
+                b"response" => {
+                    if !href.is_empty()
                         && let Some(item) = parse_ics_event(&ics)
-                        {
+                    {
                         let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
                         let safe_etag = if etag.is_empty() {
                             caldav
@@ -1674,14 +1674,13 @@ async fn load_current_calendar_items(
                             },
                             item,
                         });
-                        }
-                        href.clear();
-                        etag.clear();
-                        ics.clear();
                     }
-                    _ => {}
+                    href.clear();
+                    etag.clear();
+                    ics.clear();
                 }
-            }
+                _ => {}
+            },
             Ok(Event::Eof) => break,
             _ => {}
         }
@@ -1770,7 +1769,10 @@ async fn handle_find_email_item(
         // is querying the top-level email folder.
         DistinguishedFolder::MsgFolderRoot => "inbox",
         _ => {
-            tracing::warn!(?folder, "Unrecognised EWS folder for email FindItem; returning empty");
+            tracing::warn!(
+                ?folder,
+                "Unrecognised EWS folder for email FindItem; returning empty"
+            );
             "outbox" // fetch_emails_jmap returns empty for outbox
         }
     };
@@ -1812,7 +1814,7 @@ async fn handle_find_email_item(
     .await
     {
         Ok(result) => {
-                let emails = result.emails;
+            let emails = result.emails;
             let total_items = result.total; // JMAP calculateTotal, not page length
             let mut item_xml = String::new();
             for email in &emails {
@@ -1820,7 +1822,9 @@ async fn handle_find_email_item(
                 let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
                 let change_key = server_id.clone();
                 item_xml.push_str(&crate::email::render_jmap_email_as_ews_message(
-                    email, &server_id, &change_key,
+                    email,
+                    &server_id,
+                    &change_key,
                 ));
             }
             let includes_last = if offset as u64 + emails.len() as u64 >= total_items {
@@ -1830,7 +1834,12 @@ async fn handle_find_email_item(
             };
             let response = format!(
                 r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="{}" IndexedPagingOffset="{}"><t:Items>{}</t:Items></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
-                EWS_MSG_NS, EWS_TYPE_NS, total_items, includes_last, offset + emails.len(), item_xml
+                EWS_MSG_NS,
+                EWS_TYPE_NS,
+                total_items,
+                includes_last,
+                offset + emails.len(),
+                item_xml
             );
             soap_ok(response)
         }
@@ -1855,8 +1864,8 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     // Determine the distinguished folder being queried
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_else(|| "calendar".to_string());
-    let folder = DistinguishedFolder::from_str(&distinguished_str)
-        .unwrap_or(DistinguishedFolder::Calendar);
+    let folder =
+        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
 
     // Email folders — route to JMAP
     if folder.is_email() && state.cfg.email_enabled && state.jmap_client.is_some() {
@@ -1982,39 +1991,39 @@ async fn handle_get_email_item(
         }
     };
 
-                // Extract JMAP ID from the prefix-based email server ID
-                let jmap_id = match crate::email::jmap_id_from_email_server_id(item_id) {
-                    Some(id) => id.to_string(),
-                    None => {
-                        return operation_error_response(
-                            &EwsAction::GetItem,
-                            "ErrorItemNotFound",
-                            "Invalid email item ID format",
-                            StatusCode::OK,
-                        );
-                    }
-                };
-                match jmap.get_email(&account_id, &jmap_id, &auth.username, &auth.password).await {
-                    Ok(Some(email)) => {
-                        let server_id = crate::email::email_server_id_from_jmap_id(&jmap_id);
-                        let change_key = server_id.clone();
-            let item_xml = crate::email::render_jmap_email_as_ews_message(
-                &email, &server_id, &change_key,
+    // Extract JMAP ID from the prefix-based email server ID
+    let jmap_id = match crate::email::jmap_id_from_email_server_id(item_id) {
+        Some(id) => id.to_string(),
+        None => {
+            return operation_error_response(
+                &EwsAction::GetItem,
+                "ErrorItemNotFound",
+                "Invalid email item ID format",
+                StatusCode::OK,
             );
+        }
+    };
+    match jmap
+        .get_email(&account_id, &jmap_id, &auth.username, &auth.password)
+        .await
+    {
+        Ok(Some(email)) => {
+            let server_id = crate::email::email_server_id_from_jmap_id(&jmap_id);
+            let change_key = server_id.clone();
+            let item_xml =
+                crate::email::render_jmap_email_as_ews_message(&email, &server_id, &change_key);
             let response = format!(
                 r#"<m:GetItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>"#,
                 EWS_MSG_NS, EWS_TYPE_NS, item_xml
             );
             soap_ok(response)
         }
-        Ok(None) => {
-            operation_error_response(
-                &EwsAction::GetItem,
-                "ErrorItemNotFound",
-                "Requested email item does not exist",
-                StatusCode::OK,
-            )
-        }
+        Ok(None) => operation_error_response(
+            &EwsAction::GetItem,
+            "ErrorItemNotFound",
+            "Requested email item does not exist",
+            StatusCode::OK,
+        ),
         Err(e) => {
             tracing::warn!(error = %e, item_id = %item_id, "Failed to fetch email from JMAP for GetItem");
             operation_error_response(
@@ -2039,8 +2048,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     }
 
     // Check if the request asks for a Message shape (email) rather than CalendarItem
-    let is_email_request = body.contains("<t:Message")
-        || body.contains("MessageDisposition");
+    let is_email_request = body.contains("<t:Message") || body.contains("MessageDisposition");
 
     // Try to look up the item in the calendar DB first
     let item_owner = match state.storage.get_item_owner(&item_id).await {
@@ -2259,10 +2267,7 @@ async fn handle_sync_email_folder_items(
         }
     };
 
-    let account_id = match jmap
-        .get_account_id(&auth.username, &auth.password)
-        .await
-    {
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
         Ok(id) => id,
         Err(e) => {
             tracing::error!(error = %e, "JMAP get_account_id failed in SyncFolderItems");
@@ -2293,83 +2298,86 @@ async fn handle_sync_email_folder_items(
         // is syncing the top-level email folder.
         DistinguishedFolder::MsgFolderRoot => "inbox",
         _ => {
-            tracing::warn!(?folder, "Unrecognised EWS folder for email SyncFolderItems; returning empty");
+            tracing::warn!(
+                ?folder,
+                "Unrecognised EWS folder for email SyncFolderItems; returning empty"
+            );
             "outbox" // fetch_emails_jmap returns empty for outbox
         }
     };
 
-        if is_initial {
-            // Initial sync: JMAP Email/changes requires a valid sinceState token.
-            // Use Email/query + Email/get (batched) to fetch current emails and
-            // obtain the current data state token for subsequent /changes calls.
-            let result = match crate::email::fetch_emails_jmap(
-                state,
-                &account_id,
-                mailbox_role,
-                0,
-                _max_changes as u64,
-                &auth.username,
-                &auth.password,
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!(error = %e, "JMAP Email/query failed for initial sync");
-                    return operation_error_response(
-                        &EwsAction::SyncFolderItems,
-                        "ErrorInternalServerError",
-                        "Failed to fetch emails for initial sync",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    );
-                }
-            };
-
-            let emails = result.emails;
-            let new_state = if result.state.is_empty() {
-                // Fallback: fetch state token separately if batched get didn't return it
-                match jmap
-                    .get_email_state(&account_id, &auth.username, &auth.password)
-                    .await
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to get JMAP email state token; using empty state");
-                        String::new()
-                    }
-                }
-            } else {
-                result.state
-            };
-
-            let mut changes_xml = String::new();
-            for email in &emails {
-                let jmap_id = email.id.as_deref().unwrap_or("unknown");
-                let server_id = email_server_id_from_jmap_id(jmap_id);
-                let change_key = server_id.clone();
-                changes_xml.push_str(&format!(
-                    r#"<t:Create>{}</t:Create>"#,
-                    render_jmap_email_as_ews_message(email, &server_id, &change_key)
-                ));
+    if is_initial {
+        // Initial sync: JMAP Email/changes requires a valid sinceState token.
+        // Use Email/query + Email/get (batched) to fetch current emails and
+        // obtain the current data state token for subsequent /changes calls.
+        let result = match crate::email::fetch_emails_jmap(
+            state,
+            &account_id,
+            mailbox_role,
+            0,
+            _max_changes as u64,
+            &auth.username,
+            &auth.password,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "JMAP Email/query failed for initial sync");
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorInternalServerError",
+                    "Failed to fetch emails for initial sync",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
             }
+        };
 
-            if let Err(e) = state
-                .storage
-                .set_ews_sync_state(owner, &folder_id, &new_state)
+        let emails = result.emails;
+        let new_state = if result.state.is_empty() {
+            // Fallback: fetch state token separately if batched get didn't return it
+            match jmap
+                .get_email_state(&account_id, &auth.username, &auth.password)
                 .await
             {
-                tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state");
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to get JMAP email state token; using empty state");
+                    String::new()
+                }
             }
+        } else {
+            result.state
+        };
 
-            let response = format!(
-                r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
-                EWS_MSG_NS,
-                EWS_TYPE_NS,
-                xml_escape(&new_state),
-                changes_xml
-            );
-            return soap_ok(response);
+        let mut changes_xml = String::new();
+        for email in &emails {
+            let jmap_id = email.id.as_deref().unwrap_or("unknown");
+            let server_id = email_server_id_from_jmap_id(jmap_id);
+            let change_key = server_id.clone();
+            changes_xml.push_str(&format!(
+                r#"<t:Create>{}</t:Create>"#,
+                render_jmap_email_as_ews_message(email, &server_id, &change_key)
+            ));
         }
+
+        if let Err(e) = state
+            .storage
+            .set_ews_sync_state(owner, &folder_id, &new_state)
+            .await
+        {
+            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state");
+        }
+
+        let response = format!(
+            r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>true</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
+            EWS_MSG_NS,
+            EWS_TYPE_NS,
+            xml_escape(&new_state),
+            changes_xml
+        );
+        return soap_ok(response);
+    }
 
     // Subsequent sync: call JMAP Email/changes with the stored state token
     let changes_result = jmap
@@ -2402,8 +2410,7 @@ async fn handle_sync_email_folder_items(
             .get_email(&account_id, email_id, &auth.username, &auth.password)
             .await
         {
-            let server_id =
-                email_server_id_from_jmap_id(email_id);
+            let server_id = email_server_id_from_jmap_id(email_id);
             let change_key = server_id.clone();
             changes_xml.push_str(&format!(
                 r#"<t:Create>{}</t:Create>"#,
@@ -2418,8 +2425,7 @@ async fn handle_sync_email_folder_items(
             .get_email(&account_id, email_id, &auth.username, &auth.password)
             .await
         {
-            let server_id =
-                email_server_id_from_jmap_id(email_id);
+            let server_id = email_server_id_from_jmap_id(email_id);
             let change_key = server_id.clone();
             changes_xml.push_str(&format!(
                 r#"<t:Update>{}</t:Update>"#,
@@ -2430,8 +2436,7 @@ async fn handle_sync_email_folder_items(
 
     // Render deleted emails
     for email_id in &changes.destroyed {
-        let server_id =
-            email_server_id_from_jmap_id(email_id);
+        let server_id = email_server_id_from_jmap_id(email_id);
         changes_xml.push_str(&format!(
             r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
             xml_escape(&server_id)
@@ -2447,7 +2452,11 @@ async fn handle_sync_email_folder_items(
         tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state");
     }
 
-    let includes_last = if changes.has_more_changes { "false" } else { "true" };
+    let includes_last = if changes.has_more_changes {
+        "false"
+    } else {
+        "true"
+    };
 
     let response = format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
@@ -2471,10 +2480,10 @@ async fn handle_sync_folder_items(
     }
 
     // Determine the folder type from the request
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_default();
-    let distinguished = DistinguishedFolder::from_str(&distinguished_str)
-        .unwrap_or(DistinguishedFolder::Calendar);
+    let distinguished_str =
+        extract_first_attr(body, b"DistinguishedFolderId", b"Id").unwrap_or_default();
+    let distinguished =
+        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
 
     // Route email folders to JMAP-based sync
     if distinguished.is_email() && state.email_available() {
@@ -2839,11 +2848,8 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                 Ok(message_id) => {
                     let server_id = crate::email::email_server_id_from_send_result(&message_id);
                     let change_key = server_id.clone();
-                    let items_xml = crate::email::render_ews_message_item_xml(
-                        &server_id,
-                        &change_key,
-                        &msg,
-                    );
+                    let items_xml =
+                        crate::email::render_ews_message_item_xml(&server_id, &change_key, &msg);
                     let response = format!(
                         r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
                         EWS_MSG_NS, EWS_TYPE_NS, items_xml
@@ -2862,14 +2868,11 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             }
         }
         // SaveOnly — return success with a synthetic ItemId
-        let server_id = crate::email::email_server_id_from_jmap_id(
-            &format!("draft-{}", chrono::Utc::now().timestamp_millis()),
-        );
-        let items_xml = crate::email::render_ews_message_item_xml(
-            &server_id,
-            "0",
-            &msg,
-        );
+        let server_id = crate::email::email_server_id_from_jmap_id(&format!(
+            "draft-{}",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        let items_xml = crate::email::render_ews_message_item_xml(&server_id, "0", &msg);
         let response = format!(
             r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
             EWS_MSG_NS, EWS_TYPE_NS, items_xml
@@ -3040,10 +3043,7 @@ async fn handle_update_email_item(
         }
     };
 
-    let account_id = match jmap
-        .get_account_id(&auth.username, &auth.password)
-        .await
-    {
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
         Ok(id) => id,
         Err(e) => {
             tracing::warn!(error = %e, "JMAP get_account_id failed in UpdateItem email");
@@ -3057,8 +3057,7 @@ async fn handle_update_email_item(
     };
 
     // Parse IsRead from the update
-    let is_read = extract_first_tag_text(body, b"IsRead")
-        .and_then(|v| v.parse::<bool>().ok());
+    let is_read = extract_first_tag_text(body, b"IsRead").and_then(|v| v.parse::<bool>().ok());
 
     // Build JMAP Email/set update for keywords
     let mut keywords_update = serde_json::Map::new();
@@ -3129,9 +3128,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
 
     // Check if this is an email update (IsRead, flag changes, etc.)
-    if (body.contains("<t:IsRead>") || body.contains("<t:Message"))
-        && state.email_available()
-    {
+    if (body.contains("<t:IsRead>") || body.contains("<t:Message")) && state.email_available() {
         return handle_update_email_item(state, auth, &item_id, body).await;
     }
 
@@ -3470,10 +3467,7 @@ async fn handle_delete_email_item(
         }
     };
 
-    let account_id = match jmap
-        .get_account_id(&auth.username, &auth.password)
-        .await
-    {
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
         Ok(id) => id,
         Err(e) => {
             tracing::warn!(error = %e, "JMAP get_account_id failed in DeleteItem email");
@@ -3522,7 +3516,13 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     // Check if this is an email item (by em- prefix or by looking up the item)
     let is_email = crate::email::is_email_server_id(&item_id)
-        || state.storage.get_ews_item_by_server_id(owner, &item_id).await.ok().flatten().is_none()
+        || state
+            .storage
+            .get_ews_item_by_server_id(owner, &item_id)
+            .await
+            .ok()
+            .flatten()
+            .is_none()
             && state.email_available()
             && !item_id.is_empty();
 
@@ -3701,7 +3701,9 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         // message. Returning success here would cause silent email loss (Outlook
         // believes the draft was sent, but no email is actually delivered).
         // Return ErrorItemNotFound per MS-OXWSCORE to inform the client.
-        tracing::warn!("SendItem without inline Message — draft send is not supported (drafts are not stored on the gateway)");
+        tracing::warn!(
+            "SendItem without inline Message — draft send is not supported (drafts are not stored on the gateway)"
+        );
         return operation_error_response(
             &EwsAction::SendItem,
             "ErrorItemNotFound",

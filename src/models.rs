@@ -84,8 +84,7 @@ impl AppState {
 
     /// Whether email functionality is available (enabled and configured)
     pub fn email_available(&self) -> bool {
-        self.cfg.email_enabled
-            && (self.smtp_client.is_some() || self.jmap_client.is_some())
+        self.cfg.email_enabled && (self.smtp_client.is_some() || self.jmap_client.is_some())
     }
 
     /// Whether email sending is available (JMAP submission or SMTP)

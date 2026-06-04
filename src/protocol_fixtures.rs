@@ -143,7 +143,15 @@ pub fn eas_provision_response(policy_key: &str, status: &str) -> String {
 }
 
 pub fn autodiscover_response(host: &str, email: &str) -> String {
-    crate::autodiscover::handle_autodiscover_xml(host, "", email, None, &format!("mail.{}", email.rsplit('@').next().unwrap_or(host)), true).2
+    crate::autodiscover::handle_autodiscover_xml(
+        host,
+        "",
+        email,
+        None,
+        &format!("mail.{}", email.rsplit('@').next().unwrap_or(host)),
+        true,
+    )
+    .2
 }
 
 #[cfg(test)]

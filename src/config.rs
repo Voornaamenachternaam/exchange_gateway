@@ -157,23 +157,22 @@ impl Config {
         }
         cfg.validate()?;
 
-    // Auto-derive jmap_base from caldav_base if JMAP not explicitly set.
-    // Stalwart serves JMAP at the same host as CalDAV: replace /dav with /jmap.
-    if cfg.jmap_base.is_empty() && !cfg.caldav_base.is_empty() {
-        let derived = crate::jmap::JmapClient::derive_from_caldav(&cfg.caldav_base);
-        tracing::info!(
-            target: "config",
-            caldav_base = %cfg.caldav_base,
-            derived_jmap_base = %derived,
-            "Auto-derived jmap_base from caldav_base"
-        );
-        cfg.jmap_base = derived;
-    }
-
+        // Auto-derive jmap_base from caldav_base if JMAP not explicitly set.
+        // Stalwart serves JMAP at the same host as CalDAV: replace /dav with /jmap.
+        if cfg.jmap_base.is_empty() && !cfg.caldav_base.is_empty() {
+            let derived = crate::jmap::JmapClient::derive_from_caldav(&cfg.caldav_base);
+            tracing::info!(
+                target: "config",
+                caldav_base = %cfg.caldav_base,
+                derived_jmap_base = %derived,
+                "Auto-derived jmap_base from caldav_base"
+            );
+            cfg.jmap_base = derived;
+        }
 
         // Sanitize caldav_base to avoid logging embedded credentials
         let sanitized_caldav_base = sanitize_url_for_logging(&cfg.caldav_base);
-    let sanitized_jmap_base = sanitize_url_for_logging(&cfg.jmap_base);
+        let sanitized_jmap_base = sanitize_url_for_logging(&cfg.jmap_base);
 
         tracing::info!(
             target: "config",
@@ -270,9 +269,7 @@ impl Config {
         // Validate SMTP port is a well-known submission port.
         // Port 465 (SMTPS/implicit TLS) is the default and recommended.
         // Port 587 (MSA/STARTTLS) and 25 (MTA) are also accepted for legacy setups.
-        if !self.smtp_host.is_empty()
-            && !matches!(self.smtp_port, 465 | 587 | 25)
-        {
+        if !self.smtp_host.is_empty() && !matches!(self.smtp_port, 465 | 587 | 25) {
             return Err(anyhow::anyhow!(
                 "Config: 'smtp_port' must be 465 (SMTPS), 587 (MSA), or 25 (MTA), got {}",
                 self.smtp_port
@@ -395,10 +392,7 @@ fn apply_environment_overrides(cfg: &mut Config) {
         c.smtp_host = v;
     });
 
-    if let Some(val) = env::var(ENV_SMTP_PORT)
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
+    if let Some(val) = env::var(ENV_SMTP_PORT).ok().filter(|v| !v.is_empty()) {
         match val.parse::<u16>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_SMTP_PORT);
@@ -418,10 +412,7 @@ fn apply_environment_overrides(cfg: &mut Config) {
         c.imap_host = v;
     });
 
-    if let Some(val) = env::var(ENV_IMAP_PORT)
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
+    if let Some(val) = env::var(ENV_IMAP_PORT).ok().filter(|v| !v.is_empty()) {
         match val.parse::<u16>() {
             Ok(parsed) => {
                 tracing::debug!("Applying {} from environment", ENV_IMAP_PORT);
@@ -534,7 +525,7 @@ impl Default for Config {
             imap_port: DEFAULT_IMAP_PORT,
             jmap_base: String::new(),
             email_enabled: true,
-        mail_host: String::new(),
+            mail_host: String::new(),
         }
     }
 }

@@ -112,7 +112,8 @@ impl SmtpClient {
     /// who is sending the message. The SMTP envelope MAIL FROM is set
     /// to the sender's email address.
     pub async fn send_email(&self, params: SendEmailParams<'_>) -> anyhow::Result<SendResult> {
-        let from_mailbox: Mailbox = params.from
+        let from_mailbox: Mailbox = params
+            .from
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid from address '{}': {}", params.from, e))?;
 
