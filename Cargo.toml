@@ -57,7 +57,7 @@ windows-timezones = { version = "^0.5.1", features = ["strum", "chrono-tz"] }
 strum = { version = "~0.27.2", features = ["derive"] }
 dashmap = "^6.2.1"
 smallvec = { version = "^1.15.1", features = ["serde", "write"] }
-http = "^1.4.0"
+http = "^1.4.1"
 smartstring = "^1.0.1"
 const-hex = "^1.19.0"
 bitflags = "^2.11.1"
