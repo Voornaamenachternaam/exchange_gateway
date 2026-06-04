@@ -29,7 +29,7 @@
 - **412 on synthetic/weak etag**: If-Match with a synthetic etag (prefix "sgw-") causes 412. Per RFC 7232 §3.1, If-Match uses the strong comparison function — weak etags (W/...) are semantically invalid in If-Match for state-changing methods and cause 412/400 on strict servers. Always filter out both synthetic and weak etags via `is_synthetic_etag()` before sending If-Match.
 - **ETag normalization**: `normalize_etag_to_internal()` strips W/ prefix, trims surrounding DQUOTE from the opaque-tag, then re-attaches W/ if weak. All etag parse sites (PROPFIND XML, HTTP ETag headers) must use this instead of bare `trim_matches('"')` which mangles weak etags like `W/"123"` → `W/"123` (only trailing quote removed).
 - **Auth required on ALL /dav/ paths**: Unauthenticated requests to any /dav/ path produce "Missing Authorization header" auth failure logs. Even health checks must include Basic auth (dummy credentials are fine).
-- **CalDAV REPORT calendar-data parsing**: Stalwart may return `<C:calendar-data>` content using CDATA sections (`<![CDATA[...]]>`) or as multi-line XML text. The XML parser must: (1) set `trim_text(false)` to preserve ICS whitespace, (2) accumulate both `Event::Text` and `Event::CData` events inside a `in_caldata` flag, (3) flush the accumulated buffer on `Event::End(calendar-data)`. Single `Event::Text` reads miss CDATA content and multi-line ICS data, causing all events to fail `parse_ics_event()`. This pattern applies to ALL three calendar-data parse sites: `sync.rs` EAS Sync, `ews.rs` GetUserAvailability, and `ews.rs` load_current_calendar_items.
+- **CalDAV REPORT calendar-data parsing**: Stalwart may return `<C:calendar-data>` content using CDATA sections (`<![CDATA[...]]>`) or as multi-line XML text. The XML parser must: (1) set `trim_text(false)` to preserve ICS whitespace, (2) accumulate both `Event::Text` and `Event::CData` events inside a `in_caldata` flag, (3) flush the accumulated buffer on `Event::End(calendar-data)`. Single `Event::Text` reads miss CDATA content and multi-line ICS data, causing all events to fail `parse_ics_event()`. This pattern applies to ALL calendar-data parse sites: `sync.rs` EAS Sync, `ews.rs` GetUserAvailability, `ews.rs` load_current_calendar_items, `eas.rs` merged_freebusy_for_mailbox, `eas.rs` load_calendar_events.
 
 ## SQLite Configuration
 - **WAL mode**: `PRAGMA journal_mode = WAL` in `sqlite_schema.sql` — persistent across connections, set on first init. Enables concurrent reads while a write is in progress (critical for Sync operations that read during multi-step CalDAV fetches).
@@ -40,6 +40,8 @@
 - **Auth verification priority**: JMAP first, CalDAV fallback. `AuthVerifier::verify()` tries JMAP session fetch first (when `GATEWAY_JMAP_BASE` is set), then falls back to CalDAV PROPFIND. This unifies auth for email + calendar via a single HTTP endpoint.
 - **Health check priority**: JMAP first, CalDAV fallback. `health_check()` tries JMAP `/session` endpoint first (when `GATEWAY_JMAP_BASE` is set), then falls back to CalDAV OPTIONS. If JMAP fails but CalDAV succeeds, returns "degraded" mode.
 - **JMAP Calendar operation map**: `Calendar/get` → find calendars, `CalendarEvent/query + /get` → query events, `CalendarEvent/get (iCalendar)` → get event ICS, `CalendarEvent/set (iCalendar)` → create/update event, `CalendarEvent/set (destroy)` → delete event, `Principal/getAvailability` → free-busy
+- **JMAP Calendar freebusy dispatch**: EWS `merged_freebusy_for_mailbox()` and EAS `merged_freebusy_for_mailbox()` try JMAP Calendar first via `fetch_freebusy_jmap()` / `fetch_freebusy_jmap_eas()`. If JMAP Calendar is unavailable or the query fails, falls back to CalDAV. This pattern (JMAP-primary, CalDAV-fallback) should be applied to all remaining calendar handlers in a future refactoring.
+- **JMAP session caching**: `JmapClient::get_session()` caches sessions per-username in a `DashMap` with a 5-minute TTL (`SESSION_CACHE_TTL`). Every JMAP method previously made an HTTP GET to `/session` before each API call. The cache eliminates redundant round-trips within the TTL window, critical for sync operations that call multiple JMAP methods sequentially.
 - **put_event etag flow (CalDAV fallback)**: get_event → (ics, Option<etag>) → if None, PROPFIND etag fallback → if still None, pass None (not synthetic) → put_event with 3-tier 412 retry
 - **Synthetic etag prefix**: All synthetic etags use `CaldavClient::SYNTHETIC_ETAG_PREFIX` ("sgw-"). Filter: `is_synthetic_etag()` checks for "sgw-" prefix or "W/" (weak etag). Never use `e.len() < 64` — legitimate server etags can be 64+ chars. Both synthetic AND weak etags are filtered from If-Match headers per RFC 7232 §3.1 (strong comparison required).
 - **CaldavClient reuse**: Create CaldavClient outside loops. CaldavClient::new allocates a reqwest::Client (connection pool) — creating it per iteration causes socket exhaustion.
@@ -105,11 +107,12 @@
 - The gateway now supports sending and receiving email alongside calendar functionality
 - Email reading/sync uses **JMAP** (RFC 8621) via Stalwart's JMAP API
 - Email sending prefers **JMAP EmailSubmission** (RFC 8621 §2.7) via Stalwart, with **SMTP** as fallback
-- Calendar continues to use **CalDAV** as before
+- Calendar free-busy uses **JMAP Calendar** (draft-ietf-jmap-calendars-26) as primary path, with **CalDAV** as fallback
+- Calendar CRUD (GetItem, SyncFolderItems, CreateItem, UpdateItem, DeleteItem) still uses **CalDAV** directly — JMAP Calendar API parity exists but handlers not yet wired
 - When JMAP submission is available, Stalwart ports 465 (SMTPS) and 993 (IMAPS) are optional
 
 ### Key Files
-- `src/jmap.rs` — JMAP client (session discovery, Email/query, Email/get, Email/set, Email/changes, Mailbox/query, EmailSubmission/set)
+- `src/jmap.rs` — JMAP client (session discovery, Email/query, Email/get, Email/set, Email/changes, Mailbox/query, EmailSubmission/set, Calendar/get, CalendarEvent/query+get+set+destroy, session caching)
 - `src/smtp.rs` — SMTP client (lettre with tokio1-rustls-tls, implicit TLS on port 465, STARTTLS on port 587)
 - `src/email.rs` — Email domain logic (EWS Message parsing, JMAP→EWS/EAS rendering, JMAP/SMTP sending, EAS SendMail parsing)
 
@@ -147,8 +150,8 @@
 
 ### SMTP Client Details (fallback when JMAP submission unavailable)
 - Uses `lettre` 0.11.22 with `tokio1-rustls-tls`
-- Port 465: Implicit TLS (`AsyncSmtpTransport::relay()`)
-- Port 587: STARTTLS (`AsyncSmtpTransport::starttls_relay()`)
+- Port 465: Implicit TLS (`AsyncSmtpTransport::relay()`) — **default and preferred** for Stalwart
+- Port 587: STARTTLS (`AsyncSmtpTransport::starttls_relay()`) — available if needed
 - Credentials: Same username/password as CalDAV/JMAP auth
 - MIME construction: MultiPart (text + HTML) or single-part (text only)
 - **Message-ID extraction**: Before `transport.send()` takes ownership of the `Message`, the lettre-generated `Message-ID` header is extracted via `message.headers().get::<MessageId>()`. This returns the actual RFC 5322 Message-ID (e.g. `<1717012345.abc@host>`), enabling correlation with the copy in the Sent Items folder. Falls back to a synthetic timestamp-UUID ID only if lettre didn't generate one.
@@ -198,3 +201,39 @@
 ### EWS Email — Pagination and Entity Unescaping
 - **FindItem total_items**: Uses `result.total` from JMAP `calculateTotal:true` (total matching items across all pages), not `emails.len()` (items in the current page). Previously, `total_items = emails.len()` made `includes_last` always true, preventing the client from paginating beyond the first page.
 - **XML entity unescaping in parse_ews_message**: All text extracted from EWS XML (Subject, Body, EmailAddress) is passed through `unescape_xml_text()` which uses `quick_xml::escape::unescape()` to resolve `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, and numeric character references. On unescape failure (malformed entity), returns the original text unchanged rather than dropping the email. Previously, raw XML entities were passed through to the email content, resulting in subjects like `Q&amp;A` instead of `Q&A`.
+
+## JMAP Calendar — Verification against CalDAV (May 2026)
+
+### Capability Verification (Stalwart v0.16.6)
+- **JMAP Calendar capability**: `urn:ietf:params:jmap:calendars` in session → `JmapClient::supports_calendar()` checks for this
+- **Calendar/get**: Returns calendar list (id, name, color, timeZone) — replaces CalDAV PROPFIND calendar discovery
+- **CalendarEvent/query + CalendarEvent/get**: Time-range filtered query + full event data — replaces CalDAV REPORT calendar-query
+- **CalendarEvent/get with iCalendar property**: Returns raw ICS data — critical for EWS/EAS which need iCalendar format
+- **CalendarEvent/set with iCalendar property**: Creates/updates events from raw ICS — replaces CalDAV PUT with If-Match
+- **CalendarEvent/set (destroy)**: Deletes events by ID — replaces CalDAV DELETE with If-Match
+- **JMAP Calendar API parity**: ALL CalDAV operations the gateway uses have JMAP equivalents. JMAP CAN replace CalDAV.
+
+### Current JMAP Calendar Integration Status
+- ✅ **Free-busy (EWS GetUserAvailability)**: JMAP-primary via `fetch_freebusy_jmap()`, CalDAV fallback
+- ✅ **Free-busy (EAS ResolveRecipients)**: JMAP-primary via `fetch_freebusy_jmap_eas()`, CalDAV fallback
+- ✅ **Auth verification**: JMAP session fetch first, CalDAV fallback
+- ✅ **Health check**: JMAP /session first, CalDAV OPTIONS fallback
+- ✅ **Session caching**: DashMap-backed, 5-minute TTL, eliminates redundant HTTP GETs
+- ⏳ **EWS GetItem (calendar)**: Still uses CaldavClient — JMAP CalendarEvent/get ready but not wired
+- ⏳ **EWS SyncFolderItems (calendar)**: Still uses CaldavClient — JMAP CalendarEvent/changes ready but not wired
+- ⏳ **EWS CreateItem (calendar)**: Still uses CaldavClient — JMAP CalendarEvent/set ready but not wired
+- ⏳ **EWS UpdateItem (calendar)**: Still uses CaldavClient — JMAP CalendarEvent/set ready but not wired
+- ⏳ **EWS DeleteItem (calendar)**: Still uses CaldavClient — JMAP CalendarEvent/set (destroy) ready but not wired
+- ⏳ **EAS Sync (Calendar class)**: Still uses CaldavClient — needs JMAP CalendarEvent/query + /get
+
+### JMAP Calendar Benefits over CalDAV
+- **No ETag complexity**: JMAP uses state-based change tracking. No If-Match, no 412 Precondition Failed, no synthetic etags, no ETag normalization.
+- **Single HTTP endpoint**: All operations via one POST to the JMAP API URL. No PROPFIND/REPORT/GET/PUT/DELETE method diversity.
+- **Structured JSON responses**: No XML parsing, no CDATA accumulation, no trim_text(false) workarounds.
+- **Batched requests**: Multiple operations in a single HTTP call using RFC 8621 §3.6 back-references.
+- **Session caching**: Reduces HTTP round-trips from 2 (GET session + POST API) to 1 (POST API) per method call within TTL.
+
+### Outlook Client Compatibility (May 2026)
+- **New Outlook for Windows (20251205004.10)**: Connects directly to on-prem EWS. Gateway provides EWS ↔ JMAP/CalDAV translation. Works with JMAP Calendar for free-busy. Calendar CRUD still via CalDAV.
+- **Outlook Android (5.2618.2)**: Cloud-backed via AutoDetect. Without M365 tenant, falls back to IMAP for email. Native Android Exchange account works for EAS calendar sync directly.
+- **Android native Exchange account**: Direct EAS client, no cloud middle tier. Gateway provides EAS ↔ JMAP/CalDAV translation. Works with JMAP Calendar for free-busy.
