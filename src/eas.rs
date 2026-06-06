@@ -2311,32 +2311,18 @@ async fn handle_email_sync(
                 let all_ids: Vec<String> = changes.created.iter().chain(changes.updated.iter()).cloned().collect();
                 
                 if !all_ids.is_empty() {
-                    // Use Email/get to fetch full email data for changed emails
-                    let emails_result = match jmap.query_emails(crate::jmap::QueryEmailsParams {
-                        account_id: &account_id,
-                        filter: None, // We'll filter by ID manually
-                        sort: None,
-                        position: 0,
-                        limit: all_ids.len() as u64,
-                        username,
-                        password,
-                    }).await {
-                        Ok(r) => r,
+                    // Use Email/get to fetch full email data for changed emails by ID
+                    let emails = match jmap.get_emails(&account_id, &all_ids, None, username, password).await {
+                        Ok(emails) => emails,
                         Err(e) => {
                             tracing::warn!(error = %e, "Failed to fetch changed emails from JMAP");
-                            crate::jmap::EmailListResult {
-                                emails: Vec::new(),
-                                total: 0,
-                                can_calculate_changes: false,
-                                query_state: String::new(),
-                                state: String::new(),
-                            }
+                            Vec::new()
                         }
                     };
                     
-                    // Filter emails to only those in our created/updated list
+                    // Filter emails to only those in our created/updated list (defensive)
                     let changed_ids: std::collections::HashSet<&str> = all_ids.iter().map(|s| s.as_str()).collect();
-                    for email in &emails_result.emails {
+                    for email in &emails {
                         if let Some(id) = email.id.as_deref()
                             && changed_ids.contains(id)
                         {
