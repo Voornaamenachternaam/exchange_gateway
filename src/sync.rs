@@ -1271,7 +1271,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut jmap_failed = false;
     
     if let Some(jmap) = &params.state.jmap_client {
-        let password_secret = SecretString::new(params.password.to_string().into());
+        let password_secret = SecretString::from(params.password.to_string());
         if jmap.supports_calendar(params.username, &password_secret).await {
             match jmap.get_calendar_account_id(params.username, &password_secret).await {
                 Ok(account_id) => {
