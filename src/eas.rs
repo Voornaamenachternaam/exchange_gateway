@@ -1963,7 +1963,8 @@ async fn load_calendar_events(
                 if e.name().local_name().as_ref() == b"response" {
                     let ics = caldata_buf.trim();
                     // Skip empty calendar-data (likely calendar collection root)
-                    if !href.is_empty() && !ics.is_empty()
+                    if !href.is_empty()
+                        && !ics.is_empty()
                         && let Some(item) = parse_ics_event(ics)
                     {
                         let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
@@ -2219,7 +2220,7 @@ async fn handle_email_sync(
     // For initial sync (sync_key="0"), fetch all emails and store JMAP state token
     if incoming_sync_key == "0" {
         let new_sync_key = Uuid::new_v4().simple().to_string();
-        
+
         // Fetch emails from JMAP for the requested mailbox
         let result = match crate::email::fetch_emails_jmap(
             state,
@@ -2229,7 +2230,9 @@ async fn handle_email_sync(
             EMAIL_SYNC_PAGE_SIZE,
             username,
             password,
-        ).await {
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
@@ -2247,7 +2250,12 @@ async fn handle_email_sync(
         if !result.state.is_empty() {
             if let Err(e) = state
                 .storage
-                .set_sync_key(username, state_collection_id, &new_sync_key, Some(&result.state))
+                .set_sync_key(
+                    username,
+                    state_collection_id,
+                    &new_sync_key,
+                    Some(&result.state),
+                )
                 .await
             {
                 tracing::warn!(error = %e, "Failed to set initial email sync key with JMAP state");
@@ -2288,19 +2296,30 @@ async fn handle_email_sync(
 
     // Subsequent syncs — use JMAP Email/changes for delta sync
     let new_sync_key = Uuid::new_v4().simple().to_string();
-    
+
     // Get the stored JMAP state token
-    let previous_state = state.storage.get_sync_key(username, state_collection_id).await?;
+    let previous_state = state
+        .storage
+        .get_sync_key(username, state_collection_id)
+        .await?;
     let jmap_state_token = previous_state.and_then(|(_, token)| token);
 
     if let Some(old_state) = jmap_state_token {
         // Use JMAP Email/changes for delta sync
-        match jmap.sync_email_changes(&account_id, &old_state, username, password).await {
+        match jmap
+            .sync_email_changes(&account_id, &old_state, username, password)
+            .await
+        {
             Ok(changes) => {
                 // Store the new JMAP state token
                 if let Err(e) = state
                     .storage
-                    .set_sync_key(username, state_collection_id, &new_sync_key, Some(&changes.new_state))
+                    .set_sync_key(
+                        username,
+                        state_collection_id,
+                        &new_sync_key,
+                        Some(&changes.new_state),
+                    )
                     .await
                 {
                     tracing::warn!(error = %e, "Failed to update email sync key with JMAP state");
@@ -2308,20 +2327,29 @@ async fn handle_email_sync(
 
                 // Fetch full email data for created/updated emails
                 let mut commands_xml = String::new();
-                let all_ids: Vec<String> = changes.created.iter().chain(changes.updated.iter()).cloned().collect();
-                
+                let all_ids: Vec<String> = changes
+                    .created
+                    .iter()
+                    .chain(changes.updated.iter())
+                    .cloned()
+                    .collect();
+
                 if !all_ids.is_empty() {
                     // Use Email/get to fetch full email data for changed emails by ID
-                    let emails = match jmap.get_emails(&account_id, &all_ids, None, username, password).await {
+                    let emails = match jmap
+                        .get_emails(&account_id, &all_ids, None, username, password)
+                        .await
+                    {
                         Ok(emails) => emails,
                         Err(e) => {
                             tracing::warn!(error = %e, "Failed to fetch changed emails from JMAP");
                             Vec::new()
                         }
                     };
-                    
+
                     // Filter emails to only those in our created/updated list (defensive)
-                    let changed_ids: std::collections::HashSet<&str> = all_ids.iter().map(|s| s.as_str()).collect();
+                    let changed_ids: std::collections::HashSet<&str> =
+                        all_ids.iter().map(|s| s.as_str()).collect();
                     for email in &emails {
                         if let Some(id) = email.id.as_deref()
                             && changed_ids.contains(id)
