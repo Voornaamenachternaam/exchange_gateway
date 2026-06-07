@@ -1328,8 +1328,10 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         jmap_failed = true;
     }
     
-    // Fallback to CalDAV if JMAP Calendar is not available or failed
-    if jmap_failed || events.is_empty() {
+    // Fallback to CalDAV only if JMAP Calendar failed (not if it returned zero events)
+    // Zero events is a valid JMAP result; falling back would cause unnecessary
+    // CalDAV requests and potential stale/duplicate data.
+    if jmap_failed {
         let caldav = CaldavClient::new(&params.state.cfg)?;
         let calendars = caldav
             .find_user_calendars(params.username, params.password)
