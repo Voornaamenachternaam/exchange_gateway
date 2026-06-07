@@ -1773,7 +1773,10 @@ async fn merged_freebusy_for_mailbox(
                     Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
                         in_cal_data = false;
                         let ics = caldata_buf.trim();
-                        if let Some(item) = parse_ics_event(ics) {
+                        // Skip empty calendar-data (likely calendar collection root)
+                        if !ics.is_empty()
+                            && let Some(item) = parse_ics_event(ics)
+                        {
                             let sd = match item.busy_status.unwrap_or(2) {
                                 0 => '0',
                                 1 => '1',
@@ -1959,11 +1962,18 @@ async fn load_calendar_events(
                 }
                 if e.name().local_name().as_ref() == b"response" {
                     let ics = caldata_buf.trim();
+                    // Skip empty calendar-data (likely calendar collection root)
                     if !href.is_empty()
+                        && !ics.is_empty()
                         && let Some(item) = parse_ics_event(ics)
                     {
                         let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
                         out.push((server_id, href.clone(), item));
+                    } else if !href.is_empty() && ics.is_empty() {
+                        tracing::debug!(
+                            "load_calendar_events: skipping href {} (no calendar-data element - likely calendar collection root)",
+                            href
+                        );
                     }
                     href.clear();
                     caldata_buf.clear();
@@ -2170,50 +2180,98 @@ async fn handle_email_sync(
         }
     };
 
-    // For initial sync (sync_key="0"), return folder structure
+    let jmap = match &state.jmap_client {
+        Some(j) => j,
+        None => {
+            // JMAP not configured — return empty sync
+            let new_sync_key = Uuid::new_v4().simple().to_string();
+            if let Err(e) = state
+                .storage
+                .set_sync_key(username, state_collection_id, &new_sync_key, None)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to set email sync key");
+            }
+            let resp_xml = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                new_sync_key, state_collection_id
+            );
+            return Ok(xml_or_wbxml_response(
+                wbxml, as_wbxml, &resp_xml, request_id,
+            ));
+        }
+    };
+
+    let account_id = match jmap.get_account_id(username, password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync");
+            let new_sync_key = Uuid::new_v4().simple().to_string();
+            let resp_xml = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                new_sync_key, state_collection_id
+            );
+            return Ok(xml_or_wbxml_response(
+                wbxml, as_wbxml, &resp_xml, request_id,
+            ));
+        }
+    };
+
+    // For initial sync (sync_key="0"), fetch all emails and store JMAP state token
     if incoming_sync_key == "0" {
         let new_sync_key = Uuid::new_v4().simple().to_string();
-        if let Err(e) = state
-            .storage
-            .set_sync_key(username, state_collection_id, &new_sync_key, None)
-            .await
-        {
-            tracing::warn!(error = %e, "Failed to set initial email sync key");
-        }
 
         // Fetch emails from JMAP for the requested mailbox
-        let emails = if let Some(jmap) = &state.jmap_client {
-            match jmap.get_account_id(username, password).await {
-                Ok(account_id) => {
-                    match crate::email::fetch_emails_jmap(
-                        state,
-                        &account_id,
-                        mailbox_role,
-                        0,
-                        EMAIL_SYNC_PAGE_SIZE,
-                        username,
-                        password,
-                    )
-                    .await
-                    {
-                        Ok(result) => result.emails,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
-                            Vec::new()
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync");
-                    Vec::new()
-                }
+        let result = match crate::email::fetch_emails_jmap(
+            state,
+            &account_id,
+            mailbox_role,
+            0,
+            EMAIL_SYNC_PAGE_SIZE,
+            username,
+            password,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
+                let resp_xml = format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                    new_sync_key, state_collection_id
+                );
+                return Ok(xml_or_wbxml_response(
+                    wbxml, as_wbxml, &resp_xml, request_id,
+                ));
             }
-        } else {
-            Vec::new()
         };
 
+        // Store the JMAP state token for delta sync
+        if !result.state.is_empty() {
+            if let Err(e) = state
+                .storage
+                .set_sync_key(
+                    username,
+                    state_collection_id,
+                    &new_sync_key,
+                    Some(&result.state),
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to set initial email sync key with JMAP state");
+            }
+        } else {
+            if let Err(e) = state
+                .storage
+                .set_sync_key(username, state_collection_id, &new_sync_key, None)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to set initial email sync key");
+            }
+        }
+
         let mut commands_xml = String::new();
-        for email in &emails {
+        for email in &result.emails {
             let jmap_id = email.id.as_deref().unwrap_or("unknown");
             let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
             let app_data = crate::email::render_jmap_email_as_eas_application_data(
@@ -2236,8 +2294,112 @@ async fn handle_email_sync(
         ));
     }
 
-    // Subsequent syncs — check for changes
+    // Subsequent syncs — use JMAP Email/changes for delta sync
     let new_sync_key = Uuid::new_v4().simple().to_string();
+
+    // Get the stored JMAP state token
+    let previous_state = state
+        .storage
+        .get_sync_key(username, state_collection_id)
+        .await?;
+    let jmap_state_token = previous_state.and_then(|(_, token)| token);
+
+    if let Some(old_state) = jmap_state_token {
+        // Use JMAP Email/changes for delta sync
+        match jmap
+            .sync_email_changes(&account_id, &old_state, username, password)
+            .await
+        {
+            Ok(changes) => {
+                // Store the new JMAP state token
+                if let Err(e) = state
+                    .storage
+                    .set_sync_key(
+                        username,
+                        state_collection_id,
+                        &new_sync_key,
+                        Some(&changes.new_state),
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to update email sync key with JMAP state");
+                }
+
+                // Fetch full email data for created/updated emails
+                let mut commands_xml = String::new();
+                let all_ids: Vec<String> = changes
+                    .created
+                    .iter()
+                    .chain(changes.updated.iter())
+                    .cloned()
+                    .collect();
+
+                if !all_ids.is_empty() {
+                    // Use Email/get to fetch full email data for changed emails by ID
+                    let emails = match jmap
+                        .get_emails(&account_id, &all_ids, None, username, password)
+                        .await
+                    {
+                        Ok(emails) => emails,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to fetch changed emails from JMAP");
+                            Vec::new()
+                        }
+                    };
+
+                    // Filter emails to only those in our created/updated list (defensive)
+                    let changed_ids: std::collections::HashSet<&str> =
+                        all_ids.iter().map(|s| s.as_str()).collect();
+                    for email in &emails {
+                        if let Some(id) = email.id.as_deref()
+                            && changed_ids.contains(id)
+                        {
+                            let server_id = crate::email::email_server_id_from_jmap_id(id);
+                            let app_data = crate::email::render_jmap_email_as_eas_application_data(
+                                email,
+                                &server_id,
+                                state_collection_id,
+                            );
+                            if changes.created.iter().any(|c| c == id) {
+                                commands_xml.push_str(&format!(
+                                    "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                                    server_id, app_data,
+                                ));
+                            } else {
+                                commands_xml.push_str(&format!(
+                                    "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
+                                    server_id, app_data,
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                // Add Delete commands for destroyed emails
+                for destroyed_id in &changes.destroyed {
+                    let server_id = crate::email::email_server_id_from_jmap_id(destroyed_id);
+                    commands_xml.push_str(&format!(
+                        "<Delete><ServerId>{}</ServerId></Delete>",
+                        server_id,
+                    ));
+                }
+
+                let resp_xml = format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
+                    new_sync_key, state_collection_id, commands_xml
+                );
+                return Ok(xml_or_wbxml_response(
+                    wbxml, as_wbxml, &resp_xml, request_id,
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "JMAP Email/changes failed, falling back to full sync");
+                // Fall through to full sync fallback
+            }
+        }
+    }
+
+    // Fallback: return empty changes (client will do full sync on next attempt)
     if let Err(e) = state
         .storage
         .set_sync_key(username, state_collection_id, &new_sync_key, None)

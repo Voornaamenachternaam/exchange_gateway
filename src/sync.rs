@@ -4,14 +4,16 @@ use crate::calendar::{
     Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_datetime,
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
+use crate::jmap::QueryCalendarEventsParams;
 use crate::models::AppState;
-use crate::util::{normalize_email, truncate_string, xml_escape};
+use crate::util::{normalize_email, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
+use secrecy::SecretString;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1253,100 +1255,196 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
-    let caldav = CaldavClient::new(&params.state.cfg)?;
-    let calendars = caldav
-        .find_user_calendars(params.username, params.password)
-        .await?;
-    let collection_href = calendars
-        .first()
-        .ok_or_else(|| anyhow!("no calendars found"))?
-        .clone();
-    let start = params
-        .opts
-        .filter_start
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string();
-    let end = (Utc::now() + Duration::weeks(104))
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string();
-    let events_xml = caldav
-        .query_events(
-            &collection_href,
-            &start,
-            &end,
-            params.username,
-            params.password,
-        )
-        .await?;
 
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
-
+    // EventItem struct used by both JMAP and CalDAV paths
     #[derive(Clone)]
     struct EventItem {
         href: String,
         etag: String,
         ics: String,
+        item: CalendarItem,
     }
 
-    let mut reader = Reader::from_str(&events_xml);
-    reader.config_mut().trim_text(false);
+    // Try JMAP Calendar first (urn:ietf:params:jmap:calendars).
+    // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     let mut events = Vec::new();
-    let mut current = EventItem {
-        href: String::new(),
-        etag: String::new(),
-        ics: String::new(),
-    };
-    let mut buf = Vec::new();
-    let mut in_caldata = false;
-    let mut caldata_buf = String::new();
+    let mut jmap_failed = false;
 
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
-                b"href" => {
-                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                        current.href = e.decode().unwrap_or_default().trim().to_string();
+    if let Some(jmap) = &params.state.jmap_client {
+        let password_secret = SecretString::from(params.password.to_string());
+        if jmap
+            .supports_calendar(params.username, &password_secret)
+            .await
+        {
+            match jmap
+                .get_calendar_account_id(params.username, &password_secret)
+                .await
+            {
+                Ok(account_id) => {
+                    let start = params
+                        .opts
+                        .filter_start
+                        .format("%Y%m%dT%H%M%SZ")
+                        .to_string();
+                    let end = (Utc::now() + Duration::weeks(104))
+                        .format("%Y%m%dT%H%M%SZ")
+                        .to_string();
+
+                    match jmap
+                        .query_calendar_events(QueryCalendarEventsParams {
+                            account_id: &account_id,
+                            calendar_id: None,
+                            start: &start,
+                            end: &end,
+                            limit: 1000,
+                            username: params.username,
+                            password: &password_secret,
+                        })
+                        .await
+                    {
+                        Ok(result) => {
+                            // Convert JMAP events to internal format
+                            for event in &result.events {
+                                if let Some(ref ics) = event.i_calendar
+                                    && let Some(item) = parse_ics_event(ics)
+                                {
+                                    let href = format!(
+                                        "jmap://calendar/{}/{}",
+                                        account_id,
+                                        event.id.as_deref().unwrap_or("")
+                                    );
+                                    let etag = event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
+                                    events.push(EventItem {
+                                        href,
+                                        etag,
+                                        ics: ics.clone(),
+                                        item,
+                                    });
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(target: "sync", error = %e, "JMAP Calendar query failed, falling back to CalDAV");
+                            jmap_failed = true;
+                        }
                     }
                 }
-                b"getetag" => {
-                    if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                        current.etag = e.decode().unwrap_or_default().trim().to_string();
-                    }
+                Err(e) => {
+                    tracing::debug!(target: "sync", error = %e, "JMAP Calendar account ID lookup failed, falling back to CalDAV");
+                    jmap_failed = true;
                 }
-                b"calendar-data" => {
-                    in_caldata = true;
-                    caldata_buf.clear();
-                }
-                _ => {}
-            },
-            Ok(Event::Text(ref e)) if in_caldata => {
-                caldata_buf.push_str(&e.decode().unwrap_or_default());
             }
-            Ok(Event::CData(ref e)) if in_caldata => {
-                caldata_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-            }
-            Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
-                b"calendar-data" if in_caldata => {
-                    in_caldata = false;
-                    current.ics = caldata_buf.trim().to_string();
-                }
-                b"response" => {
-                    if !current.href.is_empty() {
-                        events.push(current.clone());
-                    }
-                    current = EventItem {
-                        href: String::new(),
-                        etag: String::new(),
-                        ics: String::new(),
-                    };
-                }
-                _ => {}
-            },
-            Ok(Event::Eof) => break,
-            _ => {}
+        } else {
+            jmap_failed = true;
         }
-        buf.clear();
+    } else {
+        jmap_failed = true;
+    }
+
+    // Fallback to CalDAV only if JMAP Calendar failed (not if it returned zero events)
+    // Zero events is a valid JMAP result; falling back would cause unnecessary
+    // CalDAV requests and potential stale/duplicate data.
+    if jmap_failed {
+        let caldav = CaldavClient::new(&params.state.cfg)?;
+        let calendars = caldav
+            .find_user_calendars(params.username, params.password)
+            .await?;
+        let collection_href = calendars
+            .first()
+            .ok_or_else(|| anyhow!("no calendars found"))?
+            .clone();
+        let start = params
+            .opts
+            .filter_start
+            .format("%Y%m%dT%H%M%SZ")
+            .to_string();
+        let end = (Utc::now() + Duration::weeks(104))
+            .format("%Y%m%dT%H%M%SZ")
+            .to_string();
+        let events_xml = caldav
+            .query_events(
+                &collection_href,
+                &start,
+                &end,
+                params.username,
+                params.password,
+            )
+            .await?;
+
+        use quick_xml::Reader;
+        use quick_xml::events::Event;
+
+        let mut reader = Reader::from_str(&events_xml);
+        reader.config_mut().trim_text(false);
+        let mut current = EventItem {
+            href: String::new(),
+            etag: String::new(),
+            ics: String::new(),
+            item: CalendarItem::default(),
+        };
+        let mut buf = Vec::new();
+        let mut in_caldata = false;
+        let mut caldata_buf = String::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
+                    b"href" => {
+                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+                            current.href = e.decode().unwrap_or_default().trim().to_string();
+                        }
+                    }
+                    b"getetag" => {
+                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
+                            current.etag = e.decode().unwrap_or_default().trim().to_string();
+                        }
+                    }
+                    b"calendar-data" => {
+                        in_caldata = true;
+                        caldata_buf.clear();
+                    }
+                    _ => {}
+                },
+                Ok(Event::Text(ref e)) if in_caldata => {
+                    caldata_buf.push_str(&e.decode().unwrap_or_default());
+                }
+                Ok(Event::CData(ref e)) if in_caldata => {
+                    caldata_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                }
+                Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
+                    b"calendar-data" if in_caldata => {
+                        in_caldata = false;
+                        current.ics = caldata_buf.trim().to_string();
+                    }
+                    b"response" => {
+                        // Skip the calendar collection itself (which has no calendar-data)
+                        // Only process individual events that have ICS data
+                        if !current.href.is_empty()
+                            && !current.ics.is_empty()
+                            && let Some(item) = parse_ics_event(&current.ics)
+                        {
+                            current.item = item;
+                            events.push(current.clone());
+                        } else if !current.href.is_empty() && current.ics.is_empty() {
+                            tracing::debug!(
+                                "sync: skipping href {} (no calendar-data element - likely calendar collection root)",
+                                current.href
+                            );
+                        }
+                        current = EventItem {
+                            href: String::new(),
+                            etag: String::new(),
+                            ics: String::new(),
+                            item: CalendarItem::default(),
+                        };
+                    }
+                    _ => {}
+                },
+                Ok(Event::Eof) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
     }
 
     let existing_map = storage
@@ -1376,22 +1474,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         let server_id = generate_server_id(params.state.cfg.hmac_secret(), &ev.href);
         seen_ids.insert(server_id.clone());
         let etag = ev.etag.trim_matches('"').to_string();
-        if ev.ics.is_empty() {
-            tracing::warn!(
-                "sync: empty ICS data for href {} (calendar-data element missing or not parsed)",
-                ev.href
-            );
-            continue;
-        }
-        let Some(item) = parse_ics_event(&ev.ics) else {
-            let preview = truncate_string(&ev.ics, 200);
-            tracing::warn!(
-                "sync: failed to parse ICS event for href: {} ics_preview={}",
-                ev.href,
-                preview
-            );
-            continue;
-        };
+        // Use pre-parsed item from EventItem (set by both JMAP and CalDAV paths)
+        let item = &ev.item;
         let existing = existing_map.get(&server_id);
         let is_add = existing.is_none();
         let changed = existing
@@ -1405,7 +1489,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             resource_href: ev.href.clone(),
             uid: item.uid.clone(),
             etag,
-            item,
+            item: item.clone(),
             is_add,
         });
     }
@@ -1442,7 +1526,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         storage
             .upsert_item_map(
                 params.owner,
-                &collection_href,
+                &pi.resource_href,
                 &pi.resource_href,
                 &pi.server_id,
                 &pi.uid,

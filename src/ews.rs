@@ -1290,7 +1290,10 @@ async fn merged_freebusy_for_mailbox(
                 Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
                     in_calendar_data = false;
                     let ics = caldata_buf.trim();
-                    if let Some(item) = parse_ics_event(ics) {
+                    // Skip empty calendar-data (likely calendar collection root)
+                    if !ics.is_empty()
+                        && let Some(item) = parse_ics_event(ics)
+                    {
                         let sd = match item.busy_status.unwrap_or(2) {
                             0 => '0',
                             1 => '1',
