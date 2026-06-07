@@ -1255,7 +1255,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
-    
+
     // EventItem struct used by both JMAP and CalDAV paths
     #[derive(Clone)]
     struct EventItem {
@@ -1264,16 +1264,22 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         ics: String,
         item: CalendarItem,
     }
-    
+
     // Try JMAP Calendar first (urn:ietf:params:jmap:calendars).
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     let mut events = Vec::new();
     let mut jmap_failed = false;
-    
+
     if let Some(jmap) = &params.state.jmap_client {
         let password_secret = SecretString::from(params.password.to_string());
-        if jmap.supports_calendar(params.username, &password_secret).await {
-            match jmap.get_calendar_account_id(params.username, &password_secret).await {
+        if jmap
+            .supports_calendar(params.username, &password_secret)
+            .await
+        {
+            match jmap
+                .get_calendar_account_id(params.username, &password_secret)
+                .await
+            {
                 Ok(account_id) => {
                     let start = params
                         .opts
@@ -1283,23 +1289,30 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     let end = (Utc::now() + Duration::weeks(104))
                         .format("%Y%m%dT%H%M%SZ")
                         .to_string();
-                    
-                    match jmap.query_calendar_events(QueryCalendarEventsParams {
-                        account_id: &account_id,
-                        calendar_id: None,
-                        start: &start,
-                        end: &end,
-                        limit: 1000,
-                        username: params.username,
-                        password: &password_secret,
-                    }).await {
+
+                    match jmap
+                        .query_calendar_events(QueryCalendarEventsParams {
+                            account_id: &account_id,
+                            calendar_id: None,
+                            start: &start,
+                            end: &end,
+                            limit: 1000,
+                            username: params.username,
+                            password: &password_secret,
+                        })
+                        .await
+                    {
                         Ok(result) => {
                             // Convert JMAP events to internal format
                             for event in &result.events {
                                 if let Some(ref ics) = event.i_calendar
                                     && let Some(item) = parse_ics_event(ics)
                                 {
-                                    let href = format!("jmap://calendar/{}/{}", account_id, event.id.as_deref().unwrap_or(""));
+                                    let href = format!(
+                                        "jmap://calendar/{}/{}",
+                                        account_id,
+                                        event.id.as_deref().unwrap_or("")
+                                    );
                                     let etag = event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
                                     events.push(EventItem {
                                         href,
@@ -1327,7 +1340,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     } else {
         jmap_failed = true;
     }
-    
+
     // Fallback to CalDAV only if JMAP Calendar failed (not if it returned zero events)
     // Zero events is a valid JMAP result; falling back would cause unnecessary
     // CalDAV requests and potential stale/duplicate data.
@@ -1406,7 +1419,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     b"response" => {
                         // Skip the calendar collection itself (which has no calendar-data)
                         // Only process individual events that have ICS data
-                        if !current.href.is_empty() && !current.ics.is_empty()
+                        if !current.href.is_empty()
+                            && !current.ics.is_empty()
                             && let Some(item) = parse_ics_event(&current.ics)
                         {
                             current.item = item;
