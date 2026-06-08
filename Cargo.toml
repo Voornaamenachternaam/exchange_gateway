@@ -13,12 +13,12 @@ axum-extra = { version = "^0.12.6", features = ["typed-header"] }
 quick-xml = { version = "^0.39.4", features = ["serialize", "async-tokio", "encoding"] }
 nom = "^8.0.0"
 serde = { version = "^1.0.228", features = ["derive", "rc", "std"] }
-serde_json = "^1.0.149"
+serde_json = "^1.0.150"
 toml = "^1.1.2"
 anyhow = "^1.0.102"
 thiserror = "^2.0.18"
-uuid = { version = "^1.23.1", features = ["v4", "v7", "serde"] }
-chrono = { version = "^0.4.44", features = ["serde", "clock", "std"] }
+uuid = { version = "^1.23.2", features = ["v4", "v7", "serde"] }
+chrono = { version = "^0.4.45", features = ["serde", "clock", "std"] }
 chrono-tz = "^0.10.4"
 rrule = "^0.14.0"
 hmac = "^0.13.0"
@@ -36,7 +36,7 @@ tower-http = { version = "^0.6.11", features = ["trace", "cors", "limit", "timeo
 parking_lot = { version = "^0.12.5", features = ["send_guard"] }
 futures-util = "^0.3.32"
 futures-core = "^0.3.32"
-compact_str = { version = "^0.9.0", features = ["serde", "bytes"] }
+compact_str = { version = "^0.9.1", features = ["serde", "bytes"] }
 headers = "^0.4.1"
 flate2 = "^1.1.9"
 tokio-util = { version = "^0.7.18", features = ["codec", "io", "compat", "rt"] }
@@ -50,20 +50,20 @@ mime = "^0.3.17"
 lru = "^0.18.0"
 moka = { version = "^0.12.15", features = ["sync"] }
 arc-swap = "^1.9.1"
-memchr = "^2.8.0"
+memchr = "^2.8.1"
 itoa = "^1.0.18"
 ryu = "^1.0.23"
 windows-timezones = { version = "^0.5.1", features = ["strum", "chrono-tz"] }
 strum = { version = "~0.27.2", features = ["derive"] }
 dashmap = "^6.2.1"
 smallvec = { version = "^1.15.1", features = ["serde", "write"] }
-http = "^1.4.0"
+http = "^1.4.1"
 smartstring = "^1.0.1"
-const-hex = "^1.19.0"
-bitflags = "^2.11.1"
+const-hex = "^1.19.1"
+bitflags = "^2.13.0"
 unicode-normalization = "^0.1.25"
 phf = { version = "^0.13.1", features = ["macros"] }
-icalendar = { version = "^0.17.10", features = ["parser", "chrono-tz"] }
+icalendar = { version = "^0.17.11", features = ["parser", "chrono-tz"] }
 email_address = "^0.2.9"
 iso8601-duration = "^0.2.0"
 roxmltree = "^0.21.1"
@@ -71,8 +71,8 @@ itertools = "^0.14.0"
 derive_more = { version = "^2.1", features = ["full"] }
 bstr = "^1.12.1"
 sqlx = { version = "^0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
-lettre = { version = "^0.11.16", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
-rustls-pki-types = "^1.12.0"
+lettre = { version = "^0.11.22", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
+rustls-pki-types = "^1.14.1"
 
 [dev-dependencies]
 proptest = "^1.11.0"
