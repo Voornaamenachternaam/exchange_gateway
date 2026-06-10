@@ -521,23 +521,22 @@ impl JmapClient {
             .json()
             .await
             .map_err(|e| anyhow!("Failed to parse JMAP session: {}", e))?;
-    // Override the API URL with the configured base URL.
-    // Stalwart's session returns the external apiUrl (e.g.
-    // https://stalwart.example.com/jmap/) but the gateway should use its
-    // configured internal base_url (e.g. http://stalwart:8080/jmap) for
-    // API calls. This ensures traffic stays within the Docker network and
-    // avoids errors when the external URL routes through a reverse proxy
-    // that may modify or reject JMAP POST requests.
-    if session.api_url != self.base_url {
-        debug!(
-            target: "jmap",
-            session_api_url = %session.api_url,
-            configured_base_url = %self.base_url,
-            "Overriding session apiUrl with configured base_url for internal routing"
-        );
-        session.api_url = self.base_url.clone();
-    }
-
+        // Override the API URL with the configured base URL.
+        // Stalwart's session returns the external apiUrl (e.g.
+        // https://stalwart.example.com/jmap/) but the gateway should use its
+        // configured internal base_url (e.g. http://stalwart:8080/jmap) for
+        // API calls. This ensures traffic stays within the Docker network and
+        // avoids errors when the external URL routes through a reverse proxy
+        // that may modify or reject JMAP POST requests.
+        if session.api_url != self.base_url {
+            debug!(
+                target: "jmap",
+                session_api_url = %session.api_url,
+                configured_base_url = %self.base_url,
+                "Overriding session apiUrl with configured base_url for internal routing"
+            );
+            session.api_url = self.base_url.clone();
+        }
 
         // Cache the session with expiry
         let expires = Instant::now() + SESSION_CACHE_TTL;
@@ -2023,7 +2022,10 @@ mod tests {
             id: "e0".to_string(),
         };
         let json = serde_json::to_value(&call).unwrap();
-        assert!(json.is_array(), "JmapMethodCall must serialize as array, got: {json}");
+        assert!(
+            json.is_array(),
+            "JmapMethodCall must serialize as array, got: {json}"
+        );
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 3, "JmapMethodCall array must have 3 elements");
         assert_eq!(arr[0], "Email/query");
@@ -2056,8 +2058,16 @@ mod tests {
         let calls = method_calls.as_array().unwrap();
         assert_eq!(calls.len(), 2);
         // Each call must be a 3-element array, not an object
-        assert!(calls[0].is_array(), "First methodCall must be array, got: {}", calls[0]);
-        assert!(calls[1].is_array(), "Second methodCall must be array, got: {}", calls[1]);
+        assert!(
+            calls[0].is_array(),
+            "First methodCall must be array, got: {}",
+            calls[0]
+        );
+        assert!(
+            calls[1].is_array(),
+            "Second methodCall must be array, got: {}",
+            calls[1]
+        );
         assert_eq!(calls[0][0], "Email/query");
         assert_eq!(calls[0][2], "e0");
         assert_eq!(calls[1][0], "Email/get");
