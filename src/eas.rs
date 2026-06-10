@@ -2147,6 +2147,7 @@ async fn handle_email_sync(
     state: &Arc<AppState>,
     username: &str,
     password: &SecretString,
+    collection_id: &str,
     state_collection_id: &str,
     incoming_sync_key: &str,
     wbxml: &Wbxml,
@@ -2157,7 +2158,9 @@ async fn handle_email_sync(
     // Previously hardcoded "inbox" and "2", meaning syncing any other folder
     // (Sent Items, Drafts, etc.) would incorrectly fetch Inbox emails and
     // return them under CollectionId "2", violating the ActiveSync protocol.
-    let mailbox_role = match crate::email::eas_collection_id_to_mailbox_role(state_collection_id) {
+    // Use the raw collection_id (e.g. "2"), NOT the scoped state_collection_id
+    // (e.g. "2::deviceid") — the scoped form would never match any role.
+    let mailbox_role = match crate::email::eas_collection_id_to_mailbox_role(collection_id) {
         Some(role) => role,
         None => {
             // CollectionId has no JMAP mailbox (e.g. Outbox "6").
@@ -2172,7 +2175,7 @@ async fn handle_email_sync(
             }
             let resp_xml = format!(
                 r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-                new_sync_key, state_collection_id
+                new_sync_key, collection_id
             );
             return Ok(xml_or_wbxml_response(
                 wbxml, as_wbxml, &resp_xml, request_id,
@@ -2194,7 +2197,7 @@ async fn handle_email_sync(
             }
             let resp_xml = format!(
                 r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-                new_sync_key, state_collection_id
+                new_sync_key, collection_id
             );
             return Ok(xml_or_wbxml_response(
                 wbxml, as_wbxml, &resp_xml, request_id,
@@ -2209,7 +2212,7 @@ async fn handle_email_sync(
             let new_sync_key = Uuid::new_v4().simple().to_string();
             let resp_xml = format!(
                 r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-                new_sync_key, state_collection_id
+                new_sync_key, collection_id
             );
             return Ok(xml_or_wbxml_response(
                 wbxml, as_wbxml, &resp_xml, request_id,
@@ -2238,7 +2241,7 @@ async fn handle_email_sync(
                 tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
                 let resp_xml = format!(
                     r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-                    new_sync_key, state_collection_id
+                    new_sync_key, collection_id
                 );
                 return Ok(xml_or_wbxml_response(
                     wbxml, as_wbxml, &resp_xml, request_id,
@@ -2277,7 +2280,7 @@ async fn handle_email_sync(
             let app_data = crate::email::render_jmap_email_as_eas_application_data(
                 email,
                 &server_id,
-                state_collection_id,
+                collection_id,
             );
             commands_xml.push_str(&format!(
                 "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
@@ -2287,7 +2290,7 @@ async fn handle_email_sync(
 
         let resp_xml = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
-            new_sync_key, state_collection_id, commands_xml
+            new_sync_key, collection_id, commands_xml
         );
         return Ok(xml_or_wbxml_response(
             wbxml, as_wbxml, &resp_xml, request_id,
@@ -2358,7 +2361,7 @@ async fn handle_email_sync(
                             let app_data = crate::email::render_jmap_email_as_eas_application_data(
                                 email,
                                 &server_id,
-                                state_collection_id,
+                                collection_id,
                             );
                             if changes.created.iter().any(|c| c == id) {
                                 commands_xml.push_str(&format!(
@@ -2386,7 +2389,7 @@ async fn handle_email_sync(
 
                 let resp_xml = format!(
                     r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
-                    new_sync_key, state_collection_id, commands_xml
+                    new_sync_key, collection_id, commands_xml
                 );
                 return Ok(xml_or_wbxml_response(
                     wbxml, as_wbxml, &resp_xml, request_id,
@@ -2410,7 +2413,7 @@ async fn handle_email_sync(
 
     let resp_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-        new_sync_key, state_collection_id
+        new_sync_key, collection_id
     );
     Ok(xml_or_wbxml_response(
         wbxml, as_wbxml, &resp_xml, request_id,
@@ -2516,6 +2519,7 @@ pub async fn handle(
                         &state,
                         &username,
                         &password,
+                        collection_id,
                         &state_collection_id,
                         incoming_key,
                         &wbxml,
