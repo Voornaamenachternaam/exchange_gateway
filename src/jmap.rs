@@ -501,10 +501,26 @@ impl JmapClient {
             ));
         }
 
-        let session: JmapSession = resp
+        let mut session: JmapSession = resp
             .json()
             .await
             .map_err(|e| anyhow!("Failed to parse JMAP session: {}", e))?;
+        // Override the API URL with the configured base URL.
+        // Stalwart's session returns the external apiUrl (e.g.
+        // https://stalwart.example.com/jmap/) but the gateway should use its
+        // configured internal base_url (e.g. http://stalwart:8080/jmap) for
+        // API calls. This ensures traffic stays within the Docker network and
+        // avoids errors when the external URL routes through a reverse proxy
+        // that may modify or reject JMAP POST requests.
+        if session.api_url != self.base_url {
+            debug!(
+                target: "jmap",
+                session_api_url = %session.api_url,
+                configured_base_url = %self.base_url,
+                "Overriding session apiUrl with configured base_url for internal routing"
+            );
+            session.api_url = self.base_url.clone();
+        }
 
         // Cache the session with expiry
         let expires = Instant::now() + SESSION_CACHE_TTL;
