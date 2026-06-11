@@ -66,12 +66,28 @@ pub struct JmapRequest {
     pub method_calls: Vec<JmapMethodCall>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// A JMAP method call, serialized as a 3-element array per RFC 8621 §3.2:
+/// `["methodName", {arguments}, "id"]`.
+///
+/// Using a tuple representation is critical because JMAP servers (including
+/// Stalwart) reject object-form method calls with a 400 `notRequest` error:
+/// "invalid type: map, expected an array with 3 elements".
+#[derive(Clone, Debug)]
 pub struct JmapMethodCall {
     pub name: String,
     pub arguments: Value,
     pub id: String,
+}
+
+impl Serialize for JmapMethodCall {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // RFC 8621 §3.2: Each invocation is represented as an array of 3 elements:
+        // [String:method name, {arguments}, String:method id]
+        (&self.name, &self.arguments, &self.id).serialize(serializer)
+    }
 }
 
 /// JMAP API response
@@ -1985,9 +2001,6 @@ mod tests {
             email: Some("john@example.com".to_string()),
         };
         let json = serde_json::to_value(&addr).unwrap();
-        // Fields "name" and "email" are already lowercase in camelCase,
-        // but the struct must have rename_all = "camelCase" for consistency
-        // with all other JMAP structs and for future fields that may differ.
         assert_eq!(json["name"], "John Doe");
         assert_eq!(json["email"], "john@example.com");
 
@@ -1995,5 +2008,69 @@ mod tests {
         let roundtrip: JmapEmailAddress = serde_json::from_value(json).unwrap();
         assert_eq!(roundtrip.name, Some("John Doe".to_string()));
         assert_eq!(roundtrip.email, Some("john@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_jmap_method_call_serializes_as_array_per_rfc8621() {
+        // RFC 8621 §3.2: Each method invocation is a 3-element array
+        // ["methodName", {arguments}, "id"], NOT an object.
+        // Stalwart rejects object-form with 400 notRequest:
+        // "invalid type: map, expected an array with 3 elements"
+        let call = JmapMethodCall {
+            name: "Email/query".to_string(),
+            arguments: serde_json::json!({"accountId": "u123"}),
+            id: "e0".to_string(),
+        };
+        let json = serde_json::to_value(&call).unwrap();
+        assert!(
+            json.is_array(),
+            "JmapMethodCall must serialize as array, got: {json}"
+        );
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 3, "JmapMethodCall array must have 3 elements");
+        assert_eq!(arr[0], "Email/query");
+        assert_eq!(arr[1]["accountId"], "u123");
+        assert_eq!(arr[2], "e0");
+    }
+
+    #[test]
+    fn test_jmap_request_method_calls_serializes_as_array_of_arrays() {
+        let request = JmapRequest {
+            using: vec!["urn:ietf:params:jmap:core".to_string()],
+            method_calls: vec![
+                JmapMethodCall {
+                    name: "Email/query".to_string(),
+                    arguments: serde_json::json!({"accountId": "u1"}),
+                    id: "e0".to_string(),
+                },
+                JmapMethodCall {
+                    name: "Email/get".to_string(),
+                    arguments: serde_json::json!({"accountId": "u1", "#ids": {}}),
+                    id: "e1".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        // Verify methodCalls contains arrays, not objects
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        let method_calls = &parsed["methodCalls"];
+        assert!(method_calls.is_array());
+        let calls = method_calls.as_array().unwrap();
+        assert_eq!(calls.len(), 2);
+        // Each call must be a 3-element array, not an object
+        assert!(
+            calls[0].is_array(),
+            "First methodCall must be array, got: {}",
+            calls[0]
+        );
+        assert!(
+            calls[1].is_array(),
+            "Second methodCall must be array, got: {}",
+            calls[1]
+        );
+        assert_eq!(calls[0][0], "Email/query");
+        assert_eq!(calls[0][2], "e0");
+        assert_eq!(calls[1][0], "Email/get");
+        assert_eq!(calls[1][2], "e1");
     }
 }
