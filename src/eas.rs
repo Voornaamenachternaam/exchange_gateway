@@ -104,6 +104,42 @@ struct EasRequest {
     filter_type: Option<u8>,
 }
 
+/// A single Collection element within a Sync request.
+/// Per MS-ASCMD §2.2.3.31.2, a Sync request can contain multiple
+/// Collection elements inside the Collections container, allowing
+/// the client to synchronize multiple folders in one request.
+#[derive(Clone, Debug)]
+struct SyncCollection {
+    sync_key: Option<String>,
+    collection_id: Option<String>,
+    class: Option<String>,
+    window_size: Option<usize>,
+    /// Per MS-ASCMD §2.2.3.72, GetChanges defaults to true when absent.
+    get_changes: bool,
+    filter_type: Option<u8>,
+    /// The raw XML substring of this <Collection> element, used for
+    /// mutation checks and apply_client_sync_mutations instead of
+    /// the full request XML. This prevents cross-collection mutation
+    /// leakage (e.g., Email <Add> being applied to Calendar collection).
+    xml: String,
+}
+
+impl Default for SyncCollection {
+    fn default() -> Self {
+        Self {
+            sync_key: None,
+            collection_id: None,
+            class: None,
+            window_size: None,
+            // Per MS-ASCMD §2.2.3.72, GetChanges is optional and
+            // defaults to true (client wants server changes).
+            get_changes: true,
+            filter_type: None,
+            xml: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct CommandGrammar {
     namespace: &'static str,
@@ -417,6 +453,84 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
         buf.clear();
     }
     values
+}
+
+/// Parse all Collection elements from a Sync request.
+///
+/// Per MS-ASCMD §2.2.3.31.2, a Sync request can contain 1..N Collection
+/// elements inside the Collections container. Android clients (including
+/// Gmail's Exchange account) send multi-collection Sync requests to
+/// synchronize calendar and email folders in a single round-trip.
+///
+/// Each Collection contains its own SyncKey, CollectionId, Class,
+/// WindowSize, FilterType, and GetChanges. The response MUST contain
+/// a corresponding Collection element for each request Collection.
+///
+/// The raw XML of each `<Collection>` element is captured via
+/// `reader.buffer_position()` to prevent cross-collection mutation
+/// leakage when checking permissions and applying mutations.
+fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut collections = Vec::new();
+    let mut current: Option<SyncCollection> = None;
+    let mut current_tag: Option<Vec<u8>> = None;
+    let mut collection_start: u64 = 0;
+
+    loop {
+        let pos = reader.buffer_position();
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Collection" => {
+                // Record the start position of this <Collection> element.
+                collection_start = pos;
+                current = Some(SyncCollection::default());
+                current_tag = None;
+            }
+            Ok(Event::Start(e)) if current.is_some() => {
+                current_tag = Some(e.name().local_name().as_ref().to_vec());
+            }
+            Ok(Event::Text(t)) if current.is_some() => {
+                let text = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
+                if let Some(coll) = current.as_mut() {
+                    match current_tag.as_deref() {
+                        Some(b"SyncKey") => coll.sync_key = Some(text),
+                        Some(b"CollectionId") => coll.collection_id = Some(text),
+                        Some(b"Class") => coll.class = Some(text),
+                        Some(b"WindowSize") => {
+                            coll.window_size = text.parse().ok();
+                        }
+                        Some(b"FilterType") => {
+                            coll.filter_type = text.parse().ok();
+                        }
+                        Some(b"GetChanges") => {
+                            coll.get_changes = text.trim() != "0";
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Collection" => {
+                if let Some(mut coll) = current.take() {
+                    // Capture the raw XML of this <Collection> element.
+                    // buffer_position() points past the closing '>', so
+                    // xml[collection_start..pos] is the full element text.
+                    let start = collection_start as usize;
+                    let end = pos as usize;
+                    if end <= xml.len() && start < end {
+                        coll.xml = xml[start..end].to_string();
+                    }
+                    collections.push(coll);
+                }
+                current_tag = None;
+            }
+            Ok(Event::End(_)) if current.is_some() => current_tag = None,
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    collections
 }
 
 fn value_from_query(query: &HashMap<String, String>, key: &str) -> Option<String> {
@@ -1651,8 +1765,10 @@ async fn fetch_freebusy_jmap_eas(
         .query_calendar_events(QueryCalendarEventsParams {
             account_id: &account_id,
             calendar_id: None,
-            start: &start.format("%Y%m%dT%H%M%SZ").to_string(),
-            end: &end.format("%Y%m%dT%H%M%SZ").to_string(),
+            // RFC 3339 extended format required by Stalwart's JMAP
+            // CalendarEvent/query filter deserializer (not basic ISO 8601)
+            start: &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            end: &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             limit: 1000,
             username: mailbox,
             password,
@@ -2138,6 +2254,209 @@ async fn handle_send_mail(
     )
 }
 
+/// Handle a multi-collection EAS Sync command.
+///
+/// Per MS-ASCMD §2.2.3.31.2, a Sync request can contain 1..N Collection elements.
+/// Android clients (including Gmail's Exchange account) typically send all folders
+/// in a single Sync request. This function processes each collection independently
+/// and combines the responses into a single multi-collection Sync response.
+#[allow(clippy::too_many_arguments)]
+async fn handle_sync_collections(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+    device_id: &str,
+    collections: &[SyncCollection],
+) -> Response {
+    let mut collection_responses: Vec<String> = Vec::new();
+
+    for coll in collections {
+        let collection_id = coll.collection_id.as_deref().unwrap_or("1");
+        let state_collection_id = scoped_collection_id(collection_id, device_id);
+        let incoming_key = coll.sync_key.as_deref().unwrap_or("0");
+        let class = coll.class.as_deref().unwrap_or("Calendar");
+
+        let coll_xml = if class.eq_ignore_ascii_case("Email") {
+            // Email sync — route to JMAP
+            if state.cfg.email_enabled && state.jmap_client.is_some() {
+                match handle_email_sync(
+                    state,
+                    username,
+                    password,
+                    collection_id,
+                    &state_collection_id,
+                    incoming_key,
+                    wbxml,
+                    as_wbxml,
+                    request_id,
+                )
+                .await
+                {
+                    Ok(xml_str) => xml_str,
+                    Err(e) => {
+                        tracing::error!("request_id={} Email Sync Error: {}", request_id, e);
+                        format!(
+                            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            incoming_key, collection_id
+                        )
+                    }
+                }
+            } else {
+                // Email not enabled or no JMAP client — return empty success
+                let new_sync_key = Uuid::new_v4().simple().to_string();
+                if let Err(e) = state
+                    .storage
+                    .set_sync_key(username, &state_collection_id, &new_sync_key, None)
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to set email sync key");
+                }
+                format!(
+                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
+                    new_sync_key, collection_id
+                )
+            }
+        } else {
+            // Calendar/Contacts/Tasks — existing CalDAV sync
+            // Use coll.xml (collection-specific XML) for mutation checks
+            // and apply_client_sync_mutations instead of the global xml,
+            // to prevent cross-collection mutation leakage (e.g., Email
+            // <Add> elements being applied to the Calendar collection).
+            let coll_xml = &coll.xml;
+            let mut mutation_responses = String::new();
+            let owner = crate::ews::owner_from_username(username);
+            let calendar_folder_id = crate::ews_folders::folder_id_for(
+                owner,
+                crate::ews_folders::DistinguishedFolder::Calendar,
+            );
+            let enforcement = PermissionEnforcement::new(&state.storage);
+            let perm_ctx = PermissionContext::new(
+                username.to_string(),
+                owner.to_string(),
+                calendar_folder_id.clone(),
+            );
+            if coll_xml.contains("<Add") || coll_xml.contains(":Add") {
+                match enforcement.can_create_item(&perm_ctx).await {
+                    Ok(true) => {}
+                    _ => {
+                        let resp_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Status>4</Status></Sync>";
+                        return xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id);
+                    }
+                }
+            }
+            if coll_xml.contains("<Change") || coll_xml.contains(":Change") {
+                match enforcement.can_edit_item(&perm_ctx).await {
+                    Ok(true) => {}
+                    _ => {
+                        let resp_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Status>4</Status></Sync>";
+                        return xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id);
+                    }
+                }
+            }
+            if coll_xml.contains("<Delete") || coll_xml.contains(":Delete") {
+                match enforcement.can_delete_item(&perm_ctx).await {
+                    Ok(true) => {}
+                    _ => {
+                        let resp_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Status>4</Status></Sync>";
+                        return xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id);
+                    }
+                }
+            }
+            if coll_xml.contains("<Add")
+                || coll_xml.contains("<Change")
+                || coll_xml.contains("<Delete")
+                || coll_xml.contains(":Add")
+                || coll_xml.contains(":Change")
+                || coll_xml.contains(":Delete")
+            {
+                match sync::apply_client_sync_mutations(
+                    state.clone(),
+                    username,
+                    &state_collection_id,
+                    username,
+                    password.expose_secret(),
+                    coll_xml,
+                )
+                .await
+                {
+                    Ok(results) => {
+                        mutation_responses = sync::render_client_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "request_id={} failed applying Sync mutations: {}",
+                            request_id, e
+                        );
+                        let resp_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Status>6</Status></Sync>";
+                        return xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id);
+                    }
+                }
+            }
+            let opts = SyncOptions {
+                window_size: coll.window_size.unwrap_or(100),
+                get_changes: coll.get_changes,
+                filter_start: coll
+                    .filter_type
+                    .map(filter_type_to_start)
+                    .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
+            };
+            match sync::perform_sync(&sync::PerformSyncParams {
+                state: state.clone(),
+                owner: username,
+                collection_id,
+                state_collection_id: &state_collection_id,
+                incoming_sync_key: incoming_key,
+                content_class: class,
+                opts,
+                username,
+                password: password.expose_secret(),
+                client_mutation_responses: &mutation_responses,
+            })
+            .await
+            {
+                Ok(resp_xml) => {
+                    // Extract the inner <Collection> element from the single-collection
+                    // response so we can nest it inside the multi-collection wrapper.
+                    extract_inner_collection(&resp_xml)
+                }
+                Err(e) => {
+                    tracing::error!("request_id={} Sync Error: {}", request_id, e);
+                    let resp_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Status>6</Status></Sync>";
+                    return xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id);
+                }
+            }
+        };
+
+        collection_responses.push(coll_xml);
+    }
+
+    // Build multi-collection response
+    let collections_xml = collection_responses.join("");
+    let resp_xml = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Collections>{collections_xml}</Collections></Sync>"
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
+}
+
+/// Extract the inner `<Collection>...</Collection>` element from a single-collection
+/// Sync response produced by `perform_sync`. This strips the outer envelope
+/// (`<Sync><Collections>...</Collections></Sync>`) to allow nesting inside
+/// a multi-collection response.
+fn extract_inner_collection(resp_xml: &str) -> String {
+    // Try to find <Collection>...</Collection> within the response
+    if let Some(start) = resp_xml.find("<Collection")
+        && let Some(end) = resp_xml.rfind("</Collection>")
+    {
+        let end_full = end + "</Collection>".len();
+        return resp_xml[start..end_full].to_string();
+    }
+    // Fallback: return the whole XML wrapped in a Collection
+    resp_xml.to_string()
+}
+
 /// Handle EAS Email Sync class by routing to JMAP.
 ///
 /// Per MS-ASEMAIL, the Email sync class synchronizes email messages.
@@ -2150,10 +2469,10 @@ async fn handle_email_sync(
     collection_id: &str,
     state_collection_id: &str,
     incoming_sync_key: &str,
-    wbxml: &Wbxml,
-    as_wbxml: bool,
-    request_id: &str,
-) -> anyhow::Result<Response> {
+    _wbxml: &Wbxml,
+    _as_wbxml: bool,
+    _request_id: &str,
+) -> anyhow::Result<String> {
     // Map CollectionId to JMAP mailbox role.
     // Previously hardcoded "inbox" and "2", meaning syncing any other folder
     // (Sent Items, Drafts, etc.) would incorrectly fetch Inbox emails and
@@ -2173,12 +2492,9 @@ async fn handle_email_sync(
             {
                 tracing::warn!(error = %e, "Failed to set email sync key");
             }
-            let resp_xml = format!(
-                r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
                 new_sync_key, collection_id
-            );
-            return Ok(xml_or_wbxml_response(
-                wbxml, as_wbxml, &resp_xml, request_id,
             ));
         }
     };
@@ -2195,12 +2511,9 @@ async fn handle_email_sync(
             {
                 tracing::warn!(error = %e, "Failed to set email sync key");
             }
-            let resp_xml = format!(
-                r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
                 new_sync_key, collection_id
-            );
-            return Ok(xml_or_wbxml_response(
-                wbxml, as_wbxml, &resp_xml, request_id,
             ));
         }
     };
@@ -2210,12 +2523,9 @@ async fn handle_email_sync(
         Err(e) => {
             tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync");
             let new_sync_key = Uuid::new_v4().simple().to_string();
-            let resp_xml = format!(
-                r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
                 new_sync_key, collection_id
-            );
-            return Ok(xml_or_wbxml_response(
-                wbxml, as_wbxml, &resp_xml, request_id,
             ));
         }
     };
@@ -2239,12 +2549,9 @@ async fn handle_email_sync(
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
-                let resp_xml = format!(
-                    r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+                return Ok(format!(
+                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
                     new_sync_key, collection_id
-                );
-                return Ok(xml_or_wbxml_response(
-                    wbxml, as_wbxml, &resp_xml, request_id,
                 ));
             }
         };
@@ -2288,12 +2595,9 @@ async fn handle_email_sync(
             ));
         }
 
-        let resp_xml = format!(
-            r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
+        return Ok(format!(
+            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
             new_sync_key, collection_id, commands_xml
-        );
-        return Ok(xml_or_wbxml_response(
-            wbxml, as_wbxml, &resp_xml, request_id,
         ));
     }
 
@@ -2388,12 +2692,10 @@ async fn handle_email_sync(
                 }
 
                 let resp_xml = format!(
-                    r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection></Collections></Sync>"#,
+                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
                     new_sync_key, collection_id, commands_xml
                 );
-                return Ok(xml_or_wbxml_response(
-                    wbxml, as_wbxml, &resp_xml, request_id,
-                ));
+                return Ok(resp_xml);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "JMAP Email/changes failed, falling back to full sync");
@@ -2411,12 +2713,9 @@ async fn handle_email_sync(
         tracing::warn!(error = %e, "Failed to update email sync key");
     }
 
-    let resp_xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
+    Ok(format!(
+        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
         new_sync_key, collection_id
-    );
-    Ok(xml_or_wbxml_response(
-        wbxml, as_wbxml, &resp_xml, request_id,
     ))
 }
 
@@ -2504,213 +2803,56 @@ pub async fn handle(
             .await
         }
         "Sync" => {
-            let collection_id = req.collection_id.as_deref().unwrap_or("1");
-            let state_collection_id = scoped_collection_id(
-                collection_id,
-                req.device_id.as_deref().unwrap_or("unknown-device"),
-            );
-            let incoming_key = req.sync_key.as_deref().unwrap_or("0");
-            let class = req.class.as_deref().unwrap_or("Calendar");
-
-            // Email sync — route to JMAP instead of CalDAV
-            if class.eq_ignore_ascii_case("Email") {
-                if state.cfg.email_enabled && state.jmap_client.is_some() {
-                    match handle_email_sync(
-                        &state,
-                        &username,
-                        &password,
-                        collection_id,
-                        &state_collection_id,
-                        incoming_key,
-                        &wbxml,
-                        wants_wbxml,
-                        &request_id,
-                    )
-                    .await
-                    {
-                        Ok(resp) => resp,
-                        Err(e) => {
-                            tracing::error!("request_id={} Email Sync Error: {}", request_id, e);
-                            let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
-                            xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id)
-                        }
-                    }
-                } else {
-                    let new_sync_key = Uuid::new_v4().simple().to_string();
-                    if let Err(e) = state
-                        .storage
-                        .set_sync_key(&username, &state_collection_id, &new_sync_key, None)
-                        .await
-                    {
-                        tracing::warn!(error = %e, "Failed to set email sync key");
-                    }
-                    let resp_xml = format!(
-                        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>1</Status><Collections><Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection></Collections></Sync>"#,
-                        new_sync_key, collection_id
-                    );
-                    xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id)
-                }
-            } else {
-                // Calendar/Contacts/Tasks — existing CalDAV sync
-                let mut mutation_responses = String::new();
-                let owner = crate::ews::owner_from_username(&username);
-                let calendar_folder_id = crate::ews_folders::folder_id_for(
-                    owner,
-                    crate::ews_folders::DistinguishedFolder::Calendar,
-                );
-                let enforcement = PermissionEnforcement::new(&state.storage);
-                let perm_ctx = PermissionContext::new(
-                    username.clone(),
-                    owner.to_string(),
-                    calendar_folder_id.clone(),
-                );
-                if xml.contains("<Add") || xml.contains(":Add") {
-                    match enforcement.can_create_item(&perm_ctx).await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                            return xml_or_wbxml_response(
-                                &wbxml,
-                                wants_wbxml,
-                                err_xml,
-                                &request_id,
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Create operation");
-                            let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                            return xml_or_wbxml_response(
-                                &wbxml,
-                                wants_wbxml,
-                                err_xml,
-                                &request_id,
-                            );
-                        }
-                    }
-                }
-                if xml.contains("<Change") || xml.contains(":Change") {
-                    match enforcement.can_edit_item(&perm_ctx).await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                            return xml_or_wbxml_response(
-                                &wbxml,
-                                wants_wbxml,
-                                err_xml,
-                                &request_id,
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Edit operation");
-                            let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                            return xml_or_wbxml_response(
-                                &wbxml,
-                                wants_wbxml,
-                                err_xml,
-                                &request_id,
-                            );
-                        }
-                    }
-                }
-                if xml.contains("<Delete") || xml.contains(":Delete") {
-                    match enforcement.can_delete_item(&perm_ctx).await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                            return xml_or_wbxml_response(
-                                &wbxml,
-                                wants_wbxml,
-                                err_xml,
-                                &request_id,
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(request_id = %request_id, error = %e, "Permission check failed for Delete operation");
-                            let err_xml = r#"
-<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>4</Status></Sync>"#;
-                            return xml_or_wbxml_response(
-                                &wbxml,
-                                wants_wbxml,
-                                err_xml,
-                                &request_id,
-                            );
-                        }
-                    }
-                }
-                if xml.contains("<Add")
-                    || xml.contains("<Change")
-                    || xml.contains("<Delete")
-                    || xml.contains(":Add")
-                    || xml.contains(":Change")
-                    || xml.contains(":Delete")
-                {
-                    match sync::apply_client_sync_mutations(
-                        state.clone(),
-                        &username,
-                        &state_collection_id,
-                        &username,
-                        password.expose_secret(),
-                        &xml,
-                    )
-                    .await
-                    {
-                        Ok(results) => {
-                            mutation_responses = sync::render_client_mutation_responses(&results);
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "request_id={} failed applying Sync mutations: {}",
-                                request_id,
-                                e
-                            );
-                            let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
-                            return xml_or_wbxml_response(
-                                &wbxml,
-                                wants_wbxml,
-                                err_xml,
-                                &request_id,
-                            );
-                        }
-                    }
-                }
-                let opts = SyncOptions {
-                    window_size: req.window_size.unwrap_or(100),
+            // Parse all Collection elements from the Sync request.
+            // Per MS-ASCMD §2.2.3.31.2, a Sync request can contain
+            // multiple Collection elements. Android clients (including
+            // Gmail's Exchange account) send multi-collection Sync
+            // requests to synchronize calendar and email in one round-trip.
+            let sync_collections = parse_sync_collections(&xml);
+            if sync_collections.is_empty() {
+                // Fallback: use the single-collection fields from EasRequest
+                // (backward compat for clients that don't nest Collection elements)
+                let collection_id = req.collection_id.as_deref().unwrap_or("1");
+                let incoming_key = req.sync_key.as_deref().unwrap_or("0");
+                let class = req.class.as_deref().unwrap_or("Calendar");
+                let sc = SyncCollection {
+                    sync_key: Some(incoming_key.to_string()),
+                    collection_id: Some(collection_id.to_string()),
+                    class: Some(class.to_string()),
+                    window_size: req.window_size,
+                    // EasRequest.get_changes defaults to true when absent
                     get_changes: req.get_changes,
-                    filter_start: req
-                        .filter_type
-                        .map(filter_type_to_start)
-                        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
+                    filter_type: req.filter_type,
+                    // Use the full xml for single-collection requests so
+                    // mutation checks and apply_client_sync_mutations work
+                    // correctly (no cross-collection leakage possible).
+                    xml: xml.clone(),
                 };
-                match sync::perform_sync(&sync::PerformSyncParams {
-                    state: state.clone(),
-                    owner: &username,
-                    collection_id,
-                    state_collection_id: &state_collection_id,
-                    incoming_sync_key: incoming_key,
-                    content_class: class,
-                    opts,
-                    username: &username,
-                    password: password.expose_secret(),
-                    client_mutation_responses: &mutation_responses,
-                })
+                handle_sync_collections(
+                    &state,
+                    &username,
+                    &password,
+                    &wbxml,
+                    wants_wbxml,
+                    &request_id,
+                    &device_id,
+                    &[sc],
+                )
                 .await
-                {
-                    Ok(resp_xml) => {
-                        xml_or_wbxml_response(&wbxml, wants_wbxml, &resp_xml, &request_id)
-                    }
-                    Err(e) => {
-                        tracing::error!("request_id={} Sync Error: {}", request_id, e);
-                        let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Status>6</Status></Sync>"#;
-                        xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id)
-                    }
-                }
+            } else {
+                handle_sync_collections(
+                    &state,
+                    &username,
+                    &password,
+                    &wbxml,
+                    wants_wbxml,
+                    &request_id,
+                    &device_id,
+                    &sync_collections,
+                )
+                .await
             }
-        } // closes the `else { Calendar` branch
+        }
         "Ping" => {
             handle_ping(
                 &state,
@@ -3069,5 +3211,107 @@ mod tests {
         // Key use-case: user authenticated with wrong domain
         let emails = active_user_emails("contact@exchange.com", "example.com");
         assert_eq!(emails, vec!["contact@example.com"]);
+    }
+
+    #[test]
+    fn test_parse_sync_collections_multi() {
+        // Simulate Android multi-collection Sync: one Calendar, one Email
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:">
+  <Collections>
+    <Collection>
+      <SyncKey>0</SyncKey>
+      <CollectionId>1</CollectionId>
+      <Class>Calendar</Class>
+      <GetChanges>1</GetChanges>
+      <WindowSize>25</WindowSize>
+      <FilterType>5</FilterType>
+    </Collection>
+    <Collection>
+      <SyncKey>0</SyncKey>
+      <CollectionId>2</CollectionId>
+      <Class>Email</Class>
+      <GetChanges>1</GetChanges>
+      <WindowSize>50</WindowSize>
+    </Collection>
+  </Collections>
+</Sync>"#;
+
+        let collections = parse_sync_collections(xml);
+        assert_eq!(collections.len(), 2, "Should parse 2 collections");
+
+        assert_eq!(collections[0].class.as_deref(), Some("Calendar"));
+        assert_eq!(collections[0].collection_id.as_deref(), Some("1"));
+        assert_eq!(collections[0].sync_key.as_deref(), Some("0"));
+        assert_eq!(collections[0].window_size, Some(25));
+        assert_eq!(collections[0].filter_type, Some(5));
+        assert!(collections[0].get_changes);
+        // Verify raw XML captured — must only contain Calendar collection content
+        assert!(collections[0].xml.contains("<Class>Calendar</Class>"),
+            "Calendar collection xml should contain Calendar class");
+        assert!(!collections[0].xml.contains("<Class>Email</Class>"),
+            "Calendar collection xml should NOT contain Email class (cross-collection leakage)");
+
+        assert_eq!(collections[1].class.as_deref(), Some("Email"));
+        assert_eq!(collections[1].collection_id.as_deref(), Some("2"));
+        assert_eq!(collections[1].sync_key.as_deref(), Some("0"));
+        assert_eq!(collections[1].window_size, Some(50));
+        assert!(collections[1].get_changes);
+        // Verify raw XML captured — must only contain Email collection content
+        assert!(collections[1].xml.contains("<Class>Email</Class>"),
+            "Email collection xml should contain Email class");
+        assert!(!collections[1].xml.contains("<Class>Calendar</Class>"),
+            "Email collection xml should NOT contain Calendar class (cross-collection leakage)");
+    }
+
+    #[test]
+    fn test_parse_sync_collections_single() {
+        // Single-collection Sync (older clients)
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync:">
+  <Collections>
+    <Collection>
+      <SyncKey>abc123</SyncKey>
+      <CollectionId>1</CollectionId>
+      <Class>Calendar</Class>
+    </Collection>
+  </Collections>
+</Sync>"#;
+
+        let collections = parse_sync_collections(xml);
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].class.as_deref(), Some("Calendar"));
+        assert_eq!(collections[0].sync_key.as_deref(), Some("abc123"));
+        // GetChanges defaults to true when absent per MS-ASCMD §2.2.3.72
+        assert!(collections[0].get_changes,
+            "GetChanges should default to true when absent");
+        // Verify raw XML captured
+        assert!(collections[0].xml.contains("<SyncKey>abc123</SyncKey>"),
+            "Single collection xml should contain its SyncKey");
+    }
+
+    #[test]
+    fn test_parse_sync_collections_get_changes_default() {
+        // When <GetChanges> is absent, it defaults to true per MS-ASCMD §2.2.3.72
+        let xml = r#"<Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId></Collection>"#;
+        let collections = parse_sync_collections(xml);
+        assert_eq!(collections.len(), 1);
+        assert!(collections[0].get_changes, "GetChanges must default to true");
+
+        // Explicit <GetChanges>0</GetChanges> should set it to false
+        let xml_zero = r#"<Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><GetChanges>0</GetChanges></Collection>"#;
+        let colls = parse_sync_collections(xml_zero);
+        assert!(!colls[0].get_changes, "GetChanges=0 must be false");
+    }
+
+    #[test]
+    fn test_extract_inner_collection() {
+        let resp_xml = r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:"><Collections><Collection><Class>Calendar</Class><SyncKey>new</SyncKey><CollectionId>1</CollectionId><Status>1</Status></Collection></Collections></Sync>"#;
+        let inner = extract_inner_collection(resp_xml);
+        assert!(inner.contains("<Class>Calendar</Class>"));
+        assert!(inner.contains("<SyncKey>new</SyncKey>"));
+        assert!(inner.starts_with("<Collection"));
+        assert!(inner.ends_with("</Collection>"));
+        assert!(!inner.contains("<Sync xmlns"), "Should not contain outer Sync wrapper");
     }
 }
