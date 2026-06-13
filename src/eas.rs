@@ -108,14 +108,36 @@ struct EasRequest {
 /// Per MS-ASCMD §2.2.3.31.2, a Sync request can contain multiple
 /// Collection elements inside the Collections container, allowing
 /// the client to synchronize multiple folders in one request.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct SyncCollection {
     sync_key: Option<String>,
     collection_id: Option<String>,
     class: Option<String>,
     window_size: Option<usize>,
+    /// Per MS-ASCMD §2.2.3.72, GetChanges defaults to true when absent.
     get_changes: bool,
     filter_type: Option<u8>,
+    /// The raw XML substring of this <Collection> element, used for
+    /// mutation checks and apply_client_sync_mutations instead of
+    /// the full request XML. This prevents cross-collection mutation
+    /// leakage (e.g., Email <Add> being applied to Calendar collection).
+    xml: String,
+}
+
+impl Default for SyncCollection {
+    fn default() -> Self {
+        Self {
+            sync_key: None,
+            collection_id: None,
+            class: None,
+            window_size: None,
+            // Per MS-ASCMD §2.2.3.72, GetChanges is optional and
+            // defaults to true (client wants server changes).
+            get_changes: true,
+            filter_type: None,
+            xml: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -443,6 +465,10 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
 /// Each Collection contains its own SyncKey, CollectionId, Class,
 /// WindowSize, FilterType, and GetChanges. The response MUST contain
 /// a corresponding Collection element for each request Collection.
+///
+/// The raw XML of each `<Collection>` element is captured via
+/// `reader.buffer_position()` to prevent cross-collection mutation
+/// leakage when checking permissions and applying mutations.
 fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -450,10 +476,14 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
     let mut collections = Vec::new();
     let mut current: Option<SyncCollection> = None;
     let mut current_tag: Option<Vec<u8>> = None;
+    let mut collection_start: u64 = 0;
 
     loop {
+        let pos = reader.buffer_position();
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Collection" => {
+                // Record the start position of this <Collection> element.
+                collection_start = pos;
                 current = Some(SyncCollection::default());
                 current_tag = None;
             }
@@ -481,7 +511,15 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 }
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Collection" => {
-                if let Some(coll) = current.take() {
+                if let Some(mut coll) = current.take() {
+                    // Capture the raw XML of this <Collection> element.
+                    // buffer_position() points past the closing '>', so
+                    // xml[collection_start..pos] is the full element text.
+                    let start = collection_start as usize;
+                    let end = pos as usize;
+                    if end <= xml.len() && start < end {
+                        coll.xml = xml[start..end].to_string();
+                    }
                     collections.push(coll);
                 }
                 current_tag = None;
@@ -2232,7 +2270,6 @@ async fn handle_sync_collections(
     request_id: &str,
     device_id: &str,
     collections: &[SyncCollection],
-    xml: &str,
 ) -> Response {
     let mut collection_responses: Vec<String> = Vec::new();
 
@@ -2284,6 +2321,11 @@ async fn handle_sync_collections(
             }
         } else {
             // Calendar/Contacts/Tasks — existing CalDAV sync
+            // Use coll.xml (collection-specific XML) for mutation checks
+            // and apply_client_sync_mutations instead of the global xml,
+            // to prevent cross-collection mutation leakage (e.g., Email
+            // <Add> elements being applied to the Calendar collection).
+            let coll_xml = &coll.xml;
             let mut mutation_responses = String::new();
             let owner = crate::ews::owner_from_username(username);
             let calendar_folder_id = crate::ews_folders::folder_id_for(
@@ -2296,7 +2338,7 @@ async fn handle_sync_collections(
                 owner.to_string(),
                 calendar_folder_id.clone(),
             );
-            if xml.contains("<Add") || xml.contains(":Add") {
+            if coll_xml.contains("<Add") || coll_xml.contains(":Add") {
                 match enforcement.can_create_item(&perm_ctx).await {
                     Ok(true) => {}
                     _ => {
@@ -2305,7 +2347,7 @@ async fn handle_sync_collections(
                     }
                 }
             }
-            if xml.contains("<Change") || xml.contains(":Change") {
+            if coll_xml.contains("<Change") || coll_xml.contains(":Change") {
                 match enforcement.can_edit_item(&perm_ctx).await {
                     Ok(true) => {}
                     _ => {
@@ -2314,7 +2356,7 @@ async fn handle_sync_collections(
                     }
                 }
             }
-            if xml.contains("<Delete") || xml.contains(":Delete") {
+            if coll_xml.contains("<Delete") || coll_xml.contains(":Delete") {
                 match enforcement.can_delete_item(&perm_ctx).await {
                     Ok(true) => {}
                     _ => {
@@ -2323,12 +2365,12 @@ async fn handle_sync_collections(
                     }
                 }
             }
-            if xml.contains("<Add")
-                || xml.contains("<Change")
-                || xml.contains("<Delete")
-                || xml.contains(":Add")
-                || xml.contains(":Change")
-                || xml.contains(":Delete")
+            if coll_xml.contains("<Add")
+                || coll_xml.contains("<Change")
+                || coll_xml.contains("<Delete")
+                || coll_xml.contains(":Add")
+                || coll_xml.contains(":Change")
+                || coll_xml.contains(":Delete")
             {
                 match sync::apply_client_sync_mutations(
                     state.clone(),
@@ -2336,7 +2378,7 @@ async fn handle_sync_collections(
                     &state_collection_id,
                     username,
                     password.expose_secret(),
-                    xml,
+                    coll_xml,
                 )
                 .await
                 {
@@ -2778,8 +2820,13 @@ pub async fn handle(
                     collection_id: Some(collection_id.to_string()),
                     class: Some(class.to_string()),
                     window_size: req.window_size,
+                    // EasRequest.get_changes defaults to true when absent
                     get_changes: req.get_changes,
                     filter_type: req.filter_type,
+                    // Use the full xml for single-collection requests so
+                    // mutation checks and apply_client_sync_mutations work
+                    // correctly (no cross-collection leakage possible).
+                    xml: xml.clone(),
                 };
                 handle_sync_collections(
                     &state,
@@ -2790,7 +2837,6 @@ pub async fn handle(
                     &request_id,
                     &device_id,
                     &[sc],
-                    &xml,
                 )
                 .await
             } else {
@@ -2803,7 +2849,6 @@ pub async fn handle(
                     &request_id,
                     &device_id,
                     &sync_collections,
-                    &xml,
                 )
                 .await
             }
@@ -3201,12 +3246,22 @@ mod tests {
         assert_eq!(collections[0].window_size, Some(25));
         assert_eq!(collections[0].filter_type, Some(5));
         assert!(collections[0].get_changes);
+        // Verify raw XML captured — must only contain Calendar collection content
+        assert!(collections[0].xml.contains("<Class>Calendar</Class>"),
+            "Calendar collection xml should contain Calendar class");
+        assert!(!collections[0].xml.contains("<Class>Email</Class>"),
+            "Calendar collection xml should NOT contain Email class (cross-collection leakage)");
 
         assert_eq!(collections[1].class.as_deref(), Some("Email"));
         assert_eq!(collections[1].collection_id.as_deref(), Some("2"));
         assert_eq!(collections[1].sync_key.as_deref(), Some("0"));
         assert_eq!(collections[1].window_size, Some(50));
         assert!(collections[1].get_changes);
+        // Verify raw XML captured — must only contain Email collection content
+        assert!(collections[1].xml.contains("<Class>Email</Class>"),
+            "Email collection xml should contain Email class");
+        assert!(!collections[1].xml.contains("<Class>Calendar</Class>"),
+            "Email collection xml should NOT contain Calendar class (cross-collection leakage)");
     }
 
     #[test]
@@ -3227,6 +3282,26 @@ mod tests {
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].class.as_deref(), Some("Calendar"));
         assert_eq!(collections[0].sync_key.as_deref(), Some("abc123"));
+        // GetChanges defaults to true when absent per MS-ASCMD §2.2.3.72
+        assert!(collections[0].get_changes,
+            "GetChanges should default to true when absent");
+        // Verify raw XML captured
+        assert!(collections[0].xml.contains("<SyncKey>abc123</SyncKey>"),
+            "Single collection xml should contain its SyncKey");
+    }
+
+    #[test]
+    fn test_parse_sync_collections_get_changes_default() {
+        // When <GetChanges> is absent, it defaults to true per MS-ASCMD §2.2.3.72
+        let xml = r#"<Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId></Collection>"#;
+        let collections = parse_sync_collections(xml);
+        assert_eq!(collections.len(), 1);
+        assert!(collections[0].get_changes, "GetChanges must default to true");
+
+        // Explicit <GetChanges>0</GetChanges> should set it to false
+        let xml_zero = r#"<Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><GetChanges>0</GetChanges></Collection>"#;
+        let colls = parse_sync_collections(xml_zero);
+        assert!(!colls[0].get_changes, "GetChanges=0 must be false");
     }
 
     #[test]
