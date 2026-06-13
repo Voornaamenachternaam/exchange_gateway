@@ -60,9 +60,26 @@ impl DistinguishedFolder {
         }
     }
 
+    /// All folders that are direct children of MsgFolderRoot.
+    pub fn root_children() -> &'static [DistinguishedFolder] {
+        &[
+            DistinguishedFolder::Calendar,
+            DistinguishedFolder::Contacts,
+            DistinguishedFolder::Tasks,
+            DistinguishedFolder::Inbox,
+            DistinguishedFolder::SentItems,
+            DistinguishedFolder::DeletedItems,
+            DistinguishedFolder::Drafts,
+            DistinguishedFolder::Outbox,
+            DistinguishedFolder::JunkEmail,
+            DistinguishedFolder::Notes,
+            DistinguishedFolder::Journal,
+        ]
+    }
+
     pub fn child_folder_count(self) -> usize {
         match self {
-            Self::MsgFolderRoot => 1,
+            Self::MsgFolderRoot => Self::root_children().len(),
             _ => 0,
         }
     }
@@ -142,6 +159,26 @@ pub fn folder_id_for(owner: &str, folder: DistinguishedFolder) -> String {
     format!("{}-{}", tag, const_hex::encode(&digest[..12]))
 }
 
+/// Resolve an explicit FolderId (as returned by folder_id_for) back to a DistinguishedFolder.
+/// Returns None if the ID doesn't match any known folder.
+pub fn resolve_folder_id(id: &str, owner: &str) -> Option<DistinguishedFolder> {
+    let all_folders: &[DistinguishedFolder] = &[
+        DistinguishedFolder::MsgFolderRoot,
+        DistinguishedFolder::Calendar,
+        DistinguishedFolder::Inbox,
+        DistinguishedFolder::SentItems,
+        DistinguishedFolder::DeletedItems,
+        DistinguishedFolder::Drafts,
+        DistinguishedFolder::Outbox,
+        DistinguishedFolder::JunkEmail,
+        DistinguishedFolder::Contacts,
+        DistinguishedFolder::Tasks,
+        DistinguishedFolder::Notes,
+        DistinguishedFolder::Journal,
+    ];
+    all_folders.iter().find(|&&f| folder_id_for(owner, f) == id).copied()
+}
+
 pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: usize) -> String {
     let fid = folder_id_for(owner, folder);
     let parent = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
@@ -176,11 +213,45 @@ pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: 
 }
 
 pub fn render_child_folders_xml(owner: &str) -> String {
-    let folders = [DistinguishedFolder::Calendar];
-    folders
+    DistinguishedFolder::root_children()
         .iter()
         .map(|&f| render_folder_xml(owner, f, 0))
         .collect()
+}
+
+/// Render the full folder hierarchy as `<t:Create>` elements for SyncFolderHierarchy.
+/// Returns MsgFolderRoot first, then all direct children.
+pub fn render_folder_hierarchy_creates(owner: &str, calendar_item_count: usize) -> String {
+    let mut creates = String::new();
+    // MsgFolderRoot must come first — clients need its FolderId for GetUserConfiguration
+    let root_xml = render_folder_xml(owner, DistinguishedFolder::MsgFolderRoot, 0);
+    creates.push_str(&format!("<t:Create>{}</t:Create>", root_xml));
+    // Calendar folder with actual item count
+    let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, calendar_item_count);
+    creates.push_str(&format!("<t:Create>{}</t:Create>", cal_xml));
+    // All other children
+    for &f in DistinguishedFolder::root_children() {
+        if f != DistinguishedFolder::Calendar {
+            let xml = render_folder_xml(owner, f, 0);
+            creates.push_str(&format!("<t:Create>{}</t:Create>", xml));
+        }
+    }
+    creates
+}
+
+/// Render MsgFolderRoot + all direct children. Used by FindFolder when querying msgfolderroot.
+pub fn render_root_and_children(owner: &str, calendar_item_count: usize) -> (usize, String) {
+    let children = DistinguishedFolder::root_children();
+    let total = 1 + children.len(); // MsgFolderRoot + children
+    let mut xml = render_folder_xml(owner, DistinguishedFolder::MsgFolderRoot, 0);
+    xml.push_str(&render_folder_xml(owner, DistinguishedFolder::Calendar, calendar_item_count));
+    // All other children
+    for &f in children {
+        if f != DistinguishedFolder::Calendar {
+            xml.push_str(&render_folder_xml(owner, f, 0));
+        }
+    }
+    (total, xml)
 }
 
 pub fn validate_folder_request(
@@ -217,4 +288,61 @@ pub fn validate_folder_request(
         return Some("ErrorFolderNotFound");
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_folder_id_roundtrip() {
+        let owner = "contact@example.com";
+        for &folder in DistinguishedFolder::root_children() {
+            let id = folder_id_for(owner, folder);
+            let resolved = resolve_folder_id(&id, owner);
+            assert_eq!(resolved, Some(folder),
+                "resolve_folder_id({}) should return {:?}", id, folder);
+        }
+        // MsgFolderRoot
+        let root_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+        assert_eq!(resolve_folder_id(&root_id, owner), Some(DistinguishedFolder::MsgFolderRoot));
+    }
+
+    #[test]
+    fn test_resolve_folder_id_unknown_returns_none() {
+        assert_eq!(resolve_folder_id("unknown-id", "test@example.com"), None);
+    }
+
+    #[test]
+    fn test_render_folder_hierarchy_creates_includes_root() {
+        let owner = "contact@example.com";
+        let xml = render_folder_hierarchy_creates(owner, 0);
+        // Must include MsgFolderRoot
+        assert!(xml.contains("Top of Information Store"),
+            "Folder hierarchy must include MsgFolderRoot");
+        // Must include Calendar
+        assert!(xml.contains("<t:CalendarFolder>"),
+            "Folder hierarchy must include Calendar");
+        // Must include Inbox
+        assert!(xml.contains(">Inbox<"),
+            "Folder hierarchy must include Inbox");
+        // Must include Sent Items
+        assert!(xml.contains(">Sent Items<"),
+            "Folder hierarchy must include Sent Items");
+        // All must be wrapped in <t:Create>
+        assert!(xml.contains("<t:Create>"),
+            "Folders must be wrapped in <t:Create>");
+    }
+
+    #[test]
+    fn test_render_root_and_children_count() {
+        let owner = "contact@example.com";
+        let (total, xml) = render_root_and_children(owner, 5);
+        // Expect MsgFolderRoot + all root_children
+        assert_eq!(total, 1 + DistinguishedFolder::root_children().len());
+        assert!(xml.contains("Top of Information Store"),
+            "Must include MsgFolderRoot");
+        assert!(xml.contains(">Calendar<"),
+            "Must include Calendar");
+    }
 }

@@ -10,7 +10,8 @@ use crate::calendar::{
 };
 use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
-    DistinguishedFolder, folder_id_for, render_folder_xml, validate_folder_request,
+    DistinguishedFolder, folder_id_for, render_folder_xml, render_folder_hierarchy_creates,
+    render_root_and_children, resolve_folder_id, validate_folder_request,
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
@@ -101,6 +102,7 @@ enum EwsAction {
     CreateAttachment,
     GetAttachment,
     DeleteAttachment,
+    GetUserConfiguration,
 }
 
 impl EwsAction {
@@ -153,6 +155,7 @@ impl EwsAction {
             EwsAction::CreateAttachment => "CreateAttachmentResponseMessage",
             EwsAction::GetAttachment => "GetAttachmentResponseMessage",
             EwsAction::DeleteAttachment => "DeleteAttachmentResponseMessage",
+            EwsAction::GetUserConfiguration => "GetUserConfigurationResponseMessage",
         }
     }
 }
@@ -301,6 +304,7 @@ pub async fn handle(
         EwsAction::CreateAttachment => handle_create_attachment(&state, &auth, &body).await,
         EwsAction::GetAttachment => handle_get_attachment(&state, &auth, &body).await,
         EwsAction::DeleteAttachment => handle_delete_attachment(&state, &auth, &body).await,
+        EwsAction::GetUserConfiguration => handle_get_user_configuration().await,
     }
 }
 
@@ -391,6 +395,7 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"CreateAttachment" => EwsAction::CreateAttachment,
                     b"GetAttachment" => EwsAction::GetAttachment,
                     b"DeleteAttachment" => EwsAction::DeleteAttachment,
+                    b"GetUserConfiguration" => EwsAction::GetUserConfiguration,
                     _ => {
                         buf.clear();
                         continue;
@@ -1702,8 +1707,16 @@ async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let folder =
-        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+    // Also try resolving by explicit FolderId — clients like eM Client may query by ID
+    // after receiving it from SyncFolderHierarchy or FindFolder.
+    let explicit_id = extract_first_attr(body, b"FolderId", b"Id").unwrap_or_default();
+    let folder = if !distinguished_str.is_empty() {
+        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar)
+    } else if !explicit_id.is_empty() {
+        resolve_folder_id(&explicit_id, owner).unwrap_or(DistinguishedFolder::Calendar)
+    } else {
+        DistinguishedFolder::Calendar
+    };
     let total_count =
         if folder.is_calendar() || matches!(folder, DistinguishedFolder::MsgFolderRoot) {
             load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
@@ -1729,23 +1742,22 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let (total_count, cal_xml) = match distinguished_str.as_str() {
+    let (total_count, folders_xml) = match distinguished_str.as_str() {
         "msgfolderroot" | "" => {
             let count =
                 load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
                     .await
                     .map(|v| v.len())
                     .unwrap_or(0);
-            (
-                1usize,
-                render_folder_xml(owner, DistinguishedFolder::Calendar, count),
-            )
+            // Return MsgFolderRoot + all children so clients have the root FolderId
+            // for operations like GetUserConfiguration.
+            render_root_and_children(owner, count)
         }
         _ => (0usize, String::new()),
     };
     let response = format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="true"><t:Folders>{}</t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, total_count, cal_xml
+        EWS_MSG_NS, EWS_TYPE_NS, total_count, folders_xml
     );
     soap_ok(response)
 }
@@ -2795,8 +2807,9 @@ async fn handle_sync_folder_hierarchy(
             .await
             .map(|v| v.len())
             .unwrap_or(0);
-        let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
-        format!("<t:Create>{}</t:Create>", cal_xml)
+        // Return MsgFolderRoot first (clients need its FolderId for GetUserConfiguration),
+        // then Calendar, then all other child folders.
+        render_folder_hierarchy_creates(owner, count)
     } else {
         String::new()
     };
@@ -4500,6 +4513,26 @@ async fn handle_delete_attachment(
             )
         }
     }
+}
+
+/// Handle EWS GetUserConfiguration operation.
+///
+/// Per MS-OXWSUSRCFG §3.1.4.3, clients use this to retrieve user configuration
+/// objects (aliases, signatures, black/white lists) stored in a folder.
+/// The gateway does not support user configuration objects, so we return
+/// `ErrorItemNotFound` with HTTP 200 so the client can gracefully continue
+/// (aliases, signatures, and block/allow lists will simply be empty).
+///
+/// Previously, a missing GetUserConfiguration handler caused `detect_action()`
+/// to return None → SOAP fault with HTTP 400, which crashed eM Client's
+/// `ExchangeFolderSynchronizer` with `ArgumentNullException: parentFolderId`.
+async fn handle_get_user_configuration() -> Response {
+    operation_error_response(
+        &EwsAction::GetUserConfiguration,
+        "ErrorItemNotFound",
+        "User configuration object not found",
+        StatusCode::OK,
+    )
 }
 #[cfg(test)]
 mod tests {
