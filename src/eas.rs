@@ -2388,7 +2388,8 @@ async fn handle_sync_collections(
                     Err(e) => {
                         tracing::error!(
                             "request_id={} failed applying Sync mutations: {}",
-                            request_id, e
+                            request_id,
+                            e
                         );
                         let resp_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Status>6</Status></Sync>";
                         return xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id);
@@ -3247,10 +3248,14 @@ mod tests {
         assert_eq!(collections[0].filter_type, Some(5));
         assert!(collections[0].get_changes);
         // Verify raw XML captured — must only contain Calendar collection content
-        assert!(collections[0].xml.contains("<Class>Calendar</Class>"),
-            "Calendar collection xml should contain Calendar class");
-        assert!(!collections[0].xml.contains("<Class>Email</Class>"),
-            "Calendar collection xml should NOT contain Email class (cross-collection leakage)");
+        assert!(
+            collections[0].xml.contains("<Class>Calendar</Class>"),
+            "Calendar collection xml should contain Calendar class"
+        );
+        assert!(
+            !collections[0].xml.contains("<Class>Email</Class>"),
+            "Calendar collection xml should NOT contain Email class (cross-collection leakage)"
+        );
 
         assert_eq!(collections[1].class.as_deref(), Some("Email"));
         assert_eq!(collections[1].collection_id.as_deref(), Some("2"));
@@ -3258,10 +3263,14 @@ mod tests {
         assert_eq!(collections[1].window_size, Some(50));
         assert!(collections[1].get_changes);
         // Verify raw XML captured — must only contain Email collection content
-        assert!(collections[1].xml.contains("<Class>Email</Class>"),
-            "Email collection xml should contain Email class");
-        assert!(!collections[1].xml.contains("<Class>Calendar</Class>"),
-            "Email collection xml should NOT contain Calendar class (cross-collection leakage)");
+        assert!(
+            collections[1].xml.contains("<Class>Email</Class>"),
+            "Email collection xml should contain Email class"
+        );
+        assert!(
+            !collections[1].xml.contains("<Class>Calendar</Class>"),
+            "Email collection xml should NOT contain Calendar class (cross-collection leakage)"
+        );
     }
 
     #[test]
@@ -3283,11 +3292,15 @@ mod tests {
         assert_eq!(collections[0].class.as_deref(), Some("Calendar"));
         assert_eq!(collections[0].sync_key.as_deref(), Some("abc123"));
         // GetChanges defaults to true when absent per MS-ASCMD §2.2.3.72
-        assert!(collections[0].get_changes,
-            "GetChanges should default to true when absent");
+        assert!(
+            collections[0].get_changes,
+            "GetChanges should default to true when absent"
+        );
         // Verify raw XML captured
-        assert!(collections[0].xml.contains("<SyncKey>abc123</SyncKey>"),
-            "Single collection xml should contain its SyncKey");
+        assert!(
+            collections[0].xml.contains("<SyncKey>abc123</SyncKey>"),
+            "Single collection xml should contain its SyncKey"
+        );
     }
 
     #[test]
@@ -3296,7 +3309,10 @@ mod tests {
         let xml = r#"<Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId></Collection>"#;
         let collections = parse_sync_collections(xml);
         assert_eq!(collections.len(), 1);
-        assert!(collections[0].get_changes, "GetChanges must default to true");
+        assert!(
+            collections[0].get_changes,
+            "GetChanges must default to true"
+        );
 
         // Explicit <GetChanges>0</GetChanges> should set it to false
         let xml_zero = r#"<Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><GetChanges>0</GetChanges></Collection>"#;
@@ -3312,6 +3328,9 @@ mod tests {
         assert!(inner.contains("<SyncKey>new</SyncKey>"));
         assert!(inner.starts_with("<Collection"));
         assert!(inner.ends_with("</Collection>"));
-        assert!(!inner.contains("<Sync xmlns"), "Should not contain outer Sync wrapper");
+        assert!(
+            !inner.contains("<Sync xmlns"),
+            "Should not contain outer Sync wrapper"
+        );
     }
 }
