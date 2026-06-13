@@ -1281,13 +1281,19 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 .await
             {
                 Ok(account_id) => {
+                    // Stalwart's JMAP CalendarEvent/query filter deserializer
+                    // uses DateTime::parse_rfc3339() which requires RFC 3339
+                    // extended format (e.g. "2026-05-28T03:52:04Z"), NOT the
+                    // basic ISO 8601 format used by CalDAV/iCalendar
+                    // (e.g. "20260528T035204Z"). Sending basic format causes
+                    // a parse failure → entire request rejected as notRequest.
                     let start = params
                         .opts
                         .filter_start
-                        .format("%Y%m%dT%H%M%SZ")
+                        .format("%Y-%m-%dT%H:%M:%SZ")
                         .to_string();
                     let end = (Utc::now() + Duration::weeks(104))
-                        .format("%Y%m%dT%H%M%SZ")
+                        .format("%Y-%m-%dT%H:%M:%SZ")
                         .to_string();
 
                     match jmap

@@ -23,6 +23,7 @@
 - **Principal/getAvailability**: Replaces CalDAV free-busy-query. Capability URN: `urn:ietf:params:jmap:principals:availability`
 
 ## Stalwart v0.16.x Quirks
+- **JMAP Calendar datetime format**: Stalwart's JMAP CalendarEvent/query filter uses `DateTime::parse_rfc3339()` internally, which requires RFC 3339 **extended** format (`2026-05-28T03:52:04Z`), NOT the basic ISO 8601 format (`20260528T035204Z`) used by iCalendar/CalDAV. Sending basic format causes the entire JMAP request to be rejected as 400 `notRequest`. All JMAP Calendar `after`/`before` filter values must use `%Y-%m-%dT%H:%M:%SZ`. CalDAV paths continue using `%Y%m%dT%H%M%SZ`.
 - **ETag on GET**: Stalwart v0.16.5 does NOT return ETag in GET response headers. Must use PROPFIND to obtain etags.
 - **ETag in PROPFIND/REPORT**: Stalwart always includes `<D:getetag>` in multistatus responses (Depth:0 PROPFIND and calendar-query REPORT). ETags are returned double-quoted: `"1419368738"`.
 - **412 on unquoted If-Match**: Per RFC 7232 §2.3, `If-Match` requires double-quoted entity-tags (`If-Match: "etag"` not `If-Match: etag`). Stalwart rejects unquoted etags with 412 Precondition Failed. Use `CaldavClient::format_etag_for_if_match()` to wrap etags in DQUOTE before sending.
@@ -102,6 +103,13 @@
 - **This is NOT a gateway code bug for native EAS clients**: The EAS protocol implementation is correct (OPTIONS, Bearer challenge, Provision, FolderSync, Sync, Settings all work). The limitation applies only to the Outlook app, not to direct EAS clients.
 - **Why Outlook Windows works**: New Outlook for Windows (and Classic Outlook) connect DIRECTLY to on-premises servers via EWS/ActiveSync without requiring the cloud middle tier.
 - **Android calendar via gateway**: Use Android's native Exchange account (Settings → Accounts → Exchange) with the gateway's ActiveSync URL. Calendar syncs to native Android calendar. For email, use any IMAP client including Outlook for email-only.
+
+## EAS Multi-Collection Sync (June 2026)
+- **Problem**: Android clients (including Gmail's Exchange account) send multi-collection Sync requests containing both Calendar and Email `<Collection>` elements in a single Sync command. Previously, the gateway only processed the first Collection, causing email sync to be silently ignored.
+- **Solution**: `parse_sync_collections()` parses all `<Collection>` elements from the XML body. `handle_sync_collections()` processes each collection independently (Calendar via CalDAV/JMAP Calendar, Email via JMAP Email) and combines the responses into a single multi-collection `<Sync><Collections>...</Collections></Sync>` envelope.
+- **`handle_email_sync` return type**: Changed from `Result<Response>` to `Result<String>`. Returns just the inner `<Collection>...</Collection>` XML fragment, allowing composition into multi-collection responses. The caller wraps it in the full Sync envelope.
+- **Fallback**: If `parse_sync_collections()` returns empty (no nested `<Collection>` elements found), the gateway constructs a single-element list from the `EasRequest` fields — backward compatible with older single-collection clients.
+- **Per MS-ASCMD §2.2.3.31.2**: The Sync command supports 1..N Collection elements. Each collection is processed independently with its own SyncKey, CollectionId, Class, WindowSize, FilterType, and GetChanges.
 
 ## Email Architecture (JMAP + SMTP)
 
