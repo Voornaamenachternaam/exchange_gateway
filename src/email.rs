@@ -636,6 +636,15 @@ pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static
     }
 }
 
+/// Returns true if the EAS CollectionId refers to an email folder.
+///
+/// CollectionIds 2–7 are email folders (Inbox, Drafts, Sent, Deleted, Outbox, Junk).
+/// CollectionId "1" is Calendar. Any other ID is unknown.
+/// Used to route Sync requests when `<Class>` is absent from the request.
+pub fn is_eas_email_collection_id(collection_id: &str) -> bool {
+    matches!(collection_id, "2" | "3" | "4" | "5" | "6" | "7")
+}
+
 /// EAS FolderSync folder entries for email folders.
 ///
 /// Per MS-ASCON §2.2.3.41.1, the Type element indicates the content class.
@@ -1101,5 +1110,21 @@ mod tests {
     #[test]
     fn test_eas_collection_id_to_mailbox_role_unknown_returns_none() {
         assert_eq!(eas_collection_id_to_mailbox_role("99"), None);
+    }
+
+    #[test]
+    fn test_is_eas_email_collection_id() {
+        // Email folders: 2=Inbox, 3=Drafts, 4=Sent, 5=Deleted, 6=Outbox, 7=Junk
+        assert!(is_eas_email_collection_id("2"));
+        assert!(is_eas_email_collection_id("3"));
+        assert!(is_eas_email_collection_id("4"));
+        assert!(is_eas_email_collection_id("5"));
+        assert!(is_eas_email_collection_id("6"));
+        assert!(is_eas_email_collection_id("7"));
+        // Calendar: 1
+        assert!(!is_eas_email_collection_id("1"));
+        // Unknown
+        assert!(!is_eas_email_collection_id("0"));
+        assert!(!is_eas_email_collection_id("99"));
     }
 }
