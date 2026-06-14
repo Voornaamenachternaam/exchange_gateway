@@ -4738,13 +4738,15 @@ mod tests {
 
     #[test]
     fn test_xml_escape_escapes_special_characters() {
-        // xml_escape escapes &, <, >, and " for safe inclusion in XML.
-        // Single quotes do not need escaping in double-quoted attributes.
+        // xml_escape escapes &, <, >, ", and ' for safe inclusion in XML.
+        // This matches quick_xml::escape::escape behavior.
         assert_eq!(
             xml_escape("a<b>c&d\"e'f").as_ref(),
-            "a&lt;b&gt;c&amp;d&quot;e'f"
+            "a&lt;b&gt;c&amp;d&quot;e&apos;f"
         );
-        assert_eq!(xml_escape("'").as_ref(), "'");
+        assert_eq!(xml_escape("'").as_ref(), "&apos;");
+        assert_eq!(xml_escape("\"").as_ref(), "&quot;");
+        assert_eq!(xml_escape("&<>'").as_ref(), "&amp;&lt;&gt;&apos;");
     }
 
     #[test]
