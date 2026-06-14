@@ -1715,6 +1715,7 @@ fn requested_find_folder_parent_from_ids(body: &str, owner: &str) -> Distinguish
     DistinguishedFolder::Calendar
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum RequestedFolderRef {
     Distinguished(String),
     Explicit(String),
@@ -1769,7 +1770,7 @@ fn requested_folder_from_ids_with_order(
     folder_tags: &[&[u8]],
 ) -> DistinguishedFolder {
     if let Some(distinguished_id) = extract_first_attr(body, b"DistinguishedFolderId", b"Id") {
-        return DistinguishedFolder::from_str(&distinguished_id)
+        return parse_distinguished_folder_id(&distinguished_id)
             .unwrap_or(DistinguishedFolder::Calendar);
     }
 
@@ -1791,10 +1792,14 @@ fn resolve_requested_folder_ref(
 ) -> DistinguishedFolder {
     match folder_ref {
         RequestedFolderRef::Distinguished(id) => {
-            DistinguishedFolder::from_str(&id).unwrap_or(DistinguishedFolder::Calendar)
+            parse_distinguished_folder_id(&id).unwrap_or(DistinguishedFolder::Calendar)
         }
         RequestedFolderRef::Explicit(id) => resolve_explicit_folder_id(&id, owner),
     }
+}
+
+fn parse_distinguished_folder_id(id: &str) -> Result<DistinguishedFolder, ()> {
+    DistinguishedFolder::from_str(&id.to_ascii_lowercase())
 }
 
 fn resolve_explicit_folder_id(id: &str, owner: &str) -> DistinguishedFolder {
@@ -1973,7 +1978,7 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_else(|| "calendar".to_string());
     let folder =
-        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+        parse_distinguished_folder_id(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
 
     // Email folders — route to JMAP
     if folder.is_email() && state.cfg.email_enabled && state.jmap_client.is_some() {
@@ -2591,7 +2596,7 @@ async fn handle_sync_folder_items(
     let distinguished_str =
         extract_first_attr(body, b"DistinguishedFolderId", b"Id").unwrap_or_default();
     let distinguished =
-        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+        parse_distinguished_folder_id(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
 
     // Route email folders to JMAP-based sync
     if distinguished.is_email() && state.email_available() {
@@ -4756,6 +4761,25 @@ mod tests {
         assert_eq!(
             requested_find_folder_parent_from_ids(&body, owner),
             DistinguishedFolder::MsgFolderRoot
+        );
+    }
+
+    #[test]
+    fn test_distinguished_folder_ids_are_case_insensitive() {
+        let owner = "user@example.com";
+        let body = r#"<m:FindItem>
+            <m:ParentFolderIds>
+                <t:DistinguishedFolderId Id="InBoX" />
+            </m:ParentFolderIds>
+        </m:FindItem>"#;
+
+        assert_eq!(
+            requested_folder_from_ids(body, owner),
+            DistinguishedFolder::Inbox
+        );
+        assert_eq!(
+            parse_distinguished_folder_id("MsgFolderRoot"),
+            Ok(DistinguishedFolder::MsgFolderRoot)
         );
     }
 
