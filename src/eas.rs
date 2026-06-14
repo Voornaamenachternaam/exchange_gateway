@@ -1191,8 +1191,8 @@ async fn handle_folder_sync(
         .await;
     let changes = if incoming == "0" {
         // Per MS-ASCMD §2.2.3.41, Type values:
-        // 2=Email (default mail folder), 3=Drafts, 4=Sent Items,
-        // 5=Deleted Items, 6=Outbox, 7=Junk Email, 8=Calendar
+        // 2=Email (default mail folder), 3=Drafts, 4=Deleted Items,
+        // 5=Sent Items, 6=Outbox, 8=Calendar, 12=Junk Email
         // Only include email folders when email is actually available,
         // otherwise clients will attempt to sync them and hit errors.
         // Uses eas_email_folders_xml() which emits correct Type values per
@@ -2278,8 +2278,8 @@ async fn handle_sync_collections(
         let state_collection_id = scoped_collection_id(collection_id, device_id);
         let incoming_key = coll.sync_key.as_deref().unwrap_or("0");
         // Per MS-ASCMD §2.2.3.30, <Class> is optional in Sync requests.
-        // When absent, infer from CollectionId: IDs 2–7 are email folders,
-        // ID "1" is Calendar. Previously, defaulting to "Calendar" caused
+        // When absent, infer from CollectionId using the central EAS email
+        // folder mapping; ID "1" is Calendar. Previously, defaulting to "Calendar" caused
         // email Sync requests to be routed to the calendar path, returning
         // zero email items (the root cause of "no emails in Gmail on Android").
         let is_email = coll
