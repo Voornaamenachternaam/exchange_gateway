@@ -313,7 +313,9 @@ pub async fn handle(
         EwsAction::CreateAttachment => handle_create_attachment(&state, &auth, &body).await,
         EwsAction::GetAttachment => handle_get_attachment(&state, &auth, &body).await,
         EwsAction::DeleteAttachment => handle_delete_attachment(&state, &auth, &body).await,
-        EwsAction::GetUserConfiguration => handle_get_user_configuration(&state, &auth, &body).await,
+        EwsAction::GetUserConfiguration => {
+            handle_get_user_configuration(&state, &auth, &body).await
+        }
     }
 }
 
@@ -4649,7 +4651,9 @@ async fn handle_get_user_configuration(
 
         match (folder_id, distinguished_id) {
             (Some(fid), _) => format!(r#"<t:FolderId Id="{}" />"#, xml_escape(&fid)),
-            (None, Some(did)) => format!(r#"<t:DistinguishedFolderId Id="{}" />"#, xml_escape(&did)),
+            (None, Some(did)) => {
+                format!(r#"<t:DistinguishedFolderId Id="{}" />"#, xml_escape(&did))
+            }
             _ => r#"<t:DistinguishedFolderId Id="msgfolderroot" />"#.to_string(),
         }
     };
@@ -4897,8 +4901,14 @@ mod tests {
         assert!(body.contains("NoError"));
         assert!(body.contains("<t:UserConfiguration"));
         assert!(body.contains("<t:Dictionary />"));
-        assert!(body.contains("Aliases &amp; Signatures"), "Name should be XML-escaped (ampersand)");
-        assert!(body.contains(&format!("Id=\"{}\"", folder_id)), "FolderId should be echoed back");
+        assert!(
+            body.contains("Aliases &amp; Signatures"),
+            "Name should be XML-escaped (ampersand)"
+        );
+        assert!(
+            body.contains(&format!("Id=\"{}\"", folder_id)),
+            "FolderId should be echoed back"
+        );
 
         // Ensure double-quotes in config name are escaped to prevent attribute injection.
         let body_with_quote = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -4912,7 +4922,10 @@ mod tests {
         </s:Envelope>"#;
         let response = handle_get_user_configuration(&state, &auth, &body_with_quote).await;
         let body = response.into_body().into_string().unwrap();
-        assert!(body.contains("Config&quot;Name"), "Double quotes should be escaped to &quot;");
+        assert!(
+            body.contains("Config&quot;Name"),
+            "Double quotes should be escaped to &quot;"
+        );
     }
 
     #[test]
