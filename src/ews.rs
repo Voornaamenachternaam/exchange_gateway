@@ -1798,8 +1798,10 @@ fn resolve_requested_folder_ref(
     }
 }
 
-fn parse_distinguished_folder_id(id: &str) -> Result<DistinguishedFolder, ()> {
-    DistinguishedFolder::from_str(&id.to_ascii_lowercase())
+fn parse_distinguished_folder_id(id: &str) -> Result<DistinguishedFolder, String> {
+    let normalized = id.trim();
+    DistinguishedFolder::from_str(normalized)
+        .map_err(|()| format!("unrecognized distinguished folder id: {normalized:?}"))
 }
 
 fn resolve_explicit_folder_id(id: &str, owner: &str) -> DistinguishedFolder {
@@ -4780,6 +4782,10 @@ mod tests {
         assert_eq!(
             parse_distinguished_folder_id("MsgFolderRoot"),
             Ok(DistinguishedFolder::MsgFolderRoot)
+        );
+        assert_eq!(
+            parse_distinguished_folder_id(" inbox "),
+            Ok(DistinguishedFolder::Inbox)
         );
     }
 
