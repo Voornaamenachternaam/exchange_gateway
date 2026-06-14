@@ -4737,14 +4737,11 @@ mod tests {
     }
 
     #[test]
-    fn test_xml_escape_preserves_quotes_in_attribute_values() {
-        // xml_escape should escape double quotes to prevent XML attribute injection
-        assert!(xml_escape("a\"b").contains("&quot;"));
-        assert!(xml_escape("'").contains("'"));
-        assert!(xml_escape("<>&\"").contains("&lt;"));
-        assert!(xml_escape("<>&\"").contains("&gt;"));
-        assert!(xml_escape("<>&\"").contains("&amp;"));
-        assert!(xml_escape("<>&\"").contains("&quot;"));
+    fn test_xml_escape_escapes_special_characters() {
+        // xml_escape escapes &, <, >, and " for safe inclusion in XML.
+        // Single quotes do not need escaping in double-quoted attributes.
+        assert_eq!(xml_escape("a<b>c&d\"e'f").as_ref(), "a&lt;b&gt;c&amp;d&quot;e'f");
+        assert_eq!(xml_escape("'").as_ref(), "'");
     }
 
     #[test]
