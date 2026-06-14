@@ -1700,6 +1700,10 @@ async fn load_current_calendar_items(
 }
 
 fn requested_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
+    if let Some(folder_ref) = extract_scoped_folder_id(body, b"ParentFolderIds") {
+        return resolve_requested_folder_ref(folder_ref, owner);
+    }
+
     requested_folder_from_ids_with_order(
         body,
         owner,
@@ -1707,8 +1711,16 @@ fn requested_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
     )
 }
 
+fn requested_sync_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
+    if let Some(folder_ref) = extract_scoped_folder_id(body, b"SyncFolderId") {
+        return resolve_requested_folder_ref(folder_ref, owner);
+    }
+
+    requested_folder_from_ids_with_order(body, owner, &[b"SyncFolderId".as_slice()])
+}
+
 fn requested_find_folder_parent_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
-    if let Some(folder_ref) = extract_find_folder_parent_id(body) {
+    if let Some(folder_ref) = extract_scoped_folder_id(body, b"ParentFolderIds") {
         return resolve_requested_folder_ref(folder_ref, owner);
     }
 
@@ -1721,7 +1733,7 @@ enum RequestedFolderRef {
     Explicit(String),
 }
 
-fn extract_find_folder_parent_id(body: &str) -> Option<RequestedFolderRef> {
+fn extract_scoped_folder_id(body: &str, container_name: &[u8]) -> Option<RequestedFolderRef> {
     let mut reader = Reader::from_str(body);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -1729,7 +1741,7 @@ fn extract_find_folder_parent_id(body: &str) -> Option<RequestedFolderRef> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == container_name => {
                 in_parent_folder_ids = true;
             }
             Ok(Event::Start(e)) | Ok(Event::Empty(e))
@@ -1754,7 +1766,7 @@ fn extract_find_folder_parent_id(body: &str) -> Option<RequestedFolderRef> {
                     }
                 }
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == container_name => {
                 in_parent_folder_ids = false;
             }
             Ok(Event::Eof) | Err(_) => return None,
@@ -1976,11 +1988,12 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         return *resp;
     }
 
-    // Determine the distinguished folder being queried
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_else(|| "calendar".to_string());
-    let folder =
-        parse_distinguished_folder_id(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+    // Determine the requested folder from the actual ParentFolderIds block.
+    // eM Client commonly sends opaque FolderId values returned by FindFolder/
+    // SyncFolderHierarchy; using the first DistinguishedFolderId anywhere in the
+    // request is unsafe because FolderShape/Restriction can contain unrelated
+    // folder identifiers.
+    let folder = requested_folder_from_ids(body, owner);
 
     // Email folders — route to JMAP
     if folder.is_email() && state.cfg.email_enabled && state.jmap_client.is_some() {
@@ -2594,11 +2607,11 @@ async fn handle_sync_folder_items(
         return *resp;
     }
 
-    // Determine the folder type from the request
-    let distinguished_str =
-        extract_first_attr(body, b"DistinguishedFolderId", b"Id").unwrap_or_default();
-    let distinguished =
-        parse_distinguished_folder_id(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+    // Determine the folder type from SyncFolderId first.  Clients typically use
+    // the opaque FolderId values we returned in folder hierarchy responses; if
+    // we default those requests to Calendar, email folder sync falls through to
+    // the CalDAV path and can surface as HTTP 400 Bad Request.
+    let distinguished = requested_sync_folder_from_ids(body, owner);
 
     // Route email folders to JMAP-based sync
     if distinguished.is_email() && state.email_available() {
@@ -4740,6 +4753,47 @@ mod tests {
         assert_eq!(
             requested_folder_from_ids(&body, owner),
             DistinguishedFolder::Inbox
+        );
+    }
+
+    #[test]
+    fn test_find_item_uses_parent_folder_id_not_unrelated_folder_shape_ids() {
+        let owner = "user@example.com";
+        let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        let calendar_id = folder_id_for(owner, DistinguishedFolder::Calendar);
+        let body = format!(
+            r#"<m:FindItem>
+                <m:ItemShape>
+                    <t:AdditionalProperties>
+                        <t:FolderId Id="{calendar_id}" />
+                    </t:AdditionalProperties>
+                </m:ItemShape>
+                <m:ParentFolderIds>
+                    <t:FolderId Id="{inbox_id}" />
+                </m:ParentFolderIds>
+            </m:FindItem>"#
+        );
+
+        assert_eq!(
+            requested_folder_from_ids(&body, owner),
+            DistinguishedFolder::Inbox
+        );
+    }
+
+    #[test]
+    fn test_sync_folder_items_uses_sync_folder_id_for_email_folders() {
+        let owner = "user@example.com";
+        let sent_id = folder_id_for(owner, DistinguishedFolder::SentItems);
+        let body = format!(
+            r#"<m:SyncFolderItems>
+                <m:ItemShape><t:BaseShape>IdOnly</t:BaseShape></m:ItemShape>
+                <m:SyncFolderId><t:FolderId Id="{sent_id}" /></m:SyncFolderId>
+            </m:SyncFolderItems>"#
+        );
+
+        assert_eq!(
+            requested_sync_folder_from_ids(&body, owner),
+            DistinguishedFolder::SentItems
         );
     }
 
