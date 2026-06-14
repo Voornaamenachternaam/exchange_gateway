@@ -1191,8 +1191,8 @@ async fn handle_folder_sync(
         .await;
     let changes = if incoming == "0" {
         // Per MS-ASCMD §2.2.3.41, Type values:
-        // 2=Email (default mail folder), 3=Drafts, 4=Sent Items,
-        // 5=Deleted Items, 6=Outbox, 7=Junk Email, 8=Calendar
+        // 2=Email (default mail folder), 3=Drafts, 4=Deleted Items,
+        // 5=Sent Items, 6=Outbox, 8=Calendar, 12=Junk Email
         // Only include email folders when email is actually available,
         // otherwise clients will attempt to sync them and hit errors.
         // Uses eas_email_folders_xml() which emits correct Type values per
@@ -2277,9 +2277,18 @@ async fn handle_sync_collections(
         let collection_id = coll.collection_id.as_deref().unwrap_or("1");
         let state_collection_id = scoped_collection_id(collection_id, device_id);
         let incoming_key = coll.sync_key.as_deref().unwrap_or("0");
-        let class = coll.class.as_deref().unwrap_or("Calendar");
+        // Per MS-ASCMD §2.2.3.30, <Class> is optional in Sync requests.
+        // When absent, infer from CollectionId using the central EAS email
+        // folder mapping; ID "1" is Calendar. Previously, defaulting to "Calendar" caused
+        // email Sync requests to be routed to the calendar path, returning
+        // zero email items (the root cause of "no emails in Gmail on Android").
+        let is_email = coll
+            .class
+            .as_deref()
+            .map(|c| c.eq_ignore_ascii_case("Email"))
+            .unwrap_or_else(|| crate::email::is_eas_email_collection_id(collection_id));
 
-        let coll_xml = if class.eq_ignore_ascii_case("Email") {
+        let coll_xml = if is_email {
             // Email sync — route to JMAP
             if state.cfg.email_enabled && state.jmap_client.is_some() {
                 match handle_email_sync(
@@ -2410,7 +2419,7 @@ async fn handle_sync_collections(
                 collection_id,
                 state_collection_id: &state_collection_id,
                 incoming_sync_key: incoming_key,
-                content_class: class,
+                content_class: "Calendar",
                 opts,
                 username,
                 password: password.expose_secret(),

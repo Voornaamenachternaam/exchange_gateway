@@ -10,7 +10,8 @@ use crate::calendar::{
 };
 use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
-    DistinguishedFolder, folder_id_for, render_folder_xml, validate_folder_request,
+    DistinguishedFolder, folder_id_for, render_folder_hierarchy_creates, render_folder_xml,
+    render_root_and_children, resolve_folder_id, validate_folder_request,
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
@@ -101,6 +102,7 @@ enum EwsAction {
     CreateAttachment,
     GetAttachment,
     DeleteAttachment,
+    GetUserConfiguration,
 }
 
 impl EwsAction {
@@ -153,6 +155,7 @@ impl EwsAction {
             EwsAction::CreateAttachment => "CreateAttachmentResponseMessage",
             EwsAction::GetAttachment => "GetAttachmentResponseMessage",
             EwsAction::DeleteAttachment => "DeleteAttachmentResponseMessage",
+            EwsAction::GetUserConfiguration => "GetUserConfigurationResponseMessage",
         }
     }
 }
@@ -301,6 +304,7 @@ pub async fn handle(
         EwsAction::CreateAttachment => handle_create_attachment(&state, &auth, &body).await,
         EwsAction::GetAttachment => handle_get_attachment(&state, &auth, &body).await,
         EwsAction::DeleteAttachment => handle_delete_attachment(&state, &auth, &body).await,
+        EwsAction::GetUserConfiguration => handle_get_user_configuration().await,
     }
 }
 
@@ -391,6 +395,7 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"CreateAttachment" => EwsAction::CreateAttachment,
                     b"GetAttachment" => EwsAction::GetAttachment,
                     b"DeleteAttachment" => EwsAction::DeleteAttachment,
+                    b"GetUserConfiguration" => EwsAction::GetUserConfiguration,
                     _ => {
                         buf.clear();
                         continue;
@@ -1694,16 +1699,125 @@ async fn load_current_calendar_items(
     Ok(out)
 }
 
+fn requested_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
+    requested_folder_from_ids_with_order(
+        body,
+        owner,
+        &[b"FolderId".as_slice(), b"ParentFolderId".as_slice()],
+    )
+}
+
+fn requested_find_folder_parent_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
+    if let Some(folder_ref) = extract_find_folder_parent_id(body) {
+        return resolve_requested_folder_ref(folder_ref, owner);
+    }
+
+    DistinguishedFolder::Calendar
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RequestedFolderRef {
+    Distinguished(String),
+    Explicit(String),
+}
+
+fn extract_find_folder_parent_id(body: &str) -> Option<RequestedFolderRef> {
+    let mut reader = Reader::from_str(body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_parent_folder_ids = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+                in_parent_folder_ids = true;
+            }
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if in_parent_folder_ids
+                    && matches!(
+                        e.name().local_name().as_ref(),
+                        b"FolderId" | b"DistinguishedFolderId"
+                    ) =>
+            {
+                for a in e.attributes().flatten() {
+                    if a.key.local_name().as_ref() == b"Id"
+                        && let Ok(v) = a.decode_and_unescape_value(reader.decoder())
+                    {
+                        let id = v.into_owned();
+                        return Some(
+                            if e.name().local_name().as_ref() == b"DistinguishedFolderId" {
+                                RequestedFolderRef::Distinguished(id)
+                            } else {
+                                RequestedFolderRef::Explicit(id)
+                            },
+                        );
+                    }
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+                in_parent_folder_ids = false;
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+fn requested_folder_from_ids_with_order(
+    body: &str,
+    owner: &str,
+    folder_tags: &[&[u8]],
+) -> DistinguishedFolder {
+    if let Some(distinguished_id) = extract_first_attr(body, b"DistinguishedFolderId", b"Id") {
+        return parse_distinguished_folder_id(&distinguished_id)
+            .unwrap_or(DistinguishedFolder::Calendar);
+    }
+
+    // Also try resolving by explicit folder IDs — clients like eM Client may query by
+    // ID after receiving it from SyncFolderHierarchy or FindFolder. EWS also accepts
+    // the literal root ID, which maps to MsgFolderRoot.
+    for tag in folder_tags {
+        if let Some(id) = extract_first_attr(body, tag, b"Id") {
+            return resolve_explicit_folder_id(&id, owner);
+        }
+    }
+
+    DistinguishedFolder::Calendar
+}
+
+fn resolve_requested_folder_ref(
+    folder_ref: RequestedFolderRef,
+    owner: &str,
+) -> DistinguishedFolder {
+    match folder_ref {
+        RequestedFolderRef::Distinguished(id) => {
+            parse_distinguished_folder_id(&id).unwrap_or(DistinguishedFolder::Calendar)
+        }
+        RequestedFolderRef::Explicit(id) => resolve_explicit_folder_id(&id, owner),
+    }
+}
+
+fn parse_distinguished_folder_id(id: &str) -> Result<DistinguishedFolder, String> {
+    let normalized = id.trim();
+    DistinguishedFolder::from_str(normalized)
+        .map_err(|()| format!("unrecognized distinguished folder id: {normalized:?}"))
+}
+
+fn resolve_explicit_folder_id(id: &str, owner: &str) -> DistinguishedFolder {
+    if id.eq_ignore_ascii_case("root") {
+        return DistinguishedFolder::MsgFolderRoot;
+    }
+
+    resolve_folder_id(id, owner).unwrap_or(DistinguishedFolder::Calendar)
+}
+
 async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::GetFolder, owner, body) {
         return *resp;
     }
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let folder =
-        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+    let folder = requested_folder_from_ids(body, owner);
     let total_count =
         if folder.is_calendar() || matches!(folder, DistinguishedFolder::MsgFolderRoot) {
             load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
@@ -1726,26 +1840,22 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
     if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
         return *resp;
     }
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let (total_count, cal_xml) = match distinguished_str.as_str() {
-        "msgfolderroot" | "" => {
-            let count =
-                load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
-                    .await
-                    .map(|v| v.len())
-                    .unwrap_or(0);
-            (
-                1usize,
-                render_folder_xml(owner, DistinguishedFolder::Calendar, count),
-            )
-        }
-        _ => (0usize, String::new()),
+    let parent_folder = requested_find_folder_parent_from_ids(body, owner);
+    let (total_count, folders_xml) = if matches!(parent_folder, DistinguishedFolder::MsgFolderRoot)
+    {
+        let count = load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        // Return MsgFolderRoot's direct children so clients have folder IDs for
+        // operations like GetUserConfiguration.
+        render_root_and_children(owner, count)
+    } else {
+        (0usize, String::new())
     };
     let response = format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="true"><t:Folders>{}</t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, total_count, cal_xml
+        EWS_MSG_NS, EWS_TYPE_NS, total_count, folders_xml
     );
     soap_ok(response)
 }
@@ -1870,7 +1980,7 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_else(|| "calendar".to_string());
     let folder =
-        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+        parse_distinguished_folder_id(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
 
     // Email folders — route to JMAP
     if folder.is_email() && state.cfg.email_enabled && state.jmap_client.is_some() {
@@ -2488,7 +2598,7 @@ async fn handle_sync_folder_items(
     let distinguished_str =
         extract_first_attr(body, b"DistinguishedFolderId", b"Id").unwrap_or_default();
     let distinguished =
-        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+        parse_distinguished_folder_id(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
 
     // Route email folders to JMAP-based sync
     if distinguished.is_email() && state.email_available() {
@@ -2795,8 +2905,9 @@ async fn handle_sync_folder_hierarchy(
             .await
             .map(|v| v.len())
             .unwrap_or(0);
-        let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, count);
-        format!("<t:Create>{}</t:Create>", cal_xml)
+        // Return MsgFolderRoot first (clients need its FolderId for GetUserConfiguration),
+        // then Calendar, then all other child folders.
+        render_folder_hierarchy_creates(owner, count)
     } else {
         String::new()
     };
@@ -4501,6 +4612,26 @@ async fn handle_delete_attachment(
         }
     }
 }
+
+/// Handle EWS GetUserConfiguration operation.
+///
+/// Per MS-OXWSUSRCFG §3.1.4.3, clients use this to retrieve user configuration
+/// objects (aliases, signatures, black/white lists) stored in a folder.
+/// The gateway does not support user configuration objects, so we return
+/// `ErrorItemNotFound` with HTTP 200 so the client can gracefully continue
+/// (aliases, signatures, and block/allow lists will simply be empty).
+///
+/// Previously, a missing GetUserConfiguration handler caused `detect_action()`
+/// to return None → SOAP fault with HTTP 400, which crashed eM Client's
+/// `ExchangeFolderSynchronizer` with `ArgumentNullException: parentFolderId`.
+async fn handle_get_user_configuration() -> Response {
+    operation_error_response(
+        &EwsAction::GetUserConfiguration,
+        "ErrorItemNotFound",
+        "User configuration object not found",
+        StatusCode::OK,
+    )
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4577,6 +4708,114 @@ mod tests {
         assert!(
             ck.chars().all(|c| c.is_ascii_hexdigit()),
             "ChangeKey must be hex"
+        );
+    }
+
+    #[test]
+    fn test_find_folder_uses_folder_id_inside_parent_folder_ids() {
+        let owner = "user@example.com";
+        let calendar_id = folder_id_for(owner, DistinguishedFolder::Calendar);
+        let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        let body = format!(
+            r#"<m:FindFolder>
+                <m:Restriction>
+                    <t:IsEqualTo>
+                        <t:FieldURI FieldURI="folder:FolderId" />
+                        <t:FieldURIOrConstant>
+                            <t:Constant Value="{inbox_id}" />
+                        </t:FieldURIOrConstant>
+                    </t:IsEqualTo>
+                    <t:FolderId Id="{inbox_id}" />
+                </m:Restriction>
+                <m:ParentFolderIds>
+                    <t:FolderId Id="{calendar_id}" />
+                </m:ParentFolderIds>
+            </m:FindFolder>"#
+        );
+
+        assert_eq!(
+            requested_find_folder_parent_from_ids(&body, owner),
+            DistinguishedFolder::Calendar
+        );
+        assert_eq!(
+            requested_folder_from_ids(&body, owner),
+            DistinguishedFolder::Inbox
+        );
+    }
+
+    #[test]
+    fn test_find_folder_uses_distinguished_folder_id_inside_parent_folder_ids() {
+        let owner = "user@example.com";
+        let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        let body = format!(
+            r#"<m:FindFolder>
+                <m:FolderShape>
+                    <t:AdditionalProperties>
+                        <t:FolderId Id="{inbox_id}" />
+                    </t:AdditionalProperties>
+                </m:FolderShape>
+                <m:ParentFolderIds>
+                    <t:DistinguishedFolderId Id="msgfolderroot" />
+                </m:ParentFolderIds>
+            </m:FindFolder>"#
+        );
+
+        assert_eq!(
+            requested_find_folder_parent_from_ids(&body, owner),
+            DistinguishedFolder::MsgFolderRoot
+        );
+    }
+
+    #[test]
+    fn test_distinguished_folder_ids_are_case_insensitive() {
+        let owner = "user@example.com";
+        let body = r#"<m:FindItem>
+            <m:ParentFolderIds>
+                <t:DistinguishedFolderId Id="InBoX" />
+            </m:ParentFolderIds>
+        </m:FindItem>"#;
+
+        assert_eq!(
+            requested_folder_from_ids(body, owner),
+            DistinguishedFolder::Inbox
+        );
+        assert_eq!(
+            parse_distinguished_folder_id("MsgFolderRoot"),
+            Ok(DistinguishedFolder::MsgFolderRoot)
+        );
+        assert_eq!(
+            parse_distinguished_folder_id(" inbox "),
+            Ok(DistinguishedFolder::Inbox)
+        );
+    }
+
+    #[test]
+    fn test_folder_id_literal_distinguished_name_is_not_resolved_as_distinguished_folder() {
+        let owner = "user@example.com";
+        let body = r#"<m:GetFolder>
+            <m:FolderIds>
+                <t:FolderId Id="inbox" />
+            </m:FolderIds>
+        </m:GetFolder>"#;
+
+        assert_eq!(
+            requested_folder_from_ids(body, owner),
+            DistinguishedFolder::Calendar
+        );
+    }
+
+    #[test]
+    fn test_find_folder_parent_folder_id_literal_distinguished_name_is_not_resolved() {
+        let owner = "user@example.com";
+        let body = r#"<m:FindFolder>
+            <m:ParentFolderIds>
+                <t:FolderId Id="inbox" />
+            </m:ParentFolderIds>
+        </m:FindFolder>"#;
+
+        assert_eq!(
+            requested_find_folder_parent_from_ids(body, owner),
+            DistinguishedFolder::Calendar
         );
     }
 
