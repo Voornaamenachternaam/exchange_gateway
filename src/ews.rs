@@ -4658,14 +4658,47 @@ async fn handle_get_user_configuration(
         }
     };
 
-    // Generate a deterministic synthetic ItemId.
-    // Use a hash of username + config name to keep it stable.
+    // Generate a deterministic synthetic ItemId for the UserConfiguration object itself.
     let mut h = Sha256::new();
     h.update(auth.username.as_bytes());
     h.update(config_name.as_bytes());
     let digest = h.finalize();
     let synthetic_id = format!("uc-{}", const_hex::encode(&digest[..12]));
-    let change_key = "1"; // Static change key since config never changes
+    // The ChangeKey for a UserConfiguration object is typically a version string.
+    // We use a simple static ChangeKey because these configs never change.
+    let change_key = "1";
+
+    // Build the ParentFolderId: Must be a FolderId with a stable ChangeKey.
+    // Resolve the requested folder to a concrete folder ID and derive ChangeKey.
+    let owner = owner_from_username(&auth.username);
+    let fid = if let Some(fid_str) = extract_first_attr(body, b"FolderId", b"Id") {
+        fid_str
+    } else if let Some(did) = extract_first_attr(body, b"DistinguishedFolderId", b"Id") {
+        let folder_enum = match did.to_ascii_lowercase().as_str() {
+            "msgfolderroot" => DistinguishedFolder::MsgFolderRoot,
+            "inbox" => DistinguishedFolder::Inbox,
+            "sentitems" => DistinguishedFolder::SentItems,
+            "deleteditems" => DistinguishedFolder::DeletedItems,
+            "drafts" => DistinguishedFolder::Drafts,
+            "outbox" => DistinguishedFolder::Outbox,
+            "junkemail" => DistinguishedFolder::JunkEmail,
+            "calendar" => DistinguishedFolder::Calendar,
+            "contacts" => DistinguishedFolder::Contacts,
+            "tasks" => DistinguishedFolder::Tasks,
+            "notes" => DistinguishedFolder::Notes,
+            "journal" => DistinguishedFolder::Journal,
+            _ => DistinguishedFolder::MsgFolderRoot,
+        };
+        folder_id_for(owner, folder_enum)
+    } else {
+        folder_id_for(owner, DistinguishedFolder::MsgFolderRoot)
+    };
+    let synthetic_ck = format!("uc-{}", const_hex::encode({
+        let mut h2 = Sha256::new();
+        h2.update(fid.as_bytes());
+        h2.finalize()
+    })[..12]);
+    let parent_folder_id_xml = format!(r#"<t:FolderId Id="{}" ChangeKey="{}" />"#, xml_escape(&fid), synthetic_ck);
 
     let response_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -4682,6 +4715,9 @@ async fn handle_get_user_configuration(
             <t:UserConfigurationName Name="{}">
               {}
             </t:UserConfigurationName>
+            <t:ParentFolderId>
+              {}
+            </t:ParentFolderId>
             <t:ItemId Id="{}" ChangeKey="{}" />
             <t:Dictionary />
           </m:UserConfiguration>
@@ -4692,6 +4728,20 @@ async fn handle_get_user_configuration(
 </s:Envelope>"#,
         xml_escape(&config_name),
         folder_ref_xml,
+        // Always use FolderId for ParentFolderId with a synthetic ChangeKey.
+        // Per MS-OXWSUSRCFG §3.1.4.3.1, ParentFolderId is a FolderIdType, and FolderId (not DistinguishedFolderId) is the typical form.
+        // We derive a stable ChangeKey from the resolved folder identifier (fid).
+        {
+            let fid = extract_first_attr(body, b"FolderId", b"Id")
+                .or_else(|| extract_first_attr(body, b"DistinguishedFolderId", b"Id"))
+                .unwrap_or_else(|| "msgfolderroot".to_string());
+            let synthetic_ck = format!("uc-{}", const_hex::encode({
+                let mut h = Sha256::new();
+                h.update(fid.as_bytes());
+                h.finalize()
+            })[..12]);
+            format!(r#"<t:FolderId Id="{}" ChangeKey="{}" />"#, xml_escape(&fid), synthetic_ck)
+        },
         STANDARD.encode(&synthetic_id),
         change_key
     );

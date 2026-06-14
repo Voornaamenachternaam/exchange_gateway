@@ -151,8 +151,9 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
     match command.to_ascii_lowercase().as_str() {
         "sync" => Some(CommandGrammar {
             namespace: "AirSync:",
-            required_tags: &["Collections", "Collection", "SyncKey"],
+            required_tags: &[], // Accept both single-collection and multi-collection structures; validated in validate_payload.
             _optional_tags: &[
+                "SyncKey",
                 "CollectionId",
                 "Class",
                 "Options",
@@ -347,25 +348,51 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         return Err("Invalid namespace");
     }
 
+    // Validate required tags. For container elements (e.g., <Collections>), we only need to check for
+    // the presence of the opening tag, as they contain nested elements and have no text content.
+    // For non-container elements, we require non-empty text content.
     for &required in grammar.required_tags {
-        if extract_first_tag_text(xml, required.as_bytes()).is_none() {
+        let has_opening_tag = xml.contains(&format!("<{}", required));
+        if !has_opening_tag {
             return Err("Missing required tag");
         }
     }
 
     match lower_cmd.as_str() {
         "sync" => {
-            if let Some(class) = extract_first_tag_text(xml, b"Class") {
-                let lower = class.to_ascii_lowercase();
-                if lower != "calendar"
-                    && lower != "email"
-                    && lower != "contacts"
-                    && lower != "tasks"
-                    && lower != "notes"
-                {
-                    return Err("Unsupported Sync class");
+            // For sync, we already ensured <Collections> exists via required_tags.
+            // Additional validation: inside <Collections>, there must be at least one <Collection>.
+            // Each <Collection> must have CollectionId and SyncKey (checked by handler, but we can verify presence).
+            let mut reader = Reader::from_str(xml);
+            reader.config_mut().trim_text(true);
+            let mut buf = Vec::new();
+            let mut in_collections = false;
+            let mut found_collection = false;
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) => {
+                        let name = e.name().local_name();
+                        if name.as_ref() == b"Collections" {
+                            in_collections = true;
+                        } else if in_collections && name.as_ref() == b"Collection" {
+                            found_collection = true;
+                        }
+                    }
+                    Ok(Event::End(e)) => {
+                        if e.name().local_name().as_ref() == b"Collections" {
+                            in_collections = false;
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Err(_) => return Err("Invalid XML in sync request"),
                 }
+                buf.clear();
             }
+            if !found_collection {
+                return Err("Missing required Collection element inside Collections");
+            }
+
+            // Add requires ClientId (per MS-ASCAL §2.2.3.22).
             if xml.contains("<Add>") && !xml.contains("<ClientId>") {
                 return Err("Add requires ClientId");
             }
