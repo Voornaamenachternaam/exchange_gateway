@@ -1699,24 +1699,36 @@ async fn load_current_calendar_items(
     Ok(out)
 }
 
+fn requested_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
+    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !distinguished_str.is_empty() {
+        return DistinguishedFolder::from_str(&distinguished_str)
+            .unwrap_or(DistinguishedFolder::Calendar);
+    }
+
+    // Also try resolving by explicit FolderId/ParentFolderId — clients like eM Client
+    // may query by ID after receiving it from SyncFolderHierarchy or FindFolder. EWS
+    // also accepts the literal root ID, which maps to MsgFolderRoot.
+    for tag in [b"FolderId".as_slice(), b"ParentFolderId".as_slice()] {
+        if let Some(id) = extract_first_attr(body, tag, b"Id") {
+            if id == "root" {
+                return DistinguishedFolder::MsgFolderRoot;
+            }
+            return resolve_folder_id(&id, owner).unwrap_or(DistinguishedFolder::Calendar);
+        }
+    }
+
+    DistinguishedFolder::Calendar
+}
+
 async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::GetFolder, owner, body) {
         return *resp;
     }
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    // Also try resolving by explicit FolderId — clients like eM Client may query by ID
-    // after receiving it from SyncFolderHierarchy or FindFolder.
-    let explicit_id = extract_first_attr(body, b"FolderId", b"Id").unwrap_or_default();
-    let folder = if !distinguished_str.is_empty() {
-        DistinguishedFolder::from_str(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar)
-    } else if !explicit_id.is_empty() {
-        resolve_folder_id(&explicit_id, owner).unwrap_or(DistinguishedFolder::Calendar)
-    } else {
-        DistinguishedFolder::Calendar
-    };
+    let folder = requested_folder_from_ids(body, owner);
     let total_count =
         if folder.is_calendar() || matches!(folder, DistinguishedFolder::MsgFolderRoot) {
             load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
@@ -1739,21 +1751,18 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
     if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
         return *resp;
     }
-    let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let (total_count, folders_xml) = match distinguished_str.as_str() {
-        "msgfolderroot" | "" => {
-            let count =
-                load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
-                    .await
-                    .map(|v| v.len())
-                    .unwrap_or(0);
-            // Return MsgFolderRoot + all children so clients have the root FolderId
-            // for operations like GetUserConfiguration.
-            render_root_and_children(owner, count)
-        }
-        _ => (0usize, String::new()),
+    let parent_folder = requested_folder_from_ids(body, owner);
+    let (total_count, folders_xml) = if matches!(parent_folder, DistinguishedFolder::MsgFolderRoot)
+    {
+        let count = load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        // Return MsgFolderRoot's direct children so clients have folder IDs for
+        // operations like GetUserConfiguration.
+        render_root_and_children(owner, count)
+    } else {
+        (0usize, String::new())
     };
     let response = format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="true"><t:Folders>{}</t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,

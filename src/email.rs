@@ -622,10 +622,10 @@ pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static
     match collection_id {
         "2" => Some("inbox"),
         "3" => Some("drafts"),
-        "4" => Some("sent"),
-        "5" => Some("trash"),
+        "4" => Some("trash"),
+        "5" => Some("sent"),
         "6" => None, // Outbox — no JMAP equivalent; handled via EmailSubmission
-        "7" => Some("junk"),
+        "12" => Some("junk"),
         _ => {
             tracing::warn!(
                 collection_id,
@@ -638,11 +638,12 @@ pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static
 
 /// Returns true if the EAS CollectionId refers to an email folder.
 ///
-/// CollectionIds 2–7 are email folders (Inbox, Drafts, Sent, Deleted, Outbox, Junk).
-/// CollectionId "1" is Calendar. Any other ID is unknown.
+/// Uses `eas_collection_id_to_mailbox_role()` as the single source of truth for
+/// mail folders, with a special case for Outbox because it intentionally has no
+/// JMAP mailbox role. CollectionId "1" is Calendar. Any other ID is unknown.
 /// Used to route Sync requests when `<Class>` is absent from the request.
 pub fn is_eas_email_collection_id(collection_id: &str) -> bool {
-    matches!(collection_id, "2" | "3" | "4" | "5" | "6" | "7")
+    eas_collection_id_to_mailbox_role(collection_id).is_some() || collection_id == "6"
 }
 
 /// EAS FolderSync folder entries for email folders.
@@ -653,10 +654,10 @@ pub fn eas_email_folders_xml() -> String {
     [
         ("2", "0", "Inbox", eas_folder_type::INBOX),
         ("3", "0", "Drafts", eas_folder_type::DRAFTS),
-        ("4", "0", "Sent Items", eas_folder_type::SENT_ITEMS),
-        ("5", "0", "Deleted Items", eas_folder_type::DELETED_ITEMS),
+        ("4", "0", "Deleted Items", eas_folder_type::DELETED_ITEMS),
+        ("5", "0", "Sent Items", eas_folder_type::SENT_ITEMS),
         ("6", "0", "Outbox", eas_folder_type::OUTBOX),
-        ("7", "0", "Junk Email", eas_folder_type::JUNK_EMAIL),
+        ("12", "0", "Junk Email", eas_folder_type::JUNK_EMAIL),
     ]
     .iter()
     .map(|(id, parent_id, display_name, folder_type)| {
@@ -907,6 +908,14 @@ mod tests {
         assert!(xml.contains("Sent Items"), "Must include Sent Items folder");
         assert!(xml.contains("Drafts"), "Must include Drafts folder");
         assert!(xml.contains("Junk Email"), "Must include Junk Email folder");
+        assert!(
+            xml.contains("<ServerId>12</ServerId>"),
+            "Junk Email must use CollectionId 12"
+        );
+        assert!(
+            !xml.contains("<ServerId>7</ServerId>"),
+            "CollectionId 7 is Tasks, not Junk Email"
+        );
     }
 
     #[test]
@@ -1101,10 +1110,11 @@ mod tests {
     fn test_eas_collection_id_to_mailbox_role_mapping() {
         assert_eq!(eas_collection_id_to_mailbox_role("2"), Some("inbox"));
         assert_eq!(eas_collection_id_to_mailbox_role("3"), Some("drafts"));
-        assert_eq!(eas_collection_id_to_mailbox_role("4"), Some("sent"));
-        assert_eq!(eas_collection_id_to_mailbox_role("5"), Some("trash"));
+        assert_eq!(eas_collection_id_to_mailbox_role("4"), Some("trash"));
+        assert_eq!(eas_collection_id_to_mailbox_role("5"), Some("sent"));
         assert_eq!(eas_collection_id_to_mailbox_role("6"), None); // Outbox
-        assert_eq!(eas_collection_id_to_mailbox_role("7"), Some("junk"));
+        assert_eq!(eas_collection_id_to_mailbox_role("12"), Some("junk"));
+        assert_eq!(eas_collection_id_to_mailbox_role("7"), None); // Tasks, not Junk Email
     }
 
     #[test]
@@ -1114,17 +1124,18 @@ mod tests {
 
     #[test]
     fn test_is_eas_email_collection_id() {
-        // Email folders: 2=Inbox, 3=Drafts, 4=Sent, 5=Deleted, 6=Outbox, 7=Junk
+        // Email folders: 2=Inbox, 3=Drafts, 4=Deleted, 5=Sent, 6=Outbox, 12=Junk
         assert!(is_eas_email_collection_id("2"));
         assert!(is_eas_email_collection_id("3"));
         assert!(is_eas_email_collection_id("4"));
         assert!(is_eas_email_collection_id("5"));
         assert!(is_eas_email_collection_id("6"));
-        assert!(is_eas_email_collection_id("7"));
+        assert!(is_eas_email_collection_id("12"));
         // Calendar: 1
         assert!(!is_eas_email_collection_id("1"));
         // Unknown
         assert!(!is_eas_email_collection_id("0"));
+        assert!(!is_eas_email_collection_id("7"));
         assert!(!is_eas_email_collection_id("99"));
     }
 }
