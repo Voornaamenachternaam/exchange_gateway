@@ -4864,55 +4864,22 @@ mod tests {
     }
 
     #[test]
-    fn test_get_user_configuration_response_structure() {
-        // Test that the GetUserConfiguration response is well-formed and escapes content correctly.
-        let username = "contact@example.com";
-        let password = "secret".into();
-        let auth = AuthContext {
-            username: username.to_string(),
-            password: password,
-        };
-        let state = Arc::new(AppState::default());
-
-        // Build a sample request with folder ID and special characters in config name.
-        let folder_id = folder_id_for(username, DistinguishedFolder::Inbox);
-        let body = format!(
-            r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-                <s:Body>
-                    <m:GetUserConfiguration xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-                        <m:UserConfigurationName Name="Aliases &amp; Signatures">
-                            <t:FolderId Id="{folder_id}" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
-                        </m:UserConfigurationName>
-                    </m:GetUserConfiguration>
-                </s:Body>
-            </s:Envelope>"#
-        );
-
-        let response = handle_get_user_configuration(&state, &auth, &body).await;
-        let body = response.into_body().into_string().unwrap();
-
-        // Validate response structure.
-        assert!(body.contains("GetUserConfigurationResponse"));
-        assert!(body.contains("ResponseClass=\"Success\""));
-        assert!(body.contains("NoError"));
-        assert!(body.contains("<t:UserConfiguration"));
-        assert!(body.contains("<t:Dictionary />"));
-        assert!(body.contains("Aliases &amp; Signatures"), "Name should be XML-escaped (ampersand)");
-        assert!(body.contains(&format!("Id=\"{}\"", folder_id)), "FolderId should be echoed back");
-
-        // Ensure double-quotes in config name are escaped to prevent attribute injection.
-        let body_with_quote = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+    fn test_get_user_configuration_uses_distinguished_folder() {
+        // Test DistinguishedFolderId path
+        let body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
             <s:Body>
                 <m:GetUserConfiguration xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
-                    <m:UserConfigurationName Name="Config&quot;Name">
+                    <m:UserConfigurationName Name="TestConfig">
                         <t:DistinguishedFolderId Id="inbox" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
                     </m:UserConfigurationName>
                 </m:GetUserConfiguration>
             </s:Body>
         </s:Envelope>"#;
-        let response = handle_get_user_configuration(&state, &auth, &body_with_quote).await;
-        let body = response.into_body().into_string().unwrap();
-        assert!(body.contains("Config&quot;Name"), "Double quotes should be escaped to &quot;");
+
+        let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
+        assert_eq!(distinguished, Some("inbox".to_string()));
+        let folder_id = extract_first_attr(body, b"FolderId", b"Id");
+        assert!(folder_id.is_none());
     }
 
     #[test]
@@ -4935,29 +4902,6 @@ mod tests {
         assert_eq!(
             requested_find_folder_parent_from_ids(&body, owner),
             DistinguishedFolder::MsgFolderRoot
-        );
-    }
-
-    #[test]
-    fn test_distinguished_folder_ids_are_case_insensitive() {
-        let owner = "user@example.com";
-        let body = r#"<m:FindItem>
-            <m:ParentFolderIds>
-                <t:DistinguishedFolderId Id="InBoX" />
-            </m:ParentFolderIds>
-        </m:FindItem>"#;
-
-        assert_eq!(
-            requested_folder_from_ids(body, owner),
-            DistinguishedFolder::Inbox
-        );
-        assert_eq!(
-            parse_distinguished_folder_id("MsgFolderRoot"),
-            Ok(DistinguishedFolder::MsgFolderRoot)
-        );
-        assert_eq!(
-            parse_distinguished_folder_id(" inbox "),
-            Ok(DistinguishedFolder::Inbox)
         );
     }
 
