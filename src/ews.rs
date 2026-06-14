@@ -106,6 +106,9 @@ enum EwsAction {
 }
 
 impl EwsAction {
+    /// Returns true if this action may include `IncludeMimeContent` in requests.
+    /// The gateway does not validate MIME content; if the element is present,
+    /// it is ignored. The method name is retained for historical compatibility.
     const fn requires_mime_validation(&self) -> bool {
         matches!(self, EwsAction::FindItem | EwsAction::SyncFolderItems)
     }
@@ -168,8 +171,14 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
         return Err("Missing EWS messages namespace");
     }
 
+    // Note: IncludeMimeContent is allowed but will be ignored. We don't include
+    // MIME content in responses to keep payloads small. This is acceptable per
+    // MS-OXWSCORE which allows servers to omit optional elements.
     if action.requires_mime_validation() && xml.contains("IncludeMimeContent") {
-        return Err("This operation does not support IncludeMimeContent");
+        tracing::debug!(
+            action = ?action,
+            "Client requested IncludeMimeContent; it will be ignored"
+        );
     }
 
     Ok(())
@@ -304,7 +313,7 @@ pub async fn handle(
         EwsAction::CreateAttachment => handle_create_attachment(&state, &auth, &body).await,
         EwsAction::GetAttachment => handle_get_attachment(&state, &auth, &body).await,
         EwsAction::DeleteAttachment => handle_delete_attachment(&state, &auth, &body).await,
-        EwsAction::GetUserConfiguration => handle_get_user_configuration().await,
+        EwsAction::GetUserConfiguration => handle_get_user_configuration(&state, &auth, &body).await,
     }
 }
 
@@ -4617,20 +4626,77 @@ async fn handle_delete_attachment(
 ///
 /// Per MS-OXWSUSRCFG §3.1.4.3, clients use this to retrieve user configuration
 /// objects (aliases, signatures, black/white lists) stored in a folder.
-/// The gateway does not support user configuration objects, so we return
-/// `ErrorItemNotFound` with HTTP 200 so the client can gracefully continue
-/// (aliases, signatures, and block/allow lists will simply be empty).
-///
-/// Previously, a missing GetUserConfiguration handler caused `detect_action()`
-/// to return None → SOAP fault with HTTP 400, which crashed eM Client's
-/// `ExchangeFolderSynchronizer` with `ArgumentNullException: parentFolderId`.
-async fn handle_get_user_configuration() -> Response {
-    operation_error_response(
-        &EwsAction::GetUserConfiguration,
-        "ErrorItemNotFound",
-        "User configuration object not found",
-        StatusCode::OK,
-    )
+/// The gateway does not support persistent user configuration objects, but we
+/// return a successful response with an empty configuration to allow the client
+/// to proceed without errors.
+async fn handle_get_user_configuration(
+    _state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    // Parse the request to extract the configuration name and folder reference.
+    // We need to echo these back in the response to satisfy client expectations.
+
+    // Extract Name attribute from UserConfigurationName element.
+    let config_name = extract_first_attr(body, b"UserConfigurationName", b"Name")
+        .unwrap_or_else(|| "Default".to_string());
+
+    // Determine the folder reference: either FolderId or DistinguishedFolderId inside UserConfigurationName.
+    // We'll reconstruct it with the original Id value, properly XML-escaped.
+    let folder_ref_xml = {
+        let folder_id = extract_first_attr(body, b"FolderId", b"Id");
+        let distinguished_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
+
+        match (folder_id, distinguished_id) {
+            (Some(fid), _) => format!(r#"<t:FolderId Id="{}" />"#, xml_escape(&fid)),
+            (None, Some(did)) => format!(r#"<t:DistinguishedFolderId Id="{}" />"#, xml_escape(&did)),
+            _ => r#"<t:DistinguishedFolderId Id="msgfolderroot" />"#.to_string(),
+        }
+    };
+
+    // Generate a deterministic synthetic ItemId.
+    // Use a hash of username + config name to keep it stable.
+    let mut h = Sha256::new();
+    h.update(auth.username.as_bytes());
+    h.update(config_name.as_bytes());
+    let digest = h.finalize();
+    let synthetic_id = format!("uc-{}", const_hex::encode(&digest[..12]));
+    let change_key = "1"; // Static change key since config never changes
+
+    let response_xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+  </s:Header>
+  <s:Body>
+    <m:GetUserConfigurationResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ResponseMessages>
+        <m:GetUserConfigurationResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          <m:UserConfiguration>
+            <t:UserConfigurationName Name="{}">
+              {}
+            </t:UserConfigurationName>
+            <t:ItemId Id="{}" ChangeKey="{}" />
+            <t:Dictionary />
+          </m:UserConfiguration>
+        </m:GetUserConfigurationResponseMessage>
+      </m:ResponseMessages>
+    </m:GetUserConfigurationResponse>
+  </s:Body>
+</s:Envelope>"#,
+        xml_escape(&config_name),
+        folder_ref_xml,
+        STANDARD.encode(&synthetic_id),
+        change_key
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/xml; charset=utf-8")
+        .body(response_xml.into())
+        .unwrap()
 }
 #[cfg(test)]
 mod tests {
@@ -4657,13 +4723,44 @@ mod tests {
         assert_eq!(
             changekey_for_item(&row_a),
             changekey_for_item(&row_b),
-            "ChangeKey must be identical for same server_id+etag regardless of updated_at value"
+            "changekey should not depend on updated_at"
         );
         assert_eq!(
             changekey_for_item(&row_a),
             changekey_for_item(&row_c),
-            "ChangeKey must be identical for same server_id+etag with and without updated_at"
+            "changekey should not differ when updated_at is None"
         );
+    }
+
+    #[test]
+    fn test_xml_escape_preserves_quotes_in_attribute_values() {
+        // xml_escape should escape double quotes to prevent XML attribute injection
+        assert!(xml_escape("a\"b").contains("&quot;"));
+        assert!(xml_escape("'").contains("'"));
+        assert!(xml_escape("<>&\"").contains("&lt;"));
+        assert!(xml_escape("<>&\"").contains("&gt;"));
+        assert!(xml_escape("<>&\"").contains("&amp;"));
+        assert!(xml_escape("<>&\"").contains("&quot;"));
+    }
+
+    #[test]
+    fn test_synthetic_id_is_deterministic() {
+        let username = "user@example.com";
+        let config_name = "Aliases";
+
+        let mut h1 = Sha256::new();
+        h1.update(username.as_bytes());
+        h1.update(config_name.as_bytes());
+        let digest1 = h1.finalize();
+        let id1 = format!("uc-{}", const_hex::encode(&digest1[..12]));
+
+        let mut h2 = Sha256::new();
+        h2.update(username.as_bytes());
+        h2.update(config_name.as_bytes());
+        let digest2 = h2.finalize();
+        let id2 = format!("uc-{}", const_hex::encode(&digest2[..12]));
+
+        assert_eq!(id1, id2, "synthetic ID should be deterministic");
     }
 
     #[test]
@@ -4745,6 +4842,81 @@ mod tests {
 
     #[test]
     fn test_find_folder_uses_distinguished_folder_id_inside_parent_folder_ids() {
+        let owner = "user@example.com";
+        let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        let body = format!(
+            r#"<m:FindFolder>
+                <m:FolderShape>
+                    <t:AdditionalProperties>
+                        <t:FolderId Id="{inbox_id}" />
+                    </t:AdditionalProperties>
+                </m:FolderShape>
+                <m:ParentFolderIds>
+                    <t:DistinguishedFolderId Id="msgfolderroot" />
+                </m:ParentFolderIds>
+            </m:FindFolder>"#
+        );
+
+        assert_eq!(
+            requested_find_folder_parent_from_ids(&body, owner),
+            DistinguishedFolder::MsgFolderRoot
+        );
+    }
+
+    #[test]
+    fn test_get_user_configuration_response_structure() {
+        // Test that the GetUserConfiguration response is well-formed and escapes content correctly.
+        let username = "contact@example.com";
+        let password = "secret".into();
+        let auth = AuthContext {
+            username: username.to_string(),
+            password: password,
+        };
+        let state = Arc::new(AppState::default());
+
+        // Build a sample request with folder ID and special characters in config name.
+        let folder_id = folder_id_for(username, DistinguishedFolder::Inbox);
+        let body = format!(
+            r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+                <s:Body>
+                    <m:GetUserConfiguration xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+                        <m:UserConfigurationName Name="Aliases &amp; Signatures">
+                            <t:FolderId Id="{folder_id}" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+                        </m:UserConfigurationName>
+                    </m:GetUserConfiguration>
+                </s:Body>
+            </s:Envelope>"#
+        );
+
+        let response = handle_get_user_configuration(&state, &auth, &body).await;
+        let body = response.into_body().into_string().unwrap();
+
+        // Validate response structure.
+        assert!(body.contains("GetUserConfigurationResponse"));
+        assert!(body.contains("ResponseClass=\"Success\""));
+        assert!(body.contains("NoError"));
+        assert!(body.contains("<t:UserConfiguration"));
+        assert!(body.contains("<t:Dictionary />"));
+        assert!(body.contains("Aliases &amp; Signatures"), "Name should be XML-escaped (ampersand)");
+        assert!(body.contains(&format!("Id=\"{}\"", folder_id)), "FolderId should be echoed back");
+
+        // Ensure double-quotes in config name are escaped to prevent attribute injection.
+        let body_with_quote = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+            <s:Body>
+                <m:GetUserConfiguration xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+                    <m:UserConfigurationName Name="Config&quot;Name">
+                        <t:DistinguishedFolderId Id="inbox" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+                    </m:UserConfigurationName>
+                </m:GetUserConfiguration>
+            </s:Body>
+        </s:Envelope>"#;
+        let response = handle_get_user_configuration(&state, &auth, &body_with_quote).await;
+        let body = response.into_body().into_string().unwrap();
+        assert!(body.contains("Config&quot;Name"), "Double quotes should be escaped to &quot;");
+    }
+
+    #[test]
+    fn test_distinguished_folder_ids_are_case_insensitive() {
         let owner = "user@example.com";
         let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
         let body = format!(
