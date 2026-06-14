@@ -1708,11 +1708,47 @@ fn requested_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
 }
 
 fn requested_find_folder_parent_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
-    requested_folder_from_ids_with_order(
-        body,
-        owner,
-        &[b"ParentFolderId".as_slice(), b"FolderId".as_slice()],
-    )
+    if let Some(folder) = extract_find_folder_parent_id(body) {
+        return resolve_requested_folder_id(&folder, owner);
+    }
+
+    DistinguishedFolder::Calendar
+}
+
+fn extract_find_folder_parent_id(body: &str) -> Option<String> {
+    let mut reader = Reader::from_str(body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_parent_folder_ids = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+                in_parent_folder_ids = true;
+            }
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if in_parent_folder_ids
+                    && matches!(
+                        e.name().local_name().as_ref(),
+                        b"FolderId" | b"DistinguishedFolderId"
+                    ) =>
+            {
+                for a in e.attributes().flatten() {
+                    if a.key.local_name().as_ref() == b"Id"
+                        && let Ok(v) = a.decode_and_unescape_value(reader.decoder())
+                    {
+                        return Some(v.into_owned());
+                    }
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+                in_parent_folder_ids = false;
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
 }
 
 fn requested_folder_from_ids_with_order(
@@ -1733,14 +1769,22 @@ fn requested_folder_from_ids_with_order(
     // the literal root ID, which maps to MsgFolderRoot.
     for tag in folder_tags {
         if let Some(id) = extract_first_attr(body, tag, b"Id") {
-            if id == "root" {
-                return DistinguishedFolder::MsgFolderRoot;
-            }
-            return resolve_folder_id(&id, owner).unwrap_or(DistinguishedFolder::Calendar);
+            return resolve_requested_folder_id(&id, owner);
         }
     }
 
     DistinguishedFolder::Calendar
+}
+
+fn resolve_requested_folder_id(id: &str, owner: &str) -> DistinguishedFolder {
+    let normalized = id.to_ascii_lowercase();
+    if normalized == "root" {
+        return DistinguishedFolder::MsgFolderRoot;
+    }
+
+    DistinguishedFolder::from_str(&normalized)
+        .or_else(|_| resolve_folder_id(id, owner).ok_or(()))
+        .unwrap_or(DistinguishedFolder::Calendar)
 }
 
 async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
@@ -4643,18 +4687,50 @@ mod tests {
     }
 
     #[test]
-    fn test_find_folder_prefers_parent_folder_id_over_folder_id() {
+    fn test_find_folder_uses_folder_id_inside_parent_folder_ids() {
         let owner = "user@example.com";
         let calendar_id = folder_id_for(owner, DistinguishedFolder::Calendar);
         let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
         let body = format!(
             r#"<m:FindFolder>
-                <m:SomeOtherElement>
+                <m:Restriction>
+                    <t:IsEqualTo>
+                        <t:FieldURI FieldURI="folder:FolderId" />
+                        <t:FieldURIOrConstant>
+                            <t:Constant Value="{inbox_id}" />
+                        </t:FieldURIOrConstant>
+                    </t:IsEqualTo>
                     <t:FolderId Id="{inbox_id}" />
-                </m:SomeOtherElement>
+                </m:Restriction>
                 <m:ParentFolderIds>
                     <t:FolderId Id="{calendar_id}" />
-                    <t:ParentFolderId Id="root" />
+                </m:ParentFolderIds>
+            </m:FindFolder>"#
+        );
+
+        assert_eq!(
+            requested_find_folder_parent_from_ids(&body, owner),
+            DistinguishedFolder::Calendar
+        );
+        assert_eq!(
+            requested_folder_from_ids(&body, owner),
+            DistinguishedFolder::Inbox
+        );
+    }
+
+    #[test]
+    fn test_find_folder_uses_distinguished_folder_id_inside_parent_folder_ids() {
+        let owner = "user@example.com";
+        let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        let body = format!(
+            r#"<m:FindFolder>
+                <m:FolderShape>
+                    <t:AdditionalProperties>
+                        <t:FolderId Id="{inbox_id}" />
+                    </t:AdditionalProperties>
+                </m:FolderShape>
+                <m:ParentFolderIds>
+                    <t:DistinguishedFolderId Id="msgfolderroot" />
                 </m:ParentFolderIds>
             </m:FindFolder>"#
         );
@@ -4662,10 +4738,6 @@ mod tests {
         assert_eq!(
             requested_find_folder_parent_from_ids(&body, owner),
             DistinguishedFolder::MsgFolderRoot
-        );
-        assert_eq!(
-            requested_folder_from_ids(&body, owner),
-            DistinguishedFolder::Inbox
         );
     }
 
