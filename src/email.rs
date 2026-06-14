@@ -638,12 +638,12 @@ pub fn eas_collection_id_to_mailbox_role(collection_id: &str) -> Option<&'static
 
 /// Returns true if the EAS CollectionId refers to an email folder.
 ///
-/// Uses `eas_collection_id_to_mailbox_role()` as the single source of truth for
-/// mail folders, with a special case for Outbox because it intentionally has no
-/// JMAP mailbox role. CollectionId "1" is Calendar. Any other ID is unknown.
-/// Used to route Sync requests when `<Class>` is absent from the request.
+/// Checks the known email CollectionIds directly so valid non-email folders (for
+/// example, Calendar CollectionId "1") do not pass through the mailbox-role
+/// mapper and emit unknown-ID warning logs. Used to route Sync requests when
+/// `<Class>` is absent from the request.
 pub fn is_eas_email_collection_id(collection_id: &str) -> bool {
-    eas_collection_id_to_mailbox_role(collection_id).is_some() || collection_id == "6"
+    matches!(collection_id, "2" | "3" | "4" | "5" | "6" | "12")
 }
 
 /// EAS FolderSync folder entries for email folders.

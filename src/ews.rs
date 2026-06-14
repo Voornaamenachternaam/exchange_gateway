@@ -1700,6 +1700,26 @@ async fn load_current_calendar_items(
 }
 
 fn requested_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
+    requested_folder_from_ids_with_order(
+        body,
+        owner,
+        &[b"FolderId".as_slice(), b"ParentFolderId".as_slice()],
+    )
+}
+
+fn requested_find_folder_parent_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
+    requested_folder_from_ids_with_order(
+        body,
+        owner,
+        &[b"ParentFolderId".as_slice(), b"FolderId".as_slice()],
+    )
+}
+
+fn requested_folder_from_ids_with_order(
+    body: &str,
+    owner: &str,
+    folder_tags: &[&[u8]],
+) -> DistinguishedFolder {
     let distinguished_str = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -1708,10 +1728,10 @@ fn requested_folder_from_ids(body: &str, owner: &str) -> DistinguishedFolder {
             .unwrap_or(DistinguishedFolder::Calendar);
     }
 
-    // Also try resolving by explicit FolderId/ParentFolderId — clients like eM Client
-    // may query by ID after receiving it from SyncFolderHierarchy or FindFolder. EWS
-    // also accepts the literal root ID, which maps to MsgFolderRoot.
-    for tag in [b"FolderId".as_slice(), b"ParentFolderId".as_slice()] {
+    // Also try resolving by explicit folder IDs — clients like eM Client may query by
+    // ID after receiving it from SyncFolderHierarchy or FindFolder. EWS also accepts
+    // the literal root ID, which maps to MsgFolderRoot.
+    for tag in folder_tags {
         if let Some(id) = extract_first_attr(body, tag, b"Id") {
             if id == "root" {
                 return DistinguishedFolder::MsgFolderRoot;
@@ -1751,7 +1771,7 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
     if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
         return *resp;
     }
-    let parent_folder = requested_folder_from_ids(body, owner);
+    let parent_folder = requested_find_folder_parent_from_ids(body, owner);
     let (total_count, folders_xml) = if matches!(parent_folder, DistinguishedFolder::MsgFolderRoot)
     {
         let count = load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
@@ -4619,6 +4639,33 @@ mod tests {
         assert!(
             ck.chars().all(|c| c.is_ascii_hexdigit()),
             "ChangeKey must be hex"
+        );
+    }
+
+    #[test]
+    fn test_find_folder_prefers_parent_folder_id_over_folder_id() {
+        let owner = "user@example.com";
+        let calendar_id = folder_id_for(owner, DistinguishedFolder::Calendar);
+        let inbox_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        let body = format!(
+            r#"<m:FindFolder>
+                <m:SomeOtherElement>
+                    <t:FolderId Id="{inbox_id}" />
+                </m:SomeOtherElement>
+                <m:ParentFolderIds>
+                    <t:FolderId Id="{calendar_id}" />
+                    <t:ParentFolderId Id="root" />
+                </m:ParentFolderIds>
+            </m:FindFolder>"#
+        );
+
+        assert_eq!(
+            requested_find_folder_parent_from_ids(&body, owner),
+            DistinguishedFolder::MsgFolderRoot
+        );
+        assert_eq!(
+            requested_folder_from_ids(&body, owner),
+            DistinguishedFolder::Inbox
         );
     }
 
