@@ -10,7 +10,7 @@ use crate::calendar::{
 };
 use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
-    DistinguishedFolder, folder_id_for, render_folder_xml, render_folder_hierarchy_creates,
+    DistinguishedFolder, folder_id_for, render_folder_hierarchy_creates, render_folder_xml,
     render_root_and_children, resolve_folder_id, validate_folder_request,
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};

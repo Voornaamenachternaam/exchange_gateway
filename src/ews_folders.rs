@@ -176,7 +176,10 @@ pub fn resolve_folder_id(id: &str, owner: &str) -> Option<DistinguishedFolder> {
         DistinguishedFolder::Notes,
         DistinguishedFolder::Journal,
     ];
-    all_folders.iter().find(|&&f| folder_id_for(owner, f) == id).copied()
+    all_folders
+        .iter()
+        .find(|&&f| folder_id_for(owner, f) == id)
+        .copied()
 }
 
 pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: usize) -> String {
@@ -239,12 +242,11 @@ pub fn render_folder_hierarchy_creates(owner: &str, calendar_item_count: usize) 
     creates
 }
 
-/// Render MsgFolderRoot + all direct children. Used by FindFolder when querying msgfolderroot.
+/// Render the direct children of MsgFolderRoot. Used by FindFolder when querying msgfolderroot.
 pub fn render_root_and_children(owner: &str, calendar_item_count: usize) -> (usize, String) {
     let children = DistinguishedFolder::root_children();
-    let total = 1 + children.len(); // MsgFolderRoot + children
-    let mut xml = render_folder_xml(owner, DistinguishedFolder::MsgFolderRoot, 0);
-    xml.push_str(&render_folder_xml(owner, DistinguishedFolder::Calendar, calendar_item_count));
+    let total = children.len();
+    let mut xml = render_folder_xml(owner, DistinguishedFolder::Calendar, calendar_item_count);
     // All other children
     for &f in children {
         if f != DistinguishedFolder::Calendar {
@@ -300,12 +302,20 @@ mod tests {
         for &folder in DistinguishedFolder::root_children() {
             let id = folder_id_for(owner, folder);
             let resolved = resolve_folder_id(&id, owner);
-            assert_eq!(resolved, Some(folder),
-                "resolve_folder_id({}) should return {:?}", id, folder);
+            assert_eq!(
+                resolved,
+                Some(folder),
+                "resolve_folder_id({}) should return {:?}",
+                id,
+                folder
+            );
         }
         // MsgFolderRoot
         let root_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
-        assert_eq!(resolve_folder_id(&root_id, owner), Some(DistinguishedFolder::MsgFolderRoot));
+        assert_eq!(
+            resolve_folder_id(&root_id, owner),
+            Some(DistinguishedFolder::MsgFolderRoot)
+        );
     }
 
     #[test]
@@ -318,31 +328,42 @@ mod tests {
         let owner = "contact@example.com";
         let xml = render_folder_hierarchy_creates(owner, 0);
         // Must include MsgFolderRoot
-        assert!(xml.contains("Top of Information Store"),
-            "Folder hierarchy must include MsgFolderRoot");
+        assert!(
+            xml.contains("Top of Information Store"),
+            "Folder hierarchy must include MsgFolderRoot"
+        );
         // Must include Calendar
-        assert!(xml.contains("<t:CalendarFolder>"),
-            "Folder hierarchy must include Calendar");
+        assert!(
+            xml.contains("<t:CalendarFolder>"),
+            "Folder hierarchy must include Calendar"
+        );
         // Must include Inbox
-        assert!(xml.contains(">Inbox<"),
-            "Folder hierarchy must include Inbox");
+        assert!(
+            xml.contains(">Inbox<"),
+            "Folder hierarchy must include Inbox"
+        );
         // Must include Sent Items
-        assert!(xml.contains(">Sent Items<"),
-            "Folder hierarchy must include Sent Items");
+        assert!(
+            xml.contains(">Sent Items<"),
+            "Folder hierarchy must include Sent Items"
+        );
         // All must be wrapped in <t:Create>
-        assert!(xml.contains("<t:Create>"),
-            "Folders must be wrapped in <t:Create>");
+        assert!(
+            xml.contains("<t:Create>"),
+            "Folders must be wrapped in <t:Create>"
+        );
     }
 
     #[test]
     fn test_render_root_and_children_count() {
         let owner = "contact@example.com";
         let (total, xml) = render_root_and_children(owner, 5);
-        // Expect MsgFolderRoot + all root_children
-        assert_eq!(total, 1 + DistinguishedFolder::root_children().len());
-        assert!(xml.contains("Top of Information Store"),
-            "Must include MsgFolderRoot");
-        assert!(xml.contains(">Calendar<"),
-            "Must include Calendar");
+        // Expect only the direct children of MsgFolderRoot, not MsgFolderRoot itself.
+        assert_eq!(total, DistinguishedFolder::root_children().len());
+        assert!(
+            !xml.contains("Top of Information Store"),
+            "Must not include MsgFolderRoot as its own child"
+        );
+        assert!(xml.contains(">Calendar<"), "Must include Calendar");
     }
 }
