@@ -401,6 +401,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                         }
                     }
                     Ok(Event::Eof) => break,
+                    Ok(_) => {} // ignore all other event types (Empty, Text, CData, etc.)
                     Err(_) => return Err("Invalid XML in sync request"),
                 }
                 buf.clear();
