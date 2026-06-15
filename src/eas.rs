@@ -348,21 +348,37 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         return Err("Invalid namespace");
     }
 
+    // Helper to check if an element with the given local name appears in the XML.
+    // This is more robust than naive string search (avoids false positives like <FooBar> or comments).
+    fn element_exists(xml: &str, local_name: &str) -> bool {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref() == local_name.as_bytes() => {
+                    return true;
+                }
+                Ok(Event::Eof) => return false,
+                Err(_) => return false,
+                _ => {}
+            }
+            buf.clear();
+        }
+    }
+
     // Validate required tags. For container elements (e.g., <Collections>), we only need to check for
     // the presence of the opening tag, as they contain nested elements and have no text content.
-    // For non-container elements, we require non-empty text content.
+    // For non-container elements, we require non-empty text content (checked later by handler).
     for &required in grammar.required_tags {
-        let has_opening_tag = xml.contains(&format!("<{}", required));
-        if !has_opening_tag {
+        if !element_exists(xml, required) {
             return Err("Missing required tag");
         }
     }
 
     match lower_cmd.as_str() {
         "sync" => {
-            // For sync, we already ensured <Collections> exists via required_tags.
-            // Additional validation: inside <Collections>, there must be at least one <Collection>.
-            // Each <Collection> must have CollectionId and SyncKey (checked by handler, but we can verify presence).
+            // Custom validation for sync: accept either multi-collection (<Collections>) or legacy single-collection.
             let mut reader = Reader::from_str(xml);
             reader.config_mut().trim_text(true);
             let mut buf = Vec::new();
