@@ -196,11 +196,10 @@ pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: 
         String::new()
     } else {
         let parent_prefix_len = parent.find('-').map(|i| i + 1).unwrap_or(5);
-        let parent_ck = &parent[parent_prefix_len..];
         format!(
-            r#"<t:ParentFolderId><t:FolderId Id="{parent}" ChangeKey="{ck}" /></t:ParentFolderId>"#,
+            r#"<t:ParentFolderId Id="{parent}" ChangeKey="{ck}" />"#,
             parent = parent,
-            ck = parent_ck
+            ck = &parent[parent_prefix_len..]
         )
     };
     format!(
@@ -372,18 +371,31 @@ mod tests {
     fn test_parent_folder_id_structure() {
         let owner = "contact@example.com";
         let xml = render_folder_xml(owner, DistinguishedFolder::Inbox, 0);
-        // Ensure ParentFolderId contains a nested FolderId element, not attributes directly on ParentFolderId.
+        // Ensure ParentFolderId element exists and has both Id and ChangeKey attributes directly on it.
         assert!(
-            xml.contains("<t:ParentFolderId><t:FolderId"),
-            "ParentFolderId must contain nested FolderId element"
+            xml.contains("<t:ParentFolderId"),
+            "Missing ParentFolderId element"
         );
-        assert!(
-            !xml.contains(r#"<t:ParentFolderId Id="#),
-            "ParentFolderId must not have Id attribute directly"
-        );
+        // Find the ParentFolderId element and verify its attributes.
+        if let Some(start) = xml.find("<t:ParentFolderId") {
+            let rest = &xml[start..];
+            // Find the closing of the element (/> or >)
+            let end_idx = rest.find("/>").map(|i| i + 2).or_else(|| rest.find('>').map(|i| i + 1)).unwrap_or(rest.len());
+            let parent_el = &rest[..end_idx];
+            assert!(
+                parent_el.contains("Id=\"") && parent_el.contains("ChangeKey=\""),
+                "ParentFolderId must have both Id and ChangeKey attributes"
+            );
+            assert!(
+                !parent_el.contains("<t:FolderId"),
+                "ParentFolderId must NOT contain nested FolderId element (non-standard)"
+            );
+        } else {
+            panic!("ParentFolderId element not found");
+        }
         // Check that ParentFolderId appears after FolderId and before DisplayName
         let folder_id_pos = xml.find("<t:FolderId Id=").unwrap();
-        let parent_id_pos = xml.find("<t:ParentFolderId>").unwrap();
+        let parent_id_pos = xml.find("<t:ParentFolderId").unwrap();
         let display_name_pos = xml.find("<t:DisplayName>").unwrap();
         assert!(folder_id_pos < parent_id_pos, "FolderId must come before ParentFolderId");
         assert!(parent_id_pos < display_name_pos, "ParentFolderId must come before DisplayName");
