@@ -196,10 +196,11 @@ pub fn render_folder_xml(owner: &str, folder: DistinguishedFolder, total_count: 
         String::new()
     } else {
         let parent_prefix_len = parent.find('-').map(|i| i + 1).unwrap_or(5);
+        let parent_ck = &parent[parent_prefix_len..];
         format!(
-            r#"<t:ParentFolderId Id="{parent}" ChangeKey="{ck}" />"#,
+            r#"<t:ParentFolderId><t:FolderId Id="{parent}" ChangeKey="{ck}" /></t:ParentFolderId>"#,
             parent = parent,
-            ck = &parent[parent_prefix_len..]
+            ck = parent_ck
         )
     };
     format!(
@@ -365,5 +366,26 @@ mod tests {
             "Must not include MsgFolderRoot as its own child"
         );
         assert!(xml.contains(">Calendar<"), "Must include Calendar");
+    }
+
+    #[test]
+    fn test_parent_folder_id_structure() {
+        let owner = "contact@example.com";
+        let xml = render_folder_xml(owner, DistinguishedFolder::Inbox, 0);
+        // Ensure ParentFolderId contains a nested FolderId element, not attributes directly on ParentFolderId.
+        assert!(
+            xml.contains("<t:ParentFolderId><t:FolderId"),
+            "ParentFolderId must contain nested FolderId element"
+        );
+        assert!(
+            !xml.contains(r#"<t:ParentFolderId Id="#),
+            "ParentFolderId must not have Id attribute directly"
+        );
+        // Check that ParentFolderId appears after FolderId and before DisplayName
+        let folder_id_pos = xml.find("<t:FolderId Id=").unwrap();
+        let parent_id_pos = xml.find("<t:ParentFolderId>").unwrap();
+        let display_name_pos = xml.find("<t:DisplayName>").unwrap();
+        assert!(folder_id_pos < parent_id_pos, "FolderId must come before ParentFolderId");
+        assert!(parent_id_pos < display_name_pos, "ParentFolderId must come before DisplayName");
     }
 }
