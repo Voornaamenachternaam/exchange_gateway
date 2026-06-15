@@ -338,7 +338,9 @@ pub fn render_jmap_email_as_eas_application_data(
 
     // Build a single Email:To element with recipients formatted as "Name <email>" separated by semicolons.
     // Filter out recipients with empty email addresses to avoid malformed entries.
-    let to_xml = if let Some(recipients) = email.to.as_ref() && !recipients.is_empty() {
+    let to_xml = if let Some(recipients) = email.to.as_ref()
+        && !recipients.is_empty()
+    {
         let mut to_parts: Vec<String> = Vec::new();
         for r in recipients {
             let addr = r.email.as_deref().unwrap_or("");
