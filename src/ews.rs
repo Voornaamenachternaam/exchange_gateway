@@ -4693,12 +4693,10 @@ async fn handle_get_user_configuration(
     } else {
         folder_id_for(owner, DistinguishedFolder::MsgFolderRoot)
     };
-    let h2 = Sha256::new();
-    let fid_bytes = fid.as_bytes();
     // Compute the full hex string first to avoid slicing an unsized str directly.
     let full_hex = const_hex::encode({
         let mut h = Sha256::new();
-        h.update(fid_bytes);
+        h.update(fid.as_bytes());
         h.finalize()
     });
     let synthetic_ck = format!("uc-{}", &full_hex[..12]);
