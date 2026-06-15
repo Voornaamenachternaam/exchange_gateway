@@ -4719,9 +4719,7 @@ async fn handle_get_user_configuration(
             <t:UserConfigurationName Name="{}">
               {}
             </t:UserConfigurationName>
-            <t:ParentFolderId>
-              {}
-            </t:ParentFolderId>
+            {}
             <t:ItemId Id="{}" ChangeKey="{}" />
             <t:Dictionary />
           </m:UserConfiguration>
