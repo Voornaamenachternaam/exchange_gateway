@@ -555,8 +555,7 @@ pub async fn fetch_emails_jmap(
         .ok_or_else(|| anyhow::anyhow!("JMAP is not configured; email reading is unavailable"))?;
 
     // Map mailbox role to JMAP filter.
-    // "outbox" returns None (empty filter) which would match ALL emails —
-    // a privacy/correctness bug. JMAP has no outbox role; outbound email
+    // "outbox" returns empty result — JMAP has no outbox role; outbound email
     // is handled via EmailSubmission/set. Return early with empty result.
     let mailbox_role_lower = mailbox_role.to_lowercase();
     if mailbox_role_lower == "outbox" {
@@ -569,25 +568,23 @@ pub async fn fetch_emails_jmap(
         });
     }
 
-    let filter = match mailbox_role_lower.as_str() {
-        "inbox" => Some(serde_json::json!({
-            "inMailboxRole": "inbox"
-        })),
-        "sentitems" | "sent" => Some(serde_json::json!({
-            "inMailboxRole": "sent"
-        })),
-        "drafts" | "draft" => Some(serde_json::json!({
-            "inMailboxRole": "drafts"
-        })),
-        "junkemail" | "junk" => Some(serde_json::json!({
-            "inMailboxRole": "junk"
-        })),
-        "deleteditems" | "trash" => Some(serde_json::json!({
-            "inMailboxRole": "trash"
-        })),
+    // Normalize role to JMAP standard role name
+    let normalized_role = match mailbox_role_lower.as_str() {
+        "inbox" => "inbox",
+        "sentitems" | "sent" => "sent",
+        "drafts" | "draft" => "drafts",
+        "junkemail" | "junk" => "junk",
+        "deleteditems" | "trash" => "trash",
+        "outbox" => {
+            return Ok(crate::jmap::EmailListResult {
+                emails: Vec::new(),
+                total: 0,
+                can_calculate_changes: false,
+                query_state: String::new(),
+                state: String::new(),
+            });
+        }
         _ => {
-            // Unrecognised role — returning no filter would match ALL emails
-            // in the account (privacy/correctness bug). Return empty instead.
             tracing::warn!(role = %mailbox_role, "Unrecognised mailbox role; returning empty email list");
             return Ok(crate::jmap::EmailListResult {
                 emails: Vec::new(),
@@ -599,19 +596,52 @@ pub async fn fetch_emails_jmap(
         }
     };
 
-    let result = jmap
-        .query_emails(crate::jmap::QueryEmailsParams {
-            account_id,
-            filter,
-            sort: None,
-            position,
-            limit,
-            username,
-            password,
-        })
-        .await?;
-
-    Ok(result)
+    // Fetch the mailbox ID(s) for the requested role using Mailbox/query.
+    // Use mailboxIds filter instead of inMailboxRole for compatibility.
+    match jmap
+        .get_mailbox_ids_for_role(account_id, normalized_role, username, password)
+        .await
+    {
+        Ok(mailbox_ids) if !mailbox_ids.is_empty() => {
+            let filter = Some(serde_json::json!({
+                "mailboxIds": mailbox_ids
+            }));
+            let result = jmap
+                .query_emails(crate::jmap::QueryEmailsParams {
+                    account_id,
+                    filter,
+                    sort: None,
+                    position,
+                    limit,
+                    username,
+                    password,
+                })
+                .await?;
+            Ok(result)
+        }
+        Ok(_) => {
+            // No mailbox for that role — return empty result.
+            tracing::info!(role = %normalized_role, "No mailbox found for role; returning empty email list");
+            Ok(crate::jmap::EmailListResult {
+                emails: Vec::new(),
+                total: 0,
+                can_calculate_changes: false,
+                query_state: String::new(),
+                state: String::new(),
+            })
+        }
+        Err(e) => {
+            // Log the error but still return empty result to maintain sync stability.
+            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role");
+            Ok(crate::jmap::EmailListResult {
+                emails: Vec::new(),
+                total: 0,
+                can_calculate_changes: false,
+                query_state: String::new(),
+                state: String::new(),
+            })
+        }
+    }
 }
 
 /// EAS folder type constants per MS-ASCMD §2.2.3.186.3.

@@ -1198,6 +1198,24 @@ impl JmapClient {
         username: &str,
         password: &SecretString,
     ) -> Result<String> {
+        let ids = self
+            .get_mailbox_ids_for_role(account_id, "sent", username, password)
+            .await?;
+        ids.first()
+            .cloned()
+            .ok_or_else(|| anyhow!("No 'sent' mailbox found"))
+    }
+
+    /// Get all mailbox IDs for a given JMAP role (e.g., "inbox", "sent").
+    /// This is used to filter emails via `mailboxIds` instead of `inMailboxRole`,
+    /// which is not supported by some JMAP servers (e.g., older Stalwart versions).
+    pub async fn get_mailbox_ids_for_role(
+        &self,
+        account_id: &str,
+        role: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Vec<String>> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
@@ -1205,7 +1223,7 @@ impl JmapClient {
             "Mailbox/query",
             json!({
                 "accountId": account_id,
-                "filter": { "role": "sent" },
+                "filter": { "role": role },
             }),
             "mq0",
         )];
@@ -1220,16 +1238,32 @@ impl JmapClient {
             )
             .await?;
 
+        let mut ids = Vec::new();
+        let mut found = false;
         for (method, data, _) in response.method_responses {
-            if method == "Mailbox/query"
-                && let Some(ids) = data.get("ids").and_then(|v| v.as_array())
-                && let Some(first_id) = ids.first().and_then(|v| v.as_str())
-            {
-                return Ok(first_id.to_string());
+            if method == "Mailbox/query" {
+                found = true;
+                if let Some(arr) = data.get("ids").and_then(|v| v.as_array()) {
+                    for id_val in arr {
+                        if let Some(s) = id_val.as_str() {
+                            ids.push(s.to_string());
+                        }
+                    }
+                } else {
+                    tracing::warn!(role = %role, "Mailbox/query response missing 'ids' array");
+                    return Err(anyhow!(
+                        "Malformed Mailbox/query response: missing ids array"
+                    ));
+                }
             }
         }
 
-        Err(anyhow!("No 'sent' mailbox found"))
+        if !found {
+            tracing::warn!(role = %role, "No Mailbox/query response present");
+            return Err(anyhow!("Mailbox/query response missing"));
+        }
+
+        Ok(ids)
     }
     /// Query mailboxes for an account.
     ///
