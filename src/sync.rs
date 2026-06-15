@@ -1052,10 +1052,10 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
     xml.push_str(&format!(
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
-        item.description.as_ref().map_or(0, |d| d.len())
+        item.description.len()
     ));
     xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>");
-    xml.push_str(&xml_escape(item.description.as_ref().unwrap_or(&String::new())));
+    xml.push_str(&xml_escape(&item.description));
     xml.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
     xml.push_str("<AirSyncBase:NativeBodyType>1</AirSyncBase:NativeBodyType>");
     if !item.all_day

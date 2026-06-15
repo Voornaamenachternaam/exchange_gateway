@@ -4728,20 +4728,7 @@ async fn handle_get_user_configuration(
 </s:Envelope>"#,
         xml_escape(&config_name),
         folder_ref_xml,
-        // Always use FolderId for ParentFolderId with a synthetic ChangeKey.
-        // Per MS-OXWSUSRCFG §3.1.4.3.1, ParentFolderId is a FolderIdType, and FolderId (not DistinguishedFolderId) is the typical form.
-        // We derive a stable ChangeKey from the resolved folder identifier (fid).
-        {
-            let fid = extract_first_attr(body, b"FolderId", b"Id")
-                .or_else(|| extract_first_attr(body, b"DistinguishedFolderId", b"Id"))
-                .unwrap_or_else(|| "msgfolderroot".to_string());
-            let synthetic_ck = format!("uc-{}", const_hex::encode({
-                let mut h = Sha256::new();
-                h.update(fid.as_bytes());
-                h.finalize()
-            })[..12]);
-            format!(r#"<t:FolderId Id="{}" ChangeKey="{}" />"#, xml_escape(&fid), synthetic_ck)
-        },
+        parent_folder_id_xml,
         STANDARD.encode(&synthetic_id),
         change_key
     );
