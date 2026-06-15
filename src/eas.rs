@@ -408,8 +408,8 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 return Err("Missing required Collection element inside Collections");
             }
 
-            // Add requires ClientId (per MS-ASCAL §2.2.3.22). Use namespace-aware detection.
-            if extract_first_tag_text(xml, b"Add").is_some() && extract_first_tag_text(xml, b"ClientId").is_none() {
+            // Add requires ClientId (per MS-ASCAL §2.2.3.22). Use element presence detection.
+            if element_exists(xml, "Add") && !element_exists(xml, "ClientId") {
                 return Err("Add requires ClientId");
             }
         }
