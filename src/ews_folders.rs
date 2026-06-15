@@ -366,4 +366,48 @@ mod tests {
         );
         assert!(xml.contains(">Calendar<"), "Must include Calendar");
     }
+
+    #[test]
+    fn test_parent_folder_id_structure() {
+        let owner = "contact@example.com";
+        let xml = render_folder_xml(owner, DistinguishedFolder::Inbox, 0);
+        // Ensure ParentFolderId element exists and has both Id and ChangeKey attributes directly on it.
+        assert!(
+            xml.contains("<t:ParentFolderId"),
+            "Missing ParentFolderId element"
+        );
+        // Find the ParentFolderId element and verify its attributes.
+        if let Some(start) = xml.find("<t:ParentFolderId") {
+            let rest = &xml[start..];
+            // Find the closing of the element (/> or >)
+            let end_idx = rest
+                .find("/>")
+                .map(|i| i + 2)
+                .or_else(|| rest.find('>').map(|i| i + 1))
+                .unwrap_or(rest.len());
+            let parent_el = &rest[..end_idx];
+            assert!(
+                parent_el.contains("Id=\"") && parent_el.contains("ChangeKey=\""),
+                "ParentFolderId must have both Id and ChangeKey attributes"
+            );
+            assert!(
+                !parent_el.contains("<t:FolderId"),
+                "ParentFolderId must NOT contain nested FolderId element (non-standard)"
+            );
+        } else {
+            panic!("ParentFolderId element not found");
+        }
+        // Check that ParentFolderId appears after FolderId and before DisplayName
+        let folder_id_pos = xml.find("<t:FolderId Id=").unwrap();
+        let parent_id_pos = xml.find("<t:ParentFolderId").unwrap();
+        let display_name_pos = xml.find("<t:DisplayName>").unwrap();
+        assert!(
+            folder_id_pos < parent_id_pos,
+            "FolderId must come before ParentFolderId"
+        );
+        assert!(
+            parent_id_pos < display_name_pos,
+            "ParentFolderId must come before DisplayName"
+        );
+    }
 }

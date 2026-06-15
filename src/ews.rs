@@ -4693,17 +4693,15 @@ async fn handle_get_user_configuration(
     } else {
         folder_id_for(owner, DistinguishedFolder::MsgFolderRoot)
     };
-    // Compute the full hex string first to avoid slicing an unsized str directly.
-    let full_hex = const_hex::encode({
-        let mut h = Sha256::new();
-        h.update(fid.as_bytes());
-        h.finalize()
-    });
-    let synthetic_ck = format!("uc-{}", &full_hex[..12]);
+    // Compute the folder's ChangeKey using the same method as render_folder_xml:
+    // For a folder ID like "CAL-abc123", the ChangeKey is the suffix after the first dash.
+    let parent_prefix_len = fid.find('-').map(|i| i + 1).unwrap_or(4);
+    let parent_ck = &fid[parent_prefix_len..];
+    // ParentFolderId is of type FolderIdType: Id and ChangeKey are attributes directly on the element.
     let parent_folder_id_xml = format!(
-        r#"<t:FolderId Id="{}" ChangeKey="{}" />"#,
+        r#"<t:ParentFolderId Id="{}" ChangeKey="{}" />"#,
         xml_escape(&fid),
-        synthetic_ck
+        parent_ck
     );
 
     let response_xml = format!(
