@@ -4693,11 +4693,15 @@ async fn handle_get_user_configuration(
     } else {
         folder_id_for(owner, DistinguishedFolder::MsgFolderRoot)
     };
-    let synthetic_ck = format!("uc-{}", const_hex::encode({
-        let mut h2 = Sha256::new();
-        h2.update(fid.as_bytes());
-        h2.finalize()
-    })[..12]);
+    let h2 = Sha256::new();
+    let fid_bytes = fid.as_bytes();
+    // Compute the full hex string first to avoid slicing an unsized str directly.
+    let full_hex = const_hex::encode({
+        let mut h = Sha256::new();
+        h.update(fid_bytes);
+        h.finalize()
+    });
+    let synthetic_ck = format!("uc-{}", &full_hex[..12]);
     let parent_folder_id_xml = format!(r#"<t:FolderId Id="{}" ChangeKey="{}" />"#, xml_escape(&fid), synthetic_ck);
 
     let response_xml = format!(

@@ -360,10 +360,9 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                     return true;
                 }
                 Ok(Event::Eof) => return false,
+                Ok(_) => {} // ignore other event types (Text, End, CData, etc.)
                 Err(_) => return false,
-                _ => {}
             }
-            buf.clear();
         }
     }
 
