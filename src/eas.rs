@@ -356,7 +356,9 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         let mut buf = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref() == local_name.as_bytes() => {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                    if e.name().local_name().as_ref() == local_name.as_bytes() =>
+                {
                     return true;
                 }
                 Ok(Event::Eof) => return false,
