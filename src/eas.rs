@@ -2491,7 +2491,7 @@ async fn handle_sync_collections(
     // Build multi-collection response
     let collections_xml = collection_responses.join("");
     let resp_xml = format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Collections>{collections_xml}</Collections></Sync>"
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
 }

@@ -336,13 +336,34 @@ pub fn render_jmap_email_as_eas_application_data(
         .and_then(|s| s.email.as_deref())
         .unwrap_or("");
 
-    let to_xml = email.to.as_ref().map(|recipients| {
-        recipients.iter().map(|r| {
-            let name = xml_escape(r.name.as_deref().unwrap_or(""));
-            let addr = xml_escape(r.email.as_deref().unwrap_or(""));
-            format!("<Email2:To><Email2:Name>{name}</Email2:Name><Email2:EmailAddress>{addr}</Email2:EmailAddress></Email2:To>")
-        }).collect::<String>()
-    }).unwrap_or_default();
+    // Build a single Email:To element with recipients formatted as "Name <email>" separated by semicolons.
+    // Filter out recipients with empty email addresses to avoid malformed entries.
+    let to_xml = if let Some(recipients) = email.to.as_ref()
+        && !recipients.is_empty()
+    {
+        let mut to_parts: Vec<String> = Vec::new();
+        for r in recipients {
+            let addr = r.email.as_deref().unwrap_or("");
+            if addr.is_empty() {
+                continue; // Skip recipients without an email address
+            }
+            let name = r.name.as_deref().unwrap_or("");
+            let escaped_name = xml_escape(name);
+            let escaped_addr = xml_escape(addr);
+            if !escaped_name.is_empty() {
+                to_parts.push(format!("{} &lt;{}&gt;", escaped_name, escaped_addr));
+            } else {
+                to_parts.push(escaped_addr.to_string());
+            }
+        }
+        if to_parts.is_empty() {
+            String::new()
+        } else {
+            format!("<Email:To>{}</Email:To>", to_parts.join("; "))
+        }
+    } else {
+        String::new()
+    };
 
     let (body_text, is_html) = extract_jmap_body(email);
     // Per MS-ASAIRS §2.2.2.6, Type values: 1=plain text, 2=HTML
@@ -363,7 +384,7 @@ pub fn render_jmap_email_as_eas_application_data(
     });
 
     format!(
-        r#"<AirSync:ApplicationData><AirSync:ServerId>{server_id}</AirSync:ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></AirSync:ApplicationData>"#,
+        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData>"#,
         server_id = xml_escape(server_id),
         subject = xml_escape(subject),
         sender_name = xml_escape(sender_name),
