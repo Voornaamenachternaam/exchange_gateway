@@ -1237,16 +1237,26 @@ impl JmapClient {
             .await?;
 
         let mut ids = Vec::new();
+        let mut found = false;
         for (method, data, _) in response.method_responses {
-            if method == "Mailbox/query"
-                && let Some(arr) = data.get("ids").and_then(|v| v.as_array())
-            {
-                for id_val in arr {
-                    if let Some(s) = id_val.as_str() {
-                        ids.push(s.to_string());
+            if method == "Mailbox/query" {
+                found = true;
+                if let Some(arr) = data.get("ids").and_then(|v| v.as_array()) {
+                    for id_val in arr {
+                        if let Some(s) = id_val.as_str() {
+                            ids.push(s.to_string());
+                        }
                     }
+                } else {
+                    tracing::warn!(role = %role, "Mailbox/query response missing 'ids' array");
+                    return Err(anyhow!("Malformed Mailbox/query response: missing ids array"));
                 }
             }
+        }
+
+        if !found {
+            tracing::warn!(role = %role, "No Mailbox/query response present");
+            return Err(anyhow!("Mailbox/query response missing"));
         }
 
         Ok(ids)

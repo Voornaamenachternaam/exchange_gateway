@@ -566,42 +566,72 @@ pub async fn fetch_emails_jmap(
         });
     }
 
-    // Fetch the mailbox ID(s) for the requested role. Use mailboxIds filter
-    // instead of inMailboxRole for compatibility with all JMAP servers.
-    let mailbox_ids = jmap
-        .get_mailbox_ids_for_role(account_id, &mailbox_role_lower, username, password)
+    // Normalize role to JMAP standard role name
+    let normalized_role = match mailbox_role_lower.as_str() {
+        "inbox" => "inbox",
+        "sentitems" | "sent" => "sent",
+        "drafts" | "draft" => "drafts",
+        "junkemail" | "junk" => "junk",
+        "deleteditems" | "trash" => "trash",
+        "outbox" => return Ok(crate::jmap::EmailListResult { emails: Vec::new(), total: 0, can_calculate_changes: false, query_state: String::new(), state: String::new() }),
+        _ => {
+            tracing::warn!(role = %mailbox_role, "Unrecognised mailbox role; returning empty email list");
+            return Ok(crate::jmap::EmailListResult {
+                emails: Vec::new(),
+                total: 0,
+                can_calculate_changes: false,
+                query_state: String::new(),
+                state: String::new(),
+            });
+        }
+    };
+
+    // Fetch the mailbox ID(s) for the requested role using Mailbox/query.
+    // Use mailboxIds filter instead of inMailboxRole for compatibility.
+    match jmap
+        .get_mailbox_ids_for_role(account_id, normalized_role, username, password)
         .await
-        .unwrap_or_default(); // Fallback to empty on error
-
-    if mailbox_ids.is_empty() {
-        // No mailbox for that role — return empty result.
-        tracing::info!(role = %mailbox_role, "No mailbox found for role; returning empty email list");
-        return Ok(crate::jmap::EmailListResult {
-            emails: Vec::new(),
-            total: 0,
-            can_calculate_changes: false,
-            query_state: String::new(),
-            state: String::new(),
-        });
+    {
+        Ok(mailbox_ids) if !mailbox_ids.is_empty() => {
+            let filter = Some(serde_json::json!({
+                "mailboxIds": mailbox_ids
+            }));
+            let result = jmap
+                .query_emails(crate::jmap::QueryEmailsParams {
+                    account_id,
+                    filter,
+                    sort: None,
+                    position,
+                    limit,
+                    username,
+                    password,
+                })
+                .await?;
+            Ok(result)
+        }
+        Ok(_) => {
+            // No mailbox for that role — return empty result.
+            tracing::info!(role = %normalized_role, "No mailbox found for role; returning empty email list");
+            Ok(crate::jmap::EmailListResult {
+                emails: Vec::new(),
+                total: 0,
+                can_calculate_changes: false,
+                query_state: String::new(),
+                state: String::new(),
+            })
+        }
+        Err(e) => {
+            // Log the error but still return empty result to maintain sync stability.
+            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role");
+            Ok(crate::jmap::EmailListResult {
+                emails: Vec::new(),
+                total: 0,
+                can_calculate_changes: false,
+                query_state: String::new(),
+                state: String::new(),
+            })
+        }
     }
-
-    let filter = Some(serde_json::json!({
-        "mailboxIds": mailbox_ids
-    }));
-
-    let result = jmap
-        .query_emails(crate::jmap::QueryEmailsParams {
-            account_id,
-            filter,
-            sort: None,
-            position,
-            limit,
-            username,
-            password,
-        })
-        .await?;
-
-    Ok(result)
 }
 
 /// EAS folder type constants per MS-ASCMD §2.2.3.186.3.
