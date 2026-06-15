@@ -4700,7 +4700,11 @@ async fn handle_get_user_configuration(
         h.finalize()
     });
     let synthetic_ck = format!("uc-{}", &full_hex[..12]);
-    let parent_folder_id_xml = format!(r#"<t:FolderId Id="{}" ChangeKey="{}" />"#, xml_escape(&fid), synthetic_ck);
+    let parent_folder_id_xml = format!(
+        r#"<t:FolderId Id="{}" ChangeKey="{}" />"#,
+        xml_escape(&fid),
+        synthetic_ck
+    );
 
     let response_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
