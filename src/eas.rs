@@ -151,8 +151,9 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
     match command.to_ascii_lowercase().as_str() {
         "sync" => Some(CommandGrammar {
             namespace: "AirSync:",
-            required_tags: &["Collections", "Collection", "SyncKey"],
+            required_tags: &[], // Accept both single-collection and multi-collection structures; validated in validate_payload.
             _optional_tags: &[
+                "SyncKey",
                 "CollectionId",
                 "Class",
                 "Options",
@@ -347,26 +348,70 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         return Err("Invalid namespace");
     }
 
+    // Helper to check if an element with the given local name appears in the XML.
+    // This is more robust than naive string search (avoids false positives like <FooBar> or comments).
+    fn element_exists(xml: &str, local_name: &str) -> bool {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                    if e.name().local_name().as_ref() == local_name.as_bytes() =>
+                {
+                    return true;
+                }
+                Ok(Event::Eof) => return false,
+                Ok(_) => {} // ignore other event types (Text, End, CData, etc.)
+                Err(_) => return false,
+            }
+        }
+    }
+
+    // Validate required tags. For container elements (e.g., <Collections>), we only need to check for
+    // the presence of the opening tag, as they contain nested elements and have no text content.
+    // For non-container elements, we require non-empty text content (checked later by handler).
     for &required in grammar.required_tags {
-        if extract_first_tag_text(xml, required.as_bytes()).is_none() {
+        if !element_exists(xml, required) {
             return Err("Missing required tag");
         }
     }
 
     match lower_cmd.as_str() {
         "sync" => {
-            if let Some(class) = extract_first_tag_text(xml, b"Class") {
-                let lower = class.to_ascii_lowercase();
-                if lower != "calendar"
-                    && lower != "email"
-                    && lower != "contacts"
-                    && lower != "tasks"
-                    && lower != "notes"
-                {
-                    return Err("Unsupported Sync class");
+            // Custom validation for sync: accept either multi-collection (<Collections>) or legacy single-collection.
+            let mut reader = Reader::from_str(xml);
+            reader.config_mut().trim_text(true);
+            let mut buf = Vec::new();
+            let mut in_collections = false;
+            let mut found_collection = false;
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) => {
+                        let name = e.name().local_name();
+                        if name.as_ref() == b"Collections" {
+                            in_collections = true;
+                        } else if in_collections && name.as_ref() == b"Collection" {
+                            found_collection = true;
+                        }
+                    }
+                    Ok(Event::End(e)) => {
+                        if e.name().local_name().as_ref() == b"Collections" {
+                            in_collections = false;
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Ok(_) => {} // ignore all other event types (Empty, Text, CData, etc.)
+                    Err(_) => return Err("Invalid XML in sync request"),
                 }
+                buf.clear();
             }
-            if xml.contains("<Add>") && !xml.contains("<ClientId>") {
+            if !found_collection {
+                return Err("Missing required Collection element inside Collections");
+            }
+
+            // Add requires ClientId (per MS-ASCAL §2.2.3.22). Use element presence detection.
+            if element_exists(xml, "Add") && !element_exists(xml, "ClientId") {
                 return Err("Add requires ClientId");
             }
         }
