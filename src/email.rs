@@ -337,11 +337,15 @@ pub fn render_jmap_email_as_eas_application_data(
         .unwrap_or("");
 
     // Build a single Email:To element with recipients formatted as "Name <email>" separated by semicolons.
+    // Filter out recipients with empty email addresses to avoid malformed entries.
     let to_xml = if let Some(recipients) = email.to.as_ref() && !recipients.is_empty() {
         let mut to_parts: Vec<String> = Vec::new();
         for r in recipients {
-            let name = r.name.as_deref().unwrap_or("");
             let addr = r.email.as_deref().unwrap_or("");
+            if addr.is_empty() {
+                continue; // Skip recipients without an email address
+            }
+            let name = r.name.as_deref().unwrap_or("");
             let escaped_name = xml_escape(name);
             let escaped_addr = xml_escape(addr);
             if !escaped_name.is_empty() {
@@ -377,16 +381,8 @@ pub fn render_jmap_email_as_eas_application_data(
         }
     });
 
-    // Format To recipients as a single string in the same style as From (EAS expects simple strings)
-    let to_combined = if to_xml.is_empty() {
-        String::new()
-    } else {
-        // to_xml contains multiple <Email:To>...</Email:To> fragments concatenated.
-        // They are already escaped; just concatenate them directly.
-        to_xml
-    };
     format!(
-        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_combined}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData>"#,
+        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData>"#,
         server_id = xml_escape(server_id),
         subject = xml_escape(subject),
         sender_name = xml_escape(sender_name),
