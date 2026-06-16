@@ -111,6 +111,7 @@ static TAG_TO_NAME: phf::Map<[u8; 2], &'static str> = phf::phf_map! {
     [2u8, 0x3Du8] => "Email:FlagType",
     [2u8, 0x3Eu8] => "Email:CompleteTime",
     [2u8, 0x40u8] => "Email:DisallowNewTimeProposal",
+    [2u8, 0x41u8] => "Email:Importance",
     [4u8, 0x05u8] => "Calendar:Timezone",
     [4u8, 0x06u8] => "Calendar:AllDayEvent",
     [4u8, 0x07u8] => "Calendar:Attendees",

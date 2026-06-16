@@ -2516,14 +2516,16 @@ async fn handle_sync_collections(
 /// (`<Sync><Collections>...</Collections></Sync>`) to allow nesting inside
 /// a multi-collection response.
 fn extract_inner_collection(resp_xml: &str) -> String {
-    // Try to find <Collection>...</Collection> within the response
-    if let Some(start) = resp_xml.find("<Collection")
-        && let Some(end) = resp_xml.rfind("</Collection>")
-    {
+    // Find the start of a <Collection> element (avoid matching <Collections>)
+    let start = resp_xml
+        .find("<Collection>")
+        .or_else(|| resp_xml.find("<Collection "));
+    let end = resp_xml.rfind("</Collection>");
+    if let (Some(start), Some(end)) = (start, end) {
         let end_full = end + "</Collection>".len();
         return resp_xml[start..end_full].to_string();
     }
-    // Fallback: return the whole XML wrapped in a Collection
+    // Fallback: return the whole XML as-is
     resp_xml.to_string()
 }
 
