@@ -2635,8 +2635,16 @@ async fn handle_email_sync(
             }
         }
 
+        let emails = &result.emails;
+        tracing::info!(
+            user = %username,
+            collection_id,
+            email_count = emails.len(),
+            sync_type = "initial",
+            "Building EAS email sync response"
+        );
         let mut commands_xml = String::new();
-        for email in &result.emails {
+        for email in emails {
             let jmap_id = email.id.as_deref().unwrap_or("unknown");
             let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
             let app_data = crate::email::render_jmap_email_as_eas_application_data(
@@ -2649,11 +2657,17 @@ async fn handle_email_sync(
                 server_id, app_data,
             ));
         }
-
-        return Ok(format!(
+        let response = format!(
             "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
             new_sync_key, collection_id, commands_xml
-        ));
+        );
+        tracing::info!(
+            user = %username,
+            collection_id,
+            sync_type = "initial",
+            "EAS email sync response built"
+        );
+        return Ok(response);
     }
 
     // Subsequent syncs — use JMAP Email/changes for delta sync
@@ -2746,11 +2760,24 @@ async fn handle_email_sync(
                     ));
                 }
 
-                let resp_xml = format!(
+                tracing::info!(
+                    user = %username,
+                    collection_id,
+                    changed_count = all_ids.len(),
+                    sync_type = "delta",
+                    "Building EAS email delta sync response"
+                );
+                let response = format!(
                     "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
                     new_sync_key, collection_id, commands_xml
                 );
-                return Ok(resp_xml);
+                tracing::info!(
+                    user = %username,
+                    collection_id,
+                    sync_type = "delta",
+                    "EAS email delta sync response built"
+                );
+                return Ok(response);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "JMAP Email/changes failed, falling back to full sync");
