@@ -998,12 +998,27 @@ fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str, request_id: &
                 b,
             )
                 .into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE.as_str(), "text/plain; charset=utf-8")],
-                format!("WBXML Encode Err: {}", e).into_bytes(),
-            )
-                .into_response(),
+            Err(e) => {
+                // Log detailed error to diagnose 500s
+                let preview = if xml.len() > 500 {
+                    &xml[..500]
+                } else {
+                    xml
+                };
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %e,
+                    xml_len = xml.len(),
+                    preview = %preview,
+                    "WBXML encode failed"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE.as_str(), "text/plain; charset=utf-8")],
+                    format!("WBXML Encode Err: {}", e).into_bytes(),
+                )
+                    .into_response()
+            }
         }
     } else {
         (
