@@ -1000,11 +1000,7 @@ fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str, request_id: &
                 .into_response(),
             Err(e) => {
                 // Log detailed error to diagnose 500s
-                let preview = if xml.len() > 500 {
-                    &xml[..500]
-                } else {
-                    xml
-                };
+                let preview = if xml.len() > 500 { &xml[..500] } else { xml };
                 tracing::error!(
                     request_id = %request_id,
                     error = %e,
