@@ -594,8 +594,18 @@ pub async fn fetch_emails_jmap(
         .await
     {
         Ok(mailbox_ids) if !mailbox_ids.is_empty() => {
+            // RFC 8621 §4.3.1: "inMailbox" filter must be a single mailbox ID (String).
+            // get_mailbox_ids_for_role returns a Vec for flexibility, but in practice
+            // each role maps to exactly one mailbox. Use the first ID.
+            if mailbox_ids.len() > 1 {
+                tracing::warn!(
+                    role = %normalized_role,
+                    count = mailbox_ids.len(),
+                    "Multiple mailbox IDs found for role; using first"
+                );
+            }
             let filter = Some(serde_json::json!({
-                "inMailbox": mailbox_ids
+                "inMailbox": mailbox_ids[0]
             }));
             let result = jmap
                 .query_emails(crate::jmap::QueryEmailsParams {
