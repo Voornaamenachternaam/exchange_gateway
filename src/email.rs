@@ -261,39 +261,48 @@ pub fn render_jmap_email_as_ews_message(
     server_id: &str,
     change_key: &str,
 ) -> String {
-    let subject = email.subject.as_deref().unwrap_or("(No Subject)");
+    let subject = sanitize_for_xml(email.subject.as_deref().unwrap_or("(No Subject)"));
     let sender = email.from.as_ref().and_then(|v| v.first());
-    let sender_name = sender
-        .as_ref()
-        .and_then(|s| s.name.as_deref())
-        .unwrap_or("");
-    let sender_email = sender
-        .as_ref()
-        .and_then(|s| s.email.as_deref())
-        .unwrap_or("");
+    let sender_name = sanitize_for_xml(
+        sender
+            .as_ref()
+            .and_then(|s| s.name.as_deref())
+            .unwrap_or("")
+    );
+    let sender_email = sanitize_for_xml(
+        sender
+            .as_ref()
+            .and_then(|s| s.email.as_deref())
+            .unwrap_or("")
+    );
 
     let to_xml = email.to.as_ref().map(|recipients| {
         recipients.iter().map(|r| {
-            let name = xml_escape(r.name.as_deref().unwrap_or(""));
-            let addr = xml_escape(r.email.as_deref().unwrap_or(""));
+            let name_san = sanitize_for_xml(r.name.as_deref().unwrap_or(""));
+            let addr_san = sanitize_for_xml(r.email.as_deref().unwrap_or(""));
+            let name = xml_escape(&name_san);
+            let addr = xml_escape(&addr_san);
             format!("<t:Mailbox><t:Name>{name}</t:Name><t:EmailAddress>{addr}</t:EmailAddress></t:Mailbox>")
         }).collect::<String>()
     }).unwrap_or_default();
 
     let cc_xml = email.cc.as_ref().map(|recipients| {
         recipients.iter().map(|r| {
-            let name = xml_escape(r.name.as_deref().unwrap_or(""));
-            let addr = xml_escape(r.email.as_deref().unwrap_or(""));
+            let name_san = sanitize_for_xml(r.name.as_deref().unwrap_or(""));
+            let addr_san = sanitize_for_xml(r.email.as_deref().unwrap_or(""));
+            let name = xml_escape(&name_san);
+            let addr = xml_escape(&addr_san);
             format!("<t:Mailbox><t:Name>{name}</t:Name><t:EmailAddress>{addr}</t:EmailAddress></t:Mailbox>")
         }).collect::<String>()
     }).unwrap_or_default();
 
-    let body_preview = email.preview.as_deref().unwrap_or("");
-    let (body_text, is_html) = extract_jmap_body(email);
+    let body_preview = sanitize_for_xml(email.preview.as_deref().unwrap_or(""));
+    let (body_text_raw, is_html) = extract_jmap_body(email);
+    let body_text_sanitized = sanitize_for_xml(body_text_raw);
     let body_type = if is_html { "HTML" } else { "Text" };
 
-    let received_at = email.received_at.as_deref().unwrap_or("");
-    let sent_at = email.sent_at.as_deref().unwrap_or("");
+    let received_at = sanitize_for_xml(email.received_at.as_deref().unwrap_or(""));
+    let sent_at = sanitize_for_xml(email.sent_at.as_deref().unwrap_or(""));
     let has_attachment = email.has_attachment.unwrap_or(false);
     let is_read = email
         .keywords
@@ -304,15 +313,15 @@ pub fn render_jmap_email_as_ews_message(
         r#"<t:Message><t:ItemId Id="{server_id}" ChangeKey="{change_key}" /><t:Subject>{subject}</t:Subject><t:Sender><t:Mailbox><t:Name>{sender_name}</t:Name><t:EmailAddress>{sender_email}</t:EmailAddress></t:Mailbox></t:Sender><t:ToRecipients>{to_xml}</t:ToRecipients><t:CcRecipients>{cc_xml}</t:CcRecipients><t:DateTimeReceived>{received_at}</t:DateTimeReceived><t:DateTimeSent>{sent_at}</t:DateTimeSent><t:IsRead>{is_read}</t:IsRead><t:HasAttachments>{has_attachment}</t:HasAttachments><t:Preview>{body_preview}</t:Preview><t:Body BodyType="{body_type}">{body_text}</t:Body></t:Message>"#,
         server_id = xml_escape(server_id),
         change_key = xml_escape(change_key),
-        subject = xml_escape(subject),
-        sender_name = xml_escape(sender_name),
-        sender_email = xml_escape(sender_email),
-        received_at = xml_escape(received_at),
-        sent_at = xml_escape(sent_at),
+        subject = xml_escape(&subject),
+        sender_name = xml_escape(&sender_name),
+        sender_email = xml_escape(&sender_email),
+        received_at = xml_escape(&received_at),
+        sent_at = xml_escape(&sent_at),
         is_read = is_read,
         has_attachment = has_attachment,
-        body_preview = xml_escape(body_preview),
-        body_text = xml_escape(body_text),
+        body_preview = xml_escape(&body_preview),
+        body_text = xml_escape(&body_text_sanitized),
     )
 }
 
@@ -320,27 +329,41 @@ pub fn render_jmap_email_as_ews_message(
 ///
 /// Per MS-ASEMAIL §2.2, the Email class includes elements like
 /// Subject, From, To, Body, etc.
+/// Remove characters that are invalid in XML 1.0.
+///
+/// XML 1.0 allowed characters: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+fn sanitize_for_xml(s: &str) -> String {
+    s.chars()
+        .filter(|&c| {
+            matches!(
+                c,
+                '\t' | '\n' | '\r' | (' '..='\u{D7FF}') | ('\u{E000}'..='\u{FFFD}') | ('\u{10000}'..='\u{10FFFF}')
+            )
+        })
+        .collect()
+}
+
 pub fn render_jmap_email_as_eas_application_data(
     email: &JmapEmail,
     server_id: &str,
     _collection_id: &str,
 ) -> String {
-    let subject = email.subject.as_deref().unwrap_or("");
+    let subject = sanitize_for_xml(email.subject.as_deref().unwrap_or(""));
     let sender = email.from.as_ref().and_then(|v| v.first());
-    let sender_name: &str = sender
+    let sender_name_raw = sender
         .as_ref()
         .and_then(|s| s.name.as_deref())
         .unwrap_or("");
-    let sender_email: &str = sender
+    let sender_name = sanitize_for_xml(sender_name_raw);
+    let sender_email_raw = sender
         .as_ref()
         .and_then(|s| s.email.as_deref())
         .unwrap_or("");
+    let sender_email = sanitize_for_xml(sender_email_raw);
 
     // Build a single Email:To element with recipients formatted as "Name <email>" separated by semicolons.
-    // Filter out recipients with empty email addresses to avoid malformed entries.
-    let to_xml = if let Some(recipients) = email.to.as_ref()
-        && !recipients.is_empty()
-    {
+    // Filter out recipients without an email address. Sanitize and escape each part.
+    let to_xml = if let Some(recipients) = email.to.as_ref() && !recipients.is_empty() {
         let mut to_parts: Vec<String> = Vec::new();
         for r in recipients {
             let addr = r.email.as_deref().unwrap_or("");
@@ -348,8 +371,10 @@ pub fn render_jmap_email_as_eas_application_data(
                 continue; // Skip recipients without an email address
             }
             let name = r.name.as_deref().unwrap_or("");
-            let escaped_name = xml_escape(name);
-            let escaped_addr = xml_escape(addr);
+            let sanitized_name = sanitize_for_xml(name);
+            let escaped_name = xml_escape(&sanitized_name);
+            let sanitized_addr = sanitize_for_xml(addr);
+            let escaped_addr = xml_escape(&sanitized_addr);
             if !escaped_name.is_empty() {
                 to_parts.push(format!("{} &lt;{}&gt;", escaped_name, escaped_addr));
             } else {
@@ -365,11 +390,12 @@ pub fn render_jmap_email_as_eas_application_data(
         String::new()
     };
 
-    let (body_text, is_html) = extract_jmap_body(email);
+    let (body_text_raw, is_html) = extract_jmap_body(email);
+    let body_text_sanitized = sanitize_for_xml(body_text_raw);
     // Per MS-ASAIRS §2.2.2.6, Type values: 1=plain text, 2=HTML
     let body_type_num = if is_html { "2" } else { "1" };
 
-    let received_at = email.received_at.as_deref().unwrap_or("");
+    let received_at = sanitize_for_xml(email.received_at.as_deref().unwrap_or(""));
     let is_read = email
         .keywords
         .as_ref()
@@ -386,14 +412,14 @@ pub fn render_jmap_email_as_eas_application_data(
     format!(
         r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachment>{has_attachment_int}</Email:HasAttachment><AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData>"#,
         server_id = xml_escape(server_id),
-        subject = xml_escape(subject),
-        sender_name = xml_escape(sender_name),
-        sender_email = xml_escape(sender_email),
-        received_at = xml_escape(received_at),
+        subject = xml_escape(&subject),
+        sender_name = xml_escape(&sender_name),
+        sender_email = xml_escape(&sender_email),
+        received_at = xml_escape(&received_at),
         importance = importance,
         is_read_int = if is_read { "1" } else { "0" },
         has_attachment_int = if has_attachment { "1" } else { "0" },
-        body_text = xml_escape(body_text),
+        body_text = xml_escape(&body_text_sanitized),
     )
 }
 
