@@ -1198,7 +1198,9 @@ impl JmapClient {
         username: &str,
         password: &SecretString,
     ) -> Result<String> {
-        let ids = self.get_mailbox_ids_for_role(account_id, "sent", username, password).await?;
+        let ids = self
+            .get_mailbox_ids_for_role(account_id, "sent", username, password)
+            .await?;
         ids.first()
             .cloned()
             .ok_or_else(|| anyhow!("No 'sent' mailbox found"))
@@ -1249,7 +1251,9 @@ impl JmapClient {
                     }
                 } else {
                     tracing::warn!(role = %role, "Mailbox/query response missing 'ids' array");
-                    return Err(anyhow!("Malformed Mailbox/query response: missing ids array"));
+                    return Err(anyhow!(
+                        "Malformed Mailbox/query response: missing ids array"
+                    ));
                 }
             }
         }
