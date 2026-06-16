@@ -267,13 +267,13 @@ pub fn render_jmap_email_as_ews_message(
         sender
             .as_ref()
             .and_then(|s| s.name.as_deref())
-            .unwrap_or("")
+            .unwrap_or(""),
     );
     let sender_email = sanitize_for_xml(
         sender
             .as_ref()
             .and_then(|s| s.email.as_deref())
-            .unwrap_or("")
+            .unwrap_or(""),
     );
 
     let to_xml = email.to.as_ref().map(|recipients| {
@@ -337,7 +337,11 @@ fn sanitize_for_xml(s: &str) -> String {
         .filter(|&c| {
             matches!(
                 c,
-                '\t' | '\n' | '\r' | (' '..='\u{D7FF}') | ('\u{E000}'..='\u{FFFD}') | ('\u{10000}'..='\u{10FFFF}')
+                '\t' | '\n'
+                    | '\r'
+                    | (' '..='\u{D7FF}')
+                    | ('\u{E000}'..='\u{FFFD}')
+                    | ('\u{10000}'..='\u{10FFFF}')
             )
         })
         .collect()
@@ -363,7 +367,9 @@ pub fn render_jmap_email_as_eas_application_data(
 
     // Build a single Email:To element with recipients formatted as "Name <email>" separated by semicolons.
     // Filter out recipients without an email address. Sanitize and escape each part.
-    let to_xml = if let Some(recipients) = email.to.as_ref() && !recipients.is_empty() {
+    let to_xml = if let Some(recipients) = email.to.as_ref()
+        && !recipients.is_empty()
+    {
         let mut to_parts: Vec<String> = Vec::new();
         for r in recipients {
             let addr = r.email.as_deref().unwrap_or("");
