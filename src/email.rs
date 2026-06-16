@@ -587,14 +587,15 @@ pub async fn fetch_emails_jmap(
     };
 
     // Fetch the mailbox ID(s) for the requested role using Mailbox/query.
-    // Use mailboxIds filter instead of inMailboxRole for compatibility.
+    // Use the standard 'inMailbox' filter (not 'inMailboxRole') for maximum
+    // compatibility across JMAP servers.
     match jmap
         .get_mailbox_ids_for_role(account_id, normalized_role, username, password)
         .await
     {
         Ok(mailbox_ids) if !mailbox_ids.is_empty() => {
             let filter = Some(serde_json::json!({
-                "mailboxIds": mailbox_ids
+                "inMailbox": mailbox_ids
             }));
             let result = jmap
                 .query_emails(crate::jmap::QueryEmailsParams {
