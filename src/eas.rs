@@ -2635,60 +2635,38 @@ async fn handle_email_sync(
             }
         }
 
-        // Move emails out of result; we no longer need result.state.
-        let emails = result.emails;
-
-        // Build response with panic catching to diagnose 500s
-        let build_response = || -> Result<String, ()> {
-            let mut commands_xml = String::new();
-            for email in &emails {
-                let jmap_id = email.id.as_deref().unwrap_or("unknown");
-                let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
-                let app_data = crate::email::render_jmap_email_as_eas_application_data(
-                    email,
-                    &server_id,
-                    collection_id,
-                );
-                commands_xml.push_str(&format!(
-                    "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
-                    server_id, app_data,
-                ));
-            }
-            Ok(format!(
-                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
-                new_sync_key, collection_id, commands_xml
-            ))
-        };
-
-        let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build_response)) {
-            Ok(Ok(xml)) => xml,
-            Ok(Err(())) => {
-                tracing::error!(user=%username, "Non-panic error during email sync response build");
-                return Ok(format!(
-                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
-                    new_sync_key, collection_id
-                ));
-            }
-            Err(panic_payload) => {
-                let payload_str = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    *s
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s
-                } else {
-                    "non-string panic payload"
-                };
-                tracing::error!(
-                    ?payload_str,
-                    email_count = emails.len(),
-                    user = %username,
-                    "Panic during EAS email sync response build"
-                );
-                return Ok(format!(
-                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
-                    new_sync_key, collection_id
-                ));
-            }
-        };
+        let emails = &result.emails;
+        tracing::info!(
+            user = %username,
+            collection_id,
+            email_count = emails.len(),
+            sync_type = "initial",
+            "Building EAS email sync response"
+        );
+        let mut commands_xml = String::new();
+        for email in emails {
+            let jmap_id = email.id.as_deref().unwrap_or("unknown");
+            let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
+            let app_data = crate::email::render_jmap_email_as_eas_application_data(
+                email,
+                &server_id,
+                collection_id,
+            );
+            commands_xml.push_str(&format!(
+                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+                server_id, app_data,
+            ));
+        }
+        let response = format!(
+            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
+            new_sync_key, collection_id, commands_xml
+        );
+        tracing::info!(
+            user = %username,
+            collection_id,
+            sync_type = "initial",
+            "EAS email sync response built"
+        );
         return Ok(response);
     }
 
@@ -2782,42 +2760,23 @@ async fn handle_email_sync(
                     ));
                 }
 
-                // Build response with panic catching to diagnose 500s
-                let build_response = || -> Result<String, ()> {
-                    Ok(format!(
-                        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
-                        new_sync_key, collection_id, commands_xml
-                    ))
-                };
-                let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build_response)) {
-                    Ok(Ok(xml)) => xml,
-                    Ok(Err(())) => {
-                        tracing::error!(user=%username, "Non-panic error during email delta sync response build");
-                        format!(
-                            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
-                            new_sync_key, collection_id
-                        )
-                    }
-                    Err(panic_payload) => {
-                        let payload_str = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                            *s
-                        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                            s
-                        } else {
-                            "non-string panic payload"
-                        };
-                        tracing::error!(
-                            ?payload_str,
-                            changed_count = all_ids.len(),
-                            user = %username,
-                            "Panic during EAS email delta sync response build"
-                        );
-                        format!(
-                            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
-                            new_sync_key, collection_id
-                        )
-                    }
-                };
+                tracing::info!(
+                    user = %username,
+                    collection_id,
+                    changed_count = all_ids.len(),
+                    sync_type = "delta",
+                    "Building EAS email delta sync response"
+                );
+                let response = format!(
+                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
+                    new_sync_key, collection_id, commands_xml
+                );
+                tracing::info!(
+                    user = %username,
+                    collection_id,
+                    sync_type = "delta",
+                    "EAS email delta sync response built"
+                );
                 return Ok(response);
             }
             Err(e) => {
