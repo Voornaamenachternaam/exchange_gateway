@@ -42,27 +42,27 @@ use tracing::info;
 ///
 /// Returns `(body_content: &str, is_html: bool)`.
 fn extract_jmap_body(email: &JmapEmail) -> (&str, bool) {
-    let bv = match email.body_values.as_ref() {
-        Some(bv) => bv,
-        None => return ("", false),
-    };
-
-    // Try plain text body first — per RFC 8621, textBody[].partId maps into bodyValues
-    if let Some(text_parts) = email.text_body.as_ref()
-        && let Some(first_part) = text_parts.first()
-        && let Some(bv_entry) = bv.get(&first_part.part_id)
-    {
-        return (bv_entry.value.as_str(), false);
+    // Try bodyValues if present (preferred source)
+    if let Some(bv) = email.body_values.as_ref() {
+        // Try plain text body first — per RFC 8621, textBody[].partId maps into bodyValues
+        if let Some(text_parts) = email.text_body.as_ref()
+            && let Some(first_part) = text_parts.first()
+            && let Some(bv_entry) = bv.get(&first_part.part_id)
+        {
+            return (bv_entry.value.as_str(), false);
+        }
+        // Fall back to HTML body
+        if let Some(html_parts) = email.html_body.as_ref()
+            && let Some(first_part) = html_parts.first()
+            && let Some(bv_entry) = bv.get(&first_part.part_id)
+        {
+            return (bv_entry.value.as_str(), true);
+        }
     }
-
-    // Fall back to HTML body
-    if let Some(html_parts) = email.html_body.as_ref()
-        && let Some(first_part) = html_parts.first()
-        && let Some(bv_entry) = bv.get(&first_part.part_id)
-    {
-        return (bv_entry.value.as_str(), true);
+    // Last resort: use preview (plain text snippet) to avoid empty body
+    if let Some(preview) = email.preview.as_ref() {
+        return (preview.as_str(), false);
     }
-
     ("", false)
 }
 
@@ -301,7 +301,9 @@ pub fn render_jmap_email_as_ews_message(
     let body_text_sanitized = sanitize_for_xml(body_text_raw);
     let body_type = if is_html { "HTML" } else { "Text" };
 
-    let received_at = sanitize_for_xml(email.received_at.as_deref().unwrap_or(""));
+    // Prefer received_at; fall back to sent_at to avoid empty date (epoch).
+    let received_at_raw = email.received_at.as_deref().or(email.sent_at.as_deref()).unwrap_or("");
+    let received_at = sanitize_for_xml(received_at_raw);
     let sent_at = sanitize_for_xml(email.sent_at.as_deref().unwrap_or(""));
     let has_attachment = email.has_attachment.unwrap_or(false);
     let is_read = email
@@ -401,7 +403,9 @@ pub fn render_jmap_email_as_eas_application_data(
     // Per MS-ASAIRS §2.2.2.6, Type values: 1=plain text, 2=HTML
     let body_type_num = if is_html { "2" } else { "1" };
 
-    let received_at = sanitize_for_xml(email.received_at.as_deref().unwrap_or(""));
+    // Prefer received_at; fall back to sent_at to avoid empty date (epoch).
+    let received_at_raw = email.received_at.as_deref().or(email.sent_at.as_deref()).unwrap_or("");
+    let received_at = sanitize_for_xml(received_at_raw);
     let is_read = email
         .keywords
         .as_ref()

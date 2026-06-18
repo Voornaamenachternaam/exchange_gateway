@@ -27,12 +27,38 @@ use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Deserializer};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, trace, warn};
+
+/// Helper: deserialize a field that may be either a single object, an array, or null.
+/// This accommodates servers that sometimes return a single object instead of an array
+/// for address fields (from, to, cc, bcc, replyTo). Returns `None` for null, `Some(vec)` otherwise.
+fn one_or_array<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match value {
+        Value::Array(arr) => {
+            arr.into_iter()
+                .map(|v| T::deserialize(v).map_err(serde::de::Error::custom))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some)
+        }
+        _ => {
+            let single = T::deserialize(value).map_err(serde::de::Error::custom)?;
+            Ok(Some(vec![single]))
+        }
+    }
+}
 
 /// JMAP session object (RFC 8621 §2.1)
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,15 +147,15 @@ pub struct JmapEmail {
     pub sent_at: Option<String>,
     #[serde(default)]
     pub has_attachment: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "one_or_array")]
     pub from: Option<Vec<JmapEmailAddress>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "one_or_array")]
     pub to: Option<Vec<JmapEmailAddress>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "one_or_array")]
     pub cc: Option<Vec<JmapEmailAddress>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "one_or_array")]
     pub bcc: Option<Vec<JmapEmailAddress>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "one_or_array")]
     pub reply_to: Option<Vec<JmapEmailAddress>>,
     #[serde(default)]
     pub subject: Option<String>,
@@ -746,7 +772,11 @@ impl JmapClient {
                 "bcc",
                 "replyTo",
                 "subject",
-                "preview"
+                "preview",
+                "bodyValues",
+                "textBody",
+                "htmlBody",
+                "attachments"
             ])
         });
 
