@@ -659,7 +659,7 @@ impl JmapClient {
                         "path": "/ids",
                     },
                     "properties": properties,
-                    "bodyProperties": ["partId", "blobId", "size", "type", "charset"],
+                    "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
                 }),
                 "g0",
             ),
@@ -756,7 +756,7 @@ impl JmapClient {
                 "accountId": account_id,
                 "ids": ids,
                 "properties": props,
-                "bodyProperties": ["partId", "blobId", "size", "type", "charset"],
+                "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
             }),
             "g0",
         )];

@@ -2344,6 +2344,14 @@ async fn handle_sync_collections(
             .map(|c| c.eq_ignore_ascii_case("Email"))
             .unwrap_or_else(|| crate::email::is_eas_email_collection_id(collection_id));
 
+        // Determine if this is Calendar sync. For non-email, we only support Calendar.
+        // Reject Contacts, Tasks, Notes, etc. with an EAS protocol error.
+        let is_calendar = coll
+            .class
+            .as_deref()
+            .map(|c| c.eq_ignore_ascii_case("Calendar"))
+            .unwrap_or_else(|| collection_id == "1"); // Default collection ID "1" is Calendar
+
         let coll_xml = if is_email {
             // Email sync — route to JMAP
             if state.cfg.email_enabled && state.jmap_client.is_some() {
@@ -2365,7 +2373,8 @@ async fn handle_sync_collections(
                         tracing::error!("request_id={} Email Sync Error: {}", request_id, e);
                         format!(
                             "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                            incoming_key, collection_id
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
                         )
                     }
                 }
@@ -2381,11 +2390,12 @@ async fn handle_sync_collections(
                 }
                 format!(
                     "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-                    new_sync_key, collection_id
+                    xml_escape(&new_sync_key),
+                    xml_escape(collection_id)
                 )
             }
-        } else {
-            // Calendar/Contacts/Tasks — existing CalDAV sync
+        } else if is_calendar {
+            // Calendar sync — existing CalDAV path
             // Use coll.xml (collection-specific XML) for mutation checks
             // and apply_client_sync_mutations instead of the global xml,
             // to prevent cross-collection mutation leakage (e.g., Email
@@ -2494,6 +2504,20 @@ async fn handle_sync_collections(
                     return xml_or_wbxml_response(wbxml, as_wbxml, resp_xml, request_id);
                 }
             }
+        } else {
+            // Unsupported collection type: Contacts, Tasks, Notes, etc.
+            tracing::warn!(
+                request_id = %request_id,
+                collection_id = %collection_id,
+                class = coll.class.as_deref().unwrap_or("(none)"),
+                "Unsupported collection type for Sync; rejecting"
+            );
+            format!(
+                "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
+                xml_escape(coll.class.as_deref().unwrap_or("")),
+                xml_escape(incoming_key),
+                xml_escape(collection_id)
+            )
         };
 
         collection_responses.push(coll_xml);

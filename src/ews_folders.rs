@@ -61,19 +61,18 @@ impl DistinguishedFolder {
     }
 
     /// All folders that are direct children of MsgFolderRoot.
+    /// Note: Contacts, Tasks, Notes, Journal are not exposed as syncable folders
+    /// by the gateway and are excluded here to prevent clients from attempting
+    /// to sync them via EAS/EWS.
     pub fn root_children() -> &'static [DistinguishedFolder] {
         &[
             DistinguishedFolder::Calendar,
-            DistinguishedFolder::Contacts,
-            DistinguishedFolder::Tasks,
             DistinguishedFolder::Inbox,
             DistinguishedFolder::SentItems,
             DistinguishedFolder::DeletedItems,
             DistinguishedFolder::Drafts,
             DistinguishedFolder::Outbox,
             DistinguishedFolder::JunkEmail,
-            DistinguishedFolder::Notes,
-            DistinguishedFolder::Journal,
         ]
     }
 
