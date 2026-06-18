@@ -4716,9 +4716,7 @@ async fn handle_get_user_configuration(
         <m:GetUserConfigurationResponseMessage ResponseClass="Success">
           <m:ResponseCode>NoError</m:ResponseCode>
           <m:UserConfiguration>
-            <t:UserConfigurationName Name="{}">
-              {}
-            </t:UserConfigurationName>
+            <t:UserConfigurationName Name="{}">{}</t:UserConfigurationName>
             {}
             <t:ItemId Id="{}" ChangeKey="{}" />
             <t:Dictionary />
