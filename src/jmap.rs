@@ -27,8 +27,8 @@ use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize, Deserializer};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,12 +51,11 @@ where
         return Ok(None);
     }
     match value {
-        Value::Array(arr) => {
-            arr.into_iter()
-                .map(|v| T::deserialize(v).map_err(serde::de::Error::custom))
-                .collect::<Result<Vec<_>, _>>()
-                .map(Some)
-        }
+        Value::Array(arr) => arr
+            .into_iter()
+            .map(|v| T::deserialize(v).map_err(serde::de::Error::custom))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
         _ => {
             let single = T::deserialize(value).map_err(serde::de::Error::custom)?;
             Ok(Some(vec![single]))
