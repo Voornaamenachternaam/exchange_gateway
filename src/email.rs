@@ -28,6 +28,18 @@ use secrecy::SecretString;
 use std::sync::Arc;
 use tracing::info;
 
+/// Compute the email's display date for EWS/EAS clients.
+///
+/// Prefer `received_at` to reflect the actual arrival time. If missing, fall back to `sent_at`.
+/// This fallback avoids epoch "01/01/1970" dates that occur when `receivedAt` is unset.
+///
+/// Note: Using `sent_at` as a fallback misrepresents the true receive time in some cases
+/// (e.g., delayed delivery). However, it provides a reasonable approximation and prevents
+/// clients from showing nonsensical epoch dates. This behavior is expected by clients.
+fn compute_email_date_received(email: &JmapEmail) -> Option<&str> {
+    email.received_at.as_deref().or(email.sent_at.as_deref())
+}
+
 /// Deterministically extract the email body content and its type from a JMAP email.
 ///
 /// Per RFC 8621 §4.1.4, `bodyValues` is keyed by `partId` from `textBody`/`htmlBody`.
@@ -301,8 +313,7 @@ pub fn render_jmap_email_as_ews_message(
     let body_text_sanitized = sanitize_for_xml(body_text_raw);
     let body_type = if is_html { "HTML" } else { "Text" };
 
-    // Prefer received_at; fall back to sent_at to avoid empty date (epoch).
-    let received_at_raw = email.received_at.as_deref().or(email.sent_at.as_deref()).unwrap_or("");
+    let received_at_raw = compute_email_date_received(email).unwrap_or("");
     let received_at = sanitize_for_xml(received_at_raw);
     let sent_at = sanitize_for_xml(email.sent_at.as_deref().unwrap_or(""));
     let has_attachment = email.has_attachment.unwrap_or(false);
@@ -403,8 +414,7 @@ pub fn render_jmap_email_as_eas_application_data(
     // Per MS-ASAIRS §2.2.2.6, Type values: 1=plain text, 2=HTML
     let body_type_num = if is_html { "2" } else { "1" };
 
-    // Prefer received_at; fall back to sent_at to avoid empty date (epoch).
-    let received_at_raw = email.received_at.as_deref().or(email.sent_at.as_deref()).unwrap_or("");
+    let received_at_raw = compute_email_date_received(email).unwrap_or("");
     let received_at = sanitize_for_xml(received_at_raw);
     let is_read = email
         .keywords

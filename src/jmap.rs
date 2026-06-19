@@ -28,6 +28,7 @@ use dashmap::DashMap;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize, Deserializer};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,10 +38,13 @@ use tracing::{debug, trace, warn};
 /// Helper: deserialize a field that may be either a single object, an array, or null.
 /// This accommodates servers that sometimes return a single object instead of an array
 /// for address fields (from, to, cc, bcc, replyTo). Returns `None` for null, `Some(vec)` otherwise.
+///
+/// The type `T` must be `DeserializeOwned` because we materialize the JSON value locally
+/// and then deserialize `T` from it; borrowing from the deserializer lifetime is not allowed.
 fn one_or_array<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
 where
     D: Deserializer<'de>,
-    T: Deserialize<'de>,
+    T: DeserializeOwned,
 {
     let value = Value::deserialize(deserializer)?;
     if value.is_null() {
@@ -656,8 +660,7 @@ impl JmapClient {
             "preview",
             "bodyValues",
             "textBody",
-            "htmlBody",
-            "attachments"
+            "htmlBody"
         ]);
 
         // Batch Email/query + Email/get in a single request (RFC 8621 §3.6).
@@ -775,8 +778,7 @@ impl JmapClient {
                 "preview",
                 "bodyValues",
                 "textBody",
-                "htmlBody",
-                "attachments"
+                "htmlBody"
             ])
         });
 
@@ -845,8 +847,7 @@ impl JmapClient {
                     "preview",
                     "bodyValues",
                     "textBody",
-                    "htmlBody",
-                    "attachments"
+                    "htmlBody"
                 ])),
                 username,
                 password,
@@ -2136,5 +2137,40 @@ mod tests {
         assert_eq!(calls[0][2], "e0");
         assert_eq!(calls[1][0], "Email/get");
         assert_eq!(calls[1][2], "e1");
+    }
+
+    #[test]
+    fn test_one_or_array() {
+        // Helper type for testing
+        #[derive(Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "super::one_or_array")]
+            pub values: Option<Vec<String>>,
+        }
+
+        // Single object becomes Some(vec![value])
+        let json_single = r#"{"values": "a"}"#;
+        let w: Wrapper = serde_json::from_str(json_single).unwrap();
+        assert_eq!(w.values, Some(vec!["a".to_string()]));
+
+        // Array becomes Some(vec![...])
+        let json_array = r#"{"values": ["a", "b"]}"#;
+        let w: Wrapper = serde_json::from_str(json_array).unwrap();
+        assert_eq!(w.values, Some(vec!["a".to_string(), "b".to_string()]));
+
+        // null becomes None
+        let json_null = r#"{"values": null}"#;
+        let w: Wrapper = serde_json::from_str(json_null).unwrap();
+        assert_eq!(w.values, None);
+
+        // Missing field becomes None (due to #[serde(default)])
+        let json_missing = r#"{}"#;
+        let w: Wrapper = serde_json::from_str(json_missing).unwrap();
+        assert_eq!(w.values, None);
+
+        // Empty array becomes Some(empty vec)
+        let json_empty = r#"{"values": []}"#;
+        let w: Wrapper = serde_json::from_str(json_empty).unwrap();
+        assert_eq!(w.values, Some(vec![] as Vec<String>));
     }
 }
