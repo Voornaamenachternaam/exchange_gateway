@@ -4668,39 +4668,16 @@ async fn handle_get_user_configuration(
     // We use a simple static ChangeKey because these configs never change.
     let change_key = "1";
 
-    // Build the ParentFolderId: Must be a FolderId with a stable ChangeKey.
-    // Resolve the requested folder to a concrete folder ID and derive ChangeKey.
+    // Build the ParentFolderId: UserConfiguration objects are stored under the root folder.
+    // Per MS-OXWSUSRCFG, the ParentFolderId identifies the folder that contains the configuration.
+    // Use MsgFolderRoot as the parent, with its derived ChangeKey.
     let owner = owner_from_username(&auth.username);
-    let fid = if let Some(fid_str) = extract_first_attr(body, b"FolderId", b"Id") {
-        fid_str
-    } else if let Some(did) = extract_first_attr(body, b"DistinguishedFolderId", b"Id") {
-        let folder_enum = match did.to_ascii_lowercase().as_str() {
-            "msgfolderroot" => DistinguishedFolder::MsgFolderRoot,
-            "inbox" => DistinguishedFolder::Inbox,
-            "sentitems" => DistinguishedFolder::SentItems,
-            "deleteditems" => DistinguishedFolder::DeletedItems,
-            "drafts" => DistinguishedFolder::Drafts,
-            "outbox" => DistinguishedFolder::Outbox,
-            "junkemail" => DistinguishedFolder::JunkEmail,
-            "calendar" => DistinguishedFolder::Calendar,
-            "contacts" => DistinguishedFolder::Contacts,
-            "tasks" => DistinguishedFolder::Tasks,
-            "notes" => DistinguishedFolder::Notes,
-            "journal" => DistinguishedFolder::Journal,
-            _ => DistinguishedFolder::MsgFolderRoot,
-        };
-        folder_id_for(owner, folder_enum)
-    } else {
-        folder_id_for(owner, DistinguishedFolder::MsgFolderRoot)
-    };
-    // Compute the folder's ChangeKey using the same method as render_folder_xml:
-    // For a folder ID like "CAL-abc123", the ChangeKey is the suffix after the first dash.
-    let parent_prefix_len = fid.find('-').map(|i| i + 1).unwrap_or(4);
-    let parent_ck = &fid[parent_prefix_len..];
-    // ParentFolderId is of type FolderIdType: Id and ChangeKey are attributes directly on the element.
+    let parent_fid = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+    let parent_prefix_len = parent_fid.find('-').map(|i| i + 1).unwrap_or(4);
+    let parent_ck = &parent_fid[parent_prefix_len..];
     let parent_folder_id_xml = format!(
         r#"<t:ParentFolderId Id="{}" ChangeKey="{}" />"#,
-        xml_escape(&fid),
+        xml_escape(&parent_fid),
         parent_ck
     );
 
