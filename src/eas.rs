@@ -3495,8 +3495,16 @@ mod tests {
                 Some(c) if c.eq_ignore_ascii_case("Calendar") => true,
                 _ => collection_id == "1",
             };
-            assert_eq!(is_email, expect_email, "Class={:?}, CollectionId={}", class, collection_id);
-            assert_eq!(is_calendar, expect_calendar, "Class={:?}, CollectionId={}", class, collection_id);
+            assert_eq!(
+                is_email, expect_email,
+                "Class={:?}, CollectionId={}",
+                class, collection_id
+            );
+            assert_eq!(
+                is_calendar, expect_calendar,
+                "Class={:?}, CollectionId={}",
+                class, collection_id
+            );
         }
     }
 }
