@@ -1253,7 +1253,7 @@ async fn handle_folder_sync(
         // otherwise clients will attempt to sync them and hit errors.
         // Uses eas_email_folders_xml() which emits correct Type values per
         // MS-ASCMD §2.2.3.186.3 (e.g. SentItems=5, DeletedItems=4, JunkEmail=12).
-        let can_read_email = state.can_read_email();
+        let can_read_email = state.cfg.email_enabled && state.jmap_client.is_some();
         let email_folders = if can_read_email {
             crate::email::eas_email_folders_xml()
         } else {
@@ -2354,8 +2354,8 @@ async fn handle_sync_collections(
             .unwrap_or_else(|| collection_id == "1"); // Default collection ID "1" is Calendar
 
         let coll_xml = if is_email {
-            // Email sync — route to JMAP
-            if state.can_read_email() {
+            // Email sync — route to JMAP if both email_enabled and jmap_client are set
+            if state.cfg.email_enabled && state.jmap_client.is_some() {
                 match handle_email_sync(
                     state,
                     username,
@@ -2527,7 +2527,7 @@ async fn handle_sync_collections(
     // Build multi-collection response
     let collections_xml = collection_responses.join("");
     let resp_xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
 }
