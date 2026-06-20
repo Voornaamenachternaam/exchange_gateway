@@ -107,6 +107,25 @@ impl DistinguishedFolder {
             _ => Some("root"),
         }
     }
+
+    /// Returns true if this folder is supported for EWS folder operations
+    /// (i.e., can be used as ParentFolderId in GetUserConfiguration).
+    /// Supported: MsgFolderRoot and any folder that is a direct child of root
+    /// (Inbox, SentItems, DeletedItems, Drafts, Outbox, JunkEmail, Calendar).
+    /// Contacts, Tasks, Notes, Journal are explicitly unsupported.
+    pub fn is_supported(self) -> bool {
+        matches!(
+            self,
+            Self::MsgFolderRoot
+                | Self::Calendar
+                | Self::Inbox
+                | Self::SentItems
+                | Self::DeletedItems
+                | Self::Drafts
+                | Self::Outbox
+                | Self::JunkEmail
+        )
+    }
 }
 
 impl FromStr for DistinguishedFolder {
