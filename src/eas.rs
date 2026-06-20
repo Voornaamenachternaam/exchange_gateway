@@ -2369,8 +2369,12 @@ async fn handle_sync_collections(
                 .await
                 {
                     Ok(xml_str) => xml_str,
-                    Err(_e) => {
-                        tracing::warn!("request_id={} Email sync failed, returning Status 6", request_id);
+                    Err(e) => {
+                        tracing::warn!(
+                            request_id = %request_id,
+                            error = %e,
+                            "Email sync failed, returning Status 6"
+                        );
                         format!(
                             "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
                             xml_escape(incoming_key),
@@ -2418,13 +2422,46 @@ async fn handle_sync_collections(
             let proceed = if has_mutations {
                 let mut ok = true;
                 if coll_xml_ref.contains("<Add") || coll_xml_ref.contains(":Add") {
-                    ok &= enforcement.can_create_item(&perm_ctx).await.unwrap_or(false);
+                    match enforcement.can_create_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                collection_id = %collection_id,
+                                error = %e,
+                                "Permission check failed for can_create_item"
+                            );
+                            ok = false;
+                        }
+                    }
                 }
                 if ok && (coll_xml_ref.contains("<Change") || coll_xml_ref.contains(":Change")) {
-                    ok &= enforcement.can_edit_item(&perm_ctx).await.unwrap_or(false);
+                    match enforcement.can_edit_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                collection_id = %collection_id,
+                                error = %e,
+                                "Permission check failed for can_edit_item"
+                            );
+                            ok = false;
+                        }
+                    }
                 }
                 if ok && (coll_xml_ref.contains("<Delete") || coll_xml_ref.contains(":Delete")) {
-                    ok &= enforcement.can_delete_item(&perm_ctx).await.unwrap_or(false);
+                    match enforcement.can_delete_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                collection_id = %collection_id,
+                                error = %e,
+                                "Permission check failed for can_delete_item"
+                            );
+                            ok = false;
+                        }
+                    }
                 }
                 ok
             } else {
