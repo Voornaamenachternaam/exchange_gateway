@@ -2475,8 +2475,11 @@ async fn handle_sync_collections(
                     collection_id = %collection_id,
                     "Calendar mutation permission denied"
                 );
-                format!("<Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
-                    xml_escape(incoming_key), xml_escape(collection_id))
+                format!(
+                    "<Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
+                    xml_escape(incoming_key),
+                    xml_escape(collection_id)
+                )
             } else if has_mutations {
                 match sync::apply_client_sync_mutations(
                     state.clone(),
@@ -2499,8 +2502,11 @@ async fn handle_sync_collections(
                             request_id,
                             e
                         );
-                        format!("<Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                            xml_escape(incoming_key), xml_escape(collection_id))
+                        format!(
+                            "<Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        )
                     }
                 }
             } else {
@@ -2536,8 +2542,11 @@ async fn handle_sync_collections(
                     Ok(resp_xml) => extract_inner_collection(&resp_xml),
                     Err(e) => {
                         tracing::error!("request_id={} Sync Error: {}", request_id, e);
-                        format!("<Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                            xml_escape(incoming_key), xml_escape(collection_id))
+                        format!(
+                            "<Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        )
                     }
                 }
             } else {
@@ -3533,8 +3542,16 @@ mod tests {
                 Some(c) if c.eq_ignore_ascii_case("Calendar") => true,
                 _ => collection_id == "1",
             };
-            assert_eq!(is_email, expect_email, "Class={:?}, CollectionId={}", class, collection_id);
-            assert_eq!(is_calendar, expect_calendar, "Class={:?}, CollectionId={}", class, collection_id);
+            assert_eq!(
+                is_email, expect_email,
+                "Class={:?}, CollectionId={}",
+                class, collection_id
+            );
+            assert_eq!(
+                is_calendar, expect_calendar,
+                "Class={:?}, CollectionId={}",
+                class, collection_id
+            );
         }
     }
 }
