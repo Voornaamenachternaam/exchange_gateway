@@ -2949,9 +2949,11 @@ pub async fn handle(
         .device_id
         .clone()
         .unwrap_or_else(|| "unknown-device".to_string());
-    if maybe_throttle(&username, &device_id).await {
-        return throttled_response(&request_id);
-    }
+    // Temporarily disable throttling to avoid blocking legitimate ActiveSync clients
+    // TODO: Re-enable with appropriate limits and diagnostics after stabilizing
+    // if maybe_throttle(&username, &device_id).await {
+    //     return throttled_response(&request_id);
+    // }
 
     match req.command.as_str() {
         "FolderSync" => {
