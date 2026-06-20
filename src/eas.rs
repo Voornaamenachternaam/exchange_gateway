@@ -1253,7 +1253,7 @@ async fn handle_folder_sync(
         // otherwise clients will attempt to sync them and hit errors.
         // Uses eas_email_folders_xml() which emits correct Type values per
         // MS-ASCMD §2.2.3.186.3 (e.g. SentItems=5, DeletedItems=4, JunkEmail=12).
-        let can_read_email = state.cfg.email_enabled && state.jmap_client.is_some();
+        let can_read_email = state.can_read_email();
         let email_folders = if can_read_email {
             crate::email::eas_email_folders_xml()
         } else {
@@ -2354,8 +2354,8 @@ async fn handle_sync_collections(
             .unwrap_or_else(|| collection_id == "1"); // Default collection ID "1" is Calendar
 
         let coll_xml = if is_email {
-            // Email sync — route to JMAP if both email_enabled and jmap_client are set
-            if state.cfg.email_enabled && state.jmap_client.is_some() {
+            // Email sync — route to JMAP if can_read_email()
+            if state.can_read_email() {
                 match handle_email_sync(
                     state,
                     username,
