@@ -4687,7 +4687,11 @@ async fn handle_get_user_configuration(
                     "junkemail" | "junk" => DistinguishedFolder::JunkEmail,
                     _ => DistinguishedFolder::MsgFolderRoot,
                 };
-                if df.is_supported() { df } else { DistinguishedFolder::MsgFolderRoot }
+                if df.is_supported() {
+                    df
+                } else {
+                    DistinguishedFolder::MsgFolderRoot
+                }
             }
             _ => DistinguishedFolder::MsgFolderRoot,
         }
