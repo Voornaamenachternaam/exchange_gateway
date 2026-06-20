@@ -1253,12 +1253,13 @@ async fn handle_folder_sync(
         // otherwise clients will attempt to sync them and hit errors.
         // Uses eas_email_folders_xml() which emits correct Type values per
         // MS-ASCMD §2.2.3.186.3 (e.g. SentItems=5, DeletedItems=4, JunkEmail=12).
-        let email_folders = if state.email_available() {
+        let can_read_email = state.can_read_email();
+        let email_folders = if can_read_email {
             crate::email::eas_email_folders_xml()
         } else {
             String::new()
         };
-        let count = if state.email_available() { 7 } else { 1 };
+        let count = if can_read_email { 7 } else { 1 };
         format!(
             r#"<Changes><Count>{count}</Count>
 <Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
@@ -2338,11 +2339,11 @@ async fn handle_sync_collections(
         // folder mapping; ID "1" is Calendar. Previously, defaulting to "Calendar" caused
         // email Sync requests to be routed to the calendar path, returning
         // zero email items (the root cause of "no emails in Gmail on Android").
-        let is_email = coll
-            .class
-            .as_deref()
-            .map(|c| c.eq_ignore_ascii_case("Email"))
-            .unwrap_or_else(|| crate::email::is_eas_email_collection_id(collection_id));
+        let is_email = match coll.class.as_deref() {
+            Some(c) if c.eq_ignore_ascii_case("Email") => true,
+            Some(_) => crate::email::is_eas_email_collection_id(collection_id),
+            None => crate::email::is_eas_email_collection_id(collection_id),
+        };
 
         // Determine if this is Calendar sync. For non-email, we only support Calendar.
         // Reject Contacts, Tasks, Notes, etc. with an EAS protocol error.
@@ -2354,7 +2355,7 @@ async fn handle_sync_collections(
 
         let coll_xml = if is_email {
             // Email sync — route to JMAP
-            if state.cfg.email_enabled && state.jmap_client.is_some() {
+            if state.can_read_email() {
                 match handle_email_sync(
                     state,
                     username,
@@ -3450,5 +3451,54 @@ mod tests {
             !inner.contains("<Sync xmlns"),
             "Should not contain outer Sync wrapper"
         );
+    }
+
+    #[test]
+    fn test_eas_email_collection_id_mapping() {
+        use crate::email::eas_collection_id_to_mailbox_role;
+
+        assert_eq!(eas_collection_id_to_mailbox_role("2"), Some("inbox"));
+        assert_eq!(eas_collection_id_to_mailbox_role("3"), Some("drafts"));
+        assert_eq!(eas_collection_id_to_mailbox_role("4"), Some("trash"));
+        assert_eq!(eas_collection_id_to_mailbox_role("5"), Some("sent"));
+        assert_eq!(eas_collection_id_to_mailbox_role("6"), None);
+        assert_eq!(eas_collection_id_to_mailbox_role("12"), Some("junk"));
+        assert_eq!(eas_collection_id_to_mailbox_role("1"), None);
+        assert_eq!(eas_collection_id_to_mailbox_role("99"), None);
+    }
+
+    #[test]
+    fn test_classification_logic_with_class_and_id() {
+        use crate::email::is_eas_email_collection_id;
+
+        let test_cases = [
+            (Some("Email"), "2", true, false),
+            (Some("Email"), "5", true, false),
+            (Some("Mail"), "5", true, false),
+            (Some("Mail"), "2", true, false),
+            (None, "3", true, false),
+            (None, "4", true, false),
+            (None, "12", true, false),
+            (Some("Unknown"), "3", true, false),
+            (Some("Calendar"), "1", false, true),
+            (None, "1", false, true),
+            (Some("Contacts"), "9", false, false),
+            (Some("Tasks"), "7", false, false),
+        ];
+
+        for (class, collection_id, expect_email, expect_calendar) in test_cases {
+            let is_email = match class {
+                Some(c) if c.eq_ignore_ascii_case("Email") => true,
+                Some(_) => is_eas_email_collection_id(collection_id),
+                None => is_eas_email_collection_id(collection_id),
+            };
+            let is_calendar = match class {
+                Some(c) if c.eq_ignore_ascii_case("Calendar") => true,
+                Some(_) => collection_id == "1",
+                None => collection_id == "1",
+            };
+            assert_eq!(is_email, expect_email, "Class={:?}, CollectionId={}", class, collection_id);
+            assert_eq!(is_calendar, expect_calendar, "Class={:?}, CollectionId={}", class, collection_id);
+        }
     }
 }
