@@ -4645,17 +4645,15 @@ async fn handle_get_user_configuration(
 
     // Determine the folder reference: either FolderId or DistinguishedFolderId inside UserConfigurationName.
     // We'll reconstruct it with the original Id value, properly XML-escaped.
-    let folder_ref_xml = {
-        let folder_id = extract_first_attr(body, b"FolderId", b"Id");
-        let distinguished_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
+    let folder_id = extract_first_attr(body, b"FolderId", b"Id");
+    let distinguished_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
 
-        match (folder_id, distinguished_id) {
-            (Some(fid), _) => format!(r#"<t:FolderId Id="{}" />"#, xml_escape(&fid)),
-            (None, Some(did)) => {
-                format!(r#"<t:DistinguishedFolderId Id="{}" />"#, xml_escape(&did))
-            }
-            _ => r#"<t:DistinguishedFolderId Id="msgfolderroot" />"#.to_string(),
+    let folder_ref_xml = match (&folder_id, &distinguished_id) {
+        (Some(fid), _) => format!(r#"<t:FolderId Id="{}" />"#, xml_escape(fid)),
+        (None, Some(did)) => {
+            format!(r#"<t:DistinguishedFolderId Id="{}" />"#, xml_escape(did))
         }
+        _ => r#"<t:DistinguishedFolderId Id="msgfolderroot" />"#.to_string(),
     };
 
     // Generate a deterministic synthetic ItemId for the UserConfiguration object itself.
@@ -4668,11 +4666,33 @@ async fn handle_get_user_configuration(
     // We use a simple static ChangeKey because these configs never change.
     let change_key = "1";
 
-    // Build the ParentFolderId: UserConfiguration objects are stored under the root folder.
-    // Per MS-OXWSUSRCFG, the ParentFolderId identifies the folder that contains the configuration.
-    // Use MsgFolderRoot as the parent, with its derived ChangeKey.
+    // Determine ParentFolderId according to MS-OXWSUSRCFG.
+    // If the requested folder (identified by FolderId or DistinguishedFolderId) is supported,
+    // use it as the parent. Otherwise, fall back to MsgFolderRoot.
     let owner = owner_from_username(&auth.username);
-    let parent_fid = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+    let parent_folder = {
+        match (folder_id, distinguished_id) {
+            (Some(fid), _) => resolve_folder_id(&fid, owner)
+                .filter(|f| f.is_supported())
+                .unwrap_or(DistinguishedFolder::MsgFolderRoot),
+            (None, Some(did)) => {
+                let df = match did.to_ascii_lowercase().as_str() {
+                    "msgfolderroot" | "root" => DistinguishedFolder::MsgFolderRoot,
+                    "calendar" => DistinguishedFolder::Calendar,
+                    "inbox" => DistinguishedFolder::Inbox,
+                    "sentitems" => DistinguishedFolder::SentItems,
+                    "deleteditems" => DistinguishedFolder::DeletedItems,
+                    "drafts" => DistinguishedFolder::Drafts,
+                    "outbox" => DistinguishedFolder::Outbox,
+                    "junkemail" | "junk" => DistinguishedFolder::JunkEmail,
+                    _ => DistinguishedFolder::MsgFolderRoot,
+                };
+                if df.is_supported() { df } else { DistinguishedFolder::MsgFolderRoot }
+            }
+            _ => DistinguishedFolder::MsgFolderRoot,
+        }
+    };
+    let parent_fid = folder_id_for(owner, parent_folder);
     let parent_prefix_len = parent_fid.find('-').map(|i| i + 1).unwrap_or(4);
     let parent_ck = &parent_fid[parent_prefix_len..];
     let parent_folder_id_xml = format!(
