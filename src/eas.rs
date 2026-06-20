@@ -2910,7 +2910,7 @@ pub async fn handle(
     if let Err(e) = validate_payload(&req.command, &xml) {
         return bad_request_response(&request_id, e);
     }
-    let _device_id = req
+    let device_id = req
         .device_id
         .clone()
         .unwrap_or_else(|| "unknown-device".to_string());
