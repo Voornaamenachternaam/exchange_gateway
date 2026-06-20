@@ -2354,7 +2354,7 @@ async fn handle_sync_collections(
             .unwrap_or_else(|| collection_id == "1"); // Default collection ID "1" is Calendar
 
         let coll_xml = if is_email {
-            // Email sync — route to JMAP
+            // Email sync — route to JMAP if can_read_email()
             if state.can_read_email() {
                 match handle_email_sync(
                     state,
@@ -2527,7 +2527,7 @@ async fn handle_sync_collections(
     // Build multi-collection response
     let collections_xml = collection_responses.join("");
     let resp_xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
 }
