@@ -3489,13 +3489,11 @@ mod tests {
         for (class, collection_id, expect_email, expect_calendar) in test_cases {
             let is_email = match class {
                 Some(c) if c.eq_ignore_ascii_case("Email") => true,
-                Some(_) => is_eas_email_collection_id(collection_id),
-                None => is_eas_email_collection_id(collection_id),
+                _ => is_eas_email_collection_id(collection_id),
             };
             let is_calendar = match class {
                 Some(c) if c.eq_ignore_ascii_case("Calendar") => true,
-                Some(_) => collection_id == "1",
-                None => collection_id == "1",
+                _ => collection_id == "1",
             };
             assert_eq!(is_email, expect_email, "Class={:?}, CollectionId={}", class, collection_id);
             assert_eq!(is_calendar, expect_calendar, "Class={:?}, CollectionId={}", class, collection_id);
