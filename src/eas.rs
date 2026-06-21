@@ -30,29 +30,18 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-const MAX_REQUESTS_PER_WINDOW: usize = 60;
-const WINDOW: Duration = Duration::from_secs(60);
-const RETRY_AFTER_SECONDS: u64 = 30;
 const MAX_FREEBUSY_DAYS: i64 = 30;
 const MAX_BODY_SIZE: usize = 1_048_576;
 const CALDAV_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
-const MAX_DEVICE_WINDOW_ENTRIES: usize = 100_000;
 /// Maximum number of emails to fetch in a single JMAP Email/query for EAS initial sync.
 /// Matches sync::DEFAULT_WINDOW_SIZE; keeps requests fast and memory-bounded.
 const EMAIL_SYNC_PAGE_SIZE: u64 = 100;
 
-type DeviceWindowCache = LruCache<String, Vec<Instant>>;
 type PingCache = LruCache<String, PingCacheEntry>;
 
-const _: () = assert!(MAX_DEVICE_WINDOW_ENTRIES > 0);
 const _: () = assert!(MAX_PING_CACHE_ENTRIES > 0);
 
-static DEVICE_WINDOW: LazyLock<TokioMutex<DeviceWindowCache>> = LazyLock::new(|| {
-    TokioMutex::new(LruCache::new(
-        NonZeroUsize::new(MAX_DEVICE_WINDOW_ENTRIES).expect("MAX_DEVICE_WINDOW_ENTRIES > 0"),
-    ))
-});
 static PING_CACHE: LazyLock<TokioMutex<PingCache>> = LazyLock::new(|| {
     TokioMutex::new(LruCache::new(
         NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).expect("MAX_PING_CACHE_ENTRIES > 0"),
@@ -814,19 +803,6 @@ fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
     }
 }
 
-async fn maybe_throttle(owner: &str, device_id: &str) -> bool {
-    let key = format!("{}:{}", owner, device_id);
-    let now = Instant::now();
-    let mut cache = DEVICE_WINDOW.lock().await;
-    let entries = cache.get_or_insert_mut(key, Vec::new);
-    entries.retain(|ts| now.checked_duration_since(*ts).is_some_and(|d| d < WINDOW));
-    if entries.len() >= MAX_REQUESTS_PER_WINDOW {
-        return true;
-    }
-    entries.push(now);
-    false
-}
-
 fn inject_common_headers(resp: &mut Response, request_id: &str) {
     let h = resp.headers_mut();
     h.insert("MS-Server-ActiveSync", HeaderValue::from_static("16.1"));
@@ -954,17 +930,6 @@ fn options_response(request_id: &str) -> Response {
         "",
     )
         .into_response();
-    inject_common_headers(&mut r, request_id);
-    r
-}
-
-fn throttled_response(request_id: &str) -> Response {
-    let mut r = (StatusCode::SERVICE_UNAVAILABLE, "Throttled").into_response();
-    r.headers_mut().insert(
-        header::RETRY_AFTER,
-        HeaderValue::from_str(&RETRY_AFTER_SECONDS.to_string())
-            .expect("RETRY_AFTER_SECONDS must be a valid Retry-After value"),
-    );
     inject_common_headers(&mut r, request_id);
     r
 }
@@ -2949,9 +2914,6 @@ pub async fn handle(
         .device_id
         .clone()
         .unwrap_or_else(|| "unknown-device".to_string());
-    if maybe_throttle(&username, &device_id).await {
-        return throttled_response(&request_id);
-    }
 
     match req.command.as_str() {
         "FolderSync" => {
