@@ -524,7 +524,6 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
 /// sections in the same way as text events, so field values wrapped in CDATA
 /// are not silently lost.
 fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
-    use quick_xml::events::Event;
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
