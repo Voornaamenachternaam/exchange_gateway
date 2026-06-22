@@ -585,7 +585,9 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 // Treat CDATA exactly like text, but decode as UTF-8.
                 if depth == 2 {
                     if let Some(tag) = current_tag.as_ref() {
-                        let text = cdata.unescape_and_unescape(/* unescape = */ false).unwrap_or_default();
+                        let text = cdata
+                            .unescape_and_unescape(/* unescape = */ false)
+                            .unwrap_or_default();
                         if let Some(coll) = current_collection.as_mut() {
                             match tag.as_slice() {
                                 b"SyncKey" => coll.sync_key = Some(text),
@@ -611,7 +613,12 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                             if start_idx < end_idx && end_idx <= xml.len() {
                                 coll.xml = xml[start_idx..end_idx].to_string();
                             } else {
-                                tracing::warn!("parse_sync_collections: invalid slice start={}, end={}, xml_len={}", start_idx, end_idx, xml.len());
+                                tracing::warn!(
+                                    "parse_sync_collections: invalid slice start={}, end={}, xml_len={}",
+                                    start_idx,
+                                    end_idx,
+                                    xml.len()
+                                );
                             }
                         }
                         collections.push(coll);
