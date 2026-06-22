@@ -500,70 +500,142 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
 /// WindowSize, FilterType, and GetChanges. The response MUST contain
 /// a corresponding Collection element for each request Collection.
 ///
-/// The raw XML of each `<Collection>` element is captured via
-/// `reader.buffer_position()` to prevent cross-collection mutation
-/// leakage when checking permissions and applying mutations.
+/// Parse all Collection elements from a Sync request.
+///
+/// Per MS-ASCMD §2.2.3.31.2, a Sync request can contain 1..N Collection
+/// elements inside the Collections container. Android clients (including
+/// Gmail's Exchange account) send multi-collection Sync requests to
+/// synchronize calendar and email folders in a single round-trip.
+///
+/// Each Collection contains its own SyncKey, CollectionId, Class,
+/// WindowSize, FilterType, and GetChanges. The response MUST contain
+/// a corresponding Collection element for each request Collection.
+///
+/// The raw XML of each `<Collection>` element is captured using
+/// `reader.buffer_position()` to obtain accurate byte offsets in the original
+/// request string, preventing cross-collection mutation leakage when
+/// checking permissions and applying mutations.
+///
+/// This parser tracks the nesting depth inside the current Collection to
+/// ensure that only *direct child* elements are interpreted as collection-level
+/// fields. This prevents <Add>/<Change> commands inside <Commands> from
+/// contaminating the field values (e.g., an <Add><Class>...</Class></Add>
+/// will not overwrite the collection's Class). It also handles CDATA
+/// sections in the same way as text events, so field values wrapped in CDATA
+/// are not silently lost.
 fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
+    use quick_xml::events::Event;
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut collections = Vec::new();
-    let mut current: Option<SyncCollection> = None;
+    let mut current_collection: Option<SyncCollection> = None;
+    let mut collection_start: Option<u64> = None;
+    // Depth counter: 0 = not inside a Collection, 1 = inside the Collection element but not in a child, >1 = nested deeper.
+    let mut depth: usize = 0;
+    // Current tag name when we are at depth 1 (direct child of Collection).
     let mut current_tag: Option<Vec<u8>> = None;
-    let mut collection_start: u64 = 0;
 
     loop {
-        let pos = reader.buffer_position();
+        let start_pos = reader.buffer_position();
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Collection" => {
-                // Record the start position of this <Collection> element.
-                collection_start = pos;
-                current = Some(SyncCollection::default());
-                current_tag = None;
+            Ok(Event::Start(e)) => {
+                let name = e.name().local_name();
+                if name.as_ref() == b"Collection" {
+                    // Entering a new Collection element.
+                    collection_start = Some(start_pos);
+                    current_collection = Some(SyncCollection::default());
+                    depth = 1;
+                    current_tag = None;
+                } else if depth == 1 && current_collection.is_some() {
+                    // Direct child of Collection: track its tag name for potential text capture.
+                    current_tag = Some(name.as_ref().to_vec());
+                    depth = 2;
+                } else if depth >= 2 {
+                    // Nested further inside; increment depth.
+                    depth += 1;
+                }
             }
-            Ok(Event::Start(e)) if current.is_some() => {
-                current_tag = Some(e.name().local_name().as_ref().to_vec());
+            Ok(Event::Text(t)) => {
+                if depth == 1 {
+                    // Should not happen: text directly inside Collection is not expected.
+                    // But we ignore it.
+                } else if depth == 2 {
+                    // Text content of a direct child element.
+                    if let Some(tag) = current_tag.as_ref() {
+                        if let Ok(text) = t.decode() {
+                            let text = text.into_owned();
+                            if let Some(coll) = current_collection.as_mut() {
+                                match tag.as_slice() {
+                                    b"SyncKey" => coll.sync_key = Some(text),
+                                    b"CollectionId" => coll.collection_id = Some(text),
+                                    b"Class" => coll.class = Some(text),
+                                    b"WindowSize" => coll.window_size = text.parse().ok(),
+                                    b"FilterType" => coll.filter_type = text.parse().ok(),
+                                    b"GetChanges" => coll.get_changes = text.trim() != "0",
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                // For depth > 2 we ignore text inside deeper nested structures.
             }
-            Ok(Event::Text(t)) if current.is_some() => {
-                let text = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
-                if let Some(coll) = current.as_mut() {
-                    match current_tag.as_deref() {
-                        Some(b"SyncKey") => coll.sync_key = Some(text),
-                        Some(b"CollectionId") => coll.collection_id = Some(text),
-                        Some(b"Class") => coll.class = Some(text),
-                        Some(b"WindowSize") => {
-                            coll.window_size = text.parse().ok();
+            Ok(Event::CData(cdata)) => {
+                // Treat CDATA exactly like text, but decode as UTF-8.
+                if depth == 2 {
+                    if let Some(tag) = current_tag.as_ref() {
+                        let text = cdata.unescape_and_unescape(/* unescape = */ false).unwrap_or_default();
+                        if let Some(coll) = current_collection.as_mut() {
+                            match tag.as_slice() {
+                                b"SyncKey" => coll.sync_key = Some(text),
+                                b"CollectionId" => coll.collection_id = Some(text),
+                                b"Class" => coll.class = Some(text),
+                                b"WindowSize" => coll.window_size = text.parse().ok(),
+                                b"FilterType" => coll.filter_type = text.parse().ok(),
+                                b"GetChanges" => coll.get_changes = text.trim() != "0",
+                                _ => {}
+                            }
                         }
-                        Some(b"FilterType") => {
-                            coll.filter_type = text.parse().ok();
-                        }
-                        Some(b"GetChanges") => {
-                            coll.get_changes = text.trim() != "0";
-                        }
-                        _ => {}
                     }
                 }
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Collection" => {
-                if let Some(mut coll) = current.take() {
-                    // Capture the raw XML of this <Collection> element.
-                    // buffer_position() points past the closing '>', so
-                    // xml[collection_start..pos] is the full element text.
-                    let start = collection_start as usize;
-                    let end = pos as usize;
-                    if end <= xml.len() && start < end {
-                        coll.xml = xml[start..end].to_string();
+            Ok(Event::End(e)) => {
+                if e.name().local_name().as_ref() == b"Collection" {
+                    if let Some(mut coll) = current_collection.take() {
+                        // After reading the End event, buffer_position() is just after the closing '>'
+                        let end_pos = reader.buffer_position();
+                        if let Some(start) = collection_start.take() {
+                            let start_idx = start as usize;
+                            let end_idx = end_pos as usize;
+                            if start_idx < end_idx && end_idx <= xml.len() {
+                                coll.xml = xml[start_idx..end_idx].to_string();
+                            } else {
+                                tracing::warn!("parse_sync_collections: invalid slice start={}, end={}, xml_len={}", start_idx, end_idx, xml.len());
+                            }
+                        }
+                        collections.push(coll);
                     }
-                    collections.push(coll);
+                    depth = 0;
+                    current_tag = None;
+                } else if depth == 2 {
+                    // Closing a direct child element of Collection.
+                    current_tag = None;
+                    depth = 1;
+                } else if depth > 2 {
+                    depth -= 1;
                 }
-                current_tag = None;
             }
-            Ok(Event::End(_)) if current.is_some() => current_tag = None,
-            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                tracing::debug!("parse_sync_collections: XML error: {}", e);
+                break;
+            }
             _ => {}
         }
         buf.clear();
     }
+
     collections
 }
 
