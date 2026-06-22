@@ -521,28 +521,48 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 current = Some(SyncCollection::default());
                 current_tag = None;
             }
-            Ok(Event::Start(e)) if current.is_some() => {
-                current_tag = Some(e.name().local_name().as_ref().to_vec());
-            }
-            Ok(Event::Text(t)) if current.is_some() => {
-                let text = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
-                if let Some(coll) = current.as_mut() {
-                    match current_tag.as_deref() {
-                        Some(b"SyncKey") => coll.sync_key = Some(text),
-                        Some(b"CollectionId") => coll.collection_id = Some(text),
-                        Some(b"Class") => coll.class = Some(text),
-                        Some(b"WindowSize") => {
-                            coll.window_size = text.parse().ok();
+            Ok(Event::Text(t)) => {
+                if depth == 1 {
+                    // Should not happen: text directly inside Collection is not expected.
+                    // But we ignore it.
+                } else if depth == 2 {
+                    // Text content of a direct child element.
+                    if let Some(tag) = current_tag.as_ref()
+                        && let Ok(text) = t.decode() {
+                            let text = text.into_owned();
+                            if let Some(coll) = current_collection.as_mut() {
+                                match tag.as_slice() {
+                                    b"SyncKey" => coll.sync_key = Some(text),
+                                    b"CollectionId" => coll.collection_id = Some(text),
+                                    b"Class" => coll.class = Some(text),
+                                    b"WindowSize" => coll.window_size = text.parse().ok(),
+                                    b"FilterType" => coll.filter_type = text.parse().ok(),
+                                    b"GetChanges" => coll.get_changes = text.trim() != "0",
+                                    _ => {}
+                                }
+                            }
                         }
-                        Some(b"FilterType") => {
-                            coll.filter_type = text.parse().ok();
-                        }
-                        Some(b"GetChanges") => {
-                            coll.get_changes = text.trim() != "0";
-                        }
-                        _ => {}
-                    }
                 }
+                // For depth > 2 we ignore text inside deeper nested structures.
+            }
+            Ok(Event::CData(cdata)) => {
+                // Treat CDATA exactly like Text; decode to String.
+                if depth == 2
+                    && let Some(tag) = current_tag.as_ref()
+                        && let Ok(text) = cdata.decode() {
+                            let text = text.into_owned();
+                            if let Some(coll) = current_collection.as_mut() {
+                                match tag.as_slice() {
+                                    b"SyncKey" => coll.sync_key = Some(text),
+                                    b"CollectionId" => coll.collection_id = Some(text),
+                                    b"Class" => coll.class = Some(text),
+                                    b"WindowSize" => coll.window_size = text.parse().ok(),
+                                    b"FilterType" => coll.filter_type = text.parse().ok(),
+                                    b"GetChanges" => coll.get_changes = text.trim() != "0",
+                                    _ => {}
+                                }
+                            }
+                        }
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Collection" => {
                 if let Some(mut coll) = current.take() {
