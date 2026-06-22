@@ -2,20 +2,6 @@
 use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
-                        if let Ok(text) = cdata.decode() {
-                            let text = text.into_owned();
-                            if let Some(coll) = current_collection.as_mut() {
-                                match tag.as_slice() {
-                                    b"SyncKey" => coll.sync_key = Some(text),
-                                    b"CollectionId" => coll.collection_id = Some(text),
-                                    b"Class" => coll.class = Some(text),
-                                    b"WindowSize" => coll.window_size = text.parse().ok(),
-                                    b"FilterType" => coll.filter_type = text.parse().ok(),
-                                    b"GetChanges" => coll.get_changes = text.trim() != "0",
-                                    _ => {}
-                                }
-                            }
-                        }
 
 const MAX_FREEBUSY_DAYS: i64 = 30;
 const MAX_BODY_SIZE: usize = 1_048_576;
