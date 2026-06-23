@@ -563,18 +563,17 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                     // Text content of a direct child element.
                     if let Some(tag) = current_tag.as_ref()
                         && let Ok(text) = t.decode()
+                        && let Some(coll) = current_collection.as_mut()
                     {
                         let text = text.into_owned();
-                        if let Some(coll) = current_collection.as_mut() {
-                            match tag.as_slice() {
-                                b"SyncKey" => coll.sync_key = Some(text),
-                                b"CollectionId" => coll.collection_id = Some(text),
-                                b"Class" => coll.class = Some(text),
-                                b"WindowSize" => coll.window_size = text.parse().ok(),
-                                b"FilterType" => coll.filter_type = text.parse().ok(),
-                                b"GetChanges" => coll.get_changes = text.trim() != "0",
-                                _ => {}
-                            }
+                        match tag.as_slice() {
+                            b"SyncKey" => coll.sync_key = Some(text),
+                            b"CollectionId" => coll.collection_id = Some(text),
+                            b"Class" => coll.class = Some(text),
+                            b"WindowSize" => coll.window_size = text.parse().ok(),
+                            b"FilterType" => coll.filter_type = text.parse().ok(),
+                            b"GetChanges" => coll.get_changes = text.trim() != "0",
+                            _ => {}
                         }
                     }
                 }
@@ -585,18 +584,17 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 if depth == 2
                     && let Some(tag) = current_tag.as_ref()
                     && let Ok(text) = cdata.decode()
+                    && let Some(coll) = current_collection.as_mut()
                 {
                     let text = text.into_owned();
-                    if let Some(coll) = current_collection.as_mut() {
-                        match tag.as_slice() {
-                            b"SyncKey" => coll.sync_key = Some(text),
-                            b"CollectionId" => coll.collection_id = Some(text),
-                            b"Class" => coll.class = Some(text),
-                            b"WindowSize" => coll.window_size = text.parse().ok(),
-                            b"FilterType" => coll.filter_type = text.parse().ok(),
-                            b"GetChanges" => coll.get_changes = text.trim() != "0",
-                            _ => {}
-                        }
+                    match tag.as_slice() {
+                        b"SyncKey" => coll.sync_key = Some(text),
+                        b"CollectionId" => coll.collection_id = Some(text),
+                        b"Class" => coll.class = Some(text),
+                        b"WindowSize" => coll.window_size = text.parse().ok(),
+                        b"FilterType" => coll.filter_type = text.parse().ok(),
+                        b"GetChanges" => coll.get_changes = text.trim() != "0",
+                        _ => {}
                     }
                 }
             }
