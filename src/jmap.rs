@@ -478,6 +478,11 @@ impl JmapClient {
         })
     }
 
+    /// Get the base URL for this JMAP client.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Derive the JMAP base URL from the CalDAV base URL.
     ///
     /// Stalwart serves JMAP at the same host as CalDAV, replacing
@@ -576,7 +581,7 @@ impl JmapClient {
     }
 
     /// Make a JMAP API call (RFC 8621 §3.2).
-    async fn api_call(
+    pub async fn api_call(
         &self,
         api_url: &str,
         using: &[&str],
