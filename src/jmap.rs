@@ -1239,25 +1239,31 @@ impl JmapClient {
 
         // Always include the provided text_body as text/plain
         if !params.text_body.is_empty() {
-            body_values.insert("text".to_string(), json!({
-                "value": params.text_body,
-                "type": "text/plain",
-                "charset": "utf-8",
-                "isEncodingProblem": false,
-                "isTruncated": false,
-            }));
+            body_values.insert(
+                "text".to_string(),
+                json!({
+                    "value": params.text_body,
+                    "type": "text/plain",
+                    "charset": "utf-8",
+                    "isEncodingProblem": false,
+                    "isTruncated": false,
+                }),
+            );
             text_body = Some(json!([{ "partId": "text", "type": "text/plain" }]));
         }
 
         // If HTML body provided, include it
         if let Some(html) = params.html_body {
-            body_values.insert("html".to_string(), json!({
-                "value": html,
-                "type": "text/html",
-                "charset": "utf-8",
-                "isEncodingProblem": false,
-                "isTruncated": false,
-            }));
+            body_values.insert(
+                "html".to_string(),
+                json!({
+                    "value": html,
+                    "type": "text/html",
+                    "charset": "utf-8",
+                    "isEncodingProblem": false,
+                    "isTruncated": false,
+                }),
+            );
             html_body = Some(json!([{ "partId": "html", "type": "text/html" }]));
         }
 
@@ -1647,7 +1653,11 @@ impl JmapClient {
         let result = self.query_calendars(username, password).await?;
         let mut calendars = result.calendars;
         // Sort by sortOrder ascending, then by id for deterministic selection
-        calendars.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.id.cmp(&b.id)));
+        calendars.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         calendars
             .first()
             .map(|c| c.id.clone())

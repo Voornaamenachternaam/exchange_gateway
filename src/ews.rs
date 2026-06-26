@@ -3040,7 +3040,8 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         .await
         {
             Ok((server_id, change_key)) => {
-                let items_xml = crate::email::render_ews_message_item_xml(&server_id, &change_key, &msg);
+                let items_xml =
+                    crate::email::render_ews_message_item_xml(&server_id, &change_key, &msg);
                 let response = format!(
                     r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
                     EWS_MSG_NS, EWS_TYPE_NS, items_xml
@@ -3959,12 +3960,14 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         // Get JMAP client and account ID
         let jmap = match state.jmap_client.as_ref() {
             Some(jmap) => jmap,
-            None => return operation_error_response(
-                &EwsAction::MoveItem,
-                "ErrorInternalServerError",
-                "JMAP not configured",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ),
+            None => {
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "JMAP not configured",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
         };
 
         let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
@@ -4097,12 +4100,14 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     // Get JMAP client
     let jmap = match state.jmap_client.as_ref() {
         Some(jmap) => jmap,
-        None => return operation_error_response(
-            &EwsAction::CopyItem,
-            "ErrorInternalServerError",
-            "JMAP not configured",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
+        None => {
+            return operation_error_response(
+                &EwsAction::CopyItem,
+                "ErrorInternalServerError",
+                "JMAP not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
     };
 
     // Get account ID
