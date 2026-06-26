@@ -1229,26 +1229,47 @@ impl JmapClient {
             );
         }
 
-        // Set body per RFC 8621 §4.1.4 — bodyValues
-        email_obj["bodyValues"] = json!({
-            "text": {
-                "value": params.text_body,
-                "isEncodingProblem": false,
-                "isTruncated": false,
-            }
-        });
+        // Construct bodyValues, textBody, and htmlBody per RFC 8621 §4.1.4.
+        // When both text and HTML are present, we provide both alternatives.
+        // When only one is present, we provide only that one.
 
-        // If HTML body provided, add it
-        if let Some(html) = params.html_body {
-            email_obj["bodyValues"]["html"] = json!({
-                "value": html,
+        let mut body_values = serde_json::Map::new();
+        let mut text_body = None;
+        let mut html_body = None;
+
+        // Always include the provided text_body as text/plain
+        if !params.text_body.is_empty() {
+            body_values.insert("text".to_string(), json!({
+                "value": params.text_body,
+                "type": "text/plain",
+                "charset": "utf-8",
                 "isEncodingProblem": false,
                 "isTruncated": false,
-            });
-            email_obj["htmlBody"] = json!({
-                "partId": "html",
-                "type": "text/html"
-            });
+            }));
+            text_body = Some(json!([{ "partId": "text", "type": "text/plain" }]));
+        }
+
+        // If HTML body provided, include it
+        if let Some(html) = params.html_body {
+            body_values.insert("html".to_string(), json!({
+                "value": html,
+                "type": "text/html",
+                "charset": "utf-8",
+                "isEncodingProblem": false,
+                "isTruncated": false,
+            }));
+            html_body = Some(json!([{ "partId": "html", "type": "text/html" }]));
+        }
+
+        // If at least one body exists, attach bodyValues and corresponding *Body arrays
+        if !body_values.is_empty() {
+            email_obj["bodyValues"] = serde_json::Value::Object(body_values);
+            if let Some(tb) = text_body {
+                email_obj["textBody"] = tb;
+            }
+            if let Some(hb) = html_body {
+                email_obj["htmlBody"] = hb;
+            }
         }
 
         // Step 1: Create the Email via Email/set
@@ -1822,7 +1843,7 @@ impl JmapClient {
         let api_url = &session.api_url;
         let method_calls = vec![(
             "CalendarEvent/get",
-            &json!({
+            json!({
                 "accountId": account_id,
                 "ids": event_ids,
                 "properties": ["id", "uid", "iCalendar", "@etag"],

@@ -606,13 +606,30 @@ pub async fn save_draft_via_jmap(
         email_obj["subject"] = json!(msg.subject);
     }
 
-    // Body: we need to provide either textBody or htmlBody or both.
-    // Since we're storing the draft, we want to preserve the body exactly.
+    // Body: Construct bodyValues and textBody/htmlBody per RFC 8621 §4.1.4
     let is_html = msg.body_type.eq_ignore_ascii_case("HTML");
+    let mut body_values = json!({
+        "text": {
+            "value": msg.body,
+            "type": "text/plain",
+            "charset": "utf-8",
+            "isEncodingProblem": false,
+            "isTruncated": false,
+        }
+    });
     if is_html {
-        email_obj["htmlBody"] = json!(msg.body);
-    } else {
-        email_obj["textBody"] = json!(msg.body);
+        body_values["html"] = json!({
+            "value": msg.body,
+            "type": "text/html",
+            "charset": "utf-8",
+            "isEncodingProblem": false,
+            "isTruncated": false,
+        });
+    }
+    email_obj["bodyValues"] = body_values;
+    email_obj["textBody"] = json!([{ "partId": "text", "type": "text/plain" }]);
+    if is_html {
+        email_obj["htmlBody"] = json!([{ "partId": "html", "type": "text/html" }]);
     }
 
     // Add keywords if present (like Draft)

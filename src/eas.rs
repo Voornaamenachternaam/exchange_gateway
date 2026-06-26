@@ -1305,7 +1305,7 @@ async fn handle_folder_sync(
         let count = if can_read_email { 7 } else { 1 };
         format!(
             r#"<Changes><Count>{count}</Count>
-<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
+<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>1</Type></Add>
 {email_folders}
 </Changes>"#
         )
@@ -1861,6 +1861,12 @@ async fn fetch_freebusy_jmap_eas(
 ) -> Option<String> {
     // Check if JMAP Calendar is supported
     if !jmap.supports_calendar(mailbox, password).await {
+        return None;
+    }
+
+    // Guard against invalid safe_interval (division by zero)
+    if safe_interval <= 0 {
+        tracing::warn!(target: "eas", ?safe_interval, "Invalid safe_interval; falling back to CalDAV");
         return None;
     }
 
