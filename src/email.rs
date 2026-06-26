@@ -673,14 +673,13 @@ pub async fn save_draft_via_jmap(
     let mut created_id: Option<String> = None;
     for (method, data, _) in response.method_responses {
         if method == "Email/set" {
-            if let Some(created) = data.get("created").and_then(|v| v.as_object()) {
-                if let Some(id) = created
+            if let Some(created) = data.get("created").and_then(|v| v.as_object())
+                && let Some(id) = created
                     .get("draft0")
                     .and_then(|v| v.get("id"))
                     .and_then(|v| v.as_str())
-                {
-                    created_id = Some(id.to_string());
-                }
+            {
+                created_id = Some(id.to_string());
             }
         } else if method == "Email/get" {
             // We could extract more data if needed

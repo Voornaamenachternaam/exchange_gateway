@@ -4,7 +4,7 @@ use crate::calendar::{
     Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_datetime,
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
-use crate::jmap::{CalendarChangesResult, QueryCalendarEventsParams};
+use crate::jmap::QueryCalendarEventsParams;
 use crate::models::AppState;
 use crate::util::{normalize_email, xml_escape};
 use anyhow::{Result, anyhow};
@@ -1218,7 +1218,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         }
     }
 
-    let since = if params.incoming_sync_key == "0" {
+    let _since = if params.incoming_sync_key == "0" {
         0
     } else {
         sync_since_from_token(
@@ -1286,6 +1286,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 Err(e) => {
                     tracing::debug!(target: "sync", error = %e, "JMAP Calendar account ID lookup failed, falling back to CalDAV");
                     jmap_failed = true;
+                    String::new()
                 }
             };
             if !jmap_failed {
@@ -1313,24 +1314,24 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     {
                         Ok(result) => {
                             for event in &result.events {
-                                if let Some(ref ics) = event.i_calendar {
-                                    if let Some(item) = parse_ics_event(ics) {
-                                        let href = format!(
-                                            "jmap://calendar/{}/{}",
-                                            account_id,
-                                            event.id.as_deref().unwrap_or("")
-                                        );
-                                        let etag = event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
-                                        events.push(EventItem {
-                                            href,
-                                            etag,
-                                            ics: ics.clone(),
-                                            item,
-                                        });
-                                    }
+                                if let Some(ref ics) = event.i_calendar
+                                    && let Some(item) = parse_ics_event(ics)
+                                {
+                                    let href = format!(
+                                        "jmap://calendar/{}/{}",
+                                        account_id,
+                                        event.id.as_deref().unwrap_or("")
+                                    );
+                                    let etag = event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
+                                    events.push(EventItem {
+                                        href,
+                                        etag,
+                                        ics: ics.clone(),
+                                        item,
+                                    });
                                 }
                             }
-                            token_to_store = Some(result.state.clone());
+                            token_to_store = Some(result.query_state.clone());
                         }
                         Err(e) => {
                             tracing::debug!(target: "sync", error = %e, "JMAP Calendar query failed, falling back to CalDAV");
@@ -1343,7 +1344,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         .as_ref()
                         .and_then(|(_, token)| token.as_deref())
                     {
-                        Some(s) if !s.is_empty() => s,
+                        Some(s) if !s.is_empty() => Some(s),
                         _ => {
                             tracing::warn!(
                                 "No JMAP state token for calendar delta sync, falling back to CalDAV"
@@ -1381,18 +1382,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     {
                                         Ok(event_map) => {
                                             for id in all_ids {
-                                                if let Some((ics, etag)) = event_map.get(&id) {
-                                                    if let Some(item) = parse_ics_event(ics) {
-                                                        events.push(EventItem {
-                                                            href: format!(
-                                                                "jmap://calendar/{}/{}",
-                                                                account_id, id
-                                                            ),
-                                                            etag: etag.clone(),
-                                                            ics: ics.clone(),
-                                                            item,
-                                                        });
-                                                    }
+                                                if let Some((ics, etag)) = event_map.get(&id)
+                                                    && let Some(item) = parse_ics_event(ics)
+                                                {
+                                                    events.push(EventItem {
+                                                        href: format!(
+                                                            "jmap://calendar/{}/{}",
+                                                            account_id, id
+                                                        ),
+                                                        etag: etag.clone(),
+                                                        ics: ics.clone(),
+                                                        item,
+                                                    });
                                                 }
                                             }
                                         }

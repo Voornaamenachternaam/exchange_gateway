@@ -1660,7 +1660,7 @@ impl JmapClient {
         });
         calendars
             .first()
-            .map(|c| c.id.clone())
+            .and_then(|c| c.id.clone())
             .ok_or_else(|| anyhow!("No calendars found for user"))
     }
 
@@ -1871,27 +1871,27 @@ impl JmapClient {
             .await?;
         let mut map = HashMap::new();
         for (method, data, _) in response.method_responses {
-            if method == "CalendarEvent/get" {
-                if let Some(list) = data.get("list").and_then(|v| v.as_array()) {
-                    for event in list {
-                        let id = event
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let ics = event
-                            .get("iCalendar")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let etag = event
-                            .get("@etag")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if !id.is_empty() {
-                            map.insert(id, (ics, etag));
-                        }
+            if method == "CalendarEvent/get"
+                && let Some(list) = data.get("list").and_then(|v| v.as_array())
+            {
+                for event in list {
+                    let id = event
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let ics = event
+                        .get("iCalendar")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let etag = event
+                        .get("@etag")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !id.is_empty() {
+                        map.insert(id, (ics, etag));
                     }
                 }
             }
