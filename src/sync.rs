@@ -1274,9 +1274,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
 
     if let Some(jmap) = &params.state.jmap_client {
         let password_secret = SecretString::from(params.password.to_string());
-        if jmap.supports_calendar(params.username, &password_secret).await {
+        if jmap
+            .supports_calendar(params.username, &password_secret)
+            .await
+        {
             // Get JMAP Calendar account ID
-            let account_id = match jmap.get_calendar_account_id(params.username, &password_secret).await {
+            let account_id = match jmap
+                .get_calendar_account_id(params.username, &password_secret)
+                .await
+            {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::debug!(target: "sync", error = %e, "JMAP Calendar account ID lookup failed, falling back to CalDAV");
@@ -1286,22 +1292,35 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             if !jmap_failed {
                 if params.incoming_sync_key == "0" {
                     // Initial full sync with wide time window
-                    let start = params.opts.filter_start.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-                    let end = (Utc::now() + Duration::weeks(104)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-                    match jmap.query_calendar_events(QueryCalendarEventsParams {
-                        account_id: &account_id,
-                        calendar_id: None,
-                        start: &start,
-                        end: &end,
-                        limit: 1000,
-                        username: params.username,
-                        password: &password_secret,
-                    }).await {
+                    let start = params
+                        .opts
+                        .filter_start
+                        .format("%Y-%m-%dT%H:%M:%SZ")
+                        .to_string();
+                    let end = (Utc::now() + Duration::weeks(104))
+                        .format("%Y-%m-%dT%H:%M:%SZ")
+                        .to_string();
+                    match jmap
+                        .query_calendar_events(QueryCalendarEventsParams {
+                            account_id: &account_id,
+                            calendar_id: None,
+                            start: &start,
+                            end: &end,
+                            limit: 1000,
+                            username: params.username,
+                            password: &password_secret,
+                        })
+                        .await
+                    {
                         Ok(result) => {
                             for event in &result.events {
                                 if let Some(ref ics) = event.i_calendar {
                                     if let Some(item) = parse_ics_event(ics) {
-                                        let href = format!("jmap://calendar/{}/{}", account_id, event.id.as_deref().unwrap_or(""));
+                                        let href = format!(
+                                            "jmap://calendar/{}/{}",
+                                            account_id,
+                                            event.id.as_deref().unwrap_or("")
+                                        );
                                         let etag = event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
                                         events.push(EventItem {
                                             href,
@@ -1322,26 +1341,55 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     }
                 } else {
                     // Delta sync using CalendarEvent/changes
-                    let old_state = match previous_state.as_ref().and_then(|(_, token)| token.as_deref()) {
+                    let old_state = match previous_state
+                        .as_ref()
+                        .and_then(|(_, token)| token.as_deref())
+                    {
                         Some(s) if !s.is_empty() => s,
                         _ => {
-                            tracing::warn!("No JMAP state token for calendar delta sync, falling back to CalDAV");
+                            tracing::warn!(
+                                "No JMAP state token for calendar delta sync, falling back to CalDAV"
+                            );
                             jmap_failed = true;
                             None
                         }
                     };
                     if let Some(old_state_str) = old_state {
-                        match jmap.changes_calendar_events(&account_id, old_state_str, params.username, &password_secret).await {
+                        match jmap
+                            .changes_calendar_events(
+                                &account_id,
+                                old_state_str,
+                                params.username,
+                                &password_secret,
+                            )
+                            .await
+                        {
                             Ok(changes) => {
-                                let all_ids: Vec<String> = changes.created.iter().chain(changes.updated.iter()).cloned().collect();
+                                let all_ids: Vec<String> = changes
+                                    .created
+                                    .iter()
+                                    .chain(changes.updated.iter())
+                                    .cloned()
+                                    .collect();
                                 if !all_ids.is_empty() {
-                                    match jmap.get_calendar_events(&account_id, &all_ids, params.username, &password_secret).await {
+                                    match jmap
+                                        .get_calendar_events(
+                                            &account_id,
+                                            &all_ids,
+                                            params.username,
+                                            &password_secret,
+                                        )
+                                        .await
+                                    {
                                         Ok(event_map) => {
                                             for id in all_ids {
                                                 if let Some((ics, etag)) = event_map.get(&id) {
                                                     if let Some(item) = parse_ics_event(ics) {
                                                         events.push(EventItem {
-                                                            href: format!("jmap://calendar/{}/{}", account_id, id),
+                                                            href: format!(
+                                                                "jmap://calendar/{}/{}",
+                                                                account_id, id
+                                                            ),
                                                             etag: etag.clone(),
                                                             ics: ics.clone(),
                                                             item,
@@ -1542,7 +1590,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     if !initial_sync {
-        let tombstones = storage.list_deleted_since_seq(params.owner, start_db_seq).await?;
+        let tombstones = storage
+            .list_deleted_since_seq(params.owner, start_db_seq)
+            .await?;
         for (_, sid) in tombstones {
             if !seen_ids.contains(sid.as_str()) {
                 pending_deletes.push(sid);
