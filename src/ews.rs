@@ -3910,23 +3910,23 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         .unwrap_or_default();
 
     if item_id.is_empty() || to_folder_id.is_empty() {
-        return Err(operation_error_response(
+        return operation_error_response(
             &EwsAction::MoveItem,
             "ErrorInvalidIdMalformed",
             "MoveItem requires ItemId/@Id and a destination folder",
             StatusCode::OK,
-        ));
+        );
     }
 
     // Check if it's an email item (has em- prefix)
     if crate::email::is_email_server_id(&item_id) {
         if !state.email_available() {
-            return Err(operation_error_response(
+            return operation_error_response(
                 &EwsAction::MoveItem,
                 "ErrorInvalidRequest",
                 "Email operations are not enabled",
                 StatusCode::FORBIDDEN,
-            ));
+            );
         }
 
         // Map DistinguishedFolderId to JMAP role
@@ -3938,21 +3938,21 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             "junkemail" => "junk",
             "outbox" => {
                 // Outbox doesn't exist in JMAP; sent emails are submitted and go to Sent
-                return Err(operation_error_response(
+                return operation_error_response(
                     &EwsAction::MoveItem,
                     "ErrorInvalidOperation",
                     "Cannot move items to Outbox",
                     StatusCode::OK,
-                ));
+                );
             }
             _ => {
                 // Unknown folder
-                return Err(operation_error_response(
+                return operation_error_response(
                     &EwsAction::MoveItem,
                     "ErrorInvalidOperation",
                     "Unsupported destination folder",
                     StatusCode::OK,
-                ));
+                );
             }
         };
 
@@ -4029,7 +4029,7 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             xml_escape(&item_id),
             xml_escape(&change_key)
         );
-        Ok(soap_ok(response))
+        soap_ok(response)
     }
 }
 

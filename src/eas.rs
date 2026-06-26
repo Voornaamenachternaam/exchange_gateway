@@ -1100,7 +1100,7 @@ fn success_status_response(
 }
 
 fn eas_provision_doc_xml() -> &'static str {
-    r#"<EASProvisionDoc>
+    r#"<Settings xmlns="Settings:">
 <DevicePasswordEnabled>0</DevicePasswordEnabled>
 <AlphanumericDevicePasswordRequired>0</AlphanumericDevicePasswordRequired>
 <PasswordRecoveryEnabled>0</PasswordRecoveryEnabled>
@@ -1141,7 +1141,10 @@ fn eas_provision_doc_xml() -> &'static str {
 <AllowConsumerEmail>1</AllowConsumerEmail>
 <AllowRemoteDesktop>1</AllowRemoteDesktop>
 <AllowInternetSharing>1</AllowInternetSharing>
-</EASProvisionDoc>"#
+<Calendar>
+  <CalendarSyncEnabled>1</CalendarSyncEnabled>
+</Calendar>
+</Settings>"#
 }
 
 async fn handle_provision(
@@ -1459,6 +1462,7 @@ fn handle_settings(
     let has_oof = xml_body.contains("<Oof>") || xml_body.contains("<Oof/>");
     let has_device_password =
         xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
+    let has_calendar = xml_body.contains("<Calendar>") || xml_body.contains("<Calendar/>");
 
     if has_user_info || (!has_oof && !has_device_password) {
         let email_entries = active_user_emails(username, &state.cfg.mail_domain)
@@ -1512,6 +1516,16 @@ fn handle_settings(
       <PasswordExpirationInDays>0</PasswordExpirationInDays>
     </Get>
   </DevicePassword>"#,
+        );
+    }
+    if has_calendar {
+        sections.push_str(
+            r#"<Calendar>
+    <Status>1</Status>
+    <Get>
+      <CalendarSyncEnabled>1</CalendarSyncEnabled>
+    </Get>
+  </Calendar>"#,
         );
     }
     let response = format!(
