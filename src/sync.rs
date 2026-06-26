@@ -1269,7 +1269,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     let mut events = Vec::new();
     let mut jmap_failed = false;
-    let mut using_jmap = false;
     let mut token_to_store: Option<String> = None;
 
     if let Some(jmap) = &params.state.jmap_client {
@@ -1332,7 +1331,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                 }
                             }
                             token_to_store = Some(result.state.clone());
-                            using_jmap = true;
                         }
                         Err(e) => {
                             tracing::debug!(target: "sync", error = %e, "JMAP Calendar query failed, falling back to CalDAV");
@@ -1406,7 +1404,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                 }
                                 if !jmap_failed {
                                     token_to_store = Some(changes.new_state.clone());
-                                    using_jmap = true;
                                 }
                             }
                             Err(e) => {
@@ -1672,11 +1669,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     let new_sync_key = Uuid::new_v4().to_string();
-    let token_val = if using_jmap {
-        token_to_store.unwrap()
-    } else {
-        sync_seq_to_token(start_db_seq)
-    };
+    let token_val = token_to_store.unwrap_or_else(|| sync_seq_to_token(start_db_seq));
     storage
         .set_sync_key(
             params.owner,
