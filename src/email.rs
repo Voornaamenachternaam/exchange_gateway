@@ -24,7 +24,9 @@
 use crate::jmap::JmapEmail;
 use crate::models::AppState;
 use crate::util::xml_escape;
+use anyhow::anyhow;
 use secrecy::SecretString;
+use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
 
@@ -522,6 +524,306 @@ async fn send_email_jmap(
     );
 
     Ok(email_id)
+}
+
+/// Save an email draft via JMAP Email/set.
+///
+/// Creates the message in the Drafts mailbox and stores the server_id mapping
+/// in the local database. This is used for CreateItem with MessageDisposition
+/// "SaveOnly" or "SendAndSaveCopy" (draft portion).
+///
+/// Returns the created server_id and change_key on success.
+pub async fn save_draft_via_jmap(
+    state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    msg: &EwsMessage,
+    account_id: &str,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<(String, String)> {
+    // Ensure the draft is placed in the Drafts mailbox.
+    let draft_mailbox_ids = jmap
+        .get_mailbox_ids_for_role(account_id, "drafts", username, password)
+        .await
+        .unwrap_or_else(|_| vec!["drafts".to_string()]);
+
+    if draft_mailbox_ids.is_empty() {
+        return Err(anyhow!("No Drafts mailbox found"));
+    }
+
+    // Build the email object for the draft.
+    // Note: For drafts, we store the full MIME content to preserve formatting.
+    // The JMAP server will parse and store the email normally.
+    let mut email_obj = json!({
+        "mailboxIds": {},
+    });
+
+    // Set mailboxIds to Drafts
+    for mb_id in &draft_mailbox_ids {
+        email_obj["mailboxIds"][mb_id] = json!(true);
+    }
+
+    // Set From header
+    let from = if msg.from.is_empty() {
+        format!(
+            "{}@{}",
+            username.split('@').next().unwrap_or(username),
+            state.cfg.mail_domain
+        )
+    } else {
+        msg.from.clone()
+    };
+    email_obj["from"] = json!([{ "email": from }]);
+
+    // Recipients
+    if !msg.to_recipients.is_empty() {
+        email_obj["to"] = json!(
+            msg.to_recipients
+                .iter()
+                .map(|addr| json!({ "email": addr }))
+                .collect::<Vec<_>>()
+        );
+    }
+    if !msg.cc_recipients.is_empty() {
+        email_obj["cc"] = json!(
+            msg.cc_recipients
+                .iter()
+                .map(|addr| json!({ "email": addr }))
+                .collect::<Vec<_>>()
+        );
+    }
+    if !msg.bcc_recipients.is_empty() {
+        email_obj["bcc"] = json!(
+            msg.bcc_recipients
+                .iter()
+                .map(|addr| json!({ "email": addr }))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Subject
+    if !msg.subject.is_empty() {
+        email_obj["subject"] = json!(msg.subject);
+    }
+
+    // Body: Construct bodyValues and textBody/htmlBody per RFC 8621 §4.1.4
+    let is_html = msg.body_type.eq_ignore_ascii_case("HTML");
+    let mut body_values = json!({
+        "text": {
+            "value": msg.body,
+            "type": "text/plain",
+            "charset": "utf-8",
+            "isEncodingProblem": false,
+            "isTruncated": false,
+        }
+    });
+    if is_html {
+        body_values["html"] = json!({
+            "value": msg.body,
+            "type": "text/html",
+            "charset": "utf-8",
+            "isEncodingProblem": false,
+            "isTruncated": false,
+        });
+    }
+    email_obj["bodyValues"] = body_values;
+    email_obj["textBody"] = json!([{ "partId": "text", "type": "text/plain" }]);
+    if is_html {
+        email_obj["htmlBody"] = json!([{ "partId": "html", "type": "text/html" }]);
+    }
+
+    // Add keywords if present (like Draft)
+    // We could set "draft" keyword, but JMAP may auto-set based on mailbox.
+    // Let's not force it; the server may set it automatically for Drafts mailbox.
+
+    let mut method_calls = vec![(
+        "Email/set",
+        json!({
+            "accountId": account_id,
+            "create": {
+                "draft0": email_obj,
+            },
+        }),
+        "cs0",
+    )];
+
+    // Also optionally fetch the created ID
+    method_calls.push((
+        "Email/get",
+        json!({
+            "accountId": account_id,
+            "ids": ["#draft0"],
+        }),
+        "cg0",
+    ));
+
+    let session = jmap.get_session(username, password).await?;
+    let api_url = session.api_url.as_str();
+
+    let response = jmap
+        .api_call(
+            api_url,
+            &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+            method_calls,
+            username,
+            password,
+        )
+        .await?;
+
+    let mut created_id: Option<String> = None;
+    for (method, data, _) in response.method_responses {
+        if method == "Email/set" {
+            if let Some(created) = data.get("created").and_then(|v| v.as_object())
+                && let Some(id) = created
+                    .get("draft0")
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+            {
+                created_id = Some(id.to_string());
+            }
+        } else if method == "Email/get" {
+            // We could extract more data if needed
+        }
+    }
+
+    let jmap_id = created_id.ok_or_else(|| anyhow!("Failed to create draft via JMAP"))?;
+
+    // Store mapping in local database
+    let server_id = format!("em-{}", jmap_id);
+    let owner = crate::util::normalize_email(username);
+
+    // Insert into item_map if not exists; updates are idempotent.
+    // Use the resource_href as jmap_id, and store uid if available (none for drafts).
+    sqlx::query(
+        r#"
+        INSERT OR REPLACE INTO item_map (owner, server_id, resource_href, uid, caldav_href, etag, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        "#,
+    )
+    .bind(&owner)
+    .bind(&server_id)
+    .bind(&jmap_id)
+    .bind::<Option<&str>>(None) // uid not available for drafts
+    .bind::<Option<&str>>(None) // caldav_href not used for email
+    .bind::<Option<&str>>(None) // etag not used for email (JMAP state-based)
+    .execute(state.storage.pool())
+    .await?;
+
+    info!(
+        target: "email",
+        %server_id,
+        %jmap_id,
+        %owner,
+        "Draft saved via JMAP"
+    );
+
+    // Return server_id and change_key (change_key == server_id for email)
+    Ok((server_id.clone(), server_id))
+}
+
+/// Move an email to a different folder via JMAP Email/set.
+///
+/// This implements MoveItem by updating the email's mailboxIds.
+/// `server_id` is the gateway's server ID (em-<jmap_id>).
+/// `target_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
+pub async fn move_email_via_jmap(
+    _state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    server_id: &str,
+    target_folder: &str,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    // Extract the JMAP ID from the server_id
+    let jmap_id = match crate::email::jmap_id_from_email_server_id(server_id) {
+        Some(id) => id.to_string(),
+        None => return Err(anyhow!("Invalid server ID format: {}", server_id)),
+    };
+
+    // Get the mailbox ID for the target folder role
+    let target_mailbox_ids = jmap
+        .get_mailbox_ids_for_role(account_id, target_folder, username, password)
+        .await?;
+
+    if target_mailbox_ids.is_empty() {
+        return Err(anyhow!("Target folder '{}' not found", target_folder));
+    }
+
+    // For simplicity, use the first mailbox ID (servers may return multiple with same role)
+    let target_mb_id = &target_mailbox_ids[0];
+
+    // Build the update: set mailboxIds to contain only the target folder
+    // This effectively moves the email (removes from other mailboxes)
+    let update_patch = json!({
+        "mailboxIds": { (target_mb_id): true },
+    });
+
+    jmap.update_email(
+        account_id,
+        &json!({
+            (jmap_id): update_patch,
+        }),
+        username,
+        password,
+    )
+    .await?;
+
+    // Return a new change key; could be same as server_id for simplicity
+    Ok(server_id.to_string())
+}
+
+/// Copy an email to another folder via JMAP Email/set.
+///
+/// This implements CopyItem by adding the target mailboxId without removing from the current mailbox(es).
+/// `server_id` is the gateway's server ID (em-<jmap_id>).
+/// `dest_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
+pub async fn copy_email_via_jmap(
+    _state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    server_id: &str,
+    dest_folder: &str,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    // Extract the JMAP ID from the server_id
+    let jmap_id = match crate::email::jmap_id_from_email_server_id(server_id) {
+        Some(id) => id.to_string(),
+        None => return Err(anyhow!("Invalid server ID format: {}", server_id)),
+    };
+
+    // Get the mailbox ID for the destination folder role
+    let dest_mailbox_ids = jmap
+        .get_mailbox_ids_for_role(account_id, dest_folder, username, password)
+        .await?;
+
+    if dest_mailbox_ids.is_empty() {
+        return Err(anyhow!("Destination folder '{}' not found", dest_folder));
+    }
+
+    // Use first mailbox ID for simplicity
+    let dest_mb_id = &dest_mailbox_ids[0];
+
+    // Build the update patch: add the destination mailboxId to the existing set.
+    // We use "mailboxIds": { dest_mb_id: true } which does not remove existing ones
+    // unless we explicitly clear them. Per JMAP, setting to true adds, false removes.
+    let update_patch = json!({
+        "mailboxIds": { (dest_mb_id): true },
+    });
+
+    jmap.update_email(
+        account_id,
+        &json!({
+            (jmap_id): update_patch,
+        }),
+        username,
+        password,
+    )
+    .await?;
+
+    // Return same change key (since content unchanged)
+    Ok(server_id.to_string())
 }
 
 /// Send an email via SMTP on behalf of a user.

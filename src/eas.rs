@@ -563,18 +563,17 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                     // Text content of a direct child element.
                     if let Some(tag) = current_tag.as_ref()
                         && let Ok(text) = t.decode()
+                        && let Some(coll) = current_collection.as_mut()
                     {
                         let text = text.into_owned();
-                        if let Some(coll) = current_collection.as_mut() {
-                            match tag.as_slice() {
-                                b"SyncKey" => coll.sync_key = Some(text),
-                                b"CollectionId" => coll.collection_id = Some(text),
-                                b"Class" => coll.class = Some(text),
-                                b"WindowSize" => coll.window_size = text.parse().ok(),
-                                b"FilterType" => coll.filter_type = text.parse().ok(),
-                                b"GetChanges" => coll.get_changes = text.trim() != "0",
-                                _ => {}
-                            }
+                        match tag.as_slice() {
+                            b"SyncKey" => coll.sync_key = Some(text),
+                            b"CollectionId" => coll.collection_id = Some(text),
+                            b"Class" => coll.class = Some(text),
+                            b"WindowSize" => coll.window_size = text.parse().ok(),
+                            b"FilterType" => coll.filter_type = text.parse().ok(),
+                            b"GetChanges" => coll.get_changes = text.trim() != "0",
+                            _ => {}
                         }
                     }
                 }
@@ -585,18 +584,17 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 if depth == 2
                     && let Some(tag) = current_tag.as_ref()
                     && let Ok(text) = cdata.decode()
+                    && let Some(coll) = current_collection.as_mut()
                 {
                     let text = text.into_owned();
-                    if let Some(coll) = current_collection.as_mut() {
-                        match tag.as_slice() {
-                            b"SyncKey" => coll.sync_key = Some(text),
-                            b"CollectionId" => coll.collection_id = Some(text),
-                            b"Class" => coll.class = Some(text),
-                            b"WindowSize" => coll.window_size = text.parse().ok(),
-                            b"FilterType" => coll.filter_type = text.parse().ok(),
-                            b"GetChanges" => coll.get_changes = text.trim() != "0",
-                            _ => {}
-                        }
+                    match tag.as_slice() {
+                        b"SyncKey" => coll.sync_key = Some(text),
+                        b"CollectionId" => coll.collection_id = Some(text),
+                        b"Class" => coll.class = Some(text),
+                        b"WindowSize" => coll.window_size = text.parse().ok(),
+                        b"FilterType" => coll.filter_type = text.parse().ok(),
+                        b"GetChanges" => coll.get_changes = text.trim() != "0",
+                        _ => {}
                     }
                 }
             }
@@ -1102,7 +1100,7 @@ fn success_status_response(
 }
 
 fn eas_provision_doc_xml() -> &'static str {
-    r#"<EASProvisionDoc>
+    r#"<Settings xmlns="Settings:">
 <DevicePasswordEnabled>0</DevicePasswordEnabled>
 <AlphanumericDevicePasswordRequired>0</AlphanumericDevicePasswordRequired>
 <PasswordRecoveryEnabled>0</PasswordRecoveryEnabled>
@@ -1143,7 +1141,10 @@ fn eas_provision_doc_xml() -> &'static str {
 <AllowConsumerEmail>1</AllowConsumerEmail>
 <AllowRemoteDesktop>1</AllowRemoteDesktop>
 <AllowInternetSharing>1</AllowInternetSharing>
-</EASProvisionDoc>"#
+<Calendar>
+  <CalendarSyncEnabled>1</CalendarSyncEnabled>
+</Calendar>
+</Settings>"#
 }
 
 async fn handle_provision(
@@ -1304,7 +1305,7 @@ async fn handle_folder_sync(
         let count = if can_read_email { 7 } else { 1 };
         format!(
             r#"<Changes><Count>{count}</Count>
-<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
+<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>1</Type></Add>
 {email_folders}
 </Changes>"#
         )
@@ -1461,6 +1462,7 @@ fn handle_settings(
     let has_oof = xml_body.contains("<Oof>") || xml_body.contains("<Oof/>");
     let has_device_password =
         xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
+    let has_calendar = xml_body.contains("<Calendar>") || xml_body.contains("<Calendar/>");
 
     if has_user_info || (!has_oof && !has_device_password) {
         let email_entries = active_user_emails(username, &state.cfg.mail_domain)
@@ -1514,6 +1516,16 @@ fn handle_settings(
       <PasswordExpirationInDays>0</PasswordExpirationInDays>
     </Get>
   </DevicePassword>"#,
+        );
+    }
+    if has_calendar {
+        sections.push_str(
+            r#"<Calendar>
+    <Status>1</Status>
+    <Get>
+      <CalendarSyncEnabled>1</CalendarSyncEnabled>
+    </Get>
+  </Calendar>"#,
         );
     }
     let response = format!(
@@ -1849,6 +1861,12 @@ async fn fetch_freebusy_jmap_eas(
 ) -> Option<String> {
     // Check if JMAP Calendar is supported
     if !jmap.supports_calendar(mailbox, password).await {
+        return None;
+    }
+
+    // Guard against invalid safe_interval (division by zero)
+    if safe_interval <= 0 {
+        tracing::warn!(target: "eas", ?safe_interval, "Invalid safe_interval; falling back to CalDAV");
         return None;
     }
 

@@ -269,6 +269,16 @@ pub struct EmailChangesResult {
     pub has_more_changes: bool,
 }
 
+/// Result of a CalendarEvent/changes call
+#[derive(Clone, Debug)]
+pub struct CalendarChangesResult {
+    pub created: Vec<String>,
+    pub updated: Vec<String>,
+    pub destroyed: Vec<String>,
+    pub new_state: String,
+    pub has_more_changes: bool,
+}
+
 /// Result of a Mailbox/query call
 #[derive(Clone, Debug)]
 pub struct MailboxListResult {
@@ -400,6 +410,11 @@ pub struct JmapCalendarEvent {
     /// Stalwart returns the original iCalendar data in this property.
     #[serde(default)]
     pub i_calendar: Option<String>,
+    /// The ETag of the event (from the JMAP response). Used for concurrency
+    /// and change tracking, replacing CalDAV's ETag handling.
+    #[serde(rename = "@etag")]
+    #[serde(default)]
+    pub etag: Option<String>,
 }
 
 /// Result of a Calendar/get call.
@@ -476,6 +491,11 @@ impl JmapClient {
             client,
             session_cache: Arc::new(DashMap::new()),
         })
+    }
+
+    /// Get the base URL for this JMAP client.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// Derive the JMAP base URL from the CalDAV base URL.
@@ -576,7 +596,7 @@ impl JmapClient {
     }
 
     /// Make a JMAP API call (RFC 8621 §3.2).
-    async fn api_call(
+    pub async fn api_call(
         &self,
         api_url: &str,
         using: &[&str],
@@ -943,6 +963,102 @@ impl JmapClient {
         ))
     }
 
+    /// Get calendar event changes via CalendarEvent/changes
+    /// (draft-ietf-jmap-calendars §5.13).
+    ///
+    /// Returns created, updated, destroyed event IDs and the new state token.
+    pub async fn changes_calendar_events(
+        &self,
+        account_id: &str,
+        old_state: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<CalendarChangesResult> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "CalendarEvent/changes",
+            json!({
+                "accountId": account_id,
+                "sinceState": old_state,
+                "maxChanges": 500,
+            }),
+            "cc0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "CalendarEvent/changes" {
+                let old_state = data
+                    .get("oldState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let new_state = data
+                    .get("newState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let has_more: bool = data
+                    .get("hasMoreChanges")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let created: Vec<String> = data
+                    .get("created")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let updated: Vec<String> = data
+                    .get("updated")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let destroyed: Vec<String> = data
+                    .get("destroyed")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+
+                debug!(
+                    target: "jmap",
+                    old_state = %old_state,
+                    new_state = %new_state,
+                    created = created.len(),
+                    updated = updated.len(),
+                    destroyed = destroyed.len(),
+                    has_more = has_more,
+                    "Calendar changes synced"
+                );
+
+                if has_more {
+                    warn!(
+                        target: "jmap",
+                        "CalendarEvent/changes returned hasMoreChanges=true; sync may be incomplete. Consider increasing maxChanges or handling pagination."
+                    );
+                }
+
+                return Ok(CalendarChangesResult {
+                    created,
+                    updated,
+                    destroyed,
+                    new_state,
+                    has_more_changes: has_more,
+                });
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for CalendarEvent/changes"
+        ))
+    }
+
     /// Update email properties via JMAP Email/set (RFC 8621 §4.5).
     ///
     /// `update` is a JSON object mapping email IDs to patch objects.
@@ -1113,26 +1229,53 @@ impl JmapClient {
             );
         }
 
-        // Set body per RFC 8621 §4.1.4 — bodyValues
-        email_obj["bodyValues"] = json!({
-            "text": {
-                "value": params.text_body,
-                "isEncodingProblem": false,
-                "isTruncated": false,
-            }
-        });
+        // Construct bodyValues, textBody, and htmlBody per RFC 8621 §4.1.4.
+        // When both text and HTML are present, we provide both alternatives.
+        // When only one is present, we provide only that one.
 
-        // If HTML body provided, add it
+        let mut body_values = serde_json::Map::new();
+        let mut text_body = None;
+        let mut html_body = None;
+
+        // Always include the provided text_body as text/plain
+        if !params.text_body.is_empty() {
+            body_values.insert(
+                "text".to_string(),
+                json!({
+                    "value": params.text_body,
+                    "type": "text/plain",
+                    "charset": "utf-8",
+                    "isEncodingProblem": false,
+                    "isTruncated": false,
+                }),
+            );
+            text_body = Some(json!([{ "partId": "text", "type": "text/plain" }]));
+        }
+
+        // If HTML body provided, include it
         if let Some(html) = params.html_body {
-            email_obj["bodyValues"]["html"] = json!({
-                "value": html,
-                "isEncodingProblem": false,
-                "isTruncated": false,
-            });
-            email_obj["htmlBody"] = json!({
-                "partId": "html",
-                "type": "text/html"
-            });
+            body_values.insert(
+                "html".to_string(),
+                json!({
+                    "value": html,
+                    "type": "text/html",
+                    "charset": "utf-8",
+                    "isEncodingProblem": false,
+                    "isTruncated": false,
+                }),
+            );
+            html_body = Some(json!([{ "partId": "html", "type": "text/html" }]));
+        }
+
+        // If at least one body exists, attach bodyValues and corresponding *Body arrays
+        if !body_values.is_empty() {
+            email_obj["bodyValues"] = serde_json::Value::Object(body_values);
+            if let Some(tb) = text_body {
+                email_obj["textBody"] = tb;
+            }
+            if let Some(hb) = html_body {
+                email_obj["htmlBody"] = hb;
+            }
         }
 
         // Step 1: Create the Email via Email/set
@@ -1499,6 +1642,28 @@ impl JmapClient {
         ))
     }
 
+    /// Get the default calendar ID for a user.
+    /// Returns the first available calendar (sorted by `sortOrder` then `id`).
+    /// This is used as the target for calendar CreateItem operations.
+    pub async fn get_default_calendar_id(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let result = self.query_calendars(username, password).await?;
+        let mut calendars = result.calendars;
+        // Sort by sortOrder ascending, then by id for deterministic selection
+        calendars.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        calendars
+            .first()
+            .and_then(|c| c.id.clone())
+            .ok_or_else(|| anyhow!("No calendars found for user"))
+    }
+
     /// Query calendar events in a time range via CalendarEvent/query
     /// + CalendarEvent/get (draft-ietf-jmap-calendars §5.11, §5.7).
     ///
@@ -1551,7 +1716,7 @@ impl JmapClient {
                         "isAllDay", "recurrenceRules", "recurrenceOverrides",
                         "excluded", "sequence", "priority", "privacy",
                         "status", "timeZone", "created", "updated",
-                        "iCalendar"
+                        "iCalendar", "@etag"
                     ],
                 }),
                 "eg0",
@@ -1600,7 +1765,7 @@ impl JmapClient {
     /// (draft-ietf-jmap-calendars §5.7).
     ///
     /// Replaces CalDAV `get_event` (GET).
-    /// Returns the ICS data and the JMAP event ID.
+    /// Returns the ICS data, the JMAP event ID, and the ETag.
     /// The ICS data comes from the `iCalendar` property returned by
     /// Stalwart when requested.
     pub async fn get_calendar_event(
@@ -1609,7 +1774,7 @@ impl JmapClient {
         event_id: &str,
         username: &str,
         password: &SecretString,
-    ) -> Result<(String, String)> {
+    ) -> Result<(String, String, String)> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
@@ -1650,7 +1815,12 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                return Ok((ics, id));
+                let etag = event
+                    .get("@etag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                return Ok((ics, id, etag));
             }
             if method == "CalendarEvent/get"
                 && let Some(not_found) = data.get("notFound")
@@ -1667,6 +1837,68 @@ impl JmapClient {
         ))
     }
 
+    /// Batch fetch multiple calendar events by IDs via CalendarEvent/get.
+    /// Returns a HashMap mapping event ID to (ics, etag).
+    pub async fn get_calendar_events(
+        &self,
+        account_id: &str,
+        event_ids: &[String],
+        username: &str,
+        password: &SecretString,
+    ) -> Result<HashMap<String, (String, String)>> {
+        if event_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let method_calls = vec![(
+            "CalendarEvent/get",
+            json!({
+                "accountId": account_id,
+                "ids": event_ids,
+                "properties": ["id", "uid", "iCalendar", "@etag"],
+            }),
+            "eg0",
+        )];
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+        let mut map = HashMap::new();
+        for (method, data, _) in response.method_responses {
+            if method == "CalendarEvent/get"
+                && let Some(list) = data.get("list").and_then(|v| v.as_array())
+            {
+                for event in list {
+                    let id = event
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let ics = event
+                        .get("iCalendar")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let etag = event
+                        .get("@etag")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !id.is_empty() {
+                        map.insert(id, (ics, etag));
+                    }
+                }
+            }
+        }
+        Ok(map)
+    }
+
     /// Create or update a calendar event via CalendarEvent/set
     /// (draft-ietf-jmap-calendars §5.9).
     ///
@@ -1679,11 +1911,11 @@ impl JmapClient {
     /// specified calendar_id.
     /// For updates (event_id is Some), the existing event is patched.
     ///
-    /// Returns (jmap_event_id, uid) on success.
+    /// Returns (jmap_event_id, uid, etag) on success.
     pub async fn set_calendar_event(
         &self,
         params: SetCalendarEventParams<'_>,
-    ) -> Result<(String, String)> {
+    ) -> Result<(String, String, String)> {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
 
@@ -1734,12 +1966,17 @@ impl JmapClient {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        return Ok((id, uid));
+                        let etag = obj
+                            .get("@etag")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        return Ok((id, uid, etag));
                     }
                 }
             }
 
-            Ok((existing_id.to_string(), String::new()))
+            Ok((existing_id.to_string(), String::new(), String::new()))
         } else {
             // Create new event
             let method_calls = vec![(
@@ -1784,7 +2021,12 @@ impl JmapClient {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        return Ok((id, uid));
+                        let etag = e0
+                            .get("@etag")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        return Ok((id, uid, etag));
                     }
                 }
             }

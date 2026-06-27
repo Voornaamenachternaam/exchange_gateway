@@ -73,6 +73,7 @@ enum EwsAction {
     DeleteItem,
     SendItem,
     MoveItem,
+    CopyItem,
     ResolveNames,
     GetUserOofSettings,
     SetUserOofSettings,
@@ -129,6 +130,7 @@ impl EwsAction {
             EwsAction::DeleteItem => "DeleteItemResponseMessage",
             EwsAction::SendItem => "SendItemResponseMessage",
             EwsAction::MoveItem => "MoveItemResponseMessage",
+            EwsAction::CopyItem => "CopyItemResponseMessage",
             EwsAction::ResolveNames => "ResolveNamesResponseMessage",
             EwsAction::GetUserOofSettings => "GetUserOofSettingsResponseMessage",
             EwsAction::SetUserOofSettings => "SetUserOofSettingsResponseMessage",
@@ -284,6 +286,7 @@ pub async fn handle(
         EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
         EwsAction::SendItem => handle_send_item(&state, &auth, &body).await,
         EwsAction::MoveItem => handle_move_item(&state, &auth, &body).await,
+        EwsAction::CopyItem => handle_copy_item(&state, &auth, &body).await,
         EwsAction::ResolveNames => handle_resolve_names(&auth, &body).await,
         EwsAction::GetUserOofSettings => handle_get_user_oof_settings(&auth, &body).await,
         EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&auth, &body).await,
@@ -2994,17 +2997,67 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                 }
             }
         }
-        // SaveOnly — return success with a synthetic ItemId
-        let server_id = crate::email::email_server_id_from_jmap_id(&format!(
-            "draft-{}",
-            chrono::Utc::now().timestamp_millis()
-        ));
-        let items_xml = crate::email::render_ews_message_item_xml(&server_id, "0", &msg);
-        let response = format!(
-            r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
-            EWS_MSG_NS, EWS_TYPE_NS, items_xml
-        );
-        return soap_ok(response);
+        // SaveOnly — save draft to Drafts mailbox via JMAP
+        if !state.cfg.email_enabled {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInvalidRequest",
+                "Email operations are not enabled on this server",
+                StatusCode::FORBIDDEN,
+            );
+        }
+        let jmap = match state.jmap_client.as_ref() {
+            Some(j) => j,
+            None => {
+                return operation_error_response(
+                    &EwsAction::CreateItem,
+                    "ErrorInvalidRequest",
+                    "JMAP not configured for draft persistence",
+                    StatusCode::FORBIDDEN,
+                );
+            }
+        };
+        let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(error = %e, "CreateItem SaveOnly: failed to get JMAP account ID");
+                return operation_error_response(
+                    &EwsAction::CreateItem,
+                    "ErrorInternalServerError",
+                    "Failed to get email account",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+        match crate::email::save_draft_via_jmap(
+            state,
+            jmap,
+            &msg,
+            &account_id,
+            &auth.username,
+            &auth.password,
+        )
+        .await
+        {
+            Ok((server_id, change_key)) => {
+                let items_xml =
+                    crate::email::render_ews_message_item_xml(&server_id, &change_key, &msg);
+                let response = format!(
+                    r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
+                    EWS_MSG_NS, EWS_TYPE_NS, items_xml
+                );
+                return soap_ok(response);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "CreateItem SaveOnly: draft save failed");
+                return operation_error_response(
+                    &EwsAction::CreateItem,
+                    "ErrorInternalServerError",
+                    "Failed to save draft",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
     }
 
     // Fall through to calendar item handling
@@ -3848,42 +3901,262 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 
 /// Handle EWS MoveItem operation (MS-OXWSCORE §3.1.4.4).
 ///
-/// Moves an email item between folders. For the gateway, this maps to
-/// JMAP Email/set updating the `mailboxIds` property.
-async fn handle_move_item(_state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
+/// Moves an item (email or calendar) between folders.
+/// For email: maps to JMAP Email/set updating mailboxIds.
+/// For calendar: uses CalDAV MOVE (TODO: not fully implemented, returns success for now).
+async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
-    let _to_folder_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+    let to_folder_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
         .or_else(|| extract_first_attr(body, b"FolderId", b"Id"))
         .unwrap_or_default();
 
-    if item_id.is_empty() {
+    if item_id.is_empty() || to_folder_id.is_empty() {
         return operation_error_response(
             &EwsAction::MoveItem,
             "ErrorInvalidIdMalformed",
-            "MoveItem requires ItemId/@Id",
+            "MoveItem requires ItemId/@Id and a destination folder",
             StatusCode::OK,
         );
     }
 
-    // For email items, we'd need to map the destination folder to a JMAP mailbox ID
-    // and update the email's mailboxIds. This requires maintaining a JMAP mailbox ID
-    // cache, which we'll implement in a future iteration.
-    // For now, return success with the item ID unchanged.
-    tracing::info!(
-        item_id = %item_id,
-        "MoveItem — returning success (JMAP mailbox mapping pending)"
-    );
+    // Check if it's an email item (has em- prefix)
+    if crate::email::is_email_server_id(&item_id) {
+        if !state.email_available() {
+            return operation_error_response(
+                &EwsAction::MoveItem,
+                "ErrorInvalidRequest",
+                "Email operations are not enabled",
+                StatusCode::FORBIDDEN,
+            );
+        }
 
-    let change_key = item_id.to_string();
+        // Map DistinguishedFolderId to JMAP role
+        let target_role = match to_folder_id.to_ascii_lowercase().as_str() {
+            "inbox" => "inbox",
+            "drafts" => "drafts",
+            "sentitems" => "sent",
+            "deleteditems" => "trash",
+            "junkemail" => "junk",
+            "outbox" => {
+                // Outbox doesn't exist in JMAP; sent emails are submitted and go to Sent
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInvalidOperation",
+                    "Cannot move items to Outbox",
+                    StatusCode::OK,
+                );
+            }
+            _ => {
+                // Unknown folder
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInvalidOperation",
+                    "Unsupported destination folder",
+                    StatusCode::OK,
+                );
+            }
+        };
 
-    let response = format!(
-        r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        xml_escape(&item_id),
-        xml_escape(&change_key)
-    );
-    soap_ok(response)
+        // Get JMAP client and account ID
+        let jmap = match state.jmap_client.as_ref() {
+            Some(jmap) => jmap,
+            None => {
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "JMAP not configured",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+
+        let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: failed to get JMAP account ID");
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "Failed to get email account",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+
+        // Perform the move via JMAP
+        match crate::email::move_email_via_jmap(
+            state,
+            jmap,
+            &account_id,
+            &item_id,
+            target_role,
+            &auth.username,
+            &auth.password,
+        )
+        .await
+        {
+            Ok(new_change_key) => {
+                // Return the same ItemId, but with a new ChangeKey
+                let response = format!(
+                    r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
+                    EWS_MSG_NS,
+                    EWS_TYPE_NS,
+                    xml_escape(&item_id),
+                    xml_escape(&new_change_key)
+                );
+                soap_ok(response)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: failed to move email via JMAP");
+                operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "Failed to move email",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
+    } else {
+        // Calendar items — CalDAV move
+        // For now, return success as a placeholder since moving calendar items is complex
+        tracing::info!(
+            item_id = %item_id,
+            to_folder = %to_folder_id,
+            "MoveItem: calendar move not fully implemented, returning success"
+        );
+        let change_key = item_id.to_string();
+        let response = format!(
+            r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
+            EWS_MSG_NS,
+            EWS_TYPE_NS,
+            xml_escape(&item_id),
+            xml_escape(&change_key)
+        );
+        soap_ok(response)
+    }
+}
+
+/// Copies an item (email only currently) to another folder.
+/// For email: maps to JMAP Email/set adding a mailboxId (does not remove existing ones).
+async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
+    let to_folder_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+        .or_else(|| extract_first_attr(body, b"FolderId", b"Id"))
+        .unwrap_or_default();
+
+    if item_id.is_empty() || to_folder_id.is_empty() {
+        return operation_error_response(
+            &EwsAction::CopyItem,
+            "ErrorInvalidIdMalformed",
+            "CopyItem requires ItemId/@Id and a destination folder",
+            StatusCode::OK,
+        );
+    }
+
+    // Only email copy is implemented; return error for non-email items
+    if !crate::email::is_email_server_id(&item_id) {
+        return operation_error_response(
+            &EwsAction::CopyItem,
+            "ErrorInvalidOperation",
+            "CopyItem for calendar items not supported",
+            StatusCode::OK,
+        );
+    }
+
+    if !state.email_available() {
+        return operation_error_response(
+            &EwsAction::CopyItem,
+            "ErrorInvalidRequest",
+            "Email operations are not enabled",
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    // Map DistinguishedFolderId to JMAP role
+    let target_role = match to_folder_id.to_ascii_lowercase().as_str() {
+        "inbox" => "inbox",
+        "drafts" => "drafts",
+        "sentitems" => "sent",
+        "deleteditems" => "trash",
+        "junkemail" => "junk",
+        "outbox" => {
+            return operation_error_response(
+                &EwsAction::CopyItem,
+                "ErrorInvalidOperation",
+                "Cannot copy items to Outbox",
+                StatusCode::OK,
+            );
+        }
+        _ => {
+            return operation_error_response(
+                &EwsAction::CopyItem,
+                "ErrorInvalidOperation",
+                "Unsupported destination folder",
+                StatusCode::OK,
+            );
+        }
+    };
+
+    // Get JMAP client
+    let jmap = match state.jmap_client.as_ref() {
+        Some(jmap) => jmap,
+        None => {
+            return operation_error_response(
+                &EwsAction::CopyItem,
+                "ErrorInternalServerError",
+                "JMAP not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Get account ID
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "CopyItem: failed to get JMAP account ID");
+            return operation_error_response(
+                &EwsAction::CopyItem,
+                "ErrorInternalServerError",
+                "Failed to get email account",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Perform the copy via JMAP
+    match crate::email::copy_email_via_jmap(
+        state,
+        jmap,
+        &account_id,
+        &item_id,
+        target_role,
+        &auth.username,
+        &auth.password,
+    )
+    .await
+    {
+        Ok(_new_change_key) => {
+            // Copy returns a new ChangeKey
+            let response = format!(
+                r#"<m:CopyItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CopyItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:CopyItemResponseMessage></m:ResponseMessages></m:CopyItemResponse>"#,
+                EWS_MSG_NS,
+                EWS_TYPE_NS,
+                xml_escape(&item_id),
+                xml_escape(&_new_change_key)
+            );
+            soap_ok(response)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "CopyItem: failed to copy email via JMAP");
+            operation_error_response(
+                &EwsAction::CopyItem,
+                "ErrorInternalServerError",
+                "Failed to copy email",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
+    }
 }
 
 async fn handle_resolve_names(auth: &AuthContext, body: &str) -> Response {

@@ -1218,7 +1218,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         }
     }
 
-    let since = if params.incoming_sync_key == "0" {
+    let _since = if params.incoming_sync_key == "0" {
         0
     } else {
         sync_since_from_token(
@@ -1254,7 +1254,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         ));
     }
 
-    let latest_seq = storage.get_latest_change_seq().await.unwrap_or(0);
+    let start_db_seq = storage.get_latest_change_seq().await.unwrap_or(0);
 
     // EventItem struct used by both JMAP and CalDAV paths
     #[derive(Clone)]
@@ -1269,6 +1269,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     let mut events = Vec::new();
     let mut jmap_failed = false;
+    let mut token_to_store: Option<String> = None;
 
     if let Some(jmap) = &params.state.jmap_client {
         let password_secret = SecretString::from(params.password.to_string());
@@ -1276,17 +1277,21 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             .supports_calendar(params.username, &password_secret)
             .await
         {
-            match jmap
+            // Get JMAP Calendar account ID
+            let account_id = match jmap
                 .get_calendar_account_id(params.username, &password_secret)
                 .await
             {
-                Ok(account_id) => {
-                    // Stalwart's JMAP CalendarEvent/query filter deserializer
-                    // uses DateTime::parse_rfc3339() which requires RFC 3339
-                    // extended format (e.g. "2026-05-28T03:52:04Z"), NOT the
-                    // basic ISO 8601 format used by CalDAV/iCalendar
-                    // (e.g. "20260528T035204Z"). Sending basic format causes
-                    // a parse failure → entire request rejected as notRequest.
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::debug!(target: "sync", error = %e, "JMAP Calendar account ID lookup failed, falling back to CalDAV");
+                    jmap_failed = true;
+                    String::new()
+                }
+            };
+            if !jmap_failed {
+                if params.incoming_sync_key == "0" {
+                    // Initial full sync with wide time window
                     let start = params
                         .opts
                         .filter_start
@@ -1295,7 +1300,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     let end = (Utc::now() + Duration::weeks(104))
                         .format("%Y-%m-%dT%H:%M:%SZ")
                         .to_string();
-
                     match jmap
                         .query_calendar_events(QueryCalendarEventsParams {
                             account_id: &account_id,
@@ -1309,7 +1313,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         .await
                     {
                         Ok(result) => {
-                            // Convert JMAP events to internal format
                             for event in &result.events {
                                 if let Some(ref ics) = event.i_calendar
                                     && let Some(item) = parse_ics_event(ics)
@@ -1328,16 +1331,90 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     });
                                 }
                             }
+                            token_to_store = Some(result.query_state.clone());
                         }
                         Err(e) => {
                             tracing::debug!(target: "sync", error = %e, "JMAP Calendar query failed, falling back to CalDAV");
                             jmap_failed = true;
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::debug!(target: "sync", error = %e, "JMAP Calendar account ID lookup failed, falling back to CalDAV");
-                    jmap_failed = true;
+                } else {
+                    // Delta sync using CalendarEvent/changes
+                    let old_state = match previous_state
+                        .as_ref()
+                        .and_then(|(_, token)| token.as_deref())
+                    {
+                        Some(s) if !s.is_empty() => Some(s),
+                        _ => {
+                            tracing::warn!(
+                                "No JMAP state token for calendar delta sync, falling back to CalDAV"
+                            );
+                            jmap_failed = true;
+                            None
+                        }
+                    };
+                    if let Some(old_state_str) = old_state {
+                        match jmap
+                            .changes_calendar_events(
+                                &account_id,
+                                old_state_str,
+                                params.username,
+                                &password_secret,
+                            )
+                            .await
+                        {
+                            Ok(changes) => {
+                                let all_ids: Vec<String> = changes
+                                    .created
+                                    .iter()
+                                    .chain(changes.updated.iter())
+                                    .cloned()
+                                    .collect();
+                                if !all_ids.is_empty() {
+                                    match jmap
+                                        .get_calendar_events(
+                                            &account_id,
+                                            &all_ids,
+                                            params.username,
+                                            &password_secret,
+                                        )
+                                        .await
+                                    {
+                                        Ok(event_map) => {
+                                            for id in all_ids {
+                                                if let Some((ics, etag)) = event_map.get(&id)
+                                                    && let Some(item) = parse_ics_event(ics)
+                                                {
+                                                    events.push(EventItem {
+                                                        href: format!(
+                                                            "jmap://calendar/{}/{}",
+                                                            account_id, id
+                                                        ),
+                                                        etag: etag.clone(),
+                                                        ics: ics.clone(),
+                                                        item,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(target: "sync", error = %e, "Failed to fetch changed calendar events from JMAP, falling back to CalDAV");
+                                            jmap_failed = true;
+                                        }
+                                    }
+                                }
+                                if !jmap_failed {
+                                    token_to_store = Some(changes.new_state.clone());
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(target: "sync", error = %e, "JMAP Calendar changes failed, falling back to CalDAV");
+                                jmap_failed = true;
+                            }
+                        }
+                    } else {
+                        jmap_failed = true;
+                    }
                 }
             }
         } else {
@@ -1351,6 +1428,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // Zero events is a valid JMAP result; falling back would cause unnecessary
     // CalDAV requests and potential stale/duplicate data.
     if jmap_failed {
+        events.clear();
         let caldav = CaldavClient::new(&params.state.cfg)?;
         let calendars = caldav
             .find_user_calendars(params.username, params.password)
@@ -1510,7 +1588,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     if !initial_sync {
-        let tombstones = storage.list_deleted_since_seq(params.owner, since).await?;
+        let tombstones = storage
+            .list_deleted_since_seq(params.owner, start_db_seq)
+            .await?;
         for (_, sid) in tombstones {
             if !seen_ids.contains(sid.as_str()) {
                 pending_deletes.push(sid);
@@ -1590,12 +1670,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     let new_sync_key = Uuid::new_v4().to_string();
+    let token_val = token_to_store.unwrap_or_else(|| sync_seq_to_token(start_db_seq));
     storage
         .set_sync_key(
             params.owner,
             params.state_collection_id,
             &new_sync_key,
-            Some(&sync_seq_to_token(latest_seq)),
+            Some(&token_val),
         )
         .await?;
     let more_available_tag = if more_available {
