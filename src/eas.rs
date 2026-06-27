@@ -1451,7 +1451,7 @@ async fn handle_ping(
     
     // Timeout reached with no changes
     let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
-    return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+    xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
 }
 
 async fn handle_settings(

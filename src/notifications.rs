@@ -3,7 +3,7 @@
 // Uses a broadcast channel to deliver change events to waiting subscribers.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::{broadcast, Mutex};
 
 /// Notification event types.
@@ -82,11 +82,11 @@ impl Default for SubscriptionManager {
 
 /// Global notification manager instance.
 /// In a real deployment, this would be stored in AppState.
-static GLOBAL_SUBSCRIPTION_MANAGER: std::sync::OnceLock<SubscriptionManager> = std::sync::OnceLock::new();
+static GLOBAL_SUBSCRIPTION_MANAGER: LazyLock<SubscriptionManager> = LazyLock::new(SubscriptionManager::new);
 
 /// Get the global subscription manager, initializing if necessary.
 pub fn global_manager() -> &'static SubscriptionManager {
-    GLOBAL_SUBSCRIPTION_MANAGER.get_or_init(|| SubscriptionManager::new())
+    &GLOBAL_SUBSCRIPTION_MANAGER
 }
 
 #[cfg(test)]
