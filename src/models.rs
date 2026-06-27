@@ -43,14 +43,25 @@ impl AppState {
         let directory = if !cfg.admin_base.is_empty() {
             Some(directory::create_directory(
                 Some(&cfg.admin_base),
-                if cfg.admin_username.is_empty() { None } else { Some(&cfg.admin_username) },
-                if cfg.admin_password.is_empty() { None } else { Some(&cfg.admin_password) },
+                if cfg.admin_username.is_empty() {
+                    None
+                } else {
+                    Some(&cfg.admin_username)
+                },
+                if cfg.admin_password.is_empty() {
+                    None
+                } else {
+                    Some(&cfg.admin_password)
+                },
             ))
         } else {
             None
         };
 
-        let oof_manager = if !cfg.admin_base.is_empty() && !cfg.admin_username.is_empty() && !cfg.admin_password.is_empty() {
+        let oof_manager = if !cfg.admin_base.is_empty()
+            && !cfg.admin_username.is_empty()
+            && !cfg.admin_password.is_empty()
+        {
             Some(oof::create_oof_manager(
                 Some(&cfg.admin_base),
                 Some(&cfg.admin_username),

@@ -2941,17 +2941,17 @@ async fn handle_sync_folder_hierarchy(
 async fn handle_subscribe(_state: &Arc<AppState>, _auth: &AuthContext, _body: &str) -> Response {
     // In a production implementation, we would parse <FolderIds> to subscribe to specific folders.
     // For now, we'll create a subscription that receives all events.
-    
+
     let subscription_id = uuid::Uuid::new_v4().to_string();
     let watermark = STANDARD.encode(subscription_id.as_bytes());
-    
+
     // Register the subscription in the manager so that when events are broadcast,
     // they can be matched to this subscriber. The manager itself doesn't store per-subscription state,
     // but we use the global broadcast channel. The subscription_id is returned to the client,
     // which will present it in subsequent GetEvents requests.
-    
+
     // We don't need to do anything else now; the GetEvents handler will call receive on the broadcast channel.
-    
+
     let response = format!(
         r#"<m:SubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SubscriptionId>{}</m:SubscriptionId><m:Watermark>{}</m:Watermark></m:SubscribeResponseMessage></m:ResponseMessages></m:SubscribeResponse>"#,
         EWS_MSG_NS,
@@ -4174,22 +4174,26 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 }
 
 async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
-    let query = extract_first_tag_text(body, b"UnresolvedEntry").unwrap_or_else(|| auth.username.clone());
-    let _search_scope = extract_first_tag_text(body, b"SearchScope").unwrap_or_else(|| "ActiveDirectory".to_string());
-    
+    let query =
+        extract_first_tag_text(body, b"UnresolvedEntry").unwrap_or_else(|| auth.username.clone());
+    let _search_scope = extract_first_tag_text(body, b"SearchScope")
+        .unwrap_or_else(|| "ActiveDirectory".to_string());
+
     // Directory is optional; if not available, return empty result
     let Some(dir) = &state.directory else {
         let response = r#"<m:ResolveNamesResponse xmlns:m="urn:schemas:mail:outlook:ews" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="0" IncludesLastItemInRange="true"/></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#.to_string();
         return soap_ok(response);
     };
-    
+
     // Perform search in blocking context
     let limit = 100;
     let query_clone = query.clone();
     let dir_clone = dir.clone();
     let search_result = match tokio::task::spawn_blocking(move || {
         dir_clone.search_blocking(&query_clone, Some(limit))
-    }).await {
+    })
+    .await
+    {
         Ok(Ok(res)) => res,
         Ok(Err(e)) => {
             tracing::warn!(target: "ews", "Directory search error: {}", e);
@@ -4208,11 +4212,11 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
             );
         }
     };
-    
+
     // Build response with resolved names
     let mut resolution_xml = String::new();
     let mut total_items = 0;
-    
+
     for contact in search_result.contacts {
         total_items += 1;
         resolution_xml.push_str(&format!(
@@ -4221,10 +4225,10 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
             xml_escape(&contact.email)
         ));
     }
-    
+
     // TODO: Expand distribution lists if search_scope indicates
     // For now, distribution lists not supported
-    
+
     let includes_last = total_items < limit;
     let response = format!(
         r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="{}" IncludesLastItemInRange="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
@@ -4300,12 +4304,16 @@ async fn handle_get_user_availability(
     soap_ok(response)
 }
 
-async fn handle_get_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext, _body: &str) -> Response {
+async fn handle_get_user_oof_settings(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    _body: &str,
+) -> Response {
     // Determine the user whose OOF settings are being requested.
     // In EWS, the user is identified by the mailbox in the request.
     // For simplicity, we use the authenticated user.
     let username = &auth.username;
-    
+
     // Get OOF settings from manager if available, else return disabled defaults.
     let settings = if let Some(oof_mgr) = &state.oof_manager {
         match oof_mgr.get_oof_settings(username) {
@@ -4333,29 +4341,34 @@ async fn handle_get_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext,
             end_time: None,
         }
     };
-    
+
     // Map OOF settings to EWS XML.
-    let oof_state = if settings.enabled { "Enabled" } else { "Disabled" };
+    let oof_state = if settings.enabled {
+        "Enabled"
+    } else {
+        "Disabled"
+    };
     let external_audience = match settings.external_audience {
         crate::oof::ExternalAudience::External => "External",
         crate::oof::ExternalAudience::KnownExternal => "KnownExternal",
         crate::oof::ExternalAudience::All => "All",
     };
-    
+
     // Duration: if start/end are set, include them; else use zeros (per stub).
-    let (start_time, end_time) = if let (Some(start), Some(end)) = (settings.start_time, settings.end_time) {
-        (
-            format_ews_datetime(&start),
-            format_ews_datetime(&end),
-        )
-    } else {
-        ("2000-01-01T00:00:00Z".to_string(), "2000-01-01T00:00:00Z".to_string())
-    };
-    
+    let (start_time, end_time) =
+        if let (Some(start), Some(end)) = (settings.start_time, settings.end_time) {
+            (format_ews_datetime(&start), format_ews_datetime(&end))
+        } else {
+            (
+                "2000-01-01T00:00:00Z".to_string(),
+                "2000-01-01T00:00:00Z".to_string(),
+            )
+        };
+
     // Replies: if OOF enabled and messages set, include them; else empty.
     let internal_reply = settings.internal_reply.as_deref().unwrap_or("");
     let external_reply = settings.external_reply.as_deref().unwrap_or("");
-    
+
     // Build response.
     let inner = format!(
         r#"<m:GetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
@@ -4386,20 +4399,26 @@ async fn handle_get_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext,
     soap_ok(inner)
 }
 
-async fn handle_set_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_set_user_oof_settings(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     // Parse the incoming OOF settings from the XML body.
     // We'll extract OofState, ExternalAudience, Duration (StartTime/EndTime), InternalReply, ExternalReply.
-    
-    let oof_state_text = extract_first_tag_text(body, b"OofState").unwrap_or_else(|| "Disabled".to_string());
+
+    let oof_state_text =
+        extract_first_tag_text(body, b"OofState").unwrap_or_else(|| "Disabled".to_string());
     let enabled = oof_state_text.eq_ignore_ascii_case("Enabled");
-    
-    let external_audience_text = extract_first_tag_text(body, b"ExternalAudience").unwrap_or_else(|| "All".to_string());
+
+    let external_audience_text =
+        extract_first_tag_text(body, b"ExternalAudience").unwrap_or_else(|| "All".to_string());
     let external_audience = match external_audience_text.to_lowercase().as_str() {
         "external" => crate::oof::ExternalAudience::External,
         "knownexternal" => crate::oof::ExternalAudience::KnownExternal,
         _ => crate::oof::ExternalAudience::All,
     };
-    
+
     // Duration
     let start_time = extract_first_tag_text(body, b"StartTime")
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
@@ -4407,11 +4426,11 @@ async fn handle_set_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext,
     let end_time = extract_first_tag_text(body, b"EndTime")
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc));
-    
+
     // Replies
     let internal_reply = extract_first_tag_text(body, b"InternalReply");
     let external_reply = extract_first_tag_text(body, b"ExternalReply");
-    
+
     // Prevent timestamps containing only zeros if OOF disabled? We'll just store as-is.
     let settings = crate::oof::OofSettings {
         enabled,
@@ -4421,7 +4440,7 @@ async fn handle_set_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext,
         start_time,
         end_time,
     };
-    
+
     // Apply OOF settings if manager is available.
     let result = if let Some(oof_mgr) = &state.oof_manager {
         match oof_mgr.set_oof_settings(&auth.username, settings.clone()) {
@@ -4448,22 +4467,30 @@ async fn handle_set_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext,
         // No manager, just echo back the settings.
         settings
     };
-    
+
     // Build response identical to GetUserOofSettings.
-    let oof_state = if result.enabled { "Enabled" } else { "Disabled" };
+    let oof_state = if result.enabled {
+        "Enabled"
+    } else {
+        "Disabled"
+    };
     let external_audience = match result.external_audience {
         crate::oof::ExternalAudience::External => "External",
         crate::oof::ExternalAudience::KnownExternal => "KnownExternal",
         crate::oof::ExternalAudience::All => "All",
     };
-    let (start_time, end_time) = if let (Some(start), Some(end)) = (result.start_time, result.end_time) {
-        (format_ews_datetime(&start), format_ews_datetime(&end))
-    } else {
-        ("2000-01-01T00:00:00Z".to_string(), "2000-01-01T00:00:00Z".to_string())
-    };
+    let (start_time, end_time) =
+        if let (Some(start), Some(end)) = (result.start_time, result.end_time) {
+            (format_ews_datetime(&start), format_ews_datetime(&end))
+        } else {
+            (
+                "2000-01-01T00:00:00Z".to_string(),
+                "2000-01-01T00:00:00Z".to_string(),
+            )
+        };
     let internal_reply = result.internal_reply.as_deref().unwrap_or("");
     let external_reply = result.external_reply.as_deref().unwrap_or("");
-    
+
     let inner = format!(
         r#"<m:SetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessage ResponseClass="Success">

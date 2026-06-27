@@ -18,6 +18,7 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use chrono::Duration as ChronoDuration;
 use futures_util::future::join_all;
 use lru::LruCache;
 use quick_xml::Reader;
@@ -28,7 +29,6 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration as StdDuration, Instant};
 use subtle::ConstantTimeEq;
-use chrono::Duration as ChronoDuration;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -1448,9 +1448,10 @@ async fn handle_ping(
         let remaining = deadline.saturating_duration_since(Instant::now());
         tokio::time::sleep(remaining.min(StdDuration::from_secs(15))).await;
     }
-    
+
     // Timeout reached with no changes
-    let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
+    let xml =
+        r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
     xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
 }
 
@@ -1486,9 +1487,11 @@ async fn handle_settings(
     };
     if !oof_inner.is_empty() {
         // We expect a full Set - Oof block. For simplicity, parse required fields.
-        let oof_state_text = extract_first_tag_text(oof_inner, b"OofState").unwrap_or("0".to_string());
+        let oof_state_text =
+            extract_first_tag_text(oof_inner, b"OofState").unwrap_or("0".to_string());
         let enabled = oof_state_text == "1";
-        let external_audience_text = extract_first_tag_text(oof_inner, b"ExternalAudience").unwrap_or("2".to_string());
+        let external_audience_text =
+            extract_first_tag_text(oof_inner, b"ExternalAudience").unwrap_or("2".to_string());
         let external_audience = match external_audience_text.as_str() {
             "0" => crate::oof::ExternalAudience::External,
             "1" => crate::oof::ExternalAudience::KnownExternal,
@@ -1502,7 +1505,7 @@ async fn handle_settings(
             .map(|dt| dt.with_timezone(&chrono::Utc));
         let internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
         let external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
-        
+
         let settings = crate::oof::OofSettings {
             enabled,
             external_audience,
@@ -1511,7 +1514,7 @@ async fn handle_settings(
             start_time,
             end_time,
         };
-        
+
         if let Some(oof_mgr) = &state.oof_manager {
             let _ = oof_mgr.set_oof_settings(username, settings);
             // Ignore result; we'll still respond success.
@@ -1560,7 +1563,9 @@ async fn handle_settings(
                         crate::oof::ExternalAudience::All => "2",
                     };
                     // Duration: if set, include; else empty.
-                    let duration = if let (Some(start), Some(end)) = (settings.start_time, settings.end_time) {
+                    let duration = if let (Some(start), Some(end)) =
+                        (settings.start_time, settings.end_time)
+                    {
                         format!(
                             "<StartTime>{}</StartTime><EndTime>{}</EndTime>",
                             start.to_rfc3339(),
@@ -1570,9 +1575,11 @@ async fn handle_settings(
                         String::new()
                     };
                     // Replies: escape them.
-                    let internal_reply = xml_escape(settings.internal_reply.as_deref().unwrap_or(""));
-                    let external_reply = xml_escape(settings.external_reply.as_deref().unwrap_or(""));
-                    
+                    let internal_reply =
+                        xml_escape(settings.internal_reply.as_deref().unwrap_or(""));
+                    let external_reply =
+                        xml_escape(settings.external_reply.as_deref().unwrap_or(""));
+
                     format!(
                         r#"<Oof>
     <Status>1</Status>
@@ -1585,11 +1592,7 @@ async fn handle_settings(
       <AllowExternalOof>true</AllowExternalOof>
     </Get>
   </Oof>"#,
-                        state_val,
-                        external,
-                        duration,
-                        internal_reply,
-                        external_reply
+                        state_val, external, duration, internal_reply, external_reply
                     )
                 }
                 Err(e) => {
@@ -1602,7 +1605,8 @@ async fn handle_settings(
       <ExternalAudience>2</ExternalAudience>
       <AllowExternalOof>true</AllowExternalOof>
     </Get>
-  </Oof>"#.to_string()
+  </Oof>"#
+                        .to_string()
                 }
             }
         } else {
@@ -1614,9 +1618,10 @@ async fn handle_settings(
       <ExternalAudience>2</ExternalAudience>
       <AllowExternalOof>true</AllowExternalOof>
     </Get>
-  </Oof>"#.to_string()
+  </Oof>"#
+                .to_string()
         };
-        
+
         sections.push_str(&oof_section);
     }
     if has_device_password {
@@ -2227,11 +2232,11 @@ async fn handle_resolve_recipients(
             let Some(directory) = state.directory.clone() else {
                 return Ok(Vec::<crate::directory::Contact>::new());
             };
-            let search_result = tokio::task::spawn_blocking(move || {
-                directory.search_blocking(&query, None)
-            }).await
-            .map_err(|e| Error::Internal(e.to_string()))?
-            .map_err(|e| Error::Internal(e.to_string()))?;
+            let search_result =
+                tokio::task::spawn_blocking(move || directory.search_blocking(&query, None))
+                    .await
+                    .map_err(|e| Error::Internal(e.to_string()))?
+                    .map_err(|e| Error::Internal(e.to_string()))?;
             Ok(search_result.contacts)
         }
     });
@@ -2243,15 +2248,15 @@ async fn handle_resolve_recipients(
         let recipient = &recipients[i];
         let freebusy = &freebusy_results[i];
         let lookup_res: &Result<Vec<crate::directory::Contact>, Error> = &lookup_results[i];
-        
+
         let (display_name, email) = match lookup_res {
             Ok(lookup) if !lookup.is_empty() => {
                 let contact = &lookup[0];
                 (contact.display_name.clone(), contact.email.clone())
             }
-            _ => (recipient.clone(), recipient.clone())
+            _ => (recipient.clone(), recipient.clone()),
         };
-        
+
         let avail_xml = if availability_window.is_some() {
             format!(
                 "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
@@ -3237,7 +3242,9 @@ pub async fn handle(
             )
             .await
         }
-        "Settings" => handle_settings(&state, &username, &wbxml, wants_wbxml, &request_id, &xml).await,
+        "Settings" => {
+            handle_settings(&state, &username, &wbxml, wants_wbxml, &request_id, &xml).await
+        }
         "ItemOperations" => {
             handle_item_operations(
                 &state,
