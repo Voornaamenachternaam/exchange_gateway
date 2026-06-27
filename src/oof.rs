@@ -80,6 +80,7 @@ pub struct StalwartOofManager {
     admin_username: Option<String>,
     admin_password: Option<String>,
     mail_domain: String,
+    client: reqwest::blocking::Client,
 }
 
 impl StalwartOofManager {
@@ -93,11 +94,16 @@ impl StalwartOofManager {
         if admin_base.is_empty() {
             return Err(OofError::ConfigError("Admin base URL is required".to_string()));
         }
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| OofError::NetworkError(format!("Failed to build HTTP client: {}", e)))?;
         Ok(Arc::new(Self {
             admin_base: admin_base.to_string(),
             admin_username: admin_username.map(String::from),
             admin_password: admin_password.map(String::from),
             mail_domain: mail_domain.to_string(),
+            client,
         }) as Arc<dyn OofManager>)
     }
     
@@ -236,12 +242,7 @@ fn build_sieve_script(
     
     fn get_current_script(&self, username: &str) -> Result<String, OofError> {
         let url = format!("{}/sieve/{}", self.admin_base, urlencoding::encode(username));
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| OofError::NetworkError(format!("Failed to build client: {}", e)))?;
-        
-        let req = client.get(&url);
+        let req = self.client.get(&url);
         let req = match (&self.admin_username, &self.admin_password) {
             (Some(u), Some(p)) => req.basic_auth(u, Some(p)),
             _ => req,
@@ -265,12 +266,7 @@ fn build_sieve_script(
     
     fn set_script(&self, username: &str, script: &str) -> Result<(), OofError> {
         let url = format!("{}/sieve/{}", self.admin_base, urlencoding::encode(username));
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| OofError::NetworkError(format!("Failed to build client: {}", e)))?;
-        
-        let mut req = client.put(&url);
+        let mut req = self.client.put(&url);
         req = match (&self.admin_username, &self.admin_password) {
             (Some(u), Some(p)) => req.basic_auth(u, Some(p)),
             _ => req,

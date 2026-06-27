@@ -40,11 +40,15 @@ impl AppState {
         let room_manager = Arc::new(RoomManager::new(storage.clone()));
         let auth_verifier = Arc::new(AuthVerifier::new(&cfg));
 
-        let directory = Some(directory::create_directory(
-            if cfg.admin_base.is_empty() { None } else { Some(&cfg.admin_base) },
-            if cfg.admin_username.is_empty() { None } else { Some(&cfg.admin_username) },
-            if cfg.admin_password.is_empty() { None } else { Some(&cfg.admin_password) },
-        ));
+        let directory = if !cfg.admin_base.is_empty() {
+            Some(directory::create_directory(
+                Some(&cfg.admin_base),
+                if cfg.admin_username.is_empty() { None } else { Some(&cfg.admin_username) },
+                if cfg.admin_password.is_empty() { None } else { Some(&cfg.admin_password) },
+            ))
+        } else {
+            None
+        };
 
         let oof_manager = if !cfg.admin_base.is_empty() && !cfg.admin_username.is_empty() && !cfg.admin_password.is_empty() {
             Some(oof::create_oof_manager(

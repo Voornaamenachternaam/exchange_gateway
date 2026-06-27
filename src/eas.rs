@@ -1472,24 +1472,36 @@ async fn handle_settings(
     let has_calendar = xml_body.contains("<Calendar>") || xml_body.contains("<Calendar/>");
 
     // Handle Set - OOF operations if present.
-    if let Some(set_oof) = xml_body.strip_prefix("<Set><Oof>").or_else(|| xml_body.strip_prefix("<Set>\n  <Oof>")) {
+    let oof_inner = {
+        if let Some(start) = xml_body.find("<Oof>") {
+            let start_idx = start + 5; // after "<Oof>"
+            if let Some(end) = xml_body[start_idx..].find("</Oof>") {
+                &xml_body[start_idx..start_idx + end]
+            } else {
+                &xml_body[start_idx..]
+            }
+        } else {
+            ""
+        }
+    };
+    if !oof_inner.is_empty() {
         // We expect a full Set - Oof block. For simplicity, parse required fields.
-        let oof_state_text = extract_first_tag_text(set_oof, b"OofState").unwrap_or("0".to_string());
+        let oof_state_text = extract_first_tag_text(oof_inner, b"OofState").unwrap_or("0".to_string());
         let enabled = oof_state_text == "1";
-        let external_audience_text = extract_first_tag_text(set_oof, b"ExternalAudience").unwrap_or("2".to_string());
+        let external_audience_text = extract_first_tag_text(oof_inner, b"ExternalAudience").unwrap_or("2".to_string());
         let external_audience = match external_audience_text.as_str() {
             "0" => crate::oof::ExternalAudience::External,
             "1" => crate::oof::ExternalAudience::KnownExternal,
             _ => crate::oof::ExternalAudience::All,
         };
-        let start_time = extract_first_tag_text(set_oof, b"StartTime")
+        let start_time = extract_first_tag_text(oof_inner, b"StartTime")
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
-        let end_time = extract_first_tag_text(set_oof, b"EndTime")
+        let end_time = extract_first_tag_text(oof_inner, b"EndTime")
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
-        let internal_reply = extract_first_tag_text(set_oof, b"InternalReply");
-        let external_reply = extract_first_tag_text(set_oof, b"ExternalReply");
+        let internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
+        let external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
         
         let settings = crate::oof::OofSettings {
             enabled,

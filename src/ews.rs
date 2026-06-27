@@ -15,7 +15,7 @@ use crate::ews_folders::{
     render_root_and_children, resolve_folder_id, validate_folder_request,
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};
-use crate::directory::DirectoryLookup;
+
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 
@@ -36,7 +36,7 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use chrono::{DateTime, Datelike, Utc};
+use chrono::Datelike;
 use const_hex;
 use itertools::Itertools;
 use quick_xml::Reader;
@@ -4345,8 +4345,8 @@ async fn handle_get_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext,
     // Duration: if start/end are set, include them; else use zeros (per stub).
     let (start_time, end_time) = if let (Some(start), Some(end)) = (settings.start_time, settings.end_time) {
         (
-            start.to_rfc3339(),
-            end.to_rfc3339(),
+            format_ews_datetime(&start),
+            format_ews_datetime(&end),
         )
     } else {
         ("2000-01-01T00:00:00Z".to_string(), "2000-01-01T00:00:00Z".to_string())
@@ -4457,7 +4457,7 @@ async fn handle_set_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext,
         crate::oof::ExternalAudience::All => "All",
     };
     let (start_time, end_time) = if let (Some(start), Some(end)) = (result.start_time, result.end_time) {
-        (start.to_rfc3339(), end.to_rfc3339())
+        (format_ews_datetime(&start), format_ews_datetime(&end))
     } else {
         ("2000-01-01T00:00:00Z".to_string(), "2000-01-01T00:00:00Z".to_string())
     };
