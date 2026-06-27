@@ -4,11 +4,14 @@ use crate::auth::AuthVerifier;
 use crate::config::Config;
 use crate::directory::{self, DirectoryLookup};
 use crate::jmap::JmapClient;
+use crate::metrics::AppMetrics;
 use crate::notifications::SubscriptionManager;
 use crate::oof::{self, OofManager};
 use crate::room::RoomManager;
 use crate::smtp::SmtpClient;
 use crate::storage::Storage;
+use governor::{clock::DefaultClock, state::{InMemoryState, NotKeyed}, Quota, RateLimiter};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -28,6 +31,10 @@ pub struct AppState {
     pub smtp_client: Option<Arc<SmtpClient>>,
     /// JMAP client for reading/syncing email (None if email is disabled or JMAP not configured)
     pub jmap_client: Option<Arc<JmapClient>>,
+    /// Application metrics collector.
+    pub metrics: Arc<AppMetrics>,
+    /// Global rate limiter to protect against floods.
+    pub rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
 }
 
 impl AppState {
@@ -112,6 +119,22 @@ impl AppState {
             "Directory service initialized"
         );
 
+        let metrics = Arc::new(AppMetrics::new());
+
+        // Initialize rate limiter if enabled
+        let rate_limiter = if cfg.rate_limit_enabled {
+            let rps = cfg.rate_limit_requests_per_minute as f64 / 60.0;
+            let rps_u32 = rps.max(1.0).round() as u32;
+            let burst = std::num::NonZeroU32::new(cfg.rate_limit_max_concurrent.max(1) as u32).unwrap();
+            let quota = Quota::per_second(NonZeroU32::new(rps_u32).unwrap()).allow_burst(burst);
+            Arc::new(RateLimiter::direct(quota))
+        } else {
+            // Use an infinite quota (no limiting) by creating a limiter with extremely high limits
+            let burst = NonZeroU32::new(u32::MAX).unwrap();
+            let quota = Quota::per_second(NonZeroU32::new(u32::MAX).unwrap()).allow_burst(burst);
+            Arc::new(RateLimiter::direct(quota))
+        };
+
         Self {
             cfg,
             storage,
@@ -123,6 +146,8 @@ impl AppState {
             subscription_manager,
             smtp_client,
             jmap_client,
+            metrics,
+            rate_limiter,
         }
     }
 
