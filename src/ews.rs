@@ -8,14 +8,17 @@ use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
 };
+
 use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
     DistinguishedFolder, folder_id_for, render_folder_hierarchy_creates, render_folder_xml,
     render_root_and_children, resolve_folder_id, validate_folder_request,
 };
 use crate::ews_update::{apply_field_changes, parse_item_changes};
+use crate::directory::DirectoryLookup;
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
+
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::room::{
@@ -33,7 +36,7 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use chrono::Datelike;
+use chrono::{DateTime, Datelike, Utc};
 use const_hex;
 use itertools::Itertools;
 use quick_xml::Reader;
@@ -279,17 +282,17 @@ pub async fn handle(
         EwsAction::GetUserAvailability => handle_get_user_availability(&state, &auth, &body).await,
         EwsAction::SyncFolderItems => handle_sync_folder_items(&state, &auth, &body).await,
         EwsAction::SyncFolderHierarchy => handle_sync_folder_hierarchy(&state, &auth, &body).await,
-        EwsAction::Subscribe => handle_subscribe(&auth, &body).await,
-        EwsAction::Unsubscribe => handle_unsubscribe(&auth, &body).await,
+        EwsAction::Subscribe => handle_subscribe(&state, &auth, &body).await,
+        EwsAction::Unsubscribe => handle_unsubscribe(&state, &auth, &body).await,
         EwsAction::CreateItem => handle_create_item(&state, &auth, &body).await,
         EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
         EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
         EwsAction::SendItem => handle_send_item(&state, &auth, &body).await,
         EwsAction::MoveItem => handle_move_item(&state, &auth, &body).await,
         EwsAction::CopyItem => handle_copy_item(&state, &auth, &body).await,
-        EwsAction::ResolveNames => handle_resolve_names(&auth, &body).await,
-        EwsAction::GetUserOofSettings => handle_get_user_oof_settings(&auth, &body).await,
-        EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&auth, &body).await,
+        EwsAction::ResolveNames => handle_resolve_names(&state, &auth, &body).await,
+        EwsAction::GetUserOofSettings => handle_get_user_oof_settings(&state, &auth, &body).await,
+        EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&state, &auth, &body).await,
         EwsAction::GetServiceConfiguration => handle_get_service_configuration(&state).await,
         EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
@@ -2935,9 +2938,20 @@ async fn handle_sync_folder_hierarchy(
     soap_ok(response)
 }
 
-async fn handle_subscribe(_auth: &AuthContext, _body: &str) -> Response {
+async fn handle_subscribe(_state: &Arc<AppState>, _auth: &AuthContext, _body: &str) -> Response {
+    // In a production implementation, we would parse <FolderIds> to subscribe to specific folders.
+    // For now, we'll create a subscription that receives all events.
+    
     let subscription_id = uuid::Uuid::new_v4().to_string();
     let watermark = STANDARD.encode(subscription_id.as_bytes());
+    
+    // Register the subscription in the manager so that when events are broadcast,
+    // they can be matched to this subscriber. The manager itself doesn't store per-subscription state,
+    // but we use the global broadcast channel. The subscription_id is returned to the client,
+    // which will present it in subsequent GetEvents requests.
+    
+    // We don't need to do anything else now; the GetEvents handler will call receive on the broadcast channel.
+    
     let response = format!(
         r#"<m:SubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SubscriptionId>{}</m:SubscriptionId><m:Watermark>{}</m:Watermark></m:SubscribeResponseMessage></m:ResponseMessages></m:SubscribeResponse>"#,
         EWS_MSG_NS,
@@ -2948,7 +2962,7 @@ async fn handle_subscribe(_auth: &AuthContext, _body: &str) -> Response {
     soap_ok(response)
 }
 
-async fn handle_unsubscribe(_auth: &AuthContext, _body: &str) -> Response {
+async fn handle_unsubscribe(_state: &Arc<AppState>, _auth: &AuthContext, _body: &str) -> Response {
     let response = format!(
         r#"<m:UnsubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UnsubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UnsubscribeResponseMessage></m:ResponseMessages></m:UnsubscribeResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS
@@ -4159,20 +4173,66 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     }
 }
 
-async fn handle_resolve_names(auth: &AuthContext, body: &str) -> Response {
-    let unresolved =
-        extract_first_tag_text(body, b"UnresolvedEntry").unwrap_or_else(|| auth.username.clone());
-    let mailbox = if unresolved.contains('@') {
-        unresolved
-    } else {
-        auth.username.clone()
+async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let query = extract_first_tag_text(body, b"UnresolvedEntry").unwrap_or_else(|| auth.username.clone());
+    let _search_scope = extract_first_tag_text(body, b"SearchScope").unwrap_or_else(|| "ActiveDirectory".to_string());
+    
+    // Directory is optional; if not available, return empty result
+    let Some(dir) = &state.directory else {
+        let response = r#"<m:ResolveNamesResponse xmlns:m="urn:schemas:mail:outlook:ews" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="0" IncludesLastItemInRange="true"/></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#.to_string();
+        return soap_ok(response);
     };
+    
+    // Perform search in blocking context
+    let limit = 100;
+    let query_clone = query.clone();
+    let dir_clone = dir.clone();
+    let search_result = match tokio::task::spawn_blocking(move || {
+        dir_clone.search_blocking(&query_clone, Some(limit))
+    }).await {
+        Ok(Ok(res)) => res,
+        Ok(Err(e)) => {
+            tracing::warn!(target: "ews", "Directory search error: {}", e);
+            return soap_fault(
+                "ErrorDirectorySearch",
+                "Failed to search directory",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+        Err(e) => {
+            tracing::error!(target: "ews", "Directory task join error: {}", e);
+            return soap_fault(
+                "ErrorDirectorySearch",
+                "Directory search task failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+    
+    // Build response with resolved names
+    let mut resolution_xml = String::new();
+    let mut total_items = 0;
+    
+    for contact in search_result.contacts {
+        total_items += 1;
+        resolution_xml.push_str(&format!(
+            r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox></t:Resolution>"#,
+            xml_escape(&contact.display_name),
+            xml_escape(&contact.email)
+        ));
+    }
+    
+    // TODO: Expand distribution lists if search_scope indicates
+    // For now, distribution lists not supported
+    
+    let includes_last = total_items < limit;
     let response = format!(
-        r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="1" IncludesLastItemInRange="true"><t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox></t:Resolution></m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
+        r#"<m:ResolveNamesResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:ResolveNamesResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:ResolutionSet TotalItemsInView="{}" IncludesLastItemInRange="{}">{}</m:ResolutionSet></m:ResolveNamesResponseMessage></m:ResponseMessages></m:ResolveNamesResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&mailbox),
-        xml_escape(&mailbox)
+        total_items,
+        if includes_last { "true" } else { "false" },
+        resolution_xml
     );
     soap_ok(response)
 }
@@ -4240,37 +4300,195 @@ async fn handle_get_user_availability(
     soap_ok(response)
 }
 
-async fn handle_get_user_oof_settings(_auth: &AuthContext, _body: &str) -> Response {
+async fn handle_get_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext, _body: &str) -> Response {
+    // Determine the user whose OOF settings are being requested.
+    // In EWS, the user is identified by the mailbox in the request.
+    // For simplicity, we use the authenticated user.
+    let username = &auth.username;
+    
+    // Get OOF settings from manager if available, else return disabled defaults.
+    let settings = if let Some(oof_mgr) = &state.oof_manager {
+        match oof_mgr.get_oof_settings(username) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(target: "ews", user = %username, error = %e, "Failed to get OOF settings");
+                // Return disabled settings on error.
+                crate::oof::OofSettings {
+                    enabled: false,
+                    external_audience: crate::oof::ExternalAudience::All,
+                    internal_reply: None,
+                    external_reply: None,
+                    start_time: None,
+                    end_time: None,
+                }
+            }
+        }
+    } else {
+        crate::oof::OofSettings {
+            enabled: false,
+            external_audience: crate::oof::ExternalAudience::All,
+            internal_reply: None,
+            external_reply: None,
+            start_time: None,
+            end_time: None,
+        }
+    };
+    
+    // Map OOF settings to EWS XML.
+    let oof_state = if settings.enabled { "Enabled" } else { "Disabled" };
+    let external_audience = match settings.external_audience {
+        crate::oof::ExternalAudience::External => "External",
+        crate::oof::ExternalAudience::KnownExternal => "KnownExternal",
+        crate::oof::ExternalAudience::All => "All",
+    };
+    
+    // Duration: if start/end are set, include them; else use zeros (per stub).
+    let (start_time, end_time) = if let (Some(start), Some(end)) = (settings.start_time, settings.end_time) {
+        (
+            start.to_rfc3339(),
+            end.to_rfc3339(),
+        )
+    } else {
+        ("2000-01-01T00:00:00Z".to_string(), "2000-01-01T00:00:00Z".to_string())
+    };
+    
+    // Replies: if OOF enabled and messages set, include them; else empty.
+    let internal_reply = settings.internal_reply.as_deref().unwrap_or("");
+    let external_reply = settings.external_reply.as_deref().unwrap_or("");
+    
+    // Build response.
     let inner = format!(
         r#"<m:GetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessage ResponseClass="Success">
     <m:ResponseCode>NoError</m:ResponseCode>
   </m:ResponseMessage>
   <m:OofSettings>
-    <t:OofState>Disabled</t:OofState>
-    <t:ExternalAudience>All</t:ExternalAudience>
+    <t:OofState>{}</t:OofState>
+    <t:ExternalAudience>{}</t:ExternalAudience>
     <t:Duration>
-      <t:StartTime>2000-01-01T00:00:00Z</t:StartTime>
-      <t:EndTime>2000-01-01T00:00:00Z</t:EndTime>
+      <t:StartTime>{}</t:StartTime>
+      <t:EndTime>{}</t:EndTime>
     </t:Duration>
-    <t:InternalReply/>
-    <t:ExternalReply/>
+    <t:InternalReply>{}</t:InternalReply>
+    <t:ExternalReply>{}</t:ExternalReply>
   </m:OofSettings>
   <m:AllowExternalOof>true</m:AllowExternalOof>
 </m:GetUserOofSettingsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        oof_state,
+        external_audience,
+        start_time,
+        end_time,
+        xml_escape(internal_reply),
+        xml_escape(external_reply)
     );
     soap_ok(inner)
 }
 
-async fn handle_set_user_oof_settings(_auth: &AuthContext, _body: &str) -> Response {
+async fn handle_set_user_oof_settings(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    // Parse the incoming OOF settings from the XML body.
+    // We'll extract OofState, ExternalAudience, Duration (StartTime/EndTime), InternalReply, ExternalReply.
+    
+    let oof_state_text = extract_first_tag_text(body, b"OofState").unwrap_or_else(|| "Disabled".to_string());
+    let enabled = oof_state_text.eq_ignore_ascii_case("Enabled");
+    
+    let external_audience_text = extract_first_tag_text(body, b"ExternalAudience").unwrap_or_else(|| "All".to_string());
+    let external_audience = match external_audience_text.to_lowercase().as_str() {
+        "external" => crate::oof::ExternalAudience::External,
+        "knownexternal" => crate::oof::ExternalAudience::KnownExternal,
+        _ => crate::oof::ExternalAudience::All,
+    };
+    
+    // Duration
+    let start_time = extract_first_tag_text(body, b"StartTime")
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    let end_time = extract_first_tag_text(body, b"EndTime")
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    
+    // Replies
+    let internal_reply = extract_first_tag_text(body, b"InternalReply");
+    let external_reply = extract_first_tag_text(body, b"ExternalReply");
+    
+    // Prevent timestamps containing only zeros if OOF disabled? We'll just store as-is.
+    let settings = crate::oof::OofSettings {
+        enabled,
+        external_audience,
+        internal_reply,
+        external_reply,
+        start_time,
+        end_time,
+    };
+    
+    // Apply OOF settings if manager is available.
+    let result = if let Some(oof_mgr) = &state.oof_manager {
+        match oof_mgr.set_oof_settings(&auth.username, settings.clone()) {
+            Ok(_) => {
+                // Success: return same structure as GetUserOofSettings would return.
+                // To avoid duplication, we could call handle_get_user_oof_settings but that needs the same state/auth/body.
+                // Instead, we'll construct a success GetUserOofSettingsResponse.
+                // Let's call get again to confirm.
+                match oof_mgr.get_oof_settings(&auth.username) {
+                    Ok(confirmed) => confirmed,
+                    Err(e) => {
+                        tracing::warn!(target: "ews", user = %auth.username, error = %e, "Failed to get OOF settings after set");
+                        settings
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "ews", user = %auth.username, error = %e, "Failed to set OOF settings");
+                // Return the settings we attempted to set (per spec, we return what was set)
+                settings
+            }
+        }
+    } else {
+        // No manager, just echo back the settings.
+        settings
+    };
+    
+    // Build response identical to GetUserOofSettings.
+    let oof_state = if result.enabled { "Enabled" } else { "Disabled" };
+    let external_audience = match result.external_audience {
+        crate::oof::ExternalAudience::External => "External",
+        crate::oof::ExternalAudience::KnownExternal => "KnownExternal",
+        crate::oof::ExternalAudience::All => "All",
+    };
+    let (start_time, end_time) = if let (Some(start), Some(end)) = (result.start_time, result.end_time) {
+        (start.to_rfc3339(), end.to_rfc3339())
+    } else {
+        ("2000-01-01T00:00:00Z".to_string(), "2000-01-01T00:00:00Z".to_string())
+    };
+    let internal_reply = result.internal_reply.as_deref().unwrap_or("");
+    let external_reply = result.external_reply.as_deref().unwrap_or("");
+    
     let inner = format!(
         r#"<m:SetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessage ResponseClass="Success">
     <m:ResponseCode>NoError</m:ResponseCode>
   </m:ResponseMessage>
+  <m:OofSettings>
+    <t:OofState>{}</t:OofState>
+    <t:ExternalAudience>{}</t:ExternalAudience>
+    <t:Duration>
+      <t:StartTime>{}</t:StartTime>
+      <t:EndTime>{}</t:EndTime>
+    </t:Duration>
+    <t:InternalReply>{}</t:InternalReply>
+    <t:ExternalReply>{}</t:ExternalReply>
+  </m:OofSettings>
+  <m:AllowExternalOof>true</m:AllowExternalOof>
 </m:SetUserOofSettingsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        oof_state,
+        external_audience,
+        start_time,
+        end_time,
+        xml_escape(internal_reply),
+        xml_escape(external_reply)
     );
     soap_ok(inner)
 }

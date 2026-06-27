@@ -6,7 +6,8 @@ edition = "2024"
 rust-version = "1.96.0"
 
 [dependencies]
-reqwest = { version = "^0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-webpki-roots", "cookies"] }
+reqwest = { version = "^0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-webpki-roots", "cookies", "blocking"] }
+async-trait = "^0.1.85"
 tokio = { version = "^1.52.3", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
@@ -27,10 +28,10 @@ bytes = "^1.11.1"
 tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter", "registry", "json"] }
 urlencoding = "^2.1.3"
+percent-encoding = "^2.3.2"
 base64 = "^0.22.1"
 base64ct = { version = "^1.8.3", features = ["std"] }
 url = "^2.5.8"
-percent-encoding = "^2.3.2"
 tower = { version = "^0.5.3", features = ["util", "limit", "timeout", "buffer"] }
 tower-http = { version = "^0.6.11", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full", "set-header"] }
 parking_lot = { version = "^0.12.5", features = ["send_guard"] }

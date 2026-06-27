@@ -2,7 +2,10 @@
 use crate::attachment::AttachmentManager;
 use crate::auth::AuthVerifier;
 use crate::config::Config;
+use crate::directory::{self, DirectoryLookup};
 use crate::jmap::JmapClient;
+use crate::notifications::SubscriptionManager;
+use crate::oof::{self, OofManager};
 use crate::room::RoomManager;
 use crate::smtp::SmtpClient;
 use crate::storage::Storage;
@@ -15,6 +18,12 @@ pub struct AppState {
     pub attachment_manager: Arc<AttachmentManager>,
     pub room_manager: Arc<RoomManager>,
     pub auth_verifier: Arc<AuthVerifier>,
+    /// Directory service for GAL/ResolveNames (None if not configured)
+    pub directory: Option<Arc<dyn DirectoryLookup>>,
+    /// OOF manager for Out of Office settings (None if not configured)
+    pub oof_manager: Option<Arc<dyn OofManager>>,
+    /// Notification subscription manager for streaming notifications
+    pub subscription_manager: Arc<SubscriptionManager>,
     /// SMTP client for sending email (None if email is disabled or SMTP not configured)
     pub smtp_client: Option<Arc<SmtpClient>>,
     /// JMAP client for reading/syncing email (None if email is disabled or JMAP not configured)
@@ -30,6 +39,25 @@ impl AppState {
         ));
         let room_manager = Arc::new(RoomManager::new(storage.clone()));
         let auth_verifier = Arc::new(AuthVerifier::new(&cfg));
+
+        let directory = Some(directory::create_directory(
+            if cfg.admin_base.is_empty() { None } else { Some(&cfg.admin_base) },
+            if cfg.admin_username.is_empty() { None } else { Some(&cfg.admin_username) },
+            if cfg.admin_password.is_empty() { None } else { Some(&cfg.admin_password) },
+        ));
+
+        let oof_manager = if !cfg.admin_base.is_empty() && !cfg.admin_username.is_empty() && !cfg.admin_password.is_empty() {
+            Some(oof::create_oof_manager(
+                Some(&cfg.admin_base),
+                Some(&cfg.admin_username),
+                Some(&cfg.admin_password),
+                &cfg.mail_domain,
+            ))
+        } else {
+            None
+        };
+
+        let subscription_manager = Arc::new(SubscriptionManager::new());
 
         let smtp_client = if cfg.email_enabled && !cfg.smtp_host.is_empty() {
             Some(Arc::new(SmtpClient::new(&cfg.smtp_host, cfg.smtp_port)))
@@ -63,12 +91,21 @@ impl AppState {
             );
         }
 
+        tracing::info!(
+            target: "models",
+            directory_available = directory.as_ref().map(|d| d.is_available()).unwrap_or(false),
+            "Directory service initialized"
+        );
+
         Self {
             cfg,
             storage,
             attachment_manager,
             room_manager,
             auth_verifier,
+            directory,
+            oof_manager,
+            subscription_manager,
             smtp_client,
             jmap_client,
         }
