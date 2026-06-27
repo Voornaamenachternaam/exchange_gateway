@@ -456,12 +456,20 @@ fn apply_environment_overrides(cfg: &mut Config) {
     apply_env_string(cfg, get_env_with_fallback(ENV_ADMIN_BASE, None), |c, v| {
         c.admin_base = v;
     });
-    apply_env_string(cfg, get_env_with_fallback(ENV_ADMIN_USERNAME, None), |c, v| {
-        c.admin_username = v;
-    });
-    apply_env_string(cfg, get_env_with_fallback(ENV_ADMIN_PASSWORD, None), |c, v| {
-        c.admin_password = v;
-    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_ADMIN_USERNAME, None),
+        |c, v| {
+            c.admin_username = v;
+        },
+    );
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_ADMIN_PASSWORD, None),
+        |c, v| {
+            c.admin_password = v;
+        },
+    );
 
     // Derive mail_host from mail_domain if not explicitly set
     if cfg.mail_host.is_empty() && !cfg.mail_domain.is_empty() {
