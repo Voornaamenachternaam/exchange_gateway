@@ -1,6 +1,8 @@
 // src/eas.rs
 use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
+
+use crate::error::GatewayError as Error;
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
@@ -16,6 +18,7 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use chrono::Duration as ChronoDuration;
 use futures_util::future::join_all;
 use lru::LruCache;
 use quick_xml::Reader;
@@ -24,7 +27,7 @@ use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration as StdDuration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
@@ -32,7 +35,7 @@ use uuid::Uuid;
 
 const MAX_FREEBUSY_DAYS: i64 = 30;
 const MAX_BODY_SIZE: usize = 1_048_576;
-const CALDAV_TIMEOUT: Duration = Duration::from_secs(30);
+const CALDAV_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
 /// Maximum number of emails to fetch in a single JMAP Email/query for EAS initial sync.
 /// Matches sync::DEFAULT_WINDOW_SIZE; keeps requests fast and memory-bounded.
@@ -1395,8 +1398,8 @@ async fn handle_ping(
         );
     }
 
-    let deadline = Instant::now() + Duration::from_secs(heartbeat);
-    loop {
+    let deadline = Instant::now() + StdDuration::from_secs(heartbeat);
+    while Instant::now() < deadline {
         let mut changed_folders = Vec::new();
         for folder in &folders {
             if folder.id != "1" {
@@ -1443,11 +1446,16 @@ async fn handle_ping(
             return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        tokio::time::sleep(remaining.min(Duration::from_secs(15))).await;
+        tokio::time::sleep(remaining.min(StdDuration::from_secs(15))).await;
     }
+
+    // Timeout reached with no changes
+    let xml =
+        r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
+    xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
 }
 
-fn handle_settings(
+async fn handle_settings(
     state: &Arc<AppState>,
     username: &str,
     wbxml: &Wbxml,
@@ -1463,6 +1471,55 @@ fn handle_settings(
     let has_device_password =
         xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
     let has_calendar = xml_body.contains("<Calendar>") || xml_body.contains("<Calendar/>");
+
+    // Handle Set - OOF operations if present.
+    let oof_inner = {
+        if let Some(start) = xml_body.find("<Oof>") {
+            let start_idx = start + 5; // after "<Oof>"
+            if let Some(end) = xml_body[start_idx..].find("</Oof>") {
+                &xml_body[start_idx..start_idx + end]
+            } else {
+                &xml_body[start_idx..]
+            }
+        } else {
+            ""
+        }
+    };
+    if !oof_inner.is_empty() {
+        // We expect a full Set - Oof block. For simplicity, parse required fields.
+        let oof_state_text =
+            extract_first_tag_text(oof_inner, b"OofState").unwrap_or("0".to_string());
+        let enabled = oof_state_text == "1";
+        let external_audience_text =
+            extract_first_tag_text(oof_inner, b"ExternalAudience").unwrap_or("2".to_string());
+        let external_audience = match external_audience_text.as_str() {
+            "0" => crate::oof::ExternalAudience::External,
+            "1" => crate::oof::ExternalAudience::KnownExternal,
+            _ => crate::oof::ExternalAudience::All,
+        };
+        let start_time = extract_first_tag_text(oof_inner, b"StartTime")
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let end_time = extract_first_tag_text(oof_inner, b"EndTime")
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
+        let external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
+
+        let settings = crate::oof::OofSettings {
+            enabled,
+            external_audience,
+            internal_reply,
+            external_reply,
+            start_time,
+            end_time,
+        };
+
+        if let Some(oof_mgr) = &state.oof_manager {
+            let _ = oof_mgr.set_oof_settings(username, settings);
+            // Ignore result; we'll still respond success.
+        }
+    }
 
     if has_user_info || (!has_oof && !has_device_password) {
         let email_entries = active_user_emails(username, &state.cfg.mail_domain)
@@ -1494,14 +1551,78 @@ fn handle_settings(
         ));
     }
     if has_oof {
-        sections.push_str(
+        // Query OOF settings for this user.
+        let oof_section = if let Some(oof_mgr) = &state.oof_manager {
+            match oof_mgr.get_oof_settings(username) {
+                Ok(settings) => {
+                    let state_val = if settings.enabled { "1" } else { "0" };
+                    // External audience: 0=External, 1=KnownExternal, 2=All. In absence of specific mapping, use 2.
+                    let external = match settings.external_audience {
+                        crate::oof::ExternalAudience::External => "0",
+                        crate::oof::ExternalAudience::KnownExternal => "1",
+                        crate::oof::ExternalAudience::All => "2",
+                    };
+                    // Duration: if set, include; else empty.
+                    let duration = if let (Some(start), Some(end)) =
+                        (settings.start_time, settings.end_time)
+                    {
+                        format!(
+                            "<StartTime>{}</StartTime><EndTime>{}</EndTime>",
+                            start.to_rfc3339(),
+                            end.to_rfc3339()
+                        )
+                    } else {
+                        String::new()
+                    };
+                    // Replies: escape them.
+                    let internal_reply =
+                        xml_escape(settings.internal_reply.as_deref().unwrap_or(""));
+                    let external_reply =
+                        xml_escape(settings.external_reply.as_deref().unwrap_or(""));
+
+                    format!(
+                        r#"<Oof>
+    <Status>1</Status>
+    <Get>
+      <OofState>{}</OofState>
+      <ExternalAudience>{}</ExternalAudience>
+      {}
+      <InternalReply>{}</InternalReply>
+      <ExternalReply>{}</ExternalReply>
+      <AllowExternalOof>true</AllowExternalOof>
+    </Get>
+  </Oof>"#,
+                        state_val, external, duration, internal_reply, external_reply
+                    )
+                }
+                Err(e) => {
+                    tracing::warn!(target: "eas", user = %username, error = %e, "Failed to get OOF settings");
+                    // Return OOF disabled in error case.
+                    r#"<Oof>
+    <Status>1</Status>
+    <Get>
+      <OofState>0</OofState>
+      <ExternalAudience>2</ExternalAudience>
+      <AllowExternalOof>true</AllowExternalOof>
+    </Get>
+  </Oof>"#
+                        .to_string()
+                }
+            }
+        } else {
+            // No manager configured; return OOF disabled.
             r#"<Oof>
     <Status>1</Status>
     <Get>
       <OofState>0</OofState>
+      <ExternalAudience>2</ExternalAudience>
+      <AllowExternalOof>true</AllowExternalOof>
     </Get>
-  </Oof>"#,
-        );
+  </Oof>"#
+                .to_string()
+        };
+
+        sections.push_str(&oof_section);
     }
     if has_device_password {
         sections.push_str(
@@ -1914,8 +2035,8 @@ async fn fetch_freebusy_jmap_eas(
                 _ => '2',
             };
             for (i, slot) in merged.iter_mut().enumerate() {
-                let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
-                let se = ss + chrono::Duration::minutes(safe_interval);
+                let ss = start + ChronoDuration::minutes((i as i64) * safe_interval);
+                let se = ss + ChronoDuration::minutes(safe_interval);
                 if item.start < se && item.end > ss && sd > *slot {
                     *slot = sd;
                 }
@@ -2018,8 +2139,8 @@ async fn merged_freebusy_for_mailbox(
                             };
                             for (i, slot) in merged.iter_mut().enumerate() {
                                 let ss =
-                                    start + chrono::Duration::minutes((i as i64) * safe_interval);
-                                let se = ss + chrono::Duration::minutes(safe_interval);
+                                    start + ChronoDuration::minutes((i as i64) * safe_interval);
+                                let se = ss + ChronoDuration::minutes(safe_interval);
                                 if item.start < se && item.end > ss && sd > *slot {
                                     *slot = sd;
                                 }
@@ -2073,11 +2194,11 @@ async fn handle_resolve_recipients(
         let end = {
             let pe = extract_first_tag_text(xml, b"EndTime")
                 .and_then(|v| parse_datetime(&v))
-                .unwrap_or_else(|| start + chrono::Duration::days(7));
-            let max_end = start + chrono::Duration::days(MAX_FREEBUSY_DAYS);
+                .unwrap_or_else(|| start + ChronoDuration::days(7));
+            let max_end = start + ChronoDuration::days(MAX_FREEBUSY_DAYS);
             let clamped = if pe > max_end { max_end } else { pe };
             if clamped <= start {
-                start + chrono::Duration::days(7)
+                start + ChronoDuration::days(7)
             } else {
                 clamped
             }
@@ -2102,8 +2223,40 @@ async fn handle_resolve_recipients(
     });
     let freebusy_results = join_all(freebusy_futures).await;
 
+    // Perform directory lookup for each recipient to get display name and email.
+    // We use spawn_blocking to run the synchronous directory search.
+    let lookup_futures = recipients.iter().map(|recipient| {
+        let state = state.clone();
+        let query = recipient.clone();
+        async move {
+            let Some(directory) = state.directory.clone() else {
+                return Ok(Vec::<crate::directory::Contact>::new());
+            };
+            let search_result =
+                tokio::task::spawn_blocking(move || directory.search_blocking(&query, None))
+                    .await
+                    .map_err(|e| Error::Internal(e.to_string()))?
+                    .map_err(|e| Error::Internal(e.to_string()))?;
+            Ok(search_result.contacts)
+        }
+    });
+    let lookup_results = join_all(lookup_futures).await;
+
+    // Build recipient XML combining directory results and freebusy.
     let mut recipient_xml = String::new();
-    for (recipient, freebusy) in recipients.iter().zip(freebusy_results) {
+    for i in 0..recipients.len() {
+        let recipient = &recipients[i];
+        let freebusy = &freebusy_results[i];
+        let lookup_res: &Result<Vec<crate::directory::Contact>, Error> = &lookup_results[i];
+
+        let (display_name, email) = match lookup_res {
+            Ok(lookup) if !lookup.is_empty() => {
+                let contact = &lookup[0];
+                (contact.display_name.clone(), contact.email.clone())
+            }
+            _ => (recipient.clone(), recipient.clone()),
+        };
+
         let avail_xml = if availability_window.is_some() {
             format!(
                 "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
@@ -2114,8 +2267,8 @@ async fn handle_resolve_recipients(
         };
         recipient_xml.push_str(&format!(
             "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
-            xml_escape(recipient),
-            xml_escape(recipient),
+            xml_escape(&display_name),
+            xml_escape(&email),
             avail_xml
         ));
     }
@@ -2236,10 +2389,10 @@ async fn handle_search(
     }
     let start = req
         .starts
-        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52));
+        .unwrap_or_else(|| chrono::Utc::now() - ChronoDuration::weeks(52));
     let end = req
         .ends
-        .unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::weeks(52));
+        .unwrap_or_else(|| chrono::Utc::now() + ChronoDuration::weeks(52));
     let Ok(events) = load_calendar_events(state, username, &password, start, end).await else {
         let r = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>6</Status></Store></Response></Search>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, r, request_id);
@@ -2583,7 +2736,7 @@ async fn handle_sync_collections(
                     filter_start: coll
                         .filter_type
                         .map(filter_type_to_start)
-                        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::weeks(52)),
+                        .unwrap_or_else(|| chrono::Utc::now() - ChronoDuration::weeks(52)),
                 };
                 match sync::perform_sync(&sync::PerformSyncParams {
                     state: state.clone(),
@@ -3089,7 +3242,9 @@ pub async fn handle(
             )
             .await
         }
-        "Settings" => handle_settings(&state, &username, &wbxml, wants_wbxml, &request_id, &xml),
+        "Settings" => {
+            handle_settings(&state, &username, &wbxml, wants_wbxml, &request_id, &xml).await
+        }
         "ItemOperations" => {
             handle_item_operations(
                 &state,

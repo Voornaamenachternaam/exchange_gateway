@@ -27,6 +27,9 @@ const ENV_IMAP_PORT: &str = "GATEWAY_IMAP_PORT";
 const ENV_JMAP_BASE: &str = "GATEWAY_JMAP_BASE";
 const ENV_EMAIL_ENABLED: &str = "GATEWAY_EMAIL_ENABLED";
 const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
+const ENV_ADMIN_BASE: &str = "GATEWAY_ADMIN_BASE";
+const ENV_ADMIN_USERNAME: &str = "GATEWAY_ADMIN_USERNAME";
+const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -67,6 +70,13 @@ pub struct Config {
     // (e.g., "mail.example.com"). Falls back to "mail.{mail_domain}".
     #[serde(default)]
     pub mail_host: String,
+    // Admin API configuration for GAL/ResolveNames (Stalwart admin endpoints)
+    #[serde(default)]
+    pub admin_base: String,
+    #[serde(default)]
+    pub admin_username: String,
+    #[serde(default)]
+    pub admin_password: String,
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -442,6 +452,25 @@ fn apply_environment_overrides(cfg: &mut Config) {
         c.mail_host = v;
     });
 
+    // Admin API configuration for directory/ResolveNames
+    apply_env_string(cfg, get_env_with_fallback(ENV_ADMIN_BASE, None), |c, v| {
+        c.admin_base = v;
+    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_ADMIN_USERNAME, None),
+        |c, v| {
+            c.admin_username = v;
+        },
+    );
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_ADMIN_PASSWORD, None),
+        |c, v| {
+            c.admin_password = v;
+        },
+    );
+
     // Derive mail_host from mail_domain if not explicitly set
     if cfg.mail_host.is_empty() && !cfg.mail_domain.is_empty() {
         cfg.mail_host = format!("mail.{}", cfg.mail_domain);
@@ -526,6 +555,9 @@ impl Default for Config {
             jmap_base: String::new(),
             email_enabled: true,
             mail_host: String::new(),
+            admin_base: String::new(),
+            admin_username: String::new(),
+            admin_password: String::new(),
         }
     }
 }
