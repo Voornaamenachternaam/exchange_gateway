@@ -1,15 +1,14 @@
 // src/carddav.rs
 use crate::config::Config;
 use anyhow::{Result, anyhow};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use std::time::Duration;
-use tracing::warn;
 
 /// CardDAV client for contacts sync.
 /// Supports Stalwart Mailserver v0.16.10 CardDAV endpoint at /dav/{user}/contacts/.
 pub struct CarddavClient {
-    base: String,
-    client: Client,
+    pub base: String,
+    pub client: Client,
 }
 
 /// Represents a contact entry from CardDAV.
@@ -92,32 +91,7 @@ impl CarddavClient {
         }
     }
 
-    /// List all contacts in the default addressbook.
-    /// Returns the raw XML multistatus response body.
-    pub async fn list_contacts(&self, username: &str, password: &str) -> Result<String> {
-        let home_url = self.addressbook_home(username);
-        let body = r#"<?xml version="1.0" encoding="utf-8"?>
-<D:propfind xmlns:D="DAV:">
-  <D:prop>
-    <D:getetag/>
-    <D:getcontenttype/>
-    <D:displayname/>
-  </D:prop>
-</D:propfind>"#;
-        let resp = self
-            .client
-            .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home_url)
-            .basic_auth(username, Some(password))
-            .header("Depth", "1")
-            .header("Content-Type", "application/xml; charset=utf-8")
-            .body(body)
-            .send()
-            .await?;
-        if !resp.status().is_success() && resp.status().as_u16() != 207 {
-            return Err(anyhow!("CardDAV PROPFIND failed: {}", resp.status()));
-        }
-        Ok(resp.text().await?)
-    }
+    
 
     /// Fetch a single contact vCard by its href (relative to addressbook home).
     pub async fn get_contact(&self, username: &str, password: &str, href: &str) -> Result<(String, Option<String>)> {
@@ -196,13 +170,55 @@ impl CarddavClient {
         Ok(())
     }
 
+    /// Create a new contact by POSTing a vCard to the addressbook home.
+    /// Returns (href, etag). href is relative to addressbook home.
+    pub async fn create_contact(
+        &self,
+        username: &str,
+        password: &str,
+        vcard: &str,
+    ) -> Result<(String, String)> {
+        let home = self.addressbook_home(username);
+        let resp = self
+            .client
+            .post(&home)
+            .basic_auth(username, Some(password))
+            .header("Content-Type", "text/vcard; charset=utf-8")
+            .body(vcard.to_string())
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::CREATED {
+            return Err(anyhow!("CardDAV POST failed: {}", status));
+        }
+        // Location header gives absolute URL; extract path relative to home
+        let location = resp
+            .headers()
+            .get("Location")
+            .ok_or_else(|| anyhow!("Missing Location header in create response"))?;
+        let loc_str = location.to_str().map_err(|_| anyhow!("Invalid Location header"))?;
+        let href = loc_str
+            .strip_prefix(&home)
+            .unwrap_or(loc_str)
+            .trim_end_matches('/')
+            .to_string();
+        // ETag header (may include quotes)
+        let etag = resp
+            .headers()
+            .get("ETag")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        Ok((href, etag))
+    }
+
     /// List contacts from the addressbook.
     /// Returns (contacts vec, sync_token). sync_token can be used for later sync queries.
     pub async fn list_contacts(
         &self,
         username: &str,
         password: &str,
-        sync_token: Option<&str>,
+        _sync_token: Option<&str>,
     ) -> Result<(Vec<Contact>, Option<String>)> {
         let home = self.addressbook_home(username);
         // PROPFIND body to request vCard data and getetags
@@ -266,8 +282,7 @@ impl CarddavClient {
                 }
             }
 
-            // If we find <D:sync-token> in the <D:propstat> of the collection href (empty href)
-            // we capture it for future sync queries.
+            // Capture sync token if available (unused currently but returned for future)
             if new_sync_token.is_none() {
                 if let Some(etag_elem) = resp_elem.descendants().find(|n| n.has_tag_name("sync-token")) {
                     if let Some(tok) = etag_elem.text() {

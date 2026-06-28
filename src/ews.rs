@@ -40,7 +40,7 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Datelike;
-use const_hex;
+use hex;
 use itertools::Itertools;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -2170,32 +2170,40 @@ async fn handle_get_contact_item(state: &Arc<AppState>, auth: &AuthContext, body
 
 /// Render a vCard as an EWS Contact element.
 fn render_ews_contact(server_id: &str, change_key: &str, vcard: &Vcard, shape: ItemShape) -> String {
-    let display_name = vcard.name.first().map(|n| n.value.as_str()).unwrap_or("");
+    // Determine display name: use full_name if non-empty, else first N component
+    let display_name = if !vcard.full_name.is_empty() {
+        vcard.full_name.as_str()
+    } else if let Some(first) = vcard.name.first() {
+        first.value.as_str()
+    } else {
+        ""
+    };
     let email = vcard.email.first().map(|e| e.email.as_str()).unwrap_or("");
     let phone = vcard.telephone.first().map(|t| t.number.as_str()).unwrap_or("");
-    let org = vcard.org.first().map(|o| o.value.as_str()).unwrap_or("");
+    // ORG value is components joined by ';'
+    let org = vcard.org.first().map(|o| o.value.join(";")).unwrap_or_default();
     let title = vcard.title.as_ref().map(|t| t.value.as_str()).unwrap_or("");
 
     let mut xml = String::new();
-    xml.push_str(&format!(r#"<t:Contact>"#));
-    xml.push_str(&format!(r#"<t:ItemId Id="{}" ChangeKey="{}"/>"#, xml_escape(server_id), xml_escape(change_key)));
+    xml.push_str("<t:Contact>");
+    xml.push_str(&format!("<t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>", xml_escape(server_id), xml_escape(change_key)));
     if !display_name.is_empty() {
-        xml.push_str(&format!(r#"<t:DisplayName>{}</t:DisplayName>"#, xml_escape(display_name)));
+        xml.push_str(&format!("<t:DisplayName>{}</t:DisplayName>", xml_escape(display_name)));
     }
     if !email.is_empty() {
-        xml.push_str(&format!(r#"<t:EmailAddresses><t:Entry Key="EmailAddress1">{}</t:Entry></t:EmailAddresses>"#, xml_escape(email)));
+        xml.push_str(&format!("<t:EmailAddresses><t:Entry Key=\"EmailAddress1\">{}</t:Entry></t:EmailAddresses>", xml_escape(email)));
     }
     if !phone.is_empty() {
-        xml.push_str(&format!(r#"<t:PhoneNumbers><t:Entry Key="Phone">{}</t:Entry></t:PhoneNumbers>"#, xml_escape(phone)));
+        xml.push_str(&format!("<t:PhoneNumbers><t:Entry Key=\"Phone\">{}</t:Entry></t:PhoneNumbers>", xml_escape(phone)));
     }
     if !org.is_empty() {
-        xml.push_str(&format!(r#"<t:CompanyName>{}</t:CompanyName>"#, xml_escape(org)));
+        xml.push_str(&format!("<t:CompanyName>{}</t:CompanyName>", xml_escape(&org)));
     }
     if !title.is_empty() {
-        xml.push_str(&format!(r#"<t:JobTitle>{}</t:JobTitle>"#, xml_escape(title)));
+        xml.push_str(&format!("<t:JobTitle>{}</t:JobTitle>", xml_escape(title)));
     }
     // Add more fields as needed: Addresses, ImAddress, etc.
-    xml.push_str(r#"</t:Contact>"#);
+    xml.push_str("</t:Contact>");
     xml
 }
 
@@ -2205,7 +2213,7 @@ fn sha256_hash(s: &str) -> String {
     // Take first 16 bytes for a reasonably short but unique identifier.
     // Using hex encoding (lowercase) as per MS-OXWSCORE §2.2.4.25 for ChangeKey,
     // but this is not a true ChangeKey; it's just a stable identifier.
-    format!("{:x}", &digest[..16])
+    hex::encode(&digest[..16])
 }
 
 /// Handle EWS CreateItem for Contacts using CardDAV.
@@ -2273,7 +2281,7 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 
     // Build vCard
     let uid = uuid::Uuid::new_v4().to_string();
-    let vcard_str = match vcard::build_vcard(
+    let vcard_str = match crate::vcard::build_vcard(
         &uid,
         display_name.as_deref().unwrap_or(""),
         email.as_deref(),
@@ -2293,20 +2301,14 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
         }
     };
 
-    // POST to CardDAV addressbook
-    let addressbook = carddav.addressbook_home(&auth.username);
-    let response = match carddav
-        .client
-        .post(&addressbook)
-        .basic_auth(&auth.username, Some(auth.password.expose_secret()))
-        .header("Content-Type", "text/vcard; charset=utf-8")
-        .body(vcard_str.clone())
-        .send()
+    // Create contact via CardDAV client method
+    let (href, etag) = match carddav
+        .create_contact(&auth.username, auth.password.expose_secret(), &vcard_str)
         .await
     {
-        Ok(resp) => resp,
+        Ok(res) => res,
         Err(e) => {
-            tracing::error!(error = %e, "CardDAV POST failed");
+            tracing::error!(error = %e, "CardDAV create_contact failed");
             return operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorInternalServerError",
@@ -2315,40 +2317,6 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
             );
         }
     };
-
-    if !response.status().is_success() && response.status() != StatusCode::CREATED {
-        let status = response.status();
-        tracing::error!(status = %status, "CardDAV create failed");
-        return operation_error_response(
-            &EwsAction::CreateItem,
-            "ErrorInternalServerError",
-            "CardDAV create contact failed",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        );
-    }
-
-    // Extract Location header for href and ETag header
-    let location = match response.headers().get("Location") {
-        Some(h) => h.to_str().unwrap_or("").to_string(),
-        None => {
-            tracing::error!("CardDAV create response missing Location header");
-            return operation_error_response(
-                &EwsAction::CreateItem,
-                "ErrorInternalServerError",
-                "Invalid CardDAV response",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-    let href = location
-        .strip_prefix(&addressbook)
-        .unwrap_or(&location)
-        .to_string();
-    let etag = response
-        .headers()
-        .get("ETag")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.trim_matches('"').to_string());
 
     // Store in contact_map
     let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
@@ -2386,7 +2354,7 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 
     // Extract ItemId/@Id
     let item_id = extract_first_attr(body, b"ItemId", b"Id");
-    if item_id.is_empty() {
+    if item_id.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
         return operation_error_response(
             &EwsAction::UpdateItem,
             "ErrorInvalidIdMalformed",
@@ -2396,7 +2364,7 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     }
 
     // Look up contact by server_id to get href and etag
-    let db_contact = match state.storage.get_contact(&auth.username, &item_id).await {
+    let db_contact = match state.storage.get_contact(&auth.username, item_id.as_deref().unwrap_or_default()).await {
         Ok(Some(contact)) => contact,
         Ok(None) => {
             return operation_error_response(
@@ -2639,7 +2607,7 @@ async fn handle_delete_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 
     // Extract ItemId/@Id
     let item_id = extract_first_attr(body, b"ItemId", b"Id");
-    if item_id.is_empty() {
+    if item_id.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
         return operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorInvalidIdMalformed",
@@ -2649,7 +2617,7 @@ async fn handle_delete_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     }
 
     // Look up contact to get href and etag
-    let db_contact = match state.storage.get_contact(&auth.username, &item_id).await {
+    let db_contact = match state.storage.get_contact(&auth.username, item_id.as_deref().unwrap_or_default()).await {
         Ok(Some(contact)) => contact,
         Ok(None) => {
             return operation_error_response(

@@ -9,36 +9,49 @@ use uuid::Uuid;
 /// Convert a CardDAV contact into an EAS Contacts XML element.
 pub fn render_eas_contact(server_id: &str, carddav_contact: &CarddavContact) -> String {
     // Parse vCard to extract fields; on failure, use minimal info.
-    let vcard = parse_vcard_from_data(&carddav_contact.vcard).unwrap_or_else(|_| {
-        warn!(href = %carddav_contact.href, "Failed to parse vCard, using blank");
-        Vcard::default()
-    });
+    let vcard = match parse_vcard_from_data(&carddav_contact.vcard) {
+        Ok(v) => v,
+        Err(_) => {
+            warn!(href = %carddav_contact.href, "Failed to parse vCard, using blank");
+            Vcard::default()
+        }
+    };
 
-    // Extract common fields
-    let display_name = vcard.name.first().map(|n| n.value.as_str()).unwrap_or("");
+    // Determine display name: use full_name if present, else first N component.
+    let display_name = if !vcard.full_name.is_empty() {
+        vcard.full_name.clone()
+    } else if let Some(first) = vcard.name.first() {
+        first.value.clone()
+    } else {
+        String::new()
+    };
+
     let email = vcard.email.first().map(|e| e.email.as_str()).unwrap_or("");
     let phone = vcard.telephone.first().map(|t| t.number.as_str()).unwrap_or("");
-    let org = vcard.org.first().map(|o| o.value.as_str()).unwrap_or("");
+    // ORG components are joined by ';' to match vCard representation.
+    let org = vcard.org.first().map(|o| o.value.join(";")).unwrap_or_default();
     let title = vcard.title.as_ref().map(|t| t.value.as_str()).unwrap_or("");
 
     // Build XML with proper escaping
     let mut xml = String::new();
-    xml.push_str(&format!(r#"<Contact>"#));
-    xml.push_str(&format!(r#"<ServerId>{}</ServerId>"#, xml_escape(server_id)));
-    xml.push_str(&format!(r#"<DisplayName>{}</DisplayName>"#, xml_escape(display_name)));
+    xml.push_str("<Contact>");
+    xml.push_str(&format!("<ServerId>{}</ServerId>", xml_escape(server_id)));
+    if !display_name.is_empty() {
+        xml.push_str(&format!("<DisplayName>{}</DisplayName>", xml_escape(&display_name)));
+    }
     if !email.is_empty() {
-        xml.push_str(&format!(r#"<EmailAddresses><EmailAddress><Address>{}</Address></EmailAddress></EmailAddresses>"#, xml_escape(email)));
+        xml.push_str(&format!("<EmailAddresses><EmailAddress><Address>{}</Address></EmailAddress></EmailAddresses>", xml_escape(email)));
     }
     if !phone.is_empty() {
-        xml.push_str(&format!(r#"<PhoneNumbers><PhoneNumber><Number>{}</Number></PhoneNumber></PhoneNumbers>"#, xml_escape(phone)));
+        xml.push_str(&format!("<PhoneNumbers><PhoneNumber><Number>{}</Number></PhoneNumber></PhoneNumbers>", xml_escape(phone)));
     }
     if !org.is_empty() {
-        xml.push_str(&format!(r#"<Company>{}</Company>"#, xml_escape(org)));
+        xml.push_str(&format!("<Company>{}</Company>", xml_escape(&org)));
     }
     if !title.is_empty() {
-        xml.push_str(&format!(r#"<JobTitle>{}</JobTitle>"#, xml_escape(title)));
+        xml.push_str(&format!("<JobTitle>{}</JobTitle>", xml_escape(title)));
     }
-    xml.push_str(r#"</Contact>"#);
+    xml.push_str("</Contact>");
     xml
 }
 
@@ -158,50 +171,35 @@ pub fn parse_contacts_mutations(xml: &str) -> Result<Vec<ContactsMutation>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
-    let mut stack = Vec::new();
+    // Stack stores element names as byte slices for cheap comparison
+    let mut stack: Vec<Vec<u8>> = Vec::new();
     let mut current_kind: Option<ContactsOpKind> = None;
     let mut current_server_id = String::new();
     let mut current_vcard = String::new();
-    let mut in_server_id = false;
-    let mut in_vcard = false;
     let mut mutations = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name = e.name().local_term();
-                match name {
-                    b"Add" => {
-                        current_kind = Some(ContactsOpKind::Add);
-                        current_server_id.clear();
-                        current_vcard.clear();
-                    }
-                    b"Change" => {
-                        current_kind = Some(ContactsOpKind::Change);
-                        current_server_id.clear();
-                        current_vcard.clear();
-                    }
-                    b"Delete" => {
-                        current_kind = Some(ContactsOpKind::Delete);
-                        current_server_id.clear();
-                        current_vcard.clear();
-                    }
-                    b"ServerId" if current_kind.is_some() => {
-                        in_server_id = true;
-                        current_server_id.clear();
-                    }
-                    b"vCard" if (current_kind == Some(ContactsOpKind::Add) || current_kind == Some(ContactsOpKind::Change)) => {
-                        in_vcard = true;
-                        current_vcard.clear();
-                    }
-                    _ => {}
+                let name_bytes = e.name().as_bytes().to_vec();
+                let name = String::from_utf8_lossy(&name_bytes).to_string();
+                if name == "Add" || name == "Change" || name == "Delete" {
+                    current_kind = match name.as_str() {
+                        "Add" => Some(ContactsOpKind::Add),
+                        "Change" => Some(ContactsOpKind::Change),
+                        "Delete" => Some(ContactsOpKind::Delete),
+                        _ => None,
+                    };
+                    current_server_id.clear();
+                    current_vcard.clear();
                 }
-                stack.push(name);
+                stack.push(name_bytes);
             }
             Ok(Event::End(_)) => {
-                if let Some(name) = stack.pop() {
-                    match name {
-                        b"Add" | b"Change" | b"Delete" => {
+                if let Some(name_bytes) = stack.pop() {
+                    let name = String::from_utf8_lossy(&name_bytes).to_string();
+                    match name.as_str() {
+                        "Add" | "Change" | "Delete" => {
                             if let Some(kind) = current_kind.take() {
                                 match kind {
                                     ContactsOpKind::Add => {
@@ -231,18 +229,25 @@ pub fn parse_contacts_mutations(xml: &str) -> Result<Vec<ContactsMutation>> {
                                 }
                             }
                         }
-                        b"ServerId" => in_server_id = false,
-                        b"vCard" => in_vcard = false,
+                        "ServerId" => {}
+                        "vCard" => {}
                         _ => {}
                     }
                 }
             }
             Ok(Event::Text(e)) => {
-                let text = e.unescape_and_decode(reader).unwrap_or_default();
-                if in_server_id {
-                    current_server_id.push_str(&text);
-                } else if in_vcard {
-                    current_vcard.push_str(&text);
+                match e.unescape() {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes).to_string();
+                        let in_vcard = stack.iter().any(|n| n == b"vCard");
+                        let in_server_id = stack.iter().any(|n| n == b"ServerId");
+                        if in_server_id {
+                            current_server_id.push_str(&text);
+                        } else if in_vcard && (current_kind == Some(ContactsOpKind::Add) || current_kind == Some(ContactsOpKind::Change)) {
+                            current_vcard.push_str(&text);
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
             Ok(Event::Eof) => break,
@@ -254,7 +259,7 @@ pub fn parse_contacts_mutations(xml: &str) -> Result<Vec<ContactsMutation>> {
     Ok(mutations)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ContactsOpKind {
     Add,
     Change,
