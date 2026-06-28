@@ -2,8 +2,6 @@
 //! Request rate limiting using governor.
 //! Protects the gateway from floods by limiting requests per second globally.
 
-use std::convert::Infallible;
-use std::sync::Arc;
 use axum::{
     body::Body,
     extract::State,
@@ -11,9 +9,9 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use governor::{
-    clock::{Clock, DefaultClock},
-};
+use governor::clock::{Clock, DefaultClock};
+use std::convert::Infallible;
+use std::sync::Arc;
 use tracing::warn;
 
 use crate::models::AppState;
@@ -38,7 +36,9 @@ pub async fn check_rate_limit(
                 Ok(response)
             }
             Err(not_until) => {
-                let wait_ms = not_until.wait_time_from(DefaultClock::default().now()).as_millis();
+                let wait_ms = not_until
+                    .wait_time_from(DefaultClock::default().now())
+                    .as_millis();
                 warn!(
                     target: "rate_limit",
                     wait_ms = wait_ms,
@@ -55,7 +55,10 @@ pub async fn check_rate_limit(
                 let response = (
                     StatusCode::TOO_MANY_REQUESTS,
                     [(header::RETRY_AFTER, retry_after.to_string())],
-                    format!("Rate limit exceeded. Please retry after {} seconds", retry_after),
+                    format!(
+                        "Rate limit exceeded. Please retry after {} seconds",
+                        retry_after
+                    ),
                 )
                     .into_response();
                 Ok(response)
@@ -65,5 +68,3 @@ pub async fn check_rate_limit(
         Ok(next.run(req).await)
     }
 }
-
-

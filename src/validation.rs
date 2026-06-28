@@ -120,6 +120,9 @@ mod tests {
     #[test]
     fn test_validate_attachment_size() {
         assert!(validate_attachment_size(1024, 1024 * 1024));
-        assert!(!validate_attachment_size(1024 * 1024 * 50, 1024 * 1024 * 10));
+        assert!(!validate_attachment_size(
+            1024 * 1024 * 50,
+            1024 * 1024 * 10
+        ));
     }
 }
