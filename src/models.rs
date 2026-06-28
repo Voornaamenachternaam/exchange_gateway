@@ -4,11 +4,18 @@ use crate::auth::AuthVerifier;
 use crate::config::Config;
 use crate::directory::{self, DirectoryLookup};
 use crate::jmap::JmapClient;
+use crate::metrics::AppMetrics;
 use crate::notifications::SubscriptionManager;
 use crate::oof::{self, OofManager};
 use crate::room::RoomManager;
 use crate::smtp::SmtpClient;
 use crate::storage::Storage;
+use governor::{
+    Quota, RateLimiter,
+    clock::DefaultClock,
+    state::{InMemoryState, NotKeyed},
+};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -28,6 +35,10 @@ pub struct AppState {
     pub smtp_client: Option<Arc<SmtpClient>>,
     /// JMAP client for reading/syncing email (None if email is disabled or JMAP not configured)
     pub jmap_client: Option<Arc<JmapClient>>,
+    /// Application metrics collector.
+    pub metrics: Arc<AppMetrics>,
+    /// Global rate limiter to protect against floods. None if rate limiting is disabled.
+    pub rate_limiter: Option<Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
 }
 
 impl AppState {
@@ -112,6 +123,19 @@ impl AppState {
             "Directory service initialized"
         );
 
+        let metrics = Arc::new(AppMetrics::new());
+
+        // Initialize rate limiter if enabled
+        let rate_limiter = if cfg.rate_limit_enabled {
+            let rps = cfg.rate_limit_requests_per_minute as f64 / 60.0;
+            let rps_u32 = rps.max(1.0).round() as u32;
+            let burst = NonZeroU32::new(cfg.rate_limit_max_concurrent.max(1) as u32).unwrap();
+            let quota = Quota::per_second(NonZeroU32::new(rps_u32).unwrap()).allow_burst(burst);
+            Some(Arc::new(RateLimiter::direct(quota)))
+        } else {
+            None
+        };
+
         Self {
             cfg,
             storage,
@@ -123,6 +147,8 @@ impl AppState {
             subscription_manager,
             smtp_client,
             jmap_client,
+            metrics,
+            rate_limiter,
         }
     }
 

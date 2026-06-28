@@ -9,15 +9,17 @@ use axum::{
     Router,
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
+    middleware,
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use exchange_gateway::{
-    autodiscover, config::Config, eas, ews, logging, models::AppState, storage::Storage,
+    autodiscover, config::Config, eas, ews, logging, metrics::REGISTRY, metrics::record_http,
+    models::AppState, rate_limit::check_rate_limit, storage::Storage, validation::validate_request,
 };
+use prometheus::{Encoder, TextEncoder};
 use tokio::net::TcpListener;
 use tokio::signal;
-use tower::ServiceBuilder;
 use tower_http::{
     compression::CompressionLayer, limit::RequestBodyLimitLayer,
     sensitive_headers::SetSensitiveRequestHeadersLayer, set_header::SetResponseHeaderLayer,
@@ -346,25 +348,16 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/metrics", get(metrics_handler))
         .route("/EWS/Exchange.asmx", post(ews::handle))
         .route("/EWS/{*path}", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
-        // Autodiscover V1 XML — both GET (redirect discovery per MS-OXDISCO §3.1.5.4)
-        // and POST (actual autodiscover request per MS-OXDSCLI).
-        // Case-insensitive paths are required per MS-OXDISCO §2.2.3.
         .route("/autodiscover/autodiscover.xml", any(autodiscover_xml))
         .route("/Autodiscover/Autodiscover.xml", any(autodiscover_xml))
-        // Autodiscover V1 SOAP
         .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))
         .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
-        // Autodiscover V2 JSON — used by AutoDetect cloud service and
-        // Outlook for iOS/Android (MS-ASCMD §2.2.3.1).
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
-        // Autodiscover V2 JSON with email in path (used by some Outlook versions).
-        // Single-segment {email} match — email addresses must not contain '/',
-        // so a wildcard {*email} would incorrectly capture trailing path
-        // segments (e.g. /v1.0/user@example.com/extra).
         .route(
             "/autodiscover/autodiscover.json/v1.0/{email}",
             get(autodiscover_json_v1),
@@ -373,43 +366,52 @@ async fn main() -> anyhow::Result<()> {
             "/Autodiscover/autodiscover.json/v1.0/{email}",
             get(autodiscover_json_v1),
         )
-        .layer(
-            ServiceBuilder::new()
-                .layer(SetSensitiveRequestHeadersLayer::new([
-                    header::AUTHORIZATION,
-                ]))
-                .layer(TraceLayer::new_for_http())
-                .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
-                    REQUEST_TIMEOUT_SECS,
-                )))
-                .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
-                .layer(CompressionLayer::new())
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::X_CONTENT_TYPE_OPTIONS,
-                    HeaderValue::from_static("nosniff"),
-                ))
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::HeaderName::from_static("x-frame-options"),
-                    HeaderValue::from_static("DENY"),
-                ))
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::REFERRER_POLICY,
-                    HeaderValue::from_static("strict-origin-when-cross-origin"),
-                ))
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::CONTENT_SECURITY_POLICY,
-                    HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; sandbox"),
-                ))
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("private, no-store, no-cache, max-age=0"),
-                ))
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::HeaderName::from_static("strict-transport-security"),
-                    HeaderValue::from_static("max-age=63072000; includeSubDomains"),
-                )),
-        )
-        .with_state(app_state);
+        .with_state(app_state.clone())
+        .layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            record_http,
+        ))
+        .layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            validate_request,
+        ))
+        .layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            check_rate_limit,
+        ))
+        .layer(SetSensitiveRequestHeadersLayer::new([
+            header::AUTHORIZATION,
+        ]))
+        .layer(TraceLayer::new_for_http())
+        .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
+            REQUEST_TIMEOUT_SECS,
+        )))
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .layer(CompressionLayer::new())
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; sandbox"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store, no-cache, max-age=0"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        ));
 
     let addr: SocketAddr = config.bind.parse()?;
 
@@ -588,6 +590,30 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         );
         (StatusCode::OK, "OK").into_response()
     }
+}
+
+/// Prometheus metrics endpoint.
+async fn metrics_handler() -> impl IntoResponse {
+    let encoder = TextEncoder::new();
+    let metric_families = REGISTRY.gather();
+    let mut buffer = Vec::new();
+    if encoder.encode(&metric_families, &mut buffer).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to encode metrics",
+        )
+            .into_response();
+    }
+    let metrics_text =
+        String::from_utf8(buffer).unwrap_or_else(|_| "Failed to decode metrics".to_string());
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        metrics_text,
+    )
+        .into_response()
 }
 
 async fn verify_jmap_health(state: &Arc<AppState>) -> Result<()> {

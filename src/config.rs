@@ -31,6 +31,10 @@ const ENV_ADMIN_BASE: &str = "GATEWAY_ADMIN_BASE";
 const ENV_ADMIN_USERNAME: &str = "GATEWAY_ADMIN_USERNAME";
 const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
 
+const ENV_RATE_LIMIT_ENABLED: &str = "GATEWAY_RATE_LIMIT_ENABLED";
+const ENV_RATE_LIMIT_REQUESTS_PER_MINUTE: &str = "GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE";
+const ENV_RATE_LIMIT_MAX_CONCURRENT: &str = "GATEWAY_RATE_LIMIT_MAX_CONCURRENT";
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -44,6 +48,8 @@ pub struct Config {
     pub hmac_secret: SecretString,
     #[serde(default = "default_max_attachment_bytes")]
     pub max_attachment_bytes: usize,
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: usize,
     #[serde(default = "default_room_booking_enabled")]
     pub room_booking_enabled: bool,
     #[serde(default = "default_auth_cache_ttl_secs")]
@@ -77,10 +83,33 @@ pub struct Config {
     pub admin_username: String,
     #[serde(default)]
     pub admin_password: String,
+    // Rate limiting and security
+    #[serde(default = "default_rate_limit_enabled")]
+    pub rate_limit_enabled: bool,
+    #[serde(default = "default_rate_limit_requests_per_minute")]
+    pub rate_limit_requests_per_minute: u32,
+    #[serde(default = "default_rate_limit_max_concurrent")]
+    pub rate_limit_max_concurrent: usize,
 }
 
 fn default_max_attachment_bytes() -> usize {
     DEFAULT_MAX_ATTACHMENT_BYTES
+}
+
+fn default_max_body_bytes() -> usize {
+    4 * 1024 * 1024 // 4MB
+}
+
+fn default_rate_limit_enabled() -> bool {
+    true
+}
+
+fn default_rate_limit_requests_per_minute() -> u32 {
+    120
+}
+
+fn default_rate_limit_max_concurrent() -> usize {
+    1000
 }
 
 fn default_room_booking_enabled() -> bool {
@@ -471,6 +500,57 @@ fn apply_environment_overrides(cfg: &mut Config) {
         },
     );
 
+    // Rate limiting and security configuration
+    if let Some(val) = get_env_with_fallback(ENV_RATE_LIMIT_ENABLED, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_RATE_LIMIT_ENABLED);
+        cfg.rate_limit_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+
+    if let Some(val) = env::var(ENV_RATE_LIMIT_REQUESTS_PER_MINUTE)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u32>() {
+            Ok(parsed) => {
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_RATE_LIMIT_REQUESTS_PER_MINUTE
+                );
+                cfg.rate_limit_requests_per_minute = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_RATE_LIMIT_REQUESTS_PER_MINUTE,
+                    val
+                );
+            }
+        }
+    }
+
+    if let Some(val) = env::var(ENV_RATE_LIMIT_MAX_CONCURRENT)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<usize>() {
+            Ok(parsed) => {
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_RATE_LIMIT_MAX_CONCURRENT
+                );
+                cfg.rate_limit_max_concurrent = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_RATE_LIMIT_MAX_CONCURRENT,
+                    val
+                );
+            }
+        }
+    }
+
     // Derive mail_host from mail_domain if not explicitly set
     if cfg.mail_host.is_empty() && !cfg.mail_domain.is_empty() {
         cfg.mail_host = format!("mail.{}", cfg.mail_domain);
@@ -545,6 +625,7 @@ impl Default for Config {
             database_path: String::from("/var/lib/exchange-gateway/gateway.db"),
             hmac_secret: SecretString::from(String::new()),
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
+            max_body_bytes: 4 * 1024 * 1024,
             room_booking_enabled: true,
             auth_cache_ttl_secs: DEFAULT_AUTH_CACHE_TTL_SECS,
             auth_cache_max_entries: DEFAULT_AUTH_CACHE_MAX_ENTRIES,
@@ -558,6 +639,9 @@ impl Default for Config {
             admin_base: String::new(),
             admin_username: String::new(),
             admin_password: String::new(),
+            rate_limit_enabled: true,
+            rate_limit_requests_per_minute: 120,
+            rate_limit_max_concurrent: 1000,
         }
     }
 }
