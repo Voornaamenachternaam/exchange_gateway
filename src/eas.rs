@@ -2965,20 +2965,81 @@ async fn handle_sync_collections(
                 result_xml
             }
         } else if is_contacts {
-            // Real contacts sync via CardDAV backend
+            // Contacts sync via CardDAV with client mutation support
+            let mut contact_mutation_responses = String::new();
+
+            // Apply client mutations if present
+            if has_mutations {
+                // Permission checks similar to calendar
+                let mut ok = true;
+                if coll_xml_ref.contains("<Add") || coll_xml_ref.contains(":Add") {
+                    match enforcement.can_create_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, error = %e, "Permission check failed for can_create_item (contacts)");
+                            ok = false;
+                        }
+                    }
+                }
+                if ok && (coll_xml_ref.contains("<Change") || coll_xml_ref.contains(":Change")) {
+                    match enforcement.can_edit_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, error = %e, "Permission check failed for can_edit_item (contacts)");
+                            ok = false;
+                        }
+                    }
+                }
+                if ok && (coll_xml_ref.contains("<Delete") || coll_xml_ref.contains(":Delete")) {
+                    match enforcement.can_delete_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, error = %e, "Permission check failed for can_delete_item (contacts)");
+                            ok = false;
+                        }
+                    }
+                }
+
+                if !ok {
+                    // Permission denied for mutations
+                    return format!(
+                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    );
+                }
+
+                // Apply the client mutations
+                match crate::contacts::apply_contacts_mutations(state, username, password.expose_secret(), coll_xml_ref).await {
+                    Ok(results) => {
+                        contact_mutation_responses = crate::contacts::render_contacts_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(request_id = %request_id, error = %e, "Failed to apply contacts mutations");
+                        return format!(
+                            "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        );
+                    }
+                }
+            }
+
+            // Perform server-side sync to fetch changes (after applying client mutations)
             match crate::contacts::sync_contacts(state, username, password, Some(incoming_key), device_id).await {
-                Ok(mutations_xml) => {
-                    // Fetch the new sync key that was stored by sync_contacts
+                Ok(server_changes_xml) => {
+                    // Fetch the new sync key stored by sync_contacts
                     let new_sync_key = state
                         .storage
                         .get_sync_key(username, &state_collection_id, "Contacts")
                         .await?
                         .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
                     format!(
-                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}</Collection>",
+                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
                         xml_escape(&new_sync_key),
                         xml_escape(collection_id),
-                        mutations_xml
+                        contact_mutation_responses,
+                        server_changes_xml
                     )
                 }
                 Err(e) => {

@@ -149,3 +149,378 @@ pub async fn sync_contacts(
 fn xml_escape(s: &str) -> String {
     crate::util::escape_xml_text(s)
 }
+
+/// Parse EAS Contacts sync mutations (Add/Change/Delete) from the <Collection> body.
+pub fn parse_contacts_mutations(xml: &str) -> Result<Vec<ContactsMutation>> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+    let mut stack = Vec::new();
+    let mut current_kind: Option<ContactsOpKind> = None;
+    let mut current_server_id = String::new();
+    let mut current_vcard = String::new();
+    let mut in_server_id = false;
+    let mut in_vcard = false;
+    let mut mutations = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.name().local_term();
+                match name {
+                    b"Add" => {
+                        current_kind = Some(ContactsOpKind::Add);
+                        current_server_id.clear();
+                        current_vcard.clear();
+                    }
+                    b"Change" => {
+                        current_kind = Some(ContactsOpKind::Change);
+                        current_server_id.clear();
+                        current_vcard.clear();
+                    }
+                    b"Delete" => {
+                        current_kind = Some(ContactsOpKind::Delete);
+                        current_server_id.clear();
+                        current_vcard.clear();
+                    }
+                    b"ServerId" if current_kind.is_some() => {
+                        in_server_id = true;
+                        current_server_id.clear();
+                    }
+                    b"vCard" if (current_kind == Some(ContactsOpKind::Add) || current_kind == Some(ContactsOpKind::Change)) => {
+                        in_vcard = true;
+                        current_vcard.clear();
+                    }
+                    _ => {}
+                }
+                stack.push(name);
+            }
+            Ok(Event::End(_)) => {
+                if let Some(name) = stack.pop() {
+                    match name {
+                        b"Add" | b"Change" | b"Delete" => {
+                            if let Some(kind) = current_kind.take() {
+                                match kind {
+                                    ContactsOpKind::Add => {
+                                        if !current_server_id.is_empty() && !current_vcard.is_empty() {
+                                            mutations.push(ContactsMutation::Add {
+                                                client_id: None,
+                                                server_id: current_server_id.clone(),
+                                                vcard: current_vcard.clone(),
+                                            });
+                                        }
+                                    }
+                                    ContactsOpKind::Change => {
+                                        if !current_server_id.is_empty() && !current_vcard.is_empty() {
+                                            mutations.push(ContactsMutation::Change {
+                                                server_id: current_server_id.clone(),
+                                                vcard: current_vcard.clone(),
+                                            });
+                                        }
+                                    }
+                                    ContactsOpKind::Delete => {
+                                        if !current_server_id.is_empty() {
+                                            mutations.push(ContactsMutation::Delete {
+                                                server_id: current_server_id.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        b"ServerId" => in_server_id = false,
+                        b"vCard" => in_vcard = false,
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::Text(e)) => {
+                let text = e.unescape_and_decode(reader).unwrap_or_default();
+                if in_server_id {
+                    current_server_id.push_str(&text);
+                } else if in_vcard {
+                    current_vcard.push_str(&text);
+                }
+            }
+            Ok(Event::Eof) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(mutations)
+}
+
+#[derive(Debug, Clone)]
+pub enum ContactsOpKind {
+    Add,
+    Change,
+    Delete,
+}
+
+#[derive(Debug, Clone)]
+pub enum ContactsMutation {
+    Add {
+        client_id: Option<String>,
+        server_id: String,
+        vcard: String,
+    },
+    Change {
+        server_id: String,
+        vcard: String,
+    },
+    Delete {
+        server_id: String,
+    },
+}
+
+/// Apply client mutations from a Sync request to the CardDAV backend.
+/// Returns a list of results indicating success/failure per mutation.
+pub async fn apply_contacts_mutations(
+    state: &crate::models::AppState,
+    username: &str,
+    password: &str,
+    mutations_xml: &str,
+) -> Result<Vec<ContactsMutationResult>> {
+    let mutations = parse_contacts_mutations(mutations_xml)?;
+    let mut results = Vec::new();
+
+    let Some(carddav) = state.carddav_client.as_ref() else {
+        // All mutations fail if CardDAV not configured
+        for mut m in mutations {
+            results.push(ContactsMutationResult {
+                server_id: match &mut m {
+                    ContactsMutation::Add { server_id, .. } => server_id.clone(),
+                    ContactsMutation::Change { server_id, .. } => server_id.clone(),
+                    ContactsMutation::Delete { server_id } => server_id.clone(),
+                },
+                status: "6",
+            });
+        }
+        return Ok(results);
+    };
+
+    // Process mutations in order
+    for mutation in mutations {
+        match mutation {
+            ContactsMutation::Add { server_id: _, vcard, .. } => {
+                // POST to addressbook
+                let addressbook = carddav.addressbook_home(username);
+                let response = match carddav
+                    .client
+                    .post(&addressbook)
+                    .basic_auth(username, Some(password))
+                    .header("Content-Type", "text/vcard; charset=utf-8")
+                    .body(&vcard)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(_) => {
+                        results.push(ContactsMutationResult {
+                            server_id: "".to_string(),
+                            status: "6",
+                        });
+                        continue;
+                    }
+                };
+
+                if response.status().is_success() || response.status() == StatusCode::CREATED {
+                    let location = response
+                        .headers()
+                        .get("Location")
+                        .and_then(|h| h.to_str().ok())
+                        .unwrap_or("");
+                    let href = location
+                        .strip_prefix(&addressbook)
+                        .unwrap_or(location)
+                        .to_string();
+                    let etag = response
+                        .headers()
+                        .get("ETag")
+                        .and_then(|h| h.to_str().ok())
+                        .map(|s| s.trim_matches('"').to_string());
+
+                    // We need to store the contact with server_id mapping. For Add, the server_id came from client or generated.
+                    // For simplicity, generate a new server_id here.
+                    let new_server_id = format!("contact-{}", Uuid::new_v4().simple());
+                    if let Ok(Some(existing)) = state.storage.get_contact_by_href(username, &href).await {
+                        // Already exists? That's an error; but we'll consider it success anyway to avoid client loops.
+                        results.push(ContactsMutationResult {
+                            server_id: existing.server_id,
+                            status: "1",
+                        });
+                        continue;
+                    }
+
+                    if let Err(e) = state
+                        .storage
+                        .insert_contact(username, &href, &new_server_id, etag.as_deref(), &vcard)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "Failed to store contact in DB after Add");
+                    }
+
+                    results.push(ContactsMutationResult {
+                        server_id: new_server_id,
+                        status: "1",
+                    });
+                } else {
+                    results.push(ContactsMutationResult {
+                        server_id: "".to_string(),
+                        status: "6",
+                    });
+                }
+            }
+            ContactsMutation::Change { server_id: sid, vcard } => {
+                // Fetch existing contact to get href and etag
+                let db_contact = match state.storage.get_contact(username, &sid).await {
+                    Ok(Some(c)) => c,
+                    _ => {
+                        results.push(ContactsMutationResult {
+                            server_id: sid,
+                            status: "6",
+                        });
+                        continue;
+                    }
+                };
+
+                let url = format!("{}{}", carddav.addressbook_home(username), db_contact.carddav_href);
+                let mut request = carddav
+                    .client
+                    .put(&url)
+                    .basic_auth(username, Some(password))
+                    .header("Content-Type", "text/vcard; charset=utf-8")
+                    .body(&vcard);
+
+                if let Some(ref etag) = db_contact.etag {
+                    request = request.header("If-Match", format!("\"{}\"", etag));
+                }
+
+                let response = match request.send().await {
+                    Ok(resp) => resp,
+                    Err(_) => {
+                        results.push(ContactsMutationResult {
+                            server_id: sid,
+                            status: "6",
+                        });
+                        continue;
+                    }
+                };
+
+                if response.status().is_success() {
+                    let new_etag = response
+                        .headers()
+                        .get("ETag")
+                        .and_then(|h| h.to_str().ok())
+                        .map(|s| s.trim_matches('"').to_string());
+
+                    if let Err(e) = state
+                        .storage
+                        .update_contact(username, &sid, new_etag.as_deref(), &vcard)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "Failed to update contact in DB");
+                    }
+
+                    results.push(ContactsMutationResult {
+                        server_id: sid,
+                        status: "1",
+                    });
+                } else if response.status() == StatusCode::PRECONDITION_FAILED {
+                    results.push(ContactsMutationResult {
+                        server_id: sid,
+                        status: "5", // EAS status for ChangeKey conflict?
+                    });
+                } else {
+                    results.push(ContactsMutationResult {
+                        server_id: sid,
+                        status: "6",
+                    });
+                }
+            }
+            ContactsMutation::Delete { server_id: sid } => {
+                let db_contact = match state.storage.get_contact(username, &sid).await {
+                    Ok(Some(c)) => c,
+                    _ => {
+                        results.push(ContactsMutationResult {
+                            server_id: sid,
+                            status: "6",
+                        });
+                        continue;
+                    }
+                };
+
+                let url = format!("{}{}", carddav.addressbook_home(username), db_contact.carddav_href);
+                let mut request = carddav
+                    .client
+                    .delete(&url)
+                    .basic_auth(username, Some(password));
+
+                if let Some(ref etag) = db_contact.etag {
+                    request = request.header("If-Match", format!("\"{}\"", etag));
+                }
+
+                let response = match request.send().await {
+                    Ok(resp) => resp,
+                    Err(_) => {
+                        results.push(ContactsMutationResult {
+                            server_id: sid,
+                            status: "6",
+                        });
+                        continue;
+                    }
+                };
+
+                if response.status().is_success() {
+                    if let Err(e) = state.storage.delete_contact(username, &sid).await {
+                        tracing::warn!(error = %e, "Failed to delete contact from DB");
+                    }
+                    results.push(ContactsMutationResult {
+                        server_id: sid,
+                        status: "1",
+                    });
+                } else if response.status() == StatusCode::PRECONDITION_FAILED {
+                    results.push(ContactsMutationResult {
+                        server_id: sid,
+                        status: "5",
+                    });
+                } else {
+                    results.push(ContactsMutationResult {
+                        server_id: sid,
+                        status: "6",
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Render client mutation responses for EAS Sync: maps mutation results to <Status> values.
+pub fn render_contacts_mutation_responses(results: &[ContactsMutationResult]) -> String {
+    let mut xml = String::new();
+    for res in results {
+        xml.push_str(&format!(
+            r#"<Status>{}</Status>"#,
+            xml_escape(res.status)
+        ));
+        if !res.server_id.is_empty() {
+            xml.push_str(&format!(
+                r#"<ServerId>{}</ServerId>"#,
+                xml_escape(&res.server_id)
+            ));
+        }
+    }
+    xml
+}
+
+#[derive(Debug, Clone)]
+pub struct ContactsMutationResult {
+    pub server_id: String,
+    pub status: &'static str,
+}
