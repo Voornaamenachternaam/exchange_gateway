@@ -12,6 +12,14 @@ pub struct CarddavClient {
     client: Client,
 }
 
+/// Represents a contact entry from CardDAV.
+#[derive(Debug, Clone)]
+pub struct Contact {
+    pub href: String,
+    pub etag: String,
+    pub vcard: String,
+}
+
 impl CarddavClient {
     /// Construct a new CardDAV client from configuration.
     pub fn new(cfg: &Config) -> Result<Self> {
@@ -186,6 +194,90 @@ impl CarddavClient {
             return Err(anyhow!("CardDAV DELETE failed: {}", resp.status()));
         }
         Ok(())
+    }
+
+    /// List contacts from the addressbook.
+    /// Returns (contacts vec, sync_token). sync_token can be used for later sync queries.
+    pub async fn list_contacts(
+        &self,
+        username: &str,
+        password: &str,
+        sync_token: Option<&str>,
+    ) -> Result<(Vec<Contact>, Option<String>)> {
+        let home = self.addressbook_home(username);
+        // PROPFIND body to request vCard data and getetags
+        let body = r#"<?xml version="1.0"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:getetag/>
+    <D:getcontenttype/>
+  </D:prop>
+</D:propfind>"#;
+
+        let resp = self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home)
+            .basic_auth(username, Some(password))
+            .header("Depth", "1")
+            .header("Content-Type", "text/xml")
+            .body(body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("CardDAV PROPFIND failed: {}", resp.status()));
+        }
+
+        let xml = resp.text().await?;
+        let doc = roxmltree::Document::parse(&xml).map_err(|e| anyhow!("XML parse error: {}", e))?;
+
+        let mut contacts = Vec::new();
+        let mut new_sync_token = None;
+
+        // Process <D:response> elements
+        for resp_elem in doc.descendants().filter(|n| n.has_tag_name("response")) {
+            let href_elem = resp_elem.descendants().find(|n| n.has_tag_name("href"));
+            let etag_elem = resp_elem.descendants().find(|n| n.has_tag_name("getetag"));
+            let status_elem = resp_elem.descendants().find(|n| n.has_tag_name("status"));
+
+            // Only process successful responses with a href and etag
+            if let (Some(href_node), Some(etag_node)) = (href_elem, etag_elem) {
+                let href = href_node.text().unwrap_or("").trim().to_string();
+                let etag = etag_node.text().unwrap_or("").trim().to_string();
+
+                // Skip the collection itself (href refers to addressbook collection, not item)
+                if !href.is_empty() && etag != "\"\"" && !href.ends_with('/') {
+                    // Fetch the vCard data for this contact
+                    let contact_url = format!("{}{}", home, href);
+                    let vcard_resp = self
+                        .client
+                        .get(&contact_url)
+                        .basic_auth(username, Some(password))
+                        .send()
+                        .await?;
+                    if vcard_resp.status().is_success() {
+                        let vcard_text = vcard_resp.text().await?;
+                        contacts.push(Contact {
+                            href,
+                            etag,
+                            vcard: vcard_text,
+                        });
+                    }
+                }
+            }
+
+            // If we find <D:sync-token> in the <D:propstat> of the collection href (empty href)
+            // we capture it for future sync queries.
+            if new_sync_token.is_none() {
+                if let Some(etag_elem) = resp_elem.descendants().find(|n| n.has_tag_name("sync-token")) {
+                    if let Some(tok) = etag_elem.text() {
+                        new_sync_token = Some(tok.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        Ok((contacts, new_sync_token))
     }
 }
 

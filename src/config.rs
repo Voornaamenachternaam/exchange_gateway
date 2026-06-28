@@ -493,6 +493,18 @@ fn apply_environment_overrides(cfg: &mut Config) {
         c.carddav_base = v;
     });
 
+    // Auto-derive CardDAV base from CalDAV base if not explicitly set
+    if cfg.carddav_base.is_empty() && !cfg.caldav_base.is_empty() {
+        let derived = cfg.caldav_base.replace("/dav/", "/carddav/");
+        tracing::info!(
+            target: "config",
+            caldav_base = cfg.caldav_base,
+            derived_carddav_base = derived,
+            "GATEWAY_CARDDAV_BASE not set, derived from GATEWAY_CALDAV_BASE"
+        );
+        cfg.carddav_base = derived;
+    }
+
     if let Some(val) = get_env_with_fallback(ENV_EMAIL_ENABLED, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_EMAIL_ENABLED);

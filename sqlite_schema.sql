@@ -345,3 +345,19 @@ CREATE INDEX IF NOT EXISTS idx_room_email ON room(email);
 CREATE INDEX IF NOT EXISTS idx_room_room_list ON room(room_list_email);
 
 INSERT OR IGNORE INTO schema_version (version, description) VALUES (8, 'v8: Room/resource booking - GetRoomLists/GetRooms with room mailbox support');
+
+
+-- Contacts: mapping between Exchange server IDs and CardDAV hrefs/etags
+CREATE TABLE IF NOT EXISTS contact_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    carddav_href TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    etag TEXT,
+    vcard TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, server_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_map_owner ON contact_map(owner);
+CREATE INDEX IF NOT EXISTS idx_contact_map_href ON contact_map(owner, carddav_href);

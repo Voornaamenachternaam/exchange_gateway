@@ -2754,6 +2754,17 @@ async fn handle_sync_collections(
             .map(|c| c.eq_ignore_ascii_case("Calendar"))
             .unwrap_or_else(|| collection_id == "1"); // Default collection ID "1" is Calendar
 
+        // Determine if this is Contacts sync. Per MS-ASCMD, Contacts class is "Contacts".
+        // Collection ID for contacts is often "8" (the Contacts folder) or can be a distinguished ID.
+        let is_contacts = coll
+            .class
+            .as_deref()
+            .map(|c| c.eq_ignore_ascii_case("Contacts"))
+            .unwrap_or_else(|| {
+                // Some Android clients use collection ID "8" for contacts
+                collection_id == "8" || collection_id.eq_ignore_ascii_case("contacts")
+            });
+
         let coll_xml = if is_email {
             if state.can_read_email() {
                 match handle_email_sync(
@@ -2953,8 +2964,34 @@ async fn handle_sync_collections(
             } else {
                 result_xml
             }
+        } else if is_contacts {
+            // Real contacts sync via CardDAV backend
+            match crate::contacts::sync_contacts(state, username, password, Some(incoming_key), device_id).await {
+                Ok(mutations_xml) => {
+                    // Fetch the new sync key that was stored by sync_contacts
+                    let new_sync_key = state
+                        .storage
+                        .get_sync_key(username, &state_collection_id, "Contacts")
+                        .await?
+                        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
+                    format!(
+                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}</Collection>",
+                        xml_escape(&new_sync_key),
+                        xml_escape(collection_id),
+                        mutations_xml
+                    )
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Contacts sync failed");
+                    format!(
+                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    )
+                }
+            }
         } else {
-            // Unsupported collection type: Contacts, Tasks, Notes, etc.
+            // Unsupported collection type: Tasks, Notes, etc.
             tracing::warn!(
                 request_id = %request_id,
                 collection_id = %collection_id,

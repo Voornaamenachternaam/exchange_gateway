@@ -4,6 +4,7 @@ use crate::auth::AuthVerifier;
 use crate::config::Config;
 use crate::directory::{self, DirectoryLookup};
 use crate::jmap::JmapClient;
+use crate::carddav::CarddavClient;
 use crate::metrics::AppMetrics;
 use crate::notifications::SubscriptionManager;
 use crate::oof::{self, OofManager};
@@ -35,6 +36,8 @@ pub struct AppState {
     pub smtp_client: Option<Arc<SmtpClient>>,
     /// JMAP client for reading/syncing email (None if email is disabled or JMAP not configured)
     pub jmap_client: Option<Arc<JmapClient>>,
+    /// CardDAV client for contacts sync (None if CardDAV not configured)
+    pub carddav_client: Option<Arc<CarddavClient>>,
     /// Application metrics collector.
     pub metrics: Arc<AppMetrics>,
     /// Global rate limiter to protect against floods. None if rate limiting is disabled.
@@ -108,6 +111,23 @@ impl AppState {
             None
         };
 
+        let carddav_client = if !cfg.carddav_base.is_empty() {
+            match CarddavClient::new(&cfg) {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "models",
+                        carddav_base = %cfg.carddav_base,
+                        error = %e,
+                        "Failed to create CardDAV client; contacts sync will be unavailable"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         if cfg.email_enabled {
             tracing::info!(
                 target: "models",
@@ -147,6 +167,7 @@ impl AppState {
             subscription_manager,
             smtp_client,
             jmap_client,
+            carddav_client,
             metrics,
             rate_limiter,
         }

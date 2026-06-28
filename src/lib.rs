@@ -6,6 +6,7 @@ pub mod caldav;
 pub mod calendar;
 pub mod carddav;
 pub mod config;
+pub mod contacts;
 pub mod delegate_ews;
 pub mod directory;
 pub mod eas;
@@ -32,6 +33,7 @@ pub mod sync;
 pub mod timezone;
 pub mod traits;
 pub mod util;
+pub mod vcard;
 pub mod validation;
 pub mod wbxml;
 

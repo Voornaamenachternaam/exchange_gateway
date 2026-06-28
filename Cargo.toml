@@ -69,6 +69,7 @@ email_address = "^0.2.9"
 iso8601-duration = "^0.2.0"
 roxmltree = "^0.21.1"
 itertools = "^0.14.0"
+vcard = "^0.7"
 derive_more = { version = "^2.1", features = ["full"] }
 bstr = "^1.12.1"
 sqlx = { version = "^0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
