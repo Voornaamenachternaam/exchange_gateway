@@ -4032,21 +4032,124 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         }
     } else {
         // Calendar items — CalDAV move
-        // For now, return success as a placeholder since moving calendar items is complex
-        tracing::info!(
-            item_id = %item_id,
-            to_folder = %to_folder_id,
-            "MoveItem: calendar move not fully implemented, returning success"
-        );
-        let change_key = item_id.to_string();
-        let response = format!(
-            r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
-            EWS_MSG_NS,
-            EWS_TYPE_NS,
-            xml_escape(&item_id),
-            xml_escape(&change_key)
-        );
-        soap_ok(response)
+        // Validate destination folder is a calendar folder
+        let dest_folder = match DistinguishedFolder::from_str(&to_folder_id) {
+            Ok(f) => f,
+            Err(_) => {
+                // Check if it's the explicit folder ID for the default calendar
+                let expected_cal_id = crate::ews_folders::folder_id_for(&auth.username, DistinguishedFolder::Calendar);
+                if to_folder_id == expected_cal_id {
+                    DistinguishedFolder::Calendar
+                } else {
+                    return operation_error_response(
+                        &EwsAction::MoveItem,
+                        "ErrorInvalidOperation",
+                        "Unsupported destination folder for calendar item",
+                        StatusCode::OK,
+                    );
+                }
+            }
+        };
+        if !dest_folder.is_calendar() {
+            return operation_error_response(
+                &EwsAction::MoveItem,
+                "ErrorInvalidOperation",
+                "Destination folder is not a calendar",
+                StatusCode::OK,
+            );
+        }
+
+        // Look up source item to get its resource_href and collection
+        let lookup = match state.storage.get_ews_item_by_server_id(&auth.username, &item_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorItemNotFound",
+                    "Source calendar item not found",
+                    StatusCode::OK,
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: failed to fetch calendar item");
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "Failed to fetch source item",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+
+        // Source collection href (caldav_href) should be set
+        let src_collection_href = match &lookup.caldav_href {
+            Some(h) => h,
+            None => {
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInvalidOperation",
+                    "Source item has no calendar collection",
+                    StatusCode::OK,
+                );
+            }
+        };
+
+        // Extract the resource name (href relative to collection) from full resource_href
+        let src_href = lookup.resource_href.trim_start_matches(src_collection_href).trim_start_matches('/');
+
+        // Destination collection href: should be same as source because only default calendar supported
+        let dst_collection_href = src_collection_href;
+
+        // Initialize CalDAV client
+        let caldav = match CaldavClient::new(&state.cfg) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: CalDAV client init failed");
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "CalDAV unavailable",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+
+        // Perform the move. This returns a new ETag.
+        match caldav
+            .move_event(
+                src_href,
+                src_collection_href,
+                dst_collection_href,
+                &auth.username,
+                auth.password.expose_secret(),
+            )
+            .await
+        {
+            Ok(new_etag) => {
+                // If the move was within the same collection, server_id unchanged.
+                // If it were to a different collection, we'd need to update storage with new resource_href and server_id.
+                // For now, we only support same collection, so server_id remains the same.
+                // ChangeKey can be the new etag.
+                let change_key = new_etag;
+                let response = format!(
+                    r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
+                    EWS_MSG_NS,
+                    EWS_TYPE_NS,
+                    xml_escape(&item_id),
+                    xml_escape(&change_key)
+                );
+                soap_ok(response)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: CalDAV MOVE failed");
+                operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "Failed to move calendar item",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
     }
 }
 

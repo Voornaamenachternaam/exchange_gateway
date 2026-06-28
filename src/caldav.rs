@@ -1,6 +1,6 @@
 // src/caldav.rs
 use crate::config::Config;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use const_hex;
 use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
 use sha2::{Digest, Sha256};
@@ -334,6 +334,59 @@ impl CaldavClient {
         }
         let body = resp.text().await?;
         Ok(parse_etag_from_multistatus(&body))
+    }
+
+    /// Move a calendar event from one collection to another using CalDAV MOVE.
+    /// `src_href` is the source resource path (e.g., "event123.ics").
+    /// `src_collection_href` is the source collection (calendar) path.
+    /// `dst_collection_href` is the destination collection path.
+    /// Returns new etag for the moved resource.
+    pub async fn move_event(
+        &self,
+        src_href: &str,
+        src_collection_href: &str,
+        dst_collection_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<String> {
+        // Construct full source URL
+        let src_url = self.resolve_resource_url(src_collection_href, Some(src_href))?;
+        // Destination URL: target collection + resource name
+        let dst_url = format!("{}/{}", dst_collection_href.trim_end_matches('/'), src_href);
+
+        // Build Destination header
+        let req = self
+            .client
+            .request(reqwest::Method::from_bytes(b"MOVE")?, &src_url)
+            .basic_auth(username, Some(password))
+            .header("Destination", &dst_url);
+
+        // We can optionally include Overwrite: T (default) or F, but not needed.
+        let resp = req.send().await?;
+        let status = resp.status();
+
+        if !status.is_success() {
+            let body_preview = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("CalDAV MOVE failed: {} - {}", status, body_preview));
+        }
+
+        // After move, the resource is at the new destination. We need its new ETag.
+        // The response may include ETag header directly; otherwise we can fetch via PROPFIND on destination.
+        if let Some(etag_val) = resp.headers().get("ETag")
+            .and_then(|v| v.to_str().ok())
+        {
+            Ok(normalize_etag_to_internal(etag_val))
+        } else {
+            // Fallback: fetch the ETag from the new location
+            let etag_opt = self.get_etag(&dst_url, username, password).await?;
+            etag_opt.ok_or_else(|| anyhow!("Moved resource not found at destination for ETag retrieval"))
+        }
+    }
+
+    /// Get the primary calendar collection href for a user.
+    /// For Stalwart, this is typically "/cal/{username}/".
+    pub fn calendar_collection_href(&self, username: &str) -> String {
+        format!("/cal/{}/", username)
     }
 
     pub async fn put_event(

@@ -3,6 +3,7 @@ use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 
 use crate::error::GatewayError as Error;
+use roxmltree::Document;
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
@@ -1965,6 +1966,193 @@ async fn handle_item_operations(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
+/// Handle EAS MoveItems command.
+///
+/// Moves items between folders. Supports email (via JMAP) and calendar (within default calendar).
+/// If the destination is not supported, returns an appropriate error status.
+async fn handle_move_items(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    // Parse the MoveItems XML to extract each <Move> element
+    let doc = match Document::parse(xml) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::debug!(request_id = %request_id, "Failed to parse MoveItems XML: {}", e);
+            return bad_request_response(request_id, "Invalid MoveItems XML");
+        }
+    };
+
+    let mut responses = String::new();
+    let mut overall_status = 1u8; // Success by default; any failure sets to failure and continues
+
+    // Iterate over Move elements under MoveItems (any namespace prefix)
+    for move_elem in doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "Move")
+    {
+        let src_msg_id = move_elem
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "SrcMsgId")
+            .and_then(|n| n.text())
+            .map(String::from)
+            .unwrap_or_default();
+        let dst_fld_id = move_elem
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "DstFldId")
+            .and_then(|n| n.text())
+            .map(String::from)
+            .unwrap_or_default();
+        let _src_fld_id = move_elem
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "SrcFldId")
+            .and_then(|n| n.text())
+            .map(String::from);
+
+        if src_msg_id.is_empty() || dst_fld_id.is_empty() {
+            overall_status = 4; // ErrorInvalidIdMalformed or similar
+            responses.push_str(&format!(
+                r#"<Status>{}</Status>"#,
+                overall_status
+            ));
+            continue;
+        }
+
+        // Determine item type by server ID prefix
+        let is_email = crate::email::is_email_server_id(&src_msg_id);
+
+        // For email, move via JMAP
+        if is_email {
+            if !state.email_available() {
+                overall_status = 5; // ErrorInvalidRequest?
+                responses.push_str(&format!(
+                    r#"<Status>{}</Status>"#,
+                    overall_status
+                ));
+                continue;
+            }
+
+            // Map destination folder CollectionId to mailbox role
+            let target_role = match dst_fld_id.as_str() {
+                "2" => "inbox",
+                "3" => "drafts",
+                "4" => "trash",
+                "5" => "sent",
+                "6" => {
+                    // Outbox not a real mailbox; special handling
+                    responses.push_str(r#"<Status>4</Status>"#);
+                    continue;
+                }
+                "12" => "junk",
+                _ => {
+                    // Check if it's a distinguished folder ID string (like "inbox")
+                    match dst_fld_id.to_ascii_lowercase().as_str() {
+                        "inbox" => "inbox",
+                        "drafts" => "drafts",
+                        "deleteditems" => "trash",
+                        "sentitems" => "sent",
+                        "junkemail" => "junk",
+                        _ => {
+                            responses.push_str(r#"<Status>6</Status>"#);
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            // Get JMAP client and account ID
+            let Some(jmap) = state.jmap_client.as_ref() else {
+                responses.push_str(r#"<Status>8</Status>"#);
+                continue;
+            };
+
+            let account_id = match jmap.get_account_id(username, password).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(error = %e, "MoveItems: failed to get JMAP account ID");
+                    responses.push_str(r#"<Status>8</Status>"#);
+                    continue;
+                }
+            };
+
+            // Perform the move
+            match crate::email::move_email_via_jmap(
+                state,
+                jmap,
+                &account_id,
+                &src_msg_id,
+                target_role,
+                username,
+                password,
+            )
+            .await
+            {
+                Ok(_new_change_key) => {
+                    // Success: include SrcMsgId and DstMsgId (same server id)
+                    responses.push_str(&format!(
+                        r#"<Move><SrcMsgId>{}</SrcMsgId><DstMsgId>{}</DstMsgId></Move>"#,
+                        xml_escape(&src_msg_id),
+                        xml_escape(&src_msg_id) // DstMsgId equals moved item id
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "MoveItems email move failed");
+                    responses.push_str(r#"<Status>8</Status>"#);
+                }
+            }
+        } else {
+            // Calendar item move
+            // Only support moving to default calendar (collection ID "1")
+            // because only one calendar folder is exposed.
+            // Destination folder must be the Calendar folder (id "1" or distinguished "calendar").
+            // Also source must belong to the default calendar; we can check via DB if needed.
+            if dst_fld_id != "1" && !dst_fld_id.eq_ignore_ascii_case("calendar") {
+                // Unsupported destination
+                responses.push_str(r#"<Status>6</Status>"#);
+                continue;
+            }
+
+            // For calendar, moving within the same (only) collection is effectively a no-op
+            // since there is no other calendar. The Exchange protocol expects a new DstMsgId,
+            // but the item identifier does not change when moving within same calendar.
+            // We'll return the same server ID.
+            // However, if we had multiple calendars, we would perform a CalDAV MOVE here.
+            // For now, simply return success.
+            responses.push_str(&format!(
+                r#"<Move><SrcMsgId>{}</SrcMsgId><DstMsgId>{}</DstMsgId></Move>"#,
+                xml_escape(&src_msg_id),
+                xml_escape(&src_msg_id)
+            ));
+        }
+    }
+
+    // If no <Move> elements were processed, return error
+    if responses.is_empty() {
+        overall_status = 5; // ErrorInvalidRequest
+        responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
+    }
+
+    let payload = if overall_status == 1 {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><MoveItems xmlns="Move:"><Status>{}</Status>{}</MoveItems>"#,
+            overall_status, responses
+        )
+    } else {
+        // In case of errors, we can still return the fragment per element but overall might be failure
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><MoveItems xmlns="Move:"><Status>{}</Status>{}</MoveItems>"#,
+            overall_status, responses
+        )
+    };
+
+    xml_or_wbxml_response(wbxml, as_wbxml, &payload, request_id)
+}
+
 /// Fetch free-busy information via JMAP Calendar (urn:ietf:params:jmap:calendars).
 ///
 /// Uses `CalendarEvent/query` + `CalendarEvent/get` with the `iCalendar` property
@@ -3342,10 +3530,18 @@ pub async fn handle(
             handle_get_item_estimate(&state, &username, &req, &wbxml, wants_wbxml, &request_id)
                 .await
         }
-        "MoveItems" => bad_request_response(
-            &request_id,
-            "MoveItems is not supported for this calendar-only mailbox surface",
-        ),
+        "MoveItems" => {
+            handle_move_items(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
         "SendMail" | "SmartReply" | "SmartForward" => {
             handle_send_mail(
                 &state,
