@@ -10,7 +10,11 @@ use crate::oof::{self, OofManager};
 use crate::room::RoomManager;
 use crate::smtp::SmtpClient;
 use crate::storage::Storage;
-use governor::{clock::DefaultClock, state::{InMemoryState, NotKeyed}, Quota, RateLimiter};
+use governor::{
+    Quota, RateLimiter,
+    clock::DefaultClock,
+    state::{InMemoryState, NotKeyed},
+};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 

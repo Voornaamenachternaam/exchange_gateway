@@ -2,16 +2,7 @@
 //! Observability metrics using Prometheus.
 //! Provides request latency histograms, error counters, and application-specific gauges.
 
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-    sync::Arc,
-    sync::LazyLock,
-};
-use prometheus::{
-    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
-    Registry,
-};
+use crate::AppState;
 use axum::{
     body::Body,
     extract::State,
@@ -19,7 +10,15 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use crate::AppState;
+use prometheus::{
+    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
+};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 /// Request latency buckets in seconds: 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s
 pub const REQUEST_LATENCY_BUCKETS: &[f64] = &[
@@ -78,8 +77,14 @@ impl HttpMetrics {
     /// Create a new HttpMetrics instance with the given registry.
     pub fn new(registry: &Registry) -> Self {
         let requests_total = CounterVec::new(
-            Opts::new("http_requests_total", "Total number of HTTP requests processed")
-                .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            Opts::new(
+                "http_requests_total",
+                "Total number of HTTP requests processed",
+            )
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
             &["method", "path", "status"],
         )
         .unwrap();
@@ -89,32 +94,48 @@ impl HttpMetrics {
             "http_request_duration_seconds",
             "HTTP request duration in seconds",
         )
-        .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())]))
+        .const_labels(HashMap::from([(
+            "service".to_string(),
+            "exchange_gateway".to_string(),
+        )]))
         .buckets(REQUEST_LATENCY_BUCKETS.to_vec());
-        let request_duration_seconds = HistogramVec::new(opts, &["method", "path", "status"]).unwrap();
-        registry.register(Box::new(request_duration_seconds.clone())).unwrap();
+        let request_duration_seconds =
+            HistogramVec::new(opts, &["method", "path", "status"]).unwrap();
+        registry
+            .register(Box::new(request_duration_seconds.clone()))
+            .unwrap();
 
         let requests_in_flight = GaugeVec::new(
             Opts::new(
                 "http_requests_in_flight",
                 "Current number of in-flight HTTP requests",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
             &["method", "path"],
         )
         .unwrap();
-        registry.register(Box::new(requests_in_flight.clone())).unwrap();
+        registry
+            .register(Box::new(requests_in_flight.clone()))
+            .unwrap();
 
         let request_rejections = CounterVec::new(
             Opts::new(
                 "http_request_rejections_total",
                 "Total number of rejected requests (rate limit, etc.)",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
             &["reason", "scope"],
         )
         .unwrap();
-        registry.register(Box::new(request_rejections.clone())).unwrap();
+        registry
+            .register(Box::new(request_rejections.clone()))
+            .unwrap();
 
         Self {
             requests_total,
@@ -126,7 +147,9 @@ impl HttpMetrics {
 
     /// Record a request start (increment in-flight gauge).
     pub fn inc_in_flight(&self, method: &str, path: &str) {
-        self.requests_in_flight.with_label_values(&[method, path]).inc();
+        self.requests_in_flight
+            .with_label_values(&[method, path])
+            .inc();
     }
 
     /// Record a request end (decrement in-flight gauge and record duration).
@@ -134,7 +157,9 @@ impl HttpMetrics {
         let status = status.as_u16().to_string();
         let elapsed_secs = elapsed.as_secs_f64();
         // Decrement in-flight.
-        self.requests_in_flight.with_label_values(&[method, path]).dec();
+        self.requests_in_flight
+            .with_label_values(&[method, path])
+            .dec();
         self.requests_total
             .with_label_values(&[method, path, &status])
             .inc();
@@ -158,7 +183,10 @@ impl BackendMetrics {
                 "backend_health",
                 "Health status of backends (1=healthy, 0=unhealthy)",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
             &["backend", "backend_type"],
         )
         .unwrap();
@@ -197,51 +225,76 @@ impl SubscriptionMetrics {
                 "active_subscriptions",
                 "Number of currently active subscriptions",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
         )
         .unwrap();
-        registry.register(Box::new(active_subscriptions.clone())).unwrap();
+        registry
+            .register(Box::new(active_subscriptions.clone()))
+            .unwrap();
 
         let subscriptions_created_total = Counter::with_opts(
             Opts::new(
                 "subscriptions_created_total",
                 "Total number of subscriptions created",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
         )
         .unwrap();
-        registry.register(Box::new(subscriptions_created_total.clone())).unwrap();
+        registry
+            .register(Box::new(subscriptions_created_total.clone()))
+            .unwrap();
 
         let subscriptions_deleted_total = Counter::with_opts(
             Opts::new(
                 "subscriptions_deleted_total",
                 "Total number of subscriptions deleted",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
         )
         .unwrap();
-        registry.register(Box::new(subscriptions_deleted_total.clone())).unwrap();
+        registry
+            .register(Box::new(subscriptions_deleted_total.clone()))
+            .unwrap();
 
         let notifications_sent_total = Counter::with_opts(
             Opts::new(
                 "notifications_sent_total",
                 "Total number of notifications sent to subscribers",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
         )
         .unwrap();
-        registry.register(Box::new(notifications_sent_total.clone())).unwrap();
+        registry
+            .register(Box::new(notifications_sent_total.clone()))
+            .unwrap();
 
         let subscription_duration_seconds = Histogram::with_opts(
             HistogramOpts::new(
                 "subscription_duration_seconds",
                 "Subscription lifetime in seconds",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())]))
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )]))
             .buckets(REQUEST_LATENCY_BUCKETS.to_vec()),
         )
         .unwrap();
-        registry.register(Box::new(subscription_duration_seconds.clone())).unwrap();
+        registry
+            .register(Box::new(subscription_duration_seconds.clone()))
+            .unwrap();
 
         Self {
             active_subscriptions,
@@ -275,64 +328,87 @@ pub struct OperationMetrics {
 impl OperationMetrics {
     pub fn new(registry: &Registry) -> Self {
         let backend_calls_total = CounterVec::new(
-            Opts::new("backend_calls_total", "Total backend API calls made")
-                .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            Opts::new("backend_calls_total", "Total backend API calls made").const_labels(
+                HashMap::from([("service".to_string(), "exchange_gateway".to_string())]),
+            ),
             &["operation", "backend"],
         )
         .unwrap();
-        registry.register(Box::new(backend_calls_total.clone())).unwrap();
+        registry
+            .register(Box::new(backend_calls_total.clone()))
+            .unwrap();
 
         let backend_call_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "backend_call_duration_seconds",
                 "Backend API call duration in seconds",
             )
-            .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())]))
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )]))
             .buckets(REQUEST_LATENCY_BUCKETS.to_vec()),
             &["operation", "backend"],
         )
         .unwrap();
-        registry.register(Box::new(backend_call_duration_seconds.clone())).unwrap();
+        registry
+            .register(Box::new(backend_call_duration_seconds.clone()))
+            .unwrap();
 
         let backend_call_errors_total = CounterVec::new(
-            Opts::new("backend_call_errors_total", "Total backend API call errors")
-                .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            Opts::new("backend_call_errors_total", "Total backend API call errors").const_labels(
+                HashMap::from([("service".to_string(), "exchange_gateway".to_string())]),
+            ),
             &["operation", "backend", "error_type"],
         )
         .unwrap();
-        registry.register(Box::new(backend_call_errors_total.clone())).unwrap();
+        registry
+            .register(Box::new(backend_call_errors_total.clone()))
+            .unwrap();
 
         let attachments_processed_total = CounterVec::new(
-            Opts::new("attachments_processed_total", "Total attachments processed")
-                .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            Opts::new("attachments_processed_total", "Total attachments processed").const_labels(
+                HashMap::from([("service".to_string(), "exchange_gateway".to_string())]),
+            ),
             &["operation"], // create, get, delete
         )
         .unwrap();
-        registry.register(Box::new(attachments_processed_total.clone())).unwrap();
+        registry
+            .register(Box::new(attachments_processed_total.clone()))
+            .unwrap();
 
         let email_send_total = CounterVec::new(
-            Opts::new("email_send_total", "Total email send operations")
-                .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            Opts::new("email_send_total", "Total email send operations").const_labels(
+                HashMap::from([("service".to_string(), "exchange_gateway".to_string())]),
+            ),
             &["method"], // jmap, smtp
         )
         .unwrap();
-        registry.register(Box::new(email_send_total.clone())).unwrap();
+        registry
+            .register(Box::new(email_send_total.clone()))
+            .unwrap();
 
         let calendar_operations_total = CounterVec::new(
-            Opts::new("calendar_operations_total", "Total calendar operations")
-                .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            Opts::new("calendar_operations_total", "Total calendar operations").const_labels(
+                HashMap::from([("service".to_string(), "exchange_gateway".to_string())]),
+            ),
             &["operation", "protocol"], // get, query, set, delete, freebusy; jmap, caldav
         )
         .unwrap();
-        registry.register(Box::new(calendar_operations_total.clone())).unwrap();
+        registry
+            .register(Box::new(calendar_operations_total.clone()))
+            .unwrap();
 
         let email_operations_total = CounterVec::new(
-            Opts::new("email_operations_total", "Total email operations")
-                .const_labels(HashMap::from([("service".to_string(), "exchange_gateway".to_string())])),
+            Opts::new("email_operations_total", "Total email operations").const_labels(
+                HashMap::from([("service".to_string(), "exchange_gateway".to_string())]),
+            ),
             &["operation", "protocol"], // query, get, changes, send, set
         )
         .unwrap();
-        registry.register(Box::new(email_operations_total.clone())).unwrap();
+        registry
+            .register(Box::new(email_operations_total.clone()))
+            .unwrap();
 
         Self {
             backend_calls_total,
@@ -373,8 +449,6 @@ impl Default for AppMetrics {
         Self::new()
     }
 }
-
-
 
 /// Axum middleware that records request metrics and applies rate limiting.
 pub async fn record_http(

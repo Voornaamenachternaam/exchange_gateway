@@ -7,26 +7,23 @@ use std::time::Duration;
 use anyhow::Result;
 use axum::{
     Router,
-    middleware,
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
+    middleware,
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use exchange_gateway::{
-    autodiscover, config::Config, eas, ews, logging, metrics::record_http, metrics::REGISTRY,
+    autodiscover, config::Config, eas, ews, logging, metrics::REGISTRY, metrics::record_http,
     models::AppState, rate_limit::check_rate_limit, storage::Storage, validation::validate_request,
 };
 use prometheus::{Encoder, TextEncoder};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::{
-    compression::CompressionLayer,
-    limit::RequestBodyLimitLayer,
-    sensitive_headers::SetSensitiveRequestHeadersLayer,
-    set_header::SetResponseHeaderLayer,
-    timeout::RequestBodyTimeoutLayer,
-    trace::TraceLayer,
+    compression::CompressionLayer, limit::RequestBodyLimitLayer,
+    sensitive_headers::SetSensitiveRequestHeadersLayer, set_header::SetResponseHeaderLayer,
+    timeout::RequestBodyTimeoutLayer, trace::TraceLayer,
 };
 use tracing::{debug, info, warn};
 
@@ -382,9 +379,13 @@ async fn main() -> anyhow::Result<()> {
             app_state.clone(),
             check_rate_limit,
         ))
-        .layer(SetSensitiveRequestHeadersLayer::new([header::AUTHORIZATION]))
+        .layer(SetSensitiveRequestHeadersLayer::new([
+            header::AUTHORIZATION,
+        ]))
         .layer(TraceLayer::new_for_http())
-        .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+        .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
+            REQUEST_TIMEOUT_SECS,
+        )))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(CompressionLayer::new())
         .layer(SetResponseHeaderLayer::overriding(
@@ -597,10 +598,22 @@ async fn metrics_handler() -> impl IntoResponse {
     let metric_families = REGISTRY.gather();
     let mut buffer = Vec::new();
     if encoder.encode(&metric_families, &mut buffer).is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to encode metrics").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to encode metrics",
+        )
+            .into_response();
     }
-    let metrics_text = String::from_utf8(buffer).unwrap_or_else(|_| "Failed to decode metrics".to_string());
-    ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], metrics_text).into_response()
+    let metrics_text =
+        String::from_utf8(buffer).unwrap_or_else(|_| "Failed to decode metrics".to_string());
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        metrics_text,
+    )
+        .into_response()
 }
 
 async fn verify_jmap_health(state: &Arc<AppState>) -> Result<()> {

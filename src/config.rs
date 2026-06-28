@@ -513,7 +513,10 @@ fn apply_environment_overrides(cfg: &mut Config) {
     {
         match val.parse::<u32>() {
             Ok(parsed) => {
-                tracing::debug!("Applying {} from environment", ENV_RATE_LIMIT_REQUESTS_PER_MINUTE);
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_RATE_LIMIT_REQUESTS_PER_MINUTE
+                );
                 cfg.rate_limit_requests_per_minute = parsed;
             }
             Err(_) => {
@@ -532,7 +535,10 @@ fn apply_environment_overrides(cfg: &mut Config) {
     {
         match val.parse::<usize>() {
             Ok(parsed) => {
-                tracing::debug!("Applying {} from environment", ENV_RATE_LIMIT_MAX_CONCURRENT);
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_RATE_LIMIT_MAX_CONCURRENT
+                );
                 cfg.rate_limit_max_concurrent = parsed;
             }
             Err(_) => {
