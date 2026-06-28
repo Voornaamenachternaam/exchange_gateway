@@ -6,7 +6,7 @@ edition = "2024"
 rust-version = "1.96.0"
 
 [dependencies]
-reqwest = { version = "^0.12.28", default-features = false, features = ["json", "rustls-tls", "rustls-tls-webpki-roots", "cookies", "blocking"] }
+reqwest = { version = "^0.13.4", default-features = false, features = ["json", "rustls", "cookies", "blocking"] }
 async-trait = "^0.1.89"
 tokio = { version = "^1.52.3", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
@@ -75,7 +75,7 @@ sqlx = { version = "^0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chro
 lettre = { version = "^0.11.22", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 rustls-pki-types = "^1.14.1"
 prometheus = { version = "^0.13.4", features = ["process"] }
-governor = "0.6.3"
+governor = "^0.10.4"
 
 [dev-dependencies]
 proptest = "^1.11.0"
