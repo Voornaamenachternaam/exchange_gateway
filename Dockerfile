@@ -2,7 +2,7 @@
 # Multi-stage build with proper layer caching and BuildKit optimizations
 
 # Build stage with rustup for toolchain management
-FROM rust:1.96.0-slim AS builder
+FROM rust:1.96.0-bookworm AS builder
 
 WORKDIR /app
 
