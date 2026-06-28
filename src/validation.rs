@@ -1,11 +1,13 @@
 use axum::{
     body::Body,
+    extract::State,
     http::{Request, StatusCode},
     middleware::Next,
     response::Response,
-    extract::State,
 };
+use percent_encoding::percent_decode_str;
 use std::sync::Arc;
+use tracing::warn;
 
 use crate::models::AppState;
 
@@ -13,40 +15,43 @@ const MAX_SYNC_KEY_LEN: usize = 512;
 const MAX_COLLECTION_ID_LEN: usize = 64;
 const MAX_ITEM_ID_LEN: usize = 256;
 
-pub async fn validate_request<B>(
+/// Middleware that validates incoming requests for basic security constraints.
+pub async fn validate_request(
     State(state): State<Arc<AppState>>,
-    mut req: Request<B>,
+    req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let path = req.uri().path();
     let method = req.method();
     let cfg = &state.cfg;
 
-    if let Some(len) = req.headers().get("content-length") {
-        if let Ok(size_str) = len.to_str() {
-            if let Ok(size) = size_str.parse::<usize>() {
-                if size > cfg.max_body_bytes {
-                    tracing::warn!(
-                        target: "validation",
-                        method = %method,
-                        path = %path,
-                        size = size,
-                        limit = cfg.max_body_bytes,
-                        "Request body exceeds maximum allowed size"
-                    );
-                    return Err(StatusCode::PAYLOAD_TOO_LARGE);
-                }
-            }
-        }
+    if let Some(len) = req.headers().get("content-length")
+        && let Ok(size_str) = len.to_str()
+        && let Ok(size) = size_str.parse::<usize>()
+        && size > cfg.max_body_bytes
+    {
+        warn!(
+            target: "validation",
+            method = %method,
+            path = %path,
+            size = size,
+            limit = cfg.max_body_bytes,
+            "Request body exceeds maximum allowed size"
+        );
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    if path.contains("..") {
-        tracing::warn!(
-            target: "validation",
-            path = %path,
-            "Path contains traversal sequence"
-        );
-        return Err(StatusCode::BAD_REQUEST);
+    // Path traversal check: decode percent-encoded sequences and check for /../ or leading ../
+    if let Ok(decoded_bytes) = percent_decode_str(path).decode_utf8() {
+        let decoded = decoded_bytes.as_ref();
+        if decoded.contains("/../") || decoded.starts_with("../") {
+            warn!(
+                target: "validation",
+                path = %path,
+                "Path contains traversal sequence"
+            );
+            return Err(StatusCode::BAD_REQUEST);
+        }
     }
 
     Ok(next.run(req).await)
@@ -61,7 +66,7 @@ pub fn validate_collection_id(collection_id: &str) -> bool {
         && collection_id.len() <= MAX_COLLECTION_ID_LEN
         && collection_id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ')
 }
 
 pub fn validate_item_id(item_id: &str) -> bool {

@@ -33,6 +33,34 @@ pub static REGISTRY: LazyLock<Arc<Registry>> = LazyLock::new(|| Arc::new(Registr
 pub const REQUEST_COUNT: &str = "http_requests_total";
 pub const REJECTION_COUNT: &str = "http_request_rejections_total";
 
+/// Normalize a request path for metric labels by replacing identifier-like segments with {id}.
+/// This prevents high cardinality from dynamic path elements (UUIDs, numeric IDs).
+/// Heuristic: any segment consisting only of alphanumerics, '-' or '_' with length >= 8 is considered an ID.
+fn normalize_path(path: &str) -> String {
+    let mut segments = Vec::new();
+    for seg in path.split('/') {
+        if seg.is_empty() {
+            segments.push(seg.to_string());
+            continue;
+        }
+        let mut is_id_candidate = true;
+        let mut len = 0;
+        for c in seg.chars() {
+            len += 1;
+            if !(c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                is_id_candidate = false;
+                break;
+            }
+        }
+        if is_id_candidate && len >= 8 {
+            segments.push("{id}".to_string());
+        } else {
+            segments.push(seg.to_string());
+        }
+    }
+    segments.join("/")
+}
+
 /// HTTP request metrics.
 #[derive(Clone)]
 pub struct HttpMetrics {
@@ -355,13 +383,14 @@ pub async fn record_http(
     next: Next,
 ) -> Response {
     let method = req.method().clone();
-    let path = req.uri().path().to_string();
+    let raw_path = req.uri().path().to_string();
+    let normalized_path = normalize_path(&raw_path);
 
     // Increment in-flight gauge
     state
         .metrics
         .http
-        .inc_in_flight(method.as_str(), &path);
+        .inc_in_flight(method.as_str(), &normalized_path);
 
     let start = Instant::now();
     let response = next.run(req).await;
@@ -372,7 +401,7 @@ pub async fn record_http(
     state
         .metrics
         .http
-        .record_request(method.as_str(), &path, status, duration);
+        .record_request(method.as_str(), &normalized_path, status, duration);
 
     response
 }

@@ -33,8 +33,8 @@ pub struct AppState {
     pub jmap_client: Option<Arc<JmapClient>>,
     /// Application metrics collector.
     pub metrics: Arc<AppMetrics>,
-    /// Global rate limiter to protect against floods.
-    pub rate_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
+    /// Global rate limiter to protect against floods. None if rate limiting is disabled.
+    pub rate_limiter: Option<Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
 }
 
 impl AppState {
@@ -125,14 +125,11 @@ impl AppState {
         let rate_limiter = if cfg.rate_limit_enabled {
             let rps = cfg.rate_limit_requests_per_minute as f64 / 60.0;
             let rps_u32 = rps.max(1.0).round() as u32;
-            let burst = std::num::NonZeroU32::new(cfg.rate_limit_max_concurrent.max(1) as u32).unwrap();
+            let burst = NonZeroU32::new(cfg.rate_limit_max_concurrent.max(1) as u32).unwrap();
             let quota = Quota::per_second(NonZeroU32::new(rps_u32).unwrap()).allow_burst(burst);
-            Arc::new(RateLimiter::direct(quota))
+            Some(Arc::new(RateLimiter::direct(quota)))
         } else {
-            // Use an infinite quota (no limiting) by creating a limiter with extremely high limits
-            let burst = NonZeroU32::new(u32::MAX).unwrap();
-            let quota = Quota::per_second(NonZeroU32::new(u32::MAX).unwrap()).allow_burst(burst);
-            Arc::new(RateLimiter::direct(quota))
+            None
         };
 
         Self {

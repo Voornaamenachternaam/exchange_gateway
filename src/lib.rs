@@ -31,6 +31,7 @@ pub mod sync;
 pub mod timezone;
 pub mod traits;
 pub mod util;
+pub mod validation;
 pub mod wbxml;
 
 pub use autodiscover::AutodiscoverJsonParams;

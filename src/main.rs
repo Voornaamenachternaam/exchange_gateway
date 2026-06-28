@@ -15,7 +15,7 @@ use axum::{
 };
 use exchange_gateway::{
     autodiscover, config::Config, eas, ews, logging, metrics::record_http, metrics::REGISTRY,
-    models::AppState, rate_limit::check_rate_limit, storage::Storage,
+    models::AppState, rate_limit::check_rate_limit, storage::Storage, validation::validate_request,
 };
 use prometheus::{Encoder, TextEncoder};
 use tokio::net::TcpListener;
@@ -373,6 +373,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
             record_http,
+        ))
+        .layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            validate_request,
         ))
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
