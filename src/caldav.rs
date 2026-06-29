@@ -351,8 +351,8 @@ impl CaldavClient {
     ) -> Result<String> {
         // Construct full source URL
         let src_url = self.resolve_resource_url(src_collection_href, Some(src_href))?;
-        // Destination URL: target collection + resource name
-        let dst_url = format!("{}/{}", dst_collection_href.trim_end_matches('/'), src_href);
+        // Destination URL: must be absolute per RFC 4918 Section 10.3
+        let dst_url = self.resolve_resource_url(dst_collection_href, Some(src_href))?;
 
         // Build Destination header
         let req = self
