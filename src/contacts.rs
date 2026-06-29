@@ -5,6 +5,7 @@ use crate::vcard::{parse_vcard_from_data, Vcard};
 use anyhow::{Result, anyhow};
 use tracing::warn;
 use uuid::Uuid;
+use reqwest::StatusCode;
 
 /// Convert a CardDAV contact into an EAS Contacts XML element.
 pub fn render_eas_contact(server_id: &str, carddav_contact: &CarddavContact) -> String {
@@ -68,9 +69,9 @@ pub async fn sync_contacts(
     let state_collection_id = format!("8::{}", device_id);
 
     // 1. Get the last server sync key from storage (or empty string if first sync)
-    let server_sync_key = state
+    let (server_sync_key, _token) = state
         .storage
-        .get_sync_key(username, &state_collection_id, "Contacts")
+        .get_sync_key(username, &state_collection_id)
         .await?
         .unwrap_or_default();
 
@@ -319,7 +320,7 @@ pub async fn apply_contacts_mutations(
                     .post(&addressbook)
                     .basic_auth(username, Some(password))
                     .header("Content-Type", "text/vcard; charset=utf-8")
-                    .body(&vcard)
+                    .body(vcard.as_str())
                     .send()
                     .await
                 {

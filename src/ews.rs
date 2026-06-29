@@ -40,6 +40,7 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Datelike;
+use const_hex;
 use hex;
 use itertools::Itertools;
 use quick_xml::Reader;
@@ -50,6 +51,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -2322,7 +2324,7 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
     if let Err(e) = state
         .storage
-        .insert_contact(&auth.username, &href, &server_id, etag.as_deref(), &vcard_str)
+        .insert_contact(&auth.username, &href, &server_id, etag.as_deref(), Some(vcard_str.as_str()))
         .await
     {
         tracing::error!(error = %e, "Failed to store contact in DB");
@@ -2480,34 +2482,30 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     // Apply updates: if a field is present in the request, replace; else keep existing.
     if let Some(name) = new_display_name {
         // Update the FN property in vcard
-        if let Some(fn_prop) = old_vcard
-            .properties
-            .iter_mut()
-            .find(|p| matches!(p, vcard::Property::Fn(_)))
-        {
-            if let vcard::Property::Fn(fn_val) = fn_prop {
-                fn_val.value = name;
+        let mut fn_found = false;
+        for prop in &mut old_vcard.properties {
+            if let vcard::Property::Fn(fn_val) = prop {
+                fn_val.value = name.clone();
+                fn_found = true;
             }
-        } else {
-            old_vcard.properties.push(vcard::Property::Fn(name));
+        }
+        if !fn_found {
+            old_vcard.properties.push(vcard::Property::Fn(vcard::Fn { value: name }));
         }
     }
 
     if let Some(email) = new_email {
         // Replace or add EMAIL property
         old_vcard.properties.retain(|p| !matches!(p, vcard::Property::Email(_)));
-        old_vcard.properties.push(vcard::Property::Email(vcard::Email {
-            email,
-            ..Default::default()
-        }));
+        old_vcard.properties.push(vcard::Property::Email(vcard::Email { email }));
     }
 
     if let Some(phone) = new_phone {
         old_vcard.properties.retain(|p| !matches!(p, vcard::Property::Tel(_)));
-        let mut tel = vcard::Tel::default();
-        tel.number = phone;
-        tel.params.push(vcard::Parameter::Type(vcard::Type::Work));
-        tel.params.push(vcard::Parameter::Type(vcard::Type::Voice));
+        let tel = vcard::Tel {
+            number: phone,
+            params: vec![vcard::Parameter::Type(vcard::Type::Work), vcard::Parameter::Type(vcard::Type::Voice)],
+        };
         old_vcard.properties.push(vcard::Property::Tel(tel));
     }
 
@@ -2578,7 +2576,7 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 
     if let Err(e) = state
         .storage
-        .update_contact(&auth.username, &item_id, new_etag.as_deref(), &updated_vcard_str)
+        .update_contact(&auth.username, &item_id, new_etag.as_deref(), Some(updated_vcard_str.as_str()))
         .await
     {
         tracing::error!(error = %e, "Failed to update contact in DB");

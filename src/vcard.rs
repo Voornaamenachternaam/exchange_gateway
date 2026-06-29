@@ -1,41 +1,90 @@
 // src/vcard.rs
-// Minimal vCard parser/builder for contacts integration.
+// vCard parser/builder for contacts integration with enum-based property model.
 use anyhow::Result;
 
+/// A vCard with a list of properties.
 #[derive(Debug, Clone, Default)]
 pub struct Vcard {
-    pub full_name: String,
-    pub email: Vec<Email>,
-    pub telephone: Vec<Telephone>,
-    pub org: Vec<Org>,
-    pub title: Option<Title>,
-    pub name: Vec<Name>, // from N property
-    pub uid: Option<String>,
+    pub properties: Vec<Property>,
 }
 
+/// vCard property types per RFC 6350
 #[derive(Debug, Clone)]
+pub enum Property {
+    /// FN (Formatted Name)
+    Fn(Fn),
+    /// EMAIL
+    Email(Email),
+    /// TEL (Telephone)
+    Tel(Tel),
+    /// ORG (Organization)
+    Org(Org),
+    /// TITLE
+    Title(Title),
+    /// N (Structured name)
+    N(Name),
+    /// UID
+    Uid(Uid),
+}
+
+/// FN property
+#[derive(Debug, Clone)]
+pub struct Fn {
+    pub value: String,
+}
+
+/// EMAIL property
+#[derive(Debug, Clone, Default)]
 pub struct Email {
     pub email: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Telephone {
+/// TEL property
+#[derive(Debug, Clone, Default)]
+pub struct Tel {
     pub number: String,
+    pub params: Vec<Parameter>,
 }
 
+/// ORG property
 #[derive(Debug, Clone)]
 pub struct Org {
     pub value: Vec<String>,
 }
 
+/// TITLE property
 #[derive(Debug, Clone)]
 pub struct Title {
     pub value: String,
 }
 
+/// N property (structured name)
 #[derive(Debug, Clone)]
 pub struct Name {
     pub value: String,
+}
+
+/// UID property
+#[derive(Debug, Clone)]
+pub struct Uid {
+    pub value: String,
+}
+
+/// vCard parameter types (simplified subset)
+#[derive(Debug, Clone)]
+pub enum Parameter {
+    Type(Type),
+    // Other parameters can be added as needed
+}
+
+/// TYPE parameter values
+#[derive(Debug, Clone)]
+pub enum Type {
+    Work,
+    Home,
+    Voice,
+    Cell,
+    // Extend as needed
 }
 
 /// Parse a vCard string into a Vcard struct.
@@ -54,16 +103,25 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
         let Some((name, rest)) = line.split_once(':') else { continue };
         let value = rest.trim_start();
         match name.to_ascii_uppercase().as_str() {
-            "FN" => out.full_name = value.to_string(),
-            "EMAIL" => out.email.push(Email { email: value.to_string() }),
-            "TEL" => out.telephone.push(Telephone { number: value.to_string() }),
+            "FN" => out.properties.push(Property::Fn(Fn { value: value.to_string() })),
+            "EMAIL" => {
+                out.properties.push(Property::Email(Email {
+                    email: value.to_string(),
+                }))
+            }
+            "TEL" => out.properties.push(Property::Tel(Tel {
+                number: value.to_string(),
+                params: vec![],
+            })),
             "ORG" => {
                 let parts: Vec<String> = value.split(';').map(|s| s.trim().to_string()).collect();
                 if !parts.is_empty() {
-                    out.org.push(Org { value: parts });
+                    out.properties.push(Property::Org(Org { value: parts }));
                 }
             }
-            "TITLE" => out.title = Some(Title { value: value.to_string() }),
+            "TITLE" => out.properties.push(Property::Title(Title {
+                value: value.to_string(),
+            })),
             "N" => {
                 let comps: Vec<&str> = value.split(';').collect();
                 if let Some(fam) = comps.get(0) {
@@ -80,13 +138,13 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
                         }
                     }
                     if !nm.is_empty() {
-                        out.name.push(Name { value: nm });
+                        out.properties.push(Property::N(Name { value: nm }));
                     }
                 }
             }
-            "UID" => {
-                out.uid = Some(value.to_string());
-            }
+            "UID" => out
+                .properties
+                .push(Property::Uid(Uid { value: value.to_string() })),
             _ => {}
         }
     }
@@ -103,28 +161,140 @@ pub fn build_vcard(
     organization: Option<&str>,
     title: Option<&str>,
 ) -> Result<String> {
-    let mut lines = vec![
-        "BEGIN:VCARD".to_string(),
-        "VERSION:3.0".to_string(),
-        format!("UID:{}", uid),
-        format!("FN:{}", escape_text(display_name)),
-    ];
+    let mut vcard = Vcard::default();
+    vcard.properties.push(Property::Fn(Fn {
+        value: display_name.to_string(),
+    }));
+    vcard.properties.push(Property::Uid(Uid {
+        value: uid.to_string(),
+    }));
+    if let Some(email_str) = email {
+        vcard.properties.push(Property::Email(Email {
+            email: email_str.to_string(),
+        }));
+    }
+    if let Some(phone_str) = phone {
+        let mut tel = Tel {
+            number: phone_str.to_string(),
+            params: vec![Parameter::Type(Type::Work), Parameter::Type(Type::Voice)],
+        };
+        vcard.properties.push(Property::Tel(tel));
+    }
+    if let Some(org_str) = organization {
+        let parts: Vec<String> = org_str.split(';').map(|s| s.trim().to_string()).collect();
+        vcard.properties.push(Property::Org(Org { value: parts }));
+    }
+    if let Some(title_str) = title {
+        vcard.properties.push(Property::Title(Title {
+            value: title_str.to_string(),
+        }));
+    }
 
-    if let Some(email) = email {
-        lines.push(format!("EMAIL;type=INTERNET;type=WORK:{}", escape_text(email)));
+    Ok(vcard.to_string())
+}
+
+impl std::fmt::Display for Vcard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BEGIN:VCARD\r\nVERSION:3.0\r\n")?;
+        for prop in &self.properties {
+            match prop {
+                Property::Fn(fn_val) => {
+                    f.write_str(&format!("FN:{}\r\n", escape_text(&fn_val.value)))?;
+                }
+                Property::Email(email) => {
+                    f.write_str(&format!("EMAIL;type=INTERNET;type=WORK:{}\r\n", escape_text(&email.email)))?;
+                }
+                Property::Tel(tel) => {
+                    let param_str = if tel.params.is_empty() {
+                        String::new()
+                    } else {
+                        tel.params.iter().map(|p| match p {
+                            Parameter::Type(tp) => match tp {
+                                Type::Work => "type=WORK",
+                                Type::Home => "type=HOME",
+                                Type::Voice => "type=VOICE",
+                                Type::Cell => "type=CELL",
+                            },
+                        }).collect::<Vec<_>>().join(";")
+                    };
+                    if param_str.is_empty() {
+                        f.write_str(&format!("TEL:{}\r\n", escape_text(&tel.number)))?;
+                    } else {
+                        f.write_str(&format!("TEL;{}:{}\r\n", param_str, escape_text(&tel.number)))?;
+                    }
+                }
+                Property::Org(org) => {
+                    let org_str = org.value.join(";");
+                    f.write_str(&format!("ORG:{}\r\n", escape_text(&org_str)))?;
+                }
+                Property::Title(title) => {
+                    f.write_str(&format!("TITLE:{}\r\n", escape_text(&title.value)))?;
+                }
+                Property::N(name) => {
+                    f.write_str(&format!("N:{};;;;\r\n", escape_text(&name.value)))?;
+                }
+                Property::Uid(uid) => {
+                    f.write_str(&format!("UID:{}\r\n", uid.value))?;
+                }
+            }
+        }
+        f.write_str("END:VCARD")?;
+        Ok(())
     }
-    if let Some(phone) = phone {
-        lines.push(format!("TEL;type=WORK;type=VOICE:{}", escape_text(phone)));
-    }
-    if let Some(org) = organization {
-        lines.push(format!("ORG:{}", escape_text(org)));
-    }
-    if let Some(t) = title {
-        lines.push(format!("TITLE:{}", escape_text(t)));
+}
+
+impl Vcard {
+    /// Extract full name from FN property
+    pub fn full_name(&self) -> Option<&str> {
+        for prop in &self.properties {
+            if let Property::Fn(fn_val) = prop {
+                return Some(fn_val.value.as_str());
+            }
+        }
+        None
     }
 
-    lines.push("END:VCARD".to_string());
-    Ok(lines.join("\r\n"))
+    /// Get email addresses
+    pub fn emails(&self) -> Vec<&str> {
+        let mut emails = Vec::new();
+        for prop in &self.properties {
+            if let Property::Email(email) = prop {
+                emails.push(email.email.as_str());
+            }
+        }
+        emails
+    }
+
+    /// Get phone numbers
+    pub fn phones(&self) -> Vec<&str> {
+        let mut phones = Vec::new();
+        for prop in &self.properties {
+            if let Property::Tel(tel) = prop {
+                phones.push(tel.number.as_str());
+            }
+        }
+        phones
+    }
+
+    /// Get organization
+    pub fn org(&self) -> Option<Vec<String>> {
+        for prop in &self.properties {
+            if let Property::Org(org) = prop {
+                return Some(org.value.clone());
+            }
+        }
+        None
+    }
+
+    /// Get title
+    pub fn title(&self) -> Option<&str> {
+        for prop in &self.properties {
+            if let Property::Title(title) = prop {
+                return Some(title.value.as_str());
+            }
+        }
+        None
+    }
 }
 
 /// Escape text for vCard per RFC 6350 (minimal set)
@@ -169,11 +339,37 @@ ORG:Example Inc\r
 TITLE:Engineer\r
 END:VCARD";
         let v = parse_vcard_from_data(data).unwrap();
-        assert_eq!(v.full_name, "Test User");
-        assert_eq!(v.email[0].email, "test@example.com");
-        assert_eq!(v.telephone[0].number, "+123456789");
-        assert_eq!(v.org[0].value[0], "Example Inc");
-        assert_eq!(v.title.as_ref().unwrap().value, "Engineer");
-        assert_eq!(v.uid, Some("abc".to_string()));
+        // Use the new helper methods
+        assert_eq!(v.full_name(), Some("Test User"));
+        assert_eq!(v.emails(), vec!["test@example.com"]);
+        assert_eq!(v.phones(), vec!["+123456789"]);
+        assert_eq!(v.org(), Some(vec!["Example Inc".to_string()]));
+        assert_eq!(v.title(), Some("Engineer"));
+        // Check UID via property iteration
+        let mut found_uid = None;
+        for prop in &v.properties {
+            if let Property::Uid(uid) = prop {
+                found_uid = Some(&uid.value);
+                break;
+            }
+        }
+        assert_eq!(found_uid, Some(&"abc".to_string()));
+    }
+
+    #[test]
+    fn test_vcard_display() {
+        let v = Vcard {
+            properties: vec![
+                Property::Fn(Fn { value: "Test User".to_string() }),
+                Property::Uid(Uid { value: "uid123".to_string() }),
+                Property::Email(Email { email: "test@example.com".to_string() }),
+            ],
+        };
+        let s = v.to_string();
+        assert!(s.contains("BEGIN:VCARD"));
+        assert!(s.contains("FN:Test User"));
+        assert!(s.contains("EMAIL;type=INTERNET;type=WORK:test@example.com"));
+        assert!(s.contains("UID:uid123"));
+        assert!(s.contains("END:VCARD"));
     }
 }

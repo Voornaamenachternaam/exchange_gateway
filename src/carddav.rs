@@ -3,6 +3,7 @@ use crate::config::Config;
 use anyhow::{Result, anyhow};
 use reqwest::{Client, StatusCode};
 use std::time::Duration;
+use tracing::warn;
 
 /// CardDAV client for contacts sync.
 /// Supports Stalwart Mailserver v0.16.10 CardDAV endpoint at /dav/{user}/contacts/.

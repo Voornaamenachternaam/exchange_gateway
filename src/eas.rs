@@ -2968,6 +2968,30 @@ async fn handle_sync_collections(
             // Contacts sync via CardDAV with client mutation support
             let mut contact_mutation_responses = String::new();
 
+            // Setup permission enforcement for contacts
+            let coll_xml_ref = &coll.xml;
+            let owner = crate::ews::owner_from_username(username);
+            // Determine folder ID for permission checks (use collection_id)
+            let folder_id = if collection_id == "8" {
+                "8".to_string()
+            } else {
+                collection_id.to_string()
+            };
+            let enforcement = PermissionEnforcement::new(&state.storage);
+            let perm_ctx = PermissionContext::new(
+                username.to_string(),
+                owner.to_string(),
+                folder_id.clone(),
+            );
+
+            // Detect if there are client mutations (Add/Change/Delete)
+            let has_mutations = coll_xml_ref.contains("<Add")
+                || coll_xml_ref.contains("<Change")
+                || coll_xml_ref.contains("<Delete")
+                || coll_xml_ref.contains(":Add")
+                || coll_xml_ref.contains(":Change")
+                || coll_xml_ref.contains(":Delete");
+
             // Apply client mutations if present
             if has_mutations {
                 // Permission checks similar to calendar

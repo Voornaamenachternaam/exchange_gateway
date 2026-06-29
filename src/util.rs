@@ -12,6 +12,11 @@ pub fn xml_escape_text(s: &str) -> Cow<'_, str> {
     quick_xml::escape::partial_escape(s)
 }
 
+/// Alias for xml_escape for compatibility with existing code
+pub fn escape_xml_text(s: &str) -> Cow<'_, str> {
+    xml_escape(s)
+}
+
 pub fn sanitize_path_segment(s: &str) -> String {
     s.chars()
         .map(|c| {
