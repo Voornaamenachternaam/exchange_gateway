@@ -100,41 +100,59 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
         if line.starts_with(' ') || line.starts_with('\t') {
             continue;
         }
-        let Some((name, rest)) = line.split_once(':') else { continue };
+        // Split property name and value (property may contain parameters)
+        let Some((name_params, rest)) = line.split_once(':') else { continue };
         let value = rest.trim_start();
-        match name.to_ascii_uppercase().as_str() {
-            "FN" => out.properties.push(Property::Fn(Fn { value: value.to_string() })),
+
+        // Parse property name and optional parameters (e.g., "EMAIL;type=WORK")
+        let mut parts = name_params.split(';');
+        let name_upper = parts.next().unwrap_or("").to_ascii_uppercase();
+        let params = if let Some(param_str) = parts.next() {
+            // For simplicity, treat all params as Type parameters for now
+            vec![Parameter::Type(parse_type_param(param_str))]
+        } else {
+            vec![]
+        };
+
+        match name_upper.as_str() {
+            "FN" => out.properties.push(Property::Fn(Fn { 
+                value: unescape_text(value) 
+            })),
             "EMAIL" => {
                 out.properties.push(Property::Email(Email {
-                    email: value.to_string(),
+                    email: unescape_text(value),
                 }))
             }
             "TEL" => out.properties.push(Property::Tel(Tel {
-                number: value.to_string(),
-                params: vec![],
+                number: unescape_text(value),
+                params,
             })),
             "ORG" => {
-                let parts: Vec<String> = value.split(';').map(|s| s.trim().to_string()).collect();
+                // ORG value is a ';'-delimited list. Do NOT unescape inside ORG because ';' is structural.
+                let parts: Vec<String> = value.split(';')
+                    .map(|s| s.trim().to_string())
+                    .collect();
                 if !parts.is_empty() {
                     out.properties.push(Property::Org(Org { value: parts }));
                 }
             }
             "TITLE" => out.properties.push(Property::Title(Title {
-                value: value.to_string(),
+                value: unescape_text(value),
             })),
             "N" => {
+                // Structure: Family;Given;Additional;Prefix;Suffix
                 let comps: Vec<&str> = value.split(';').collect();
                 if let Some(fam) = comps.get(0) {
                     let mut nm = String::new();
                     if !fam.is_empty() {
-                        nm.push_str(fam);
+                        nm.push_str(&unescape_text(fam));
                     }
                     if let Some(given) = comps.get(1) {
                         if !given.is_empty() {
                             if !nm.is_empty() {
                                 nm.push(' ');
                             }
-                            nm.push_str(given);
+                            nm.push_str(&unescape_text(given));
                         }
                     }
                     if !nm.is_empty() {
@@ -149,6 +167,22 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
         }
     }
     Ok(out)
+}
+
+/// Parse a TYPE parameter value like "work,voice" into a Type enum.
+fn parse_type_param(s: &str) -> Type {
+    let lower = s.to_ascii_lowercase();
+    if lower.contains("work") {
+        Type::Work
+    } else if lower.contains("home") {
+        Type::Home
+    } else if lower.contains("cell") || lower.contains("mobile") {
+        Type::Cell
+    } else if lower.contains("voice") {
+        Type::Voice
+    } else {
+        Type::Work // default
+    }
 }
 
 /// Build a minimal vCard from contact fields.
@@ -224,8 +258,13 @@ impl std::fmt::Display for Vcard {
                     }
                 }
                 Property::Org(org) => {
-                    let org_str = org.value.join(";");
-                    f.write_str(&format!("ORG:{}\r\n", escape_text(&org_str)))?;
+                    // ORG components are joined by unescaped ';' as structural delimiters per RFC 6350.
+                    // We only escape each component individually, then join with ';'.
+                    let escaped_parts: Vec<String> = org.value.iter()
+                        .map(|part| escape_text(part))
+                        .collect();
+                    let org_line = format!("ORG:{}\r\n", escaped_parts.join(";"));
+                    f.write_str(&org_line)?;
                 }
                 Property::Title(title) => {
                     f.write_str(&format!("TITLE:{}\r\n", escape_text(&title.value)))?;
@@ -308,6 +347,27 @@ fn escape_text(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Unescape vCard text values: convert \, \\, \n, \r, \; to their literal forms.
+fn unescape_text(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some(';') => out.push(';'),
+                Some(',') => out.push(','),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                _ => out.push('\\'), // Keep backslash if unknown escape
+            }
+        } else {
+            out.push(ch);
         }
     }
     out
