@@ -215,86 +215,220 @@ impl CarddavClient {
 
     /// List contacts from the addressbook.
     /// Returns (contacts vec, sync_token). sync_token can be used for later sync queries.
-    pub async fn list_contacts(
-        &self,
-        username: &str,
-        password: &str,
-        _sync_token: Option<&str>,
-    ) -> Result<(Vec<Contact>, Option<String>)> {
-        let home = self.addressbook_home(username);
-        // PROPFIND body to request vCard data and getetags
-        let body = r#"<?xml version="1.0"?>
+    /// Fetch all contacts from the addressbook using a single addressbook-query REPORT.
+/// This is much more efficient than PROPFIND + individual GETs per contact.
+pub async fn list_contacts(
+    &self,
+    username: &str,
+    password: &str,
+    _sync_token: Option<&str>,
+) -> Result<(Vec<Contact>, Option<String>)> {
+    let home = self.addressbook_home(username);
+    
+    // Use CardDAV addressbook-query REPORT to fetch all vCards in a single request.
+    // This returns <address-data> containing full vCard for each contact.
+    let query_body = r#"<?xml version="1.0"?>
+<C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">
+  <D:prop>
+    <D:getetag/>
+    <C:address-data/>
+  </D:prop>
+</C:addressbook-query>"#;
+
+    let resp = self
+        .client
+        .request(reqwest::Method::from_bytes(b"REPORT")?, &home)
+        .basic_auth(username, Some(password))
+        .header("Depth", "1")
+        .header("Content-Type", "text/xml")
+        .body(query_body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        // If REPORT is not supported, fall back to PROPFIND+multiget
+        return self.list_contacts_fallback(username, password).await;
+    }
+
+    let xml = resp.text().await?;
+    let doc = roxmltree::Document::parse(&xml).map_err(|e| anyhow!("XML parse error: {}", e))?;
+
+    let mut contacts = Vec::new();
+    let mut new_sync_token = None;
+
+    // Process each <D:response> element containing a contact
+    for resp_elem in doc.descendants().filter(|n| n.has_tag_name("response")) {
+        let href_elem = resp_elem.descendants().find(|n| n.has_tag_name("href"));
+        let etag_elem = resp_elem.descendants().find(|n| n.has_tag_name("getetag"));
+        let addr_elem = resp_elem.descendants().find(|n| n.has_tag_name("address-data"));
+
+        if let (Some(href_node), Some(etag_node)) = (href_elem, etag_elem) {
+            let href = href_node.text().unwrap_or("").trim().to_string();
+            let etag = etag_node.text().unwrap_or("").trim().to_string();
+            
+            // Extract vCard from <address-data> if present, otherwise will fetch via GET later
+            let vcard = if let Some(addr_node) = addr_elem {
+                // address-data may contain CDATA or direct text; concatenate all text nodes
+                addr_node.text().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            } else {
+                None
+            };
+
+            // Only include contacts (skip collection itself)
+            if !href.is_empty() && etag != "\"\"" && !href.ends_with('/') {
+                // If vCard missing from REPORT, fetch it separately (shouldn't happen with Stalwart)
+                let vcard = if let Some(vc) = vcard {
+                    vc
+                } else {
+                    // Fallback: GET the vCard (rare)
+                    let contact_url = format!("{}{}", home, &href);
+                    match self.client.get(&contact_url)
+                        .basic_auth(username, Some(password))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => resp.text().await.unwrap_or_default(),
+                        _ => continue,
+                    }
+                };
+                
+                contacts.push(Contact {
+                    href,
+                    etag,
+                    vcard,
+                });
+            }
+        }
+
+        // Capture sync token if available
+        if new_sync_token.is_none() {
+            if let Some(etag_elem) = resp_elem.descendants().find(|n| n.has_tag_name("sync-token")) {
+                if let Some(tok) = etag_elem.text() {
+                    new_sync_token = Some(tok.trim().to_string());
+                }
+            }
+        }
+    }
+
+    Ok((contacts, new_sync_token))
+}
+
+/// Fallback implementation using PROPFIND + individual GETs.
+/// Retained for compatibility with CardDAV servers that don't support addressbook-query.
+async fn list_contacts_fallback(
+    &self,
+    username: &str,
+    password: &str,
+) -> Result<(Vec<Contact>, Option<String>)> {
+    let home = self.addressbook_home(username);
+    // PROPFIND body to request etags only
+    let body = r#"<?xml version="1.0"?>
 <D:propfind xmlns:D="DAV:">
   <D:prop>
     <D:getetag/>
-    <D:getcontenttype/>
   </D:prop>
 </D:propfind>"#;
 
+    let resp = self
+        .client
+        .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home)
+        .basic_auth(username, Some(password))
+        .header("Depth", "1")
+        .header("Content-Type", "text/xml")
+        .body(body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(anyhow!("CardDAV PROPFIND failed: {}", resp.status()));
+    }
+
+    let xml = resp.text().await?;
+    let doc = roxmltree::Document::parse(&xml).map_err(|e| anyhow!("XML parse error: {}", e))?;
+
+    let mut contacts = Vec::new();
+    let mut new_sync_token = None;
+
+    // Collect hrefs/etags first
+    let mut items = Vec::new();
+    for resp_elem in doc.descendants().filter(|n| n.has_tag_name("response")) {
+        let href_elem = resp_elem.descendants().find(|n| n.has_tag_name("href"));
+        let etag_elem = resp_elem.descendants().find(|n| n.has_tag_name("getetag"));
+
+        if let (Some(href_node), Some(etag_node)) = (href_elem, etag_elem) {
+            let href = href_node.text().unwrap_or("").trim().to_string();
+            let etag = etag_node.text().unwrap_or("").trim().to_string();
+            if !href.is_empty() && etag != "\"\"" && !href.ends_with('/') {
+                items.push((href, etag));
+            }
+        }
+    }
+
+    // Batch fetch vCards in a single multiget REPORT for remaining items
+    // (More efficient than individual GETs)
+    if !items.is_empty() {
+        // Build a multi-get REPORT using <address-data> requests
+        let report_body = format!(r#"<?xml version="1.0"?>
+<C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">
+  <D:prop>
+    <D:getetag/>
+    <C:address-data/>
+  </D:prop>
+  <C:filter/>
+</C:addressbook-query>"#);
+
         let resp = self
             .client
-            .request(reqwest::Method::from_bytes(b"PROPFIND")?, &home)
+            .request(reqwest::Method::from_bytes(b"REPORT")?, &home)
             .basic_auth(username, Some(password))
             .header("Depth", "1")
             .header("Content-Type", "text/xml")
-            .body(body)
+            .body(report_body)
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            return Err(anyhow!("CardDAV PROPFIND failed: {}", resp.status()));
-        }
+        if resp.status().is_success() {
+            if let Ok(xml) = resp.text().await {
+                if let Ok(doc) = roxmltree::Document::parse(&xml) {
+                    for resp_elem in doc.descendants().filter(|n| n.has_tag_name("response")) {
+                        let href_elem = resp_elem.descendants().find(|n| n.has_tag_name("href"));
+                        let etag_elem = resp_elem.descendants().find(|n| n.has_tag_name("getetag"));
+                        let addr_elem = resp_elem.descendants().find(|n| n.has_tag_name("address-data"));
 
-        let xml = resp.text().await?;
-        let doc = roxmltree::Document::parse(&xml).map_err(|e| anyhow!("XML parse error: {}", e))?;
-
-        let mut contacts = Vec::new();
-        let mut new_sync_token = None;
-
-        // Process <D:response> elements
-        for resp_elem in doc.descendants().filter(|n| n.has_tag_name("response")) {
-            let href_elem = resp_elem.descendants().find(|n| n.has_tag_name("href"));
-            let etag_elem = resp_elem.descendants().find(|n| n.has_tag_name("getetag"));
-            let status_elem = resp_elem.descendants().find(|n| n.has_tag_name("status"));
-
-            // Only process successful responses with a href and etag
-            if let (Some(href_node), Some(etag_node)) = (href_elem, etag_elem) {
-                let href = href_node.text().unwrap_or("").trim().to_string();
-                let etag = etag_node.text().unwrap_or("").trim().to_string();
-
-                // Skip the collection itself (href refers to addressbook collection, not item)
-                if !href.is_empty() && etag != "\"\"" && !href.ends_with('/') {
-                    // Fetch the vCard data for this contact
-                    let contact_url = format!("{}{}", home, href);
-                    let vcard_resp = self
-                        .client
-                        .get(&contact_url)
-                        .basic_auth(username, Some(password))
-                        .send()
-                        .await?;
-                    if vcard_resp.status().is_success() {
-                        let vcard_text = vcard_resp.text().await?;
-                        contacts.push(Contact {
-                            href,
-                            etag,
-                            vcard: vcard_text,
-                        });
+                        if let (Some(href_node), Some(etag_node)) = (href_elem, etag_elem) {
+                            let href = href_node.text().unwrap_or("").trim().to_string();
+                            let etag = etag_node.text().unwrap_or("").trim().to_string();
+                            let vcard = addr_elem.and_then(|n| n.text()).unwrap_or("").trim().to_string();
+                            if !vcard.is_empty() && !href.is_empty() && etag != "\"\"" {
+                                contacts.push(Contact { href, etag, vcard });
+                            }
+                        }
                     }
-                }
-            }
-
-            // Capture sync token if available (unused currently but returned for future)
-            if new_sync_token.is_none() {
-                if let Some(etag_elem) = resp_elem.descendants().find(|n| n.has_tag_name("sync-token")) {
-                    if let Some(tok) = etag_elem.text() {
-                        new_sync_token = Some(tok.trim().to_string());
-                    }
+                    return Ok((contacts, new_sync_token));
                 }
             }
         }
-
-        Ok((contacts, new_sync_token))
     }
+
+    // If REPORT fails, fall back to individual GETs
+    for (href, etag) in items {
+        let contact_url = format!("{}{}", home, href);
+        match self.client.get(&contact_url)
+            .basic_auth(username, Some(password))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() && resp.text().await.map(|t| !t.is_empty()).unwrap_or(false) => {
+                if let Ok(vcard_text) = resp.text().await {
+                    contacts.push(Contact { href, etag, vcard: vcard_text });
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    Ok((contacts, new_sync_token))
+}
 }
 
 #[cfg(test)]

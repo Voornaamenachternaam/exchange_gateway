@@ -136,6 +136,11 @@ pub async fn sync_contacts(
     };
     let (carddav_contacts, _new_sync_token) = carddav.list_contacts(username, password, None).await?;
 
+    // Build HashSet of current CardDAV hrefs for O(1) deletion checks
+    let carddav_hrefs: std::collections::HashSet<_> = carddav_contacts.iter()
+        .map(|c| &c.href)
+        .collect();
+
     // 3. Build lookup of DB contacts by server_id and href
     let db_contacts_by_server_id: std::collections::HashMap<_, _> = state
         .storage
@@ -156,7 +161,7 @@ pub async fn sync_contacts(
     let mut deletes = Vec::new();
 
     for c in &carddav_contacts {
-        // Check if this contact exists in DB by href
+        // Check if this contact exists in DB by href (O(1) via HashMap)
         if let Some(db_row) = db_contacts_by_href.get(&c.href) {
             // Exists: compare etag to see if changed
             if db_row.etag.as_deref() != Some(c.etag.as_str()) {
@@ -178,9 +183,9 @@ pub async fn sync_contacts(
         }
     }
 
-    // Deletions: any DB contact whose href is not in current CardDAV list
+    // Deletions: any DB contact whose href is not in current CardDAV list (now O(N+M))
     for (server_id, db_row) in db_contacts_by_server_id {
-        if !carddav_contacts.iter().any(|c| c.href == db_row.carddav_href) {
+        if !carddav_hrefs.contains(&db_row.carddav_href) {
             deletes.push(server_id);
             state.storage.delete_contact(username, &server_id).await?;
         }
