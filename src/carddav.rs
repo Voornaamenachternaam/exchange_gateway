@@ -16,7 +16,7 @@ pub struct CarddavClient {
 #[derive(Debug, Clone)]
 pub struct Contact {
     pub href: String,
-    pub etag: String,
+    pub etag: Option<String>,
     pub vcard: String,
 }
 
@@ -400,7 +400,7 @@ async fn list_contacts_fallback(
                             let etag = etag_node.text().unwrap_or("").trim().to_string();
                             let vcard = addr_elem.and_then(|n| n.text()).unwrap_or("").trim().to_string();
                             if !vcard.is_empty() && !href.is_empty() && etag != "\"\"" {
-                                contacts.push(Contact { href, etag, vcard });
+                                contacts.push(Contact { href, etag: Some(etag), vcard });
                             }
                         }
                     }
@@ -418,9 +418,11 @@ async fn list_contacts_fallback(
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() && resp.text().await.map(|t| !t.is_empty()).unwrap_or(false) => {
-                if let Ok(vcard_text) = resp.text().await {
-                    contacts.push(Contact { href, etag, vcard: vcard_text });
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.ok();
+                if status.is_success() && body.as_ref().map(|t| !t.is_empty()).unwrap_or(false) {
+                    contacts.push(Contact { href, etag: Some(etag), vcard: body.unwrap() });
                 }
             }
             _ => continue,

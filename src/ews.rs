@@ -2037,6 +2037,7 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
     let paged_contacts = carddav_contacts.into_iter().skip(offset).take(max).collect::<Vec<_>>();
 
     let mut items_xml = String::new();
+    let mut actual_count = 0;
     for (idx, contact) in paged_contacts.iter().enumerate() {
         // Use a deterministic server_id based on href to avoid churn
         let server_id = format!("contact-{}", sha256_hash(&contact.href));
@@ -2065,7 +2066,9 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
             )
             .await
         {
-            tracing::warn!(?server_id, error = %e, "Failed to upsert contact mapping in DB");
+            tracing::warn!(?server_id, error = %e, "Failed to upsert contact mapping in DB, skipping this contact in FindItem");
+            // Skip this contact - without DB mapping, subsequent Get/Update/Delete will fail
+            continue;
         }
 
         // Parse vCard to extract properties for EWS Contact shape
@@ -2077,14 +2080,15 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
         // Build Contact XML per EWS schema
         let contact_xml = render_ews_contact(&server_id, &change_key, &vcard, shape);
         items_xml.push_str(&contact_xml);
+        actual_count += 1;
     }
 
     let response = format!(
         r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="{}" IndexedPagingOffset="{}"><t:Items>{}</t:Items></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        total_items,
-        if offset + max >= total_items { "true" } else { "false" },
+        actual_count,
+        if offset + actual_count >= total_items { "true" } else { "false" },
         offset,
         items_xml
     );

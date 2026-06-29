@@ -353,6 +353,7 @@ fn escape_text(s: &str) -> String {
 }
 
 /// Unescape vCard text values: convert \, \\, \n, \r, \; to their literal forms.
+/// Per RFC 6350 §3.4, both \n and \N represent newline. Unknown escapes preserve both characters.
 fn unescape_text(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars().peekable();
@@ -362,9 +363,17 @@ fn unescape_text(s: &str) -> String {
                 Some('\\') => out.push('\\'),
                 Some(';') => out.push(';'),
                 Some(',') => out.push(','),
-                Some('n') => out.push('\n'),
+                Some('n') | Some('N') => out.push('\n'), // RFC 6350: both \n and \N => newline
                 Some('r') => out.push('\r'),
-                _ => out.push('\\'), // Keep backslash if unknown escape
+                Some(other) => {
+                    // Unknown escape: preserve backslash and the character
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => {
+                    // Trailing backslash with no escape char
+                    out.push('\\');
+                }
             }
         } else {
             out.push(ch);

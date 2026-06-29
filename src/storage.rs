@@ -1315,33 +1315,23 @@ impl Storage {
         etag: Option<&str>,
         vcard: Option<&str>,
     ) -> Result<()> {
-        // Try update first; if no rows affected, insert.
-        let result = sqlx::query(
-            "UPDATE contact_map SET server_id = ?2, etag = ?3, vcard = ?4, updated_at = CURRENT_TIMESTAMP WHERE owner = ?1 AND carddav_href = ?5"
+        // Use INSERT ... ON CONFLICT to atomically upsert, avoiding race conditions
+        sqlx::query(
+            "INSERT INTO contact_map (owner, carddav_href, server_id, etag, vcard) VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(owner, carddav_href) DO UPDATE SET \
+             server_id = excluded.server_id, \
+             etag = excluded.etag, \
+             vcard = excluded.vcard, \
+             updated_at = CURRENT_TIMESTAMP"
         )
         .bind(owner)
+        .bind(carddav_href)
         .bind(server_id)
         .bind(etag)
         .bind(vcard)
-        .bind(carddav_href)
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-
-        if result.rows_affected() == 0 {
-            // No existing contact with this href; insert new
-            sqlx::query(
-                "INSERT INTO contact_map (owner, carddav_href, server_id, etag, vcard) VALUES (?1, ?2, ?3, ?4, ?5)"
-            )
-            .bind(owner)
-            .bind(carddav_href)
-            .bind(server_id)
-            .bind(etag)
-            .bind(vcard)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        }
         Ok(())
     }
 

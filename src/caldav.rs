@@ -565,8 +565,14 @@ impl CaldavClient {
         resource_href: Option<&str>,
     ) -> Result<String> {
         if let Some(resource_href) = resource_href {
-            return self.absolute_url(resource_href);
+            // Join the resource_href to the collection base URL
+            let collection_url = self.absolute_url(collection_href)?;
+            let base = reqwest::Url::parse(&collection_url)?;
+            // Remove leading slash from resource_href to avoid replacing entire path
+            let clean_href = resource_href.trim_start_matches('/');
+            return Ok(base.join(clean_href)?.to_string());
         }
+        // No resource specified: generate a new .ics file in the collection
         let collection = self.absolute_url(collection_href)?;
         let base = reqwest::Url::parse(&collection)?;
         Ok(base.join(&format!("{}.ics", Uuid::new_v4()))?.to_string())
