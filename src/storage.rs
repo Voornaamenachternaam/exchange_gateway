@@ -1304,6 +1304,47 @@ impl Storage {
         Ok(())
     }
 
+    /// Upsert a contact: insert or update based on owner+carddav_href uniqueness.
+    /// If a contact with the same owner and href exists, update its server_id, etag, vcard.
+    /// Otherwise insert a new mapping.
+    pub async fn upsert_contact(
+        &self,
+        owner: &str,
+        carddav_href: &str,
+        server_id: &str,
+        etag: Option<&str>,
+        vcard: Option<&str>,
+    ) -> Result<()> {
+        // Try update first; if no rows affected, insert.
+        let result = sqlx::query(
+            "UPDATE contact_map SET server_id = ?2, etag = ?3, vcard = ?4, updated_at = CURRENT_TIMESTAMP WHERE owner = ?1 AND carddav_href = ?5"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .bind(etag)
+        .bind(vcard)
+        .bind(carddav_href)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        if result.rows_affected() == 0 {
+            // No existing contact with this href; insert new
+            sqlx::query(
+                "INSERT INTO contact_map (owner, carddav_href, server_id, etag, vcard) VALUES (?1, ?2, ?3, ?4, ?5)"
+            )
+            .bind(owner)
+            .bind(carddav_href)
+            .bind(server_id)
+            .bind(etag)
+            .bind(vcard)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        Ok(())
+    }
+
     /// Delete a contact by server_id.
     pub async fn delete_contact(&self, owner: &str, server_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM contact_map WHERE owner = ?1 AND server_id = ?2")

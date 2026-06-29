@@ -2040,7 +2040,33 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
     for (idx, contact) in paged_contacts.iter().enumerate() {
         // Use a deterministic server_id based on href to avoid churn
         let server_id = format!("contact-{}", sha256_hash(&contact.href));
-        let change_key = server_id.clone(); // For contacts, we don't have a true change key; use server_id
+        
+        // Generate ChangeKey: include etag and a timestamp component to indicate changes.
+        // Per RFC 7252, ChangeKey should change when content changes.
+        // We'll use: format!("{}-{}", server_id, current timestamp in seconds)
+        // For stability, we'll use the contact's etag if available, else a timestamp.
+        let change_key = if let Some(ref etag) = contact.etag {
+            // Use a compound key: server_id + etag (etag changes when vcard changes)
+            format!("{}-{}", server_id, etag)
+        } else {
+            // No etag from server; use timestamp to indicate potential future changes
+            format!("{}-{}", server_id, chrono::Utc::now().timestamp())
+        };
+
+        // Register/update this contact mapping in the database to support subsequent GetItem/UpdateItem/DeleteItem
+        if let Err(e) = state
+            .storage
+            .upsert_contact(
+                &owner,
+                &contact.href,
+                &server_id,
+                contact.etag.as_deref(),
+                Some(&contact.vcard),
+            )
+            .await
+        {
+            tracing::warn!(?server_id, error = %e, "Failed to upsert contact mapping in DB");
+        }
 
         // Parse vCard to extract properties for EWS Contact shape
         let vcard = parse_vcard_from_data(&contact.vcard).unwrap_or_else(|_| {
