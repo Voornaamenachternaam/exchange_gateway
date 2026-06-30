@@ -294,19 +294,18 @@ pub async fn list_contacts(
                 
                 contacts.push(Contact {
                     href,
-                    etag,
+                    etag: Some(etag),
                     vcard,
                 });
             }
         }
 
-        // Capture sync token if available
-        if new_sync_token.is_none() {
-            if let Some(etag_elem) = resp_elem.descendants().find(|n| n.has_tag_name("sync-token")) {
-                if let Some(tok) = etag_elem.text() {
-                    new_sync_token = Some(tok.trim().to_string());
-                }
-            }
+        // Capture sync token if available (only first occurrence)
+        if new_sync_token.is_none()
+            && let Some(etag_elem) = resp_elem.descendants().find(|n| n.has_tag_name("sync-token"))
+            && let Some(tok) = etag_elem.text()
+        {
+            new_sync_token = Some(tok.trim().to_string());
         }
     }
 
@@ -347,7 +346,7 @@ async fn list_contacts_fallback(
     let doc = roxmltree::Document::parse(&xml).map_err(|e| anyhow!("XML parse error: {}", e))?;
 
     let mut contacts = Vec::new();
-    let mut new_sync_token = None;
+    let new_sync_token = None;
 
     // Collect hrefs/etags first
     let mut items = Vec::new();
@@ -368,14 +367,14 @@ async fn list_contacts_fallback(
     // (More efficient than individual GETs)
     if !items.is_empty() {
         // Build a multi-get REPORT using <address-data> requests
-        let report_body = format!(r#"<?xml version="1.0"?>
+        let report_body = r#"<?xml version="1.0"?>
 <C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">
   <D:prop>
     <D:getetag/>
     <C:address-data/>
   </D:prop>
   <C:filter/>
-</C:addressbook-query>"#);
+</C:addressbook-query>"#.to_string();
 
         let resp = self
             .client
@@ -387,26 +386,25 @@ async fn list_contacts_fallback(
             .send()
             .await?;
 
-        if resp.status().is_success() {
-            if let Ok(xml) = resp.text().await {
-                if let Ok(doc) = roxmltree::Document::parse(&xml) {
-                    for resp_elem in doc.descendants().filter(|n| n.has_tag_name("response")) {
-                        let href_elem = resp_elem.descendants().find(|n| n.has_tag_name("href"));
-                        let etag_elem = resp_elem.descendants().find(|n| n.has_tag_name("getetag"));
-                        let addr_elem = resp_elem.descendants().find(|n| n.has_tag_name("address-data"));
+        if resp.status().is_success()
+            && let Ok(xml) = resp.text().await
+            && let Ok(doc) = roxmltree::Document::parse(&xml)
+        {
+            for resp_elem in doc.descendants().filter(|n| n.has_tag_name("response")) {
+                let href_elem = resp_elem.descendants().find(|n| n.has_tag_name("href"));
+                let etag_elem = resp_elem.descendants().find(|n| n.has_tag_name("getetag"));
+                let addr_elem = resp_elem.descendants().find(|n| n.has_tag_name("address-data"));
 
-                        if let (Some(href_node), Some(etag_node)) = (href_elem, etag_elem) {
-                            let href = href_node.text().unwrap_or("").trim().to_string();
-                            let etag = etag_node.text().unwrap_or("").trim().to_string();
-                            let vcard = addr_elem.and_then(|n| n.text()).unwrap_or("").trim().to_string();
-                            if !vcard.is_empty() && !href.is_empty() && etag != "\"\"" {
-                                contacts.push(Contact { href, etag: Some(etag), vcard });
-                            }
-                        }
+                if let (Some(href_node), Some(etag_node)) = (href_elem, etag_elem) {
+                    let href = href_node.text().unwrap_or("").trim().to_string();
+                    let etag = etag_node.text().unwrap_or("").trim().to_string();
+                    let vcard = addr_elem.and_then(|n| n.text()).unwrap_or("").trim().to_string();
+                    if !vcard.is_empty() && !href.is_empty() && etag != "\"\"" {
+                        contacts.push(Contact { href, etag: Some(etag), vcard });
                     }
-                    return Ok((contacts, new_sync_token));
                 }
             }
+            return Ok((contacts, new_sync_token));
         }
     }
 

@@ -142,18 +142,18 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
             "N" => {
                 // Structure: Family;Given;Additional;Prefix;Suffix
                 let comps: Vec<&str> = value.split(';').collect();
-                if let Some(fam) = comps.get(0) {
+                if let Some(fam) = comps.first() {
                     let mut nm = String::new();
                     if !fam.is_empty() {
                         nm.push_str(&unescape_text(fam));
                     }
-                    if let Some(given) = comps.get(1) {
-                        if !given.is_empty() {
-                            if !nm.is_empty() {
-                                nm.push(' ');
-                            }
-                            nm.push_str(&unescape_text(given));
+                    if let Some(given) = comps.get(1)
+                        && !given.is_empty()
+                    {
+                        if !nm.is_empty() {
+                            nm.push(' ');
                         }
+                        nm.push_str(&unescape_text(given));
                     }
                     if !nm.is_empty() {
                         out.properties.push(Property::N(Name { value: nm }));
@@ -208,7 +208,7 @@ pub fn build_vcard(
         }));
     }
     if let Some(phone_str) = phone {
-        let mut tel = Tel {
+        let tel = Tel {
             number: phone_str.to_string(),
             params: vec![Parameter::Type(Type::Work), Parameter::Type(Type::Voice)],
         };
@@ -330,6 +330,16 @@ impl Vcard {
         for prop in &self.properties {
             if let Property::Title(title) = prop {
                 return Some(title.value.as_str());
+            }
+        }
+        None
+    }
+
+    /// Get structured name (N property) first component
+    pub fn name(&self) -> Option<&str> {
+        for prop in &self.properties {
+            if let Property::N(name) = prop {
+                return Some(name.value.as_str());
             }
         }
         None

@@ -1382,7 +1382,11 @@ impl Storage {
 
     /// Get sync token for contacts collection (reuses the sync_state table with collection_id = "8").
     pub async fn get_contacts_sync_token(&self, owner: &str, device_id: &str) -> Result<Option<String>> {
-        self.get_sync_key(owner, &format!("8::{}", device_id)).await
+        match self.get_sync_key(owner, &format!("8::{}", device_id)).await {
+            Ok(Some((sync_key, _token))) => Ok(Some(sync_key)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Set sync token for contacts collection.

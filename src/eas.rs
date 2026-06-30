@@ -3026,11 +3026,12 @@ async fn handle_sync_collections(
 
                 if !ok {
                     // Permission denied for mutations
-                    return format!(
+                    let xml = format!(
                         "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
                         xml_escape(incoming_key),
                         xml_escape(collection_id)
                     );
+                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
                 }
 
                 // Apply the client mutations
@@ -3040,39 +3041,45 @@ async fn handle_sync_collections(
                     }
                     Err(e) => {
                         tracing::error!(request_id = %request_id, error = %e, "Failed to apply contacts mutations");
-                        return format!(
+                        let xml = format!(
                             "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
                             xml_escape(incoming_key),
                             xml_escape(collection_id)
                         );
+                        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
                     }
                 }
             }
 
             // Perform server-side sync to fetch changes (after applying client mutations)
-            match crate::contacts::sync_contacts(state, username, password, Some(incoming_key), device_id).await {
+            match crate::contacts::sync_contacts(state, username, password.expose_secret(), Some(incoming_key), device_id).await {
                 Ok(server_changes_xml) => {
                     // Fetch the new sync key stored by sync_contacts
-                    let new_sync_key = state
-                        .storage
-                        .get_sync_key(username, &state_collection_id, "Contacts")
-                        .await?
-                        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
-                    format!(
+                    let new_sync_key = match state.storage.get_sync_key(username, &state_collection_id).await {
+                        Ok(Some((key, _))) => key,
+                        Ok(None) => Uuid::new_v4().simple().to_string(),
+                        Err(_) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, "Failed to get sync key for contacts, generating fresh");
+                            Uuid::new_v4().simple().to_string()
+                        }
+                    };
+                    let xml = format!(
                         "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
                         xml_escape(&new_sync_key),
                         xml_escape(collection_id),
                         contact_mutation_responses,
                         server_changes_xml
-                    )
+                    );
+                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Contacts sync failed");
-                    format!(
+                    let xml = format!(
                         "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
                         xml_escape(incoming_key),
                         xml_escape(collection_id)
-                    )
+                    );
+                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
                 }
             }
         } else {

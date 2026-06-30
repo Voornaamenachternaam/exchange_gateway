@@ -8,9 +8,8 @@ use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
 };
-use crate::carddav::CarddavClient;
-use crate::contacts::render_eas_contact; // not needed for EWS; we have separate render
-use crate::vcard::{parse_vcard_from_data, Vcard};
+// CarddavClient import removed - type inferred via usage
+use crate::vcard::{self, parse_vcard_from_data, Vcard};
 
 use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
@@ -52,7 +51,6 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use tracing::warn;
-use uuid::Uuid;
 
 #[derive(Clone)]
 struct AuthContext {
@@ -2038,7 +2036,7 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
 
     let mut items_xml = String::new();
     let mut actual_count = 0;
-    for (idx, contact) in paged_contacts.iter().enumerate() {
+    for contact in paged_contacts.iter() {
         // Use a deterministic server_id based on href to avoid churn
         let server_id = format!("contact-{}", sha256_hash(&contact.href));
         
@@ -2055,6 +2053,7 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
         };
 
         // Register/update this contact mapping in the database to support subsequent GetItem/UpdateItem/DeleteItem
+        #[allow(clippy::needless_borrow)]
         if let Err(e) = state
             .storage
             .upsert_contact(
@@ -2113,10 +2112,10 @@ async fn handle_get_contact_item(state: &Arc<AppState>, auth: &AuthContext, body
 
     let mut item_ids = Vec::new();
     for node in doc.descendants() {
-        if node.has_tag_name("ItemId") {
-            if let Some(id) = node.attribute("Id") {
-                item_ids.push(id.to_string());
-            }
+        if node.has_tag_name("ItemId")
+            && let Some(id) = node.attribute("Id")
+        {
+            item_ids.push(id.to_string());
         }
     }
 
@@ -2159,19 +2158,19 @@ async fn handle_get_contact_item(state: &Arc<AppState>, auth: &AuthContext, body
             // Fetch latest vCard from CardDAV using href (or use stored vCard if fetch fails)
             let vcard_str = match carddav
                 .client
-                .get(&format!("{}{}", carddav.addressbook_home(&auth.username), row.carddav_href))
+                .get(format!("{}{}", carddav.addressbook_home(&auth.username), row.carddav_href))
                 .basic_auth(&auth.username, Some(auth.password.expose_secret()))
                 .send()
                 .await
             {
                 Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
-                _ => Some(row.vcard.clone()),
+                _ => row.vcard.clone(),
             };
 
             let vcard = vcard_str
                 .as_ref()
                 .and_then(|s| parse_vcard_from_data(s).ok())
-                .unwrap_or_else(|| Vcard::default());
+                .unwrap_or_else(Vcard::default);
 
             let change_key = row.etag.clone().unwrap_or_else(|| server_id.clone());
             let contact_xml = render_ews_contact(&row.server_id, &change_key, &vcard, shape);
@@ -2201,20 +2200,14 @@ async fn handle_get_contact_item(state: &Arc<AppState>, auth: &AuthContext, body
 }
 
 /// Render a vCard as an EWS Contact element.
-fn render_ews_contact(server_id: &str, change_key: &str, vcard: &Vcard, shape: ItemShape) -> String {
-    // Determine display name: use full_name if non-empty, else first N component
-    let display_name = if !vcard.full_name.is_empty() {
-        vcard.full_name.as_str()
-    } else if let Some(first) = vcard.name.first() {
-        first.value.as_str()
-    } else {
-        ""
-    };
-    let email = vcard.email.first().map(|e| e.email.as_str()).unwrap_or("");
-    let phone = vcard.telephone.first().map(|t| t.number.as_str()).unwrap_or("");
+fn render_ews_contact(server_id: &str, change_key: &str, vcard: &Vcard, _shape: ItemShape) -> String {
+    // Determine display name: use full_name if non-empty, else N property
+    let display_name = vcard.full_name().or_else(|| vcard.name()).unwrap_or_default();
+    let email = vcard.emails().first().copied().unwrap_or("");
+    let phone = vcard.phones().first().copied().unwrap_or("");
     // ORG value is components joined by ';'
-    let org = vcard.org.first().map(|o| o.value.join(";")).unwrap_or_default();
-    let title = vcard.title.as_ref().map(|t| t.value.as_str()).unwrap_or("");
+    let org = vcard.org().as_deref().map(|o| o.join(";")).unwrap_or_default();
+    let title = vcard.title().unwrap_or("");
 
     let mut xml = String::new();
     xml.push_str("<t:Contact>");
@@ -2289,19 +2282,19 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
             "EmailAddresses" => {
                 // Look for <t:Entry Key="EmailAddress1">value</t:Entry>
                 for entry in node.children() {
-                    if entry.has_tag_name("Entry") {
-                        if entry.attribute("Key") == Some("EmailAddress1") {
-                            email = entry.text().map(str::to_string);
-                        }
+                    if entry.has_tag_name("Entry")
+                        && entry.attribute("Key") == Some("EmailAddress1")
+                    {
+                        email = entry.text().map(str::to_string);
                     }
                 }
             }
             "PhoneNumbers" => {
                 for entry in node.children() {
-                    if entry.has_tag_name("Entry") {
-                        if entry.attribute("Key") == Some("Phone") {
-                            phone = entry.text().map(str::to_string);
-                        }
+                    if entry.has_tag_name("Entry")
+                        && entry.attribute("Key") == Some("Phone")
+                    {
+                        phone = entry.text().map(str::to_string);
                     }
                 }
             }
@@ -2354,15 +2347,15 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
     if let Err(e) = state
         .storage
-        .insert_contact(&auth.username, &href, &server_id, etag.as_deref(), Some(vcard_str.as_str()))
+        .insert_contact(&auth.username, &href, &server_id, Some(etag.as_str()), Some(vcard_str.as_str()))
         .await
     {
         tracing::error!(error = %e, "Failed to store contact in DB");
         // Continue anyway; we have the contact on server.
     }
 
-    // Return ItemId with ChangeKey = server_id (or use etag if available)
-    let change_key = etag.unwrap_or_else(|| server_id.clone());
+    // Return ItemId with ChangeKey = etag if non-empty, else server_id
+    let change_key = if etag.is_empty() { server_id.clone() } else { etag };
     let response_xml = format!(
         r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Contact><t:ItemId Id="{}" ChangeKey="{}"/></t:Contact></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS, server_id, change_key
@@ -2432,27 +2425,20 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     };
 
     // Load existing vCard (from DB or fetch fresh)
-    let vcard_str = match state
-        .storage
-        .get_contact(&auth.username, &item_id)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|c| Some(c.vcard.clone()))
-    {
-        Some(v) => v,
-        None => {
+    let vcard_str: String = match state.storage.get_contact(&auth.username, item_id.as_deref().unwrap_or_default()).await {
+        Ok(Some(c)) => c.vcard.clone().unwrap_or_default(),
+        _ => {
             // Try fetching from CardDAV
             let url = format!("{}{}", carddav.addressbook_home(&auth.username), db_contact.carddav_href);
-            match carddav
+            let resp = match carddav
                 .client
                 .get(&url)
                 .basic_auth(&auth.username, Some(auth.password.expose_secret()))
                 .send()
                 .await
             {
-                Ok(resp) if resp.status().is_success() => resp.text().await.ok().unwrap_or_default(),
-                _ => {
+                Ok(r) => r,
+                Err(_) => {
                     return operation_error_response(
                         &EwsAction::UpdateItem,
                         "ErrorInternalServerError",
@@ -2460,6 +2446,16 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
                         StatusCode::INTERNAL_SERVER_ERROR,
                     );
                 }
+            };
+            if resp.status().is_success() {
+                resp.text().await.ok().unwrap_or_default()
+            } else {
+                return operation_error_response(
+                    &EwsAction::UpdateItem,
+                    "ErrorInternalServerError",
+                    "Failed to fetch existing contact",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
             }
         }
     };
@@ -2606,7 +2602,7 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 
     if let Err(e) = state
         .storage
-        .update_contact(&auth.username, &item_id, new_etag.as_deref(), Some(updated_vcard_str.as_str()))
+        .update_contact(&auth.username, item_id.as_deref().unwrap_or_default(), new_etag.as_deref(), Some(updated_vcard_str.as_str()))
         .await
     {
         tracing::error!(error = %e, "Failed to update contact in DB");
@@ -2712,7 +2708,7 @@ async fn handle_delete_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     // Remove from DB
     if let Err(e) = state
         .storage
-        .delete_contact(&auth.username, &item_id)
+        .delete_contact(&auth.username, item_id.as_deref().unwrap_or_default())
         .await
     {
         tracing::error!(error = %e, "Failed to delete contact from DB");

@@ -1,15 +1,14 @@
 // src/contacts.rs
-use crate::carddav::{CarddavClient, Contact as CarddavContact};
-use crate::storage::{Storage, ContactRow};
+use crate::carddav::Contact as CarddavContact;
 use crate::vcard::{parse_vcard_from_data, Vcard};
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use tracing::warn;
 use uuid::Uuid;
 use reqwest::StatusCode;
 
 /// Render a contact for EAS Sync in MS-ASCNTC format.
 /// The returned XML is the content of <ApplicationData> with Contacts:-prefixed fields.
-pub fn render_eas_contact(server_id: &str, carddav_contact: &CarddavContact) -> String {
+pub fn render_eas_contact(_server_id: &str, carddav_contact: &CarddavContact) -> String {
     // Parse vCard to extract fields; on failure, use minimal info.
     let vcard = match parse_vcard_from_data(&carddav_contact.vcard) {
         Ok(v) => v,
@@ -26,38 +25,39 @@ pub fn render_eas_contact(server_id: &str, carddav_contact: &CarddavContact) -> 
         // In production, should parse structured N (vcard.name) if available
         let parts: Vec<&str> = fn_val.split_whitespace().collect();
         if parts.is_empty() {
-            ("", "")
+            (String::new(), String::new())
         } else if parts.len() == 1 {
-            (parts[0], "")
+            (parts[0].to_string(), String::new())
         } else {
-            (parts[0], parts[1..].join(" "))
+            (parts[0].to_string(), parts[1..].join(" "))
         }
-    } else if let Some(n) = vcard.name.first() {
-        (n.value.as_str(), "")
+    } else if let Some(n) = vcard.name() {
+        // N property is stored as a single combined string; treat as last name for now
+        (String::new(), n.to_string())
     } else {
-        ("", "")
+        (String::new(), String::new())
     };
 
     if !first_name.is_empty() {
-        xml.push_str(&format!("<Contacts:FirstName>{}</Contacts:FirstName>", xml_escape(first_name)));
+        xml.push_str(&format!("<Contacts:FirstName>{}</Contacts:FirstName>", xml_escape(&first_name)));
     }
     if !last_name.is_empty() {
-        xml.push_str(&format!("<Contacts:LastName>{}</Contacts:LastName>", xml_escape(last_name)));
+        xml.push_str(&format!("<Contacts:LastName>{}</Contacts:LastName>", xml_escape(&last_name)));
     }
 
     // Company (ORG) - DO NOT escape semicolons; they are structural delimiters in vCard ORG
-    if let Some(org) = vcard.org() {
-        if !org.is_empty() {
-            let org_str = org.join(";");
-            xml.push_str(&format!("<Contacts:Company>{}</Contacts:Company>", xml_escape(&org_str)));
-        }
+    if let Some(org) = vcard.org()
+        && !org.is_empty()
+    {
+        let org_str = org.join(";");
+        xml.push_str(&format!("<Contacts:Company>{}</Contacts:Company>", xml_escape(&org_str)));
     }
 
     // Title
-    if let Some(title) = vcard.title() {
-        if !title.is_empty() {
-            xml.push_str(&format!("<Contacts:JobTitle>{}</Contacts:JobTitle>", xml_escape(title)));
-        }
+    if let Some(title) = vcard.title()
+        && !title.is_empty()
+    {
+        xml.push_str(&format!("<Contacts:JobTitle>{}</Contacts:JobTitle>", xml_escape(title)));
     }
 
     // Email1Address, Email2Address, Email3Address (max 3)
@@ -113,14 +113,14 @@ pub async fn sync_contacts(
     state: &crate::models::AppState,
     username: &str,
     password: &str,
-    client_sync_key: Option<&str>,
+    _client_sync_key: Option<&str>,
     device_id: &str,
-) -> Result<String> {
+) -> anyhow::Result<String> {
     // Determine the scoped collection ID for storage lookup
     let state_collection_id = format!("8::{}", device_id);
 
     // 1. Get the last server sync key from storage (or empty string if first sync)
-    let (server_sync_key, _token) = state
+    let (_server_sync_key, _token) = state
         .storage
         .get_sync_key(username, &state_collection_id)
         .await?
@@ -164,7 +164,7 @@ pub async fn sync_contacts(
         // Check if this contact exists in DB by href (O(1) via HashMap)
         if let Some(db_row) = db_contacts_by_href.get(&c.href) {
             // Exists: compare etag to see if changed
-            if db_row.etag.as_deref() != Some(c.etag.as_str()) {
+            if db_row.etag.as_deref() != c.etag.as_deref() {
                 // Changed: use existing server_id
                 changes.push((db_row.server_id.clone(), c.clone()));
             }
@@ -177,7 +177,7 @@ pub async fn sync_contacts(
                 username,
                 &c.href,
                 &new_server_id,
-                Some(&c.etag),
+                c.etag.as_deref(),
                 Some(&c.vcard),
             ).await?;
         }
@@ -186,7 +186,7 @@ pub async fn sync_contacts(
     // Deletions: any DB contact whose href is not in current CardDAV list (now O(N+M))
     for (server_id, db_row) in db_contacts_by_server_id {
         if !carddav_hrefs.contains(&db_row.carddav_href) {
-            deletes.push(server_id);
+            deletes.push(server_id.clone());
             state.storage.delete_contact(username, &server_id).await?;
         }
     }
@@ -213,11 +213,11 @@ pub async fn sync_contacts(
 
 /// Helper: xml_escape used above
 fn xml_escape(s: &str) -> String {
-    crate::util::escape_xml_text(s)
+    crate::util::escape_xml_text(s).to_string()
 }
 
 /// Parse EAS Contacts sync mutations (Add/Change/Delete) from the <Collection> body.
-pub fn parse_contacts_mutations(xml: &str) -> Result<Vec<ContactsMutation>> {
+pub fn parse_contacts_mutations(xml: &str) -> anyhow::Result<Vec<ContactsMutation>> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -234,7 +234,7 @@ pub fn parse_contacts_mutations(xml: &str) -> Result<Vec<ContactsMutation>> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name_bytes = e.name().as_bytes().to_vec();
+                let name_bytes = e.name().as_ref().to_vec();
                 let name = String::from_utf8_lossy(&name_bytes).to_string();
                 if name == "Add" || name == "Change" || name == "Delete" {
                     current_kind = match name.as_str() {
@@ -289,18 +289,13 @@ pub fn parse_contacts_mutations(xml: &str) -> Result<Vec<ContactsMutation>> {
                 }
             }
             Ok(Event::Text(e)) => {
-                match e.unescape() {
-                    Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes).to_string();
-                        let in_vcard = stack.iter().any(|n| n == b"vCard");
-                        let in_server_id = stack.iter().any(|n| n == b"ServerId");
-                        if in_server_id {
-                            current_server_id.push_str(&text);
-                        } else if in_vcard && (current_kind == Some(ContactsOpKind::Add) || current_kind == Some(ContactsOpKind::Change)) {
-                            current_vcard.push_str(&text);
-                        }
-                    }
-                    Err(_) => {}
+                let text = e.decode().unwrap_or_default().to_string();
+                let in_vcard = stack.iter().any(|n| n == b"vCard");
+                let in_server_id = stack.iter().any(|n| n == b"ServerId");
+                if in_server_id {
+                    current_server_id.push_str(&text);
+                } else if in_vcard && (current_kind == Some(ContactsOpKind::Add) || current_kind == Some(ContactsOpKind::Change)) {
+                    current_vcard.push_str(&text);
                 }
             }
             Ok(Event::Eof) => break,
@@ -342,7 +337,7 @@ pub async fn apply_contacts_mutations(
     username: &str,
     password: &str,
     mutations_xml: &str,
-) -> Result<Vec<ContactsMutationResult>> {
+) -> anyhow::Result<Vec<ContactsMutationResult>> {
     let mutations = parse_contacts_mutations(mutations_xml)?;
     let mut results = Vec::new();
 
@@ -374,7 +369,7 @@ pub async fn apply_contacts_mutations(
                     .post(&addressbook)
                     .basic_auth(username, Some(password))
                     .header("Content-Type", "text/vcard; charset=utf-8")
-                    .body(vcard.as_str())
+                    .body(vcard.clone())
                     .send()
                     .await
                 {
@@ -383,6 +378,7 @@ pub async fn apply_contacts_mutations(
                         results.push(ContactsMutationResult {
                             server_id: "".to_string(),
                             status: "6",
+                            op_kind: ContactsOpKind::Add, // appropriate kind derived from context
                         });
                         continue;
                     }
@@ -419,7 +415,7 @@ pub async fn apply_contacts_mutations(
 
                     if let Err(e) = state
                         .storage
-                        .insert_contact(username, &href, &new_server_id, etag.as_deref(), &vcard)
+                        .insert_contact(username, &href, &new_server_id, etag.as_deref(), Some(vcard.as_str()))
                         .await
                     {
                         tracing::warn!(error = %e, "Failed to store contact in DB after Add");
@@ -458,7 +454,7 @@ pub async fn apply_contacts_mutations(
                     .put(&url)
                     .basic_auth(username, Some(password))
                     .header("Content-Type", "text/vcard; charset=utf-8")
-                    .body(&vcard);
+                    .body(vcard.clone());
 
                 if let Some(ref etag) = db_contact.etag {
                     request = request.header("If-Match", format!("\"{}\"", etag));
@@ -470,6 +466,7 @@ pub async fn apply_contacts_mutations(
                         results.push(ContactsMutationResult {
                             server_id: sid,
                             status: "6",
+                            op_kind: ContactsOpKind::Change,
                         });
                         continue;
                     }
@@ -484,7 +481,7 @@ pub async fn apply_contacts_mutations(
 
                     if let Err(e) = state
                         .storage
-                        .update_contact(username, &sid, new_etag.as_deref(), &vcard)
+                        .update_contact(username, &sid, new_etag.as_deref(), Some(vcard.as_str()))
                         .await
                     {
                         tracing::warn!(error = %e, "Failed to update contact in DB");
@@ -505,6 +502,7 @@ pub async fn apply_contacts_mutations(
                     results.push(ContactsMutationResult {
                         server_id: sid,
                         status: "6",
+                        op_kind: ContactsOpKind::Change,
                     });
                 }
             }
