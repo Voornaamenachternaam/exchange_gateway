@@ -1347,11 +1347,7 @@ impl Storage {
     }
 
     /// Fetch a contact by server_id.
-    pub async fn get_contact(
-        &self,
-        owner: &str,
-        server_id: &str,
-    ) -> Result<Option<ContactRow>> {
+    pub async fn get_contact(&self, owner: &str, server_id: &str) -> Result<Option<ContactRow>> {
         let row = sqlx::query_as::<_, ContactRow>(
             "SELECT id, owner, carddav_href, server_id, etag, vcard, updated_at FROM contact_map WHERE owner = ?1 AND server_id = ?2"
         )
@@ -1381,7 +1377,11 @@ impl Storage {
     }
 
     /// Get sync token for contacts collection (reuses the sync_state table with collection_id = "8").
-    pub async fn get_contacts_sync_token(&self, owner: &str, device_id: &str) -> Result<Option<String>> {
+    pub async fn get_contacts_sync_token(
+        &self,
+        owner: &str,
+        device_id: &str,
+    ) -> Result<Option<String>> {
         match self.get_sync_key(owner, &format!("8::{}", device_id)).await {
             Ok(Some((sync_key, _token))) => Ok(Some(sync_key)),
             Ok(None) => Ok(None),
@@ -1390,8 +1390,14 @@ impl Storage {
     }
 
     /// Set sync token for contacts collection.
-    pub async fn set_contacts_sync_token(&self, owner: &str, device_id: &str, sync_key: &str) -> Result<()> {
-        self.set_sync_key(owner, &format!("8::{}", device_id), sync_key, None).await
+    pub async fn set_contacts_sync_token(
+        &self,
+        owner: &str,
+        device_id: &str,
+        sync_key: &str,
+    ) -> Result<()> {
+        self.set_sync_key(owner, &format!("8::{}", device_id), sync_key, None)
+            .await
     }
 
     /// Set the EAS Contacts sync state using the generic sync_state table.
@@ -1402,7 +1408,8 @@ impl Storage {
         state_collection_id: &str,
         sync_key: &str,
     ) -> Result<()> {
-        self.set_sync_key(username, state_collection_id, sync_key, None).await
+        self.set_sync_key(username, state_collection_id, sync_key, None)
+            .await
     }
 
     /// Get all contacts for an owner (for sync diffing).

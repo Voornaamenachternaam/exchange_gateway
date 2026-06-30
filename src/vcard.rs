@@ -101,7 +101,9 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
             continue;
         }
         // Split property name and value (property may contain parameters)
-        let Some((name_params, rest)) = line.split_once(':') else { continue };
+        let Some((name_params, rest)) = line.split_once(':') else {
+            continue;
+        };
         let value = rest.trim_start();
 
         // Parse property name and optional parameters (e.g., "EMAIL;type=WORK")
@@ -115,23 +117,19 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
         };
 
         match name_upper.as_str() {
-            "FN" => out.properties.push(Property::Fn(Fn { 
-                value: unescape_text(value) 
+            "FN" => out.properties.push(Property::Fn(Fn {
+                value: unescape_text(value),
             })),
-            "EMAIL" => {
-                out.properties.push(Property::Email(Email {
-                    email: unescape_text(value),
-                }))
-            }
+            "EMAIL" => out.properties.push(Property::Email(Email {
+                email: unescape_text(value),
+            })),
             "TEL" => out.properties.push(Property::Tel(Tel {
                 number: unescape_text(value),
                 params,
             })),
             "ORG" => {
                 // ORG value is a ';'-delimited list. Do NOT unescape inside ORG because ';' is structural.
-                let parts: Vec<String> = value.split(';')
-                    .map(|s| s.trim().to_string())
-                    .collect();
+                let parts: Vec<String> = value.split(';').map(|s| s.trim().to_string()).collect();
                 if !parts.is_empty() {
                     out.properties.push(Property::Org(Org { value: parts }));
                 }
@@ -160,9 +158,9 @@ pub fn parse_vcard_from_data(data: &str) -> Result<Vcard> {
                     }
                 }
             }
-            "UID" => out
-                .properties
-                .push(Property::Uid(Uid { value: value.to_string() })),
+            "UID" => out.properties.push(Property::Uid(Uid {
+                value: value.to_string(),
+            })),
             _ => {}
         }
     }
@@ -236,33 +234,43 @@ impl std::fmt::Display for Vcard {
                     f.write_str(&format!("FN:{}\r\n", escape_text(&fn_val.value)))?;
                 }
                 Property::Email(email) => {
-                    f.write_str(&format!("EMAIL;type=INTERNET;type=WORK:{}\r\n", escape_text(&email.email)))?;
+                    f.write_str(&format!(
+                        "EMAIL;type=INTERNET;type=WORK:{}\r\n",
+                        escape_text(&email.email)
+                    ))?;
                 }
                 Property::Tel(tel) => {
                     let param_str = if tel.params.is_empty() {
                         String::new()
                     } else {
-                        tel.params.iter().map(|p| match p {
-                            Parameter::Type(tp) => match tp {
-                                Type::Work => "type=WORK",
-                                Type::Home => "type=HOME",
-                                Type::Voice => "type=VOICE",
-                                Type::Cell => "type=CELL",
-                            },
-                        }).collect::<Vec<_>>().join(";")
+                        tel.params
+                            .iter()
+                            .map(|p| match p {
+                                Parameter::Type(tp) => match tp {
+                                    Type::Work => "type=WORK",
+                                    Type::Home => "type=HOME",
+                                    Type::Voice => "type=VOICE",
+                                    Type::Cell => "type=CELL",
+                                },
+                            })
+                            .collect::<Vec<_>>()
+                            .join(";")
                     };
                     if param_str.is_empty() {
                         f.write_str(&format!("TEL:{}\r\n", escape_text(&tel.number)))?;
                     } else {
-                        f.write_str(&format!("TEL;{}:{}\r\n", param_str, escape_text(&tel.number)))?;
+                        f.write_str(&format!(
+                            "TEL;{}:{}\r\n",
+                            param_str,
+                            escape_text(&tel.number)
+                        ))?;
                     }
                 }
                 Property::Org(org) => {
                     // ORG components are joined by unescaped ';' as structural delimiters per RFC 6350.
                     // We only escape each component individually, then join with ';'.
-                    let escaped_parts: Vec<String> = org.value.iter()
-                        .map(|part| escape_text(part))
-                        .collect();
+                    let escaped_parts: Vec<String> =
+                        org.value.iter().map(|part| escape_text(part)).collect();
                     let org_line = format!("ORG:{}\r\n", escaped_parts.join(";"));
                     f.write_str(&org_line)?;
                 }
@@ -398,7 +406,15 @@ mod tests {
 
     #[test]
     fn test_build_vcard_minimal() {
-        let v = build_vcard("uid123", "John Doe", Some("john@example.com"), None, None, None).unwrap();
+        let v = build_vcard(
+            "uid123",
+            "John Doe",
+            Some("john@example.com"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(v.contains("BEGIN:VCARD"));
         assert!(v.contains("FN:John Doe"));
         assert!(v.contains("EMAIL;type=INTERNET;type=WORK:john@example.com"));
@@ -439,9 +455,15 @@ END:VCARD";
     fn test_vcard_display() {
         let v = Vcard {
             properties: vec![
-                Property::Fn(Fn { value: "Test User".to_string() }),
-                Property::Uid(Uid { value: "uid123".to_string() }),
-                Property::Email(Email { email: "test@example.com".to_string() }),
+                Property::Fn(Fn {
+                    value: "Test User".to_string(),
+                }),
+                Property::Uid(Uid {
+                    value: "uid123".to_string(),
+                }),
+                Property::Email(Email {
+                    email: "test@example.com".to_string(),
+                }),
             ],
         };
         let s = v.to_string();

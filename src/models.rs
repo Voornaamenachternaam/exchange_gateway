@@ -1,10 +1,10 @@
 // src/models.rs
 use crate::attachment::AttachmentManager;
 use crate::auth::AuthVerifier;
+use crate::carddav::CarddavClient;
 use crate::config::Config;
 use crate::directory::{self, DirectoryLookup};
 use crate::jmap::JmapClient;
-use crate::carddav::CarddavClient;
 use crate::metrics::AppMetrics;
 use crate::notifications::SubscriptionManager;
 use crate::oof::{self, OofManager};
