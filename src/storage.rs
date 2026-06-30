@@ -69,6 +69,32 @@ impl SafeDebug for EwsItemRow {
     }
 }
 
+// Row struct for contact_map queries
+#[derive(FromRow)]
+pub struct ContactRow {
+    pub id: i64,
+    pub owner: String,
+    pub carddav_href: String,
+    pub server_id: String,
+    pub etag: Option<String>,
+    pub vcard: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+impl SafeDebug for ContactRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContactRow")
+            .field("id", &self.id)
+            .field("owner", &self.owner)
+            .field("carddav_href", &self.carddav_href)
+            .field("server_id", &self.server_id)
+            .field("etag", &self.etag)
+            .field("vcard", &self.vcard.as_ref().map(|_| "<redacted>"))
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
 pub struct DeviceInfoParams<'a> {
     pub owner: &'a str,
     pub device_id: &'a str,
@@ -1230,5 +1256,171 @@ impl Storage {
                 updated_at: r.get(7),
             })
             .collect())
+    }
+
+    // Contact storage methods using contact_map table
+
+    /// Insert a new contact into contact_map, returning the assigned server_id.
+    pub async fn insert_contact(
+        &self,
+        owner: &str,
+        carddav_href: &str,
+        server_id: &str,
+        etag: Option<&str>,
+        vcard: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO contact_map (owner, carddav_href, server_id, etag, vcard) VALUES (?1, ?2, ?3, ?4, ?5)"
+        )
+        .bind(owner)
+        .bind(carddav_href)
+        .bind(server_id)
+        .bind(etag)
+        .bind(vcard)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Update an existing contact's vcard and etag by server_id.
+    pub async fn update_contact(
+        &self,
+        owner: &str,
+        server_id: &str,
+        etag: Option<&str>,
+        vcard: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE contact_map SET etag = ?2, vcard = ?3, updated_at = CURRENT_TIMESTAMP WHERE owner = ?1 AND server_id = ?4"
+        )
+        .bind(owner)
+        .bind(etag)
+        .bind(vcard)
+        .bind(server_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Upsert a contact: insert or update based on owner+carddav_href uniqueness.
+    /// If a contact with the same owner and href exists, update its server_id, etag, vcard.
+    /// Otherwise insert a new mapping.
+    pub async fn upsert_contact(
+        &self,
+        owner: &str,
+        carddav_href: &str,
+        server_id: &str,
+        etag: Option<&str>,
+        vcard: Option<&str>,
+    ) -> Result<()> {
+        // Use INSERT ... ON CONFLICT to atomically upsert, avoiding race conditions
+        sqlx::query(
+            "INSERT INTO contact_map (owner, carddav_href, server_id, etag, vcard) VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(owner, carddav_href) DO UPDATE SET \
+             server_id = excluded.server_id, \
+             etag = excluded.etag, \
+             vcard = excluded.vcard, \
+             updated_at = CURRENT_TIMESTAMP"
+        )
+        .bind(owner)
+        .bind(carddav_href)
+        .bind(server_id)
+        .bind(etag)
+        .bind(vcard)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Delete a contact by server_id.
+    pub async fn delete_contact(&self, owner: &str, server_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM contact_map WHERE owner = ?1 AND server_id = ?2")
+            .bind(owner)
+            .bind(server_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Fetch a contact by server_id.
+    pub async fn get_contact(&self, owner: &str, server_id: &str) -> Result<Option<ContactRow>> {
+        let row = sqlx::query_as::<_, ContactRow>(
+            "SELECT id, owner, carddav_href, server_id, etag, vcard, updated_at FROM contact_map WHERE owner = ?1 AND server_id = ?2"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row)
+    }
+
+    /// Fetch a contact by its CardDAV href.
+    pub async fn get_contact_by_href(
+        &self,
+        owner: &str,
+        carddav_href: &str,
+    ) -> Result<Option<ContactRow>> {
+        let row = sqlx::query_as::<_, ContactRow>(
+            "SELECT id, owner, carddav_href, server_id, etag, vcard, updated_at FROM contact_map WHERE owner = ?1 AND carddav_href = ?2"
+        )
+        .bind(owner)
+        .bind(carddav_href)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row)
+    }
+
+    /// Get sync token for contacts collection (reuses the sync_state table with collection_id = "8").
+    pub async fn get_contacts_sync_token(
+        &self,
+        owner: &str,
+        device_id: &str,
+    ) -> Result<Option<String>> {
+        match self.get_sync_key(owner, &format!("8::{}", device_id)).await {
+            Ok(Some((sync_key, _token))) => Ok(Some(sync_key)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Set sync token for contacts collection.
+    pub async fn set_contacts_sync_token(
+        &self,
+        owner: &str,
+        device_id: &str,
+        sync_key: &str,
+    ) -> Result<()> {
+        self.set_sync_key(owner, &format!("8::{}", device_id), sync_key, None)
+            .await
+    }
+
+    /// Set the EAS Contacts sync state using the generic sync_state table.
+    /// The collection_id for contacts is typically "8" scoped by device.
+    pub async fn set_contacts_sync_state(
+        &self,
+        username: &str,
+        state_collection_id: &str,
+        sync_key: &str,
+    ) -> Result<()> {
+        self.set_sync_key(username, state_collection_id, sync_key, None)
+            .await
+    }
+
+    /// Get all contacts for an owner (for sync diffing).
+    pub async fn get_all_contacts_for_owner(&self, owner: &str) -> Result<Vec<ContactRow>> {
+        let rows = sqlx::query_as::<_, ContactRow>(
+            "SELECT id, owner, carddav_href, server_id, etag, vcard, updated_at FROM contact_map WHERE owner = ?1"
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
     }
 }

@@ -8,6 +8,8 @@ use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
 };
+// CarddavClient import removed - type inferred via usage
+use crate::vcard::{self, Vcard, parse_vcard_from_data};
 
 use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
@@ -38,14 +40,17 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Datelike;
 use const_hex;
+use hex;
 use itertools::Itertools;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use roxmltree;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
+use tracing::warn;
 
 #[derive(Clone)]
 struct AuthContext {
@@ -1987,6 +1992,854 @@ async fn handle_find_email_item(
     }
 }
 
+/// Handle EWS FindItem for Contacts using CardDAV.
+async fn handle_find_contacts_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let owner = owner_from_username(&auth.username);
+    let max = extract_int(body, b"MaxEntriesReturned", 100);
+    let offset = extract_int(body, b"Offset", 0);
+    let shape = requested_item_shape(body);
+
+    // Ensure CardDAV client is configured
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return operation_error_response(
+                &EwsAction::FindItem,
+                "ErrorInternalServerError",
+                "CardDAV client not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Fetch all contacts from CardDAV
+    let (carddav_contacts, _) = match carddav
+        .list_contacts(&auth.username, auth.password.expose_secret(), None)
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(error = %e, "CardDAV list_contacts failed");
+            return operation_error_response(
+                &EwsAction::FindItem,
+                "ErrorInternalServerError",
+                "Failed to fetch contacts",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Map server IDs from DB, but for FindItem we can use CardDAV href to derive stable IDs.
+    // We'll generate a server_id like "contact-{index}" but ensure consistency across calls.
+    let total_items = carddav_contacts.len();
+    let paged_contacts = carddav_contacts
+        .into_iter()
+        .skip(offset)
+        .take(max)
+        .collect::<Vec<_>>();
+
+    let mut items_xml = String::new();
+    let mut actual_count = 0;
+    for contact in paged_contacts.iter() {
+        // Use a deterministic server_id based on href to avoid churn
+        let server_id = format!("contact-{}", sha256_hash(&contact.href));
+
+        // Generate ChangeKey: include etag and a timestamp component to indicate changes.
+        // Per RFC 7252, ChangeKey should change when content changes.
+        // We'll use: format!("{}-{}", server_id, current timestamp in seconds)
+        // For stability, we'll use the contact's etag if available, else a timestamp.
+        let change_key = if let Some(ref etag) = contact.etag {
+            // Use a compound key: server_id + etag (etag changes when vcard changes)
+            format!("{}-{}", server_id, etag)
+        } else {
+            // No etag from server; use timestamp to indicate potential future changes
+            format!("{}-{}", server_id, chrono::Utc::now().timestamp())
+        };
+
+        // Register/update this contact mapping in the database to support subsequent GetItem/UpdateItem/DeleteItem
+        #[allow(clippy::needless_borrow)]
+        if let Err(e) = state
+            .storage
+            .upsert_contact(
+                &owner,
+                &contact.href,
+                &server_id,
+                contact.etag.as_deref(),
+                Some(&contact.vcard),
+            )
+            .await
+        {
+            tracing::warn!(?server_id, error = %e, "Failed to upsert contact mapping in DB, skipping this contact in FindItem");
+            // Skip this contact - without DB mapping, subsequent Get/Update/Delete will fail
+            continue;
+        }
+
+        // Parse vCard to extract properties for EWS Contact shape
+        let vcard = parse_vcard_from_data(&contact.vcard).unwrap_or_else(|_| {
+            warn!(href = %contact.href, "Failed to parse vCard for contact");
+            Vcard::default()
+        });
+
+        // Build Contact XML per EWS schema
+        let contact_xml = render_ews_contact(&server_id, &change_key, &vcard, shape);
+        items_xml.push_str(&contact_xml);
+        actual_count += 1;
+    }
+
+    let response = format!(
+        r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="{}" IndexedPagingOffset="{}"><t:Items>{}</t:Items></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        actual_count,
+        if offset + actual_count >= total_items {
+            "true"
+        } else {
+            "false"
+        },
+        offset,
+        items_xml
+    );
+    soap_ok(response)
+}
+
+/// Handle EWS GetItem for Contacts using CardDAV.
+async fn handle_get_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    // Extract ItemId(s) from request
+    let doc = match roxmltree::Document::parse(body) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(error = %e, "XML parse error in GetItem");
+            return operation_error_response(
+                &EwsAction::GetItem,
+                "ErrorSchemaValidation",
+                "Invalid XML",
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+
+    let mut item_ids = Vec::new();
+    for node in doc.descendants() {
+        if node.has_tag_name("ItemId")
+            && let Some(id) = node.attribute("Id")
+        {
+            item_ids.push(id.to_string());
+        }
+    }
+
+    if item_ids.is_empty() {
+        return operation_error_response(
+            &EwsAction::GetItem,
+            "ErrorInvalidItemId",
+            "No ItemId provided",
+            StatusCode::OK,
+        );
+    }
+
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return operation_error_response(
+                &EwsAction::GetItem,
+                "ErrorInternalServerError",
+                "CardDAV client not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    let shape = requested_item_shape(body);
+    let mut items_xml = String::new();
+
+    for server_id in item_ids {
+        // The server_id in our system maps to contact_map.server_id.
+        let db_contact = match state.storage.get_contact(&auth.username, &server_id).await {
+            Ok(Some(row)) => Some(row),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::error!(error = %e, ?server_id, "DB error fetching contact");
+                None
+            }
+        };
+
+        if let Some(row) = db_contact {
+            // Fetch latest vCard from CardDAV using href (or use stored vCard if fetch fails)
+            let vcard_str = match carddav
+                .client
+                .get(format!(
+                    "{}{}",
+                    carddav.addressbook_home(&auth.username),
+                    row.carddav_href
+                ))
+                .basic_auth(&auth.username, Some(auth.password.expose_secret()))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
+                _ => row.vcard.clone(),
+            };
+
+            let vcard = vcard_str
+                .as_ref()
+                .and_then(|s| parse_vcard_from_data(s).ok())
+                .unwrap_or_else(Vcard::default);
+
+            let change_key = row.etag.clone().unwrap_or_else(|| server_id.clone());
+            let contact_xml = render_ews_contact(&row.server_id, &change_key, &vcard, shape);
+            items_xml.push_str(&contact_xml);
+        } else {
+            // Contact not found: return error for this item (per EWS, we can still succeed overall)
+            // For simplicity, we skip missing items and return an empty response.
+            // Production implementation would return <MessageXml> with error status.
+            tracing::warn!(?server_id, "Contact not found for GetItem");
+        }
+    }
+
+    if items_xml.is_empty() {
+        return operation_error_response(
+            &EwsAction::GetItem,
+            "ErrorInvalidItemId",
+            "No valid contacts found",
+            StatusCode::OK,
+        );
+    }
+
+    let response = format!(
+        r#"<m:GetItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, items_xml
+    );
+    soap_ok(response)
+}
+
+/// Render a vCard as an EWS Contact element.
+fn render_ews_contact(
+    server_id: &str,
+    change_key: &str,
+    vcard: &Vcard,
+    _shape: ItemShape,
+) -> String {
+    // Determine display name: use full_name if non-empty, else N property
+    let display_name = vcard
+        .full_name()
+        .or_else(|| vcard.name())
+        .unwrap_or_default();
+    let email = vcard.emails().first().copied().unwrap_or("");
+    let phone = vcard.phones().first().copied().unwrap_or("");
+    // ORG value is components joined by ';'
+    let org = vcard
+        .org()
+        .as_deref()
+        .map(|o| o.join(";"))
+        .unwrap_or_default();
+    let title = vcard.title().unwrap_or("");
+
+    let mut xml = String::new();
+    xml.push_str("<t:Contact>");
+    xml.push_str(&format!(
+        "<t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>",
+        xml_escape(server_id),
+        xml_escape(change_key)
+    ));
+    if !display_name.is_empty() {
+        xml.push_str(&format!(
+            "<t:DisplayName>{}</t:DisplayName>",
+            xml_escape(display_name)
+        ));
+    }
+    if !email.is_empty() {
+        xml.push_str(&format!(
+            "<t:EmailAddresses><t:Entry Key=\"EmailAddress1\">{}</t:Entry></t:EmailAddresses>",
+            xml_escape(email)
+        ));
+    }
+    if !phone.is_empty() {
+        xml.push_str(&format!(
+            "<t:PhoneNumbers><t:Entry Key=\"Phone\">{}</t:Entry></t:PhoneNumbers>",
+            xml_escape(phone)
+        ));
+    }
+    if !org.is_empty() {
+        xml.push_str(&format!(
+            "<t:CompanyName>{}</t:CompanyName>",
+            xml_escape(&org)
+        ));
+    }
+    if !title.is_empty() {
+        xml.push_str(&format!("<t:JobTitle>{}</t:JobTitle>", xml_escape(title)));
+    }
+    // Add more fields as needed: Addresses, ImAddress, etc.
+    xml.push_str("</t:Contact>");
+    xml
+}
+
+/// Simple SHA256 hash used to generate stable IDs from CardDAV hrefs.
+fn sha256_hash(s: &str) -> String {
+    let digest = Sha256::digest(s.as_bytes());
+    // Take first 16 bytes for a reasonably short but unique identifier.
+    // Using hex encoding (lowercase) as per MS-OXWSCORE §2.2.4.25 for ChangeKey,
+    // but this is not a true ChangeKey; it's just a stable identifier.
+    hex::encode(&digest[..16])
+}
+
+/// Handle EWS CreateItem for Contacts using CardDAV.
+async fn handle_create_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                "CardDAV not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Parse the <t:Contact> element from request
+    let doc = match roxmltree::Document::parse(body) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(error = %e, "XML parse error in CreateItem Contact");
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorSchemaValidation",
+                "Invalid XML",
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+
+    // Extract contact fields
+    let mut display_name = None;
+    let mut email = None;
+    let mut phone = None;
+    let mut organization = None;
+    let mut title = None;
+
+    for node in doc.descendants() {
+        match node.tag_name().name() {
+            "DisplayName" => display_name = node.text().map(str::to_string),
+            "EmailAddresses" => {
+                // Look for <t:Entry Key="EmailAddress1">value</t:Entry>
+                for entry in node.children() {
+                    if entry.has_tag_name("Entry")
+                        && entry.attribute("Key") == Some("EmailAddress1")
+                    {
+                        email = entry.text().map(str::to_string);
+                    }
+                }
+            }
+            "PhoneNumbers" => {
+                for entry in node.children() {
+                    if entry.has_tag_name("Entry") && entry.attribute("Key") == Some("Phone") {
+                        phone = entry.text().map(str::to_string);
+                    }
+                }
+            }
+            "CompanyName" => organization = node.text().map(str::to_string),
+            "JobTitle" => title = node.text().map(str::to_string),
+            _ => {}
+        }
+    }
+
+    // Build vCard
+    let uid = uuid::Uuid::new_v4().to_string();
+    let vcard_str = match crate::vcard::build_vcard(
+        &uid,
+        display_name.as_deref().unwrap_or(""),
+        email.as_deref(),
+        phone.as_deref(),
+        organization.as_deref(),
+        title.as_deref(),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to build vCard");
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                "Failed to build contact",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Create contact via CardDAV client method
+    let (href, etag) = match carddav
+        .create_contact(&auth.username, auth.password.expose_secret(), &vcard_str)
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(error = %e, "CardDAV create_contact failed");
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                "Failed to create contact on CardDAV",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Store in contact_map
+    let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
+    if let Err(e) = state
+        .storage
+        .insert_contact(
+            &auth.username,
+            &href,
+            &server_id,
+            Some(etag.as_str()),
+            Some(vcard_str.as_str()),
+        )
+        .await
+    {
+        tracing::error!(error = %e, "Failed to store contact in DB");
+        // Continue anyway; we have the contact on server.
+    }
+
+    // Return ItemId with ChangeKey = etag if non-empty, else server_id
+    let change_key = if etag.is_empty() {
+        server_id.clone()
+    } else {
+        etag
+    };
+    let response_xml = format!(
+        r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Contact><t:ItemId Id="{}" ChangeKey="{}"/></t:Contact></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, server_id, change_key
+    );
+    soap_ok(response_xml)
+}
+
+/// Handle EWS UpdateItem for Contacts using CardDAV.
+async fn handle_update_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                "CardDAV not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Extract ItemId/@Id
+    let item_id = extract_first_attr(body, b"ItemId", b"Id");
+    if item_id.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+        return operation_error_response(
+            &EwsAction::UpdateItem,
+            "ErrorInvalidIdMalformed",
+            "UpdateItem requires ItemId/@Id",
+            StatusCode::OK,
+        );
+    }
+
+    // Look up contact by server_id to get href and etag
+    let db_contact = match state
+        .storage
+        .get_contact(&auth.username, item_id.as_deref().unwrap_or_default())
+        .await
+    {
+        Ok(Some(contact)) => contact,
+        Ok(None) => {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorItemNotFound",
+                "Contact not found",
+                StatusCode::OK,
+            );
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "DB error fetching contact");
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                "Database error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Parse updates from the <t:Contact> element
+    let doc = match roxmltree::Document::parse(body) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(error = %e, "XML parse error in UpdateItem Contact");
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorSchemaValidation",
+                "Invalid XML",
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+
+    // Load existing vCard (from DB or fetch fresh)
+    let vcard_str: String = match state
+        .storage
+        .get_contact(&auth.username, item_id.as_deref().unwrap_or_default())
+        .await
+    {
+        Ok(Some(c)) => c.vcard.clone().unwrap_or_default(),
+        _ => {
+            // Try fetching from CardDAV
+            let url = format!(
+                "{}{}",
+                carddav.addressbook_home(&auth.username),
+                db_contact.carddav_href
+            );
+            let resp = match carddav
+                .client
+                .get(&url)
+                .basic_auth(&auth.username, Some(auth.password.expose_secret()))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    return operation_error_response(
+                        &EwsAction::UpdateItem,
+                        "ErrorInternalServerError",
+                        "Failed to fetch existing contact",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
+                }
+            };
+            if resp.status().is_success() {
+                resp.text().await.ok().unwrap_or_default()
+            } else {
+                return operation_error_response(
+                    &EwsAction::UpdateItem,
+                    "ErrorInternalServerError",
+                    "Failed to fetch existing contact",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
+    };
+
+    // Parse into mutable vCard using vcard::parser? The vcard crate may not provide mutable builder.
+    // We'll re-build vCard by merging old + new manually.
+    let mut old_vcard = match parse_vcard_from_data(&vcard_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to parse existing vCard");
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                "Invalid existing vCard",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Extract updates
+    let mut new_display_name = None;
+    let mut new_email = None;
+    let mut new_phone = None;
+    let mut new_org = None;
+    let mut new_title = None;
+
+    for node in doc.descendants() {
+        match node.tag_name().name() {
+            "DisplayName" => new_display_name = node.text().map(str::to_string),
+            "EmailAddresses" => {
+                for entry in node.children() {
+                    if entry.has_tag_name("Entry")
+                        && entry.attribute("Key") == Some("EmailAddress1")
+                    {
+                        new_email = entry.text().map(str::to_string);
+                    }
+                }
+            }
+            "PhoneNumbers" => {
+                for entry in node.children() {
+                    if entry.has_tag_name("Entry") && entry.attribute("Key") == Some("Phone") {
+                        new_phone = entry.text().map(str::to_string);
+                    }
+                }
+            }
+            "CompanyName" => new_org = node.text().map(str::to_string),
+            "JobTitle" => new_title = node.text().map(str::to_string),
+            _ => {}
+        }
+    }
+
+    // Apply updates: if a field is present in the request, replace; else keep existing.
+    if let Some(name) = new_display_name {
+        // Update the FN property in vcard
+        let mut fn_found = false;
+        for prop in &mut old_vcard.properties {
+            if let vcard::Property::Fn(fn_val) = prop {
+                fn_val.value = name.clone();
+                fn_found = true;
+            }
+        }
+        if !fn_found {
+            old_vcard
+                .properties
+                .push(vcard::Property::Fn(vcard::Fn { value: name }));
+        }
+    }
+
+    if let Some(email) = new_email {
+        // Replace or add EMAIL property
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Email(_)));
+        old_vcard
+            .properties
+            .push(vcard::Property::Email(vcard::Email { email }));
+    }
+
+    if let Some(phone) = new_phone {
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Tel(_)));
+        let tel = vcard::Tel {
+            number: phone,
+            params: vec![
+                vcard::Parameter::Type(vcard::Type::Work),
+                vcard::Parameter::Type(vcard::Type::Voice),
+            ],
+        };
+        old_vcard.properties.push(vcard::Property::Tel(tel));
+    }
+
+    if let Some(org) = new_org {
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Org(_)));
+        old_vcard
+            .properties
+            .push(vcard::Property::Org(vcard::Org { value: vec![org] }));
+    }
+
+    if let Some(title) = new_title {
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Title(_)));
+        old_vcard
+            .properties
+            .push(vcard::Property::Title(vcard::Title { value: title }));
+    }
+
+    // Serialize updated vCard
+    let updated_vcard_str = old_vcard.to_string();
+
+    // PUT to CardDAV with If-Match header (use stored etag if available)
+    let url = format!(
+        "{}{}",
+        carddav.addressbook_home(&auth.username),
+        db_contact.carddav_href
+    );
+    let mut request = carddav
+        .client
+        .put(&url)
+        .basic_auth(&auth.username, Some(auth.password.expose_secret()))
+        .header("Content-Type", "text/vcard; charset=utf-8")
+        .body(updated_vcard_str.clone());
+
+    if let Some(ref etag) = db_contact.etag {
+        request = request.header("If-Match", format!("\"{}\"", etag));
+    }
+
+    let response = match request.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!(error = %e, "CardDAV PUT failed");
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                "Failed to update contact on CardDAV",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        if status == StatusCode::PRECONDITION_FAILED {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInvalidChangeKey",
+                "ChangeKey mismatch",
+                StatusCode::OK,
+            );
+        }
+        tracing::error!(status = %status, "CardDAV update failed");
+        return operation_error_response(
+            &EwsAction::UpdateItem,
+            "ErrorInternalServerError",
+            "CardDAV update contact failed",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+
+    // Update DB etag if needed
+    let new_etag = response
+        .headers()
+        .get("ETag")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim_matches('"').to_string());
+
+    if let Err(e) = state
+        .storage
+        .update_contact(
+            &auth.username,
+            item_id.as_deref().unwrap_or_default(),
+            new_etag.as_deref(),
+            Some(updated_vcard_str.as_str()),
+        )
+        .await
+    {
+        tracing::error!(error = %e, "Failed to update contact in DB");
+    }
+
+    let response_xml = format!(
+        r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(response_xml)
+}
+
+/// Handle EWS DeleteItem for Contacts using CardDAV.
+async fn handle_delete_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInternalServerError",
+                "CardDAV not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Extract ItemId/@Id
+    let item_id = extract_first_attr(body, b"ItemId", b"Id");
+    if item_id.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+        return operation_error_response(
+            &EwsAction::DeleteItem,
+            "ErrorInvalidIdMalformed",
+            "DeleteItem requires ItemId/@Id",
+            StatusCode::OK,
+        );
+    }
+
+    // Look up contact to get href and etag
+    let db_contact = match state
+        .storage
+        .get_contact(&auth.username, item_id.as_deref().unwrap_or_default())
+        .await
+    {
+        Ok(Some(contact)) => contact,
+        Ok(None) => {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorItemNotFound",
+                "Contact not found",
+                StatusCode::OK,
+            );
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "DB error fetching contact");
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInternalServerError",
+                "Database error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // DELETE from CardDAV with If-Match if etag available
+    let url = format!(
+        "{}{}",
+        carddav.addressbook_home(&auth.username),
+        db_contact.carddav_href
+    );
+    let mut request = carddav
+        .client
+        .delete(&url)
+        .basic_auth(&auth.username, Some(auth.password.expose_secret()));
+
+    if let Some(ref etag) = db_contact.etag {
+        request = request.header("If-Match", format!("\"{}\"", etag));
+    }
+
+    let response = match request.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!(error = %e, "CardDAV DELETE failed");
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInternalServerError",
+                "Failed to delete contact on CardDAV",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        if status == StatusCode::PRECONDITION_FAILED {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInvalidChangeKey",
+                "ChangeKey mismatch",
+                StatusCode::OK,
+            );
+        }
+        tracing::error!(status = %status, "CardDAV delete failed");
+        return operation_error_response(
+            &EwsAction::DeleteItem,
+            "ErrorInternalServerError",
+            "CardDAV delete contact failed",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+
+    // Remove from DB
+    if let Err(e) = state
+        .storage
+        .delete_contact(&auth.username, item_id.as_deref().unwrap_or_default())
+        .await
+    {
+        tracing::error!(error = %e, "Failed to delete contact from DB");
+        // Continue anyway; contact already deleted on server.
+    }
+
+    let response_xml = format!(
+        r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS
+    );
+    soap_ok(response_xml)
+}
+
 async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     if let Err(resp) = validate_requested_folder(&EwsAction::FindItem, owner, body) {
@@ -2002,6 +2855,11 @@ async fn handle_find_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     // Email folders — route to JMAP
     if folder.is_email() && state.cfg.email_enabled && state.jmap_client.is_some() {
         return handle_find_email_item(state, auth, body, &folder).await;
+    }
+
+    // Contacts folder — route to CardDAV
+    if matches!(folder, DistinguishedFolder::Contacts) {
+        return handle_find_contacts_item(state, auth, body).await;
     }
 
     // Calendar items — existing CalDAV path
@@ -2210,6 +3068,12 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     // If explicitly requesting email type, route to JMAP
     if is_email_request && state.cfg.email_enabled && state.jmap_client.is_some() {
         return handle_get_email_item(state, auth, &item_id).await;
+    }
+
+    // Check if item is a contact: server_id prefix "contact-" (as we generate in FindItem)
+    // Use simple prefix check; more robust would be to look up in contact_map.
+    if item_id.starts_with("contact-") && state.carddav_client.is_some() {
+        return handle_get_contact_item(state, auth, body).await;
     }
 
     let item_owner = match item_owner {
@@ -3074,6 +3938,11 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         }
     }
 
+    // If the body contains a <t:Contact> element, handle as contact
+    if body.contains("<t:Contact") {
+        return handle_create_contact_item(state, auth, body).await;
+    }
+
     // Fall through to calendar item handling
     let owner = owner_from_username(&auth.username);
 
@@ -3338,6 +4207,11 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         if !is_calendar_item {
             return handle_update_email_item(state, auth, &item_id, body).await;
         }
+    }
+
+    // Check if it's a contact (server_id prefix "contact-")
+    if item_id.starts_with("contact-") && state.carddav_client.is_some() {
+        return handle_update_contact_item(state, auth, body).await;
     }
 
     let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
@@ -3724,6 +4598,11 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         return handle_delete_email_item(state, auth, &item_id).await;
     }
 
+    // Check if it's a contact (server_id prefix "contact-")
+    if item_id.starts_with("contact-") && state.carddav_client.is_some() {
+        return handle_delete_contact_item(state, auth, body).await;
+    }
+
     let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
     let enforcement = PermissionEnforcement::new(&state.storage);
     let perm_ctx = PermissionContext::new(
@@ -4032,21 +4911,134 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         }
     } else {
         // Calendar items — CalDAV move
-        // For now, return success as a placeholder since moving calendar items is complex
-        tracing::info!(
-            item_id = %item_id,
-            to_folder = %to_folder_id,
-            "MoveItem: calendar move not fully implemented, returning success"
-        );
-        let change_key = item_id.to_string();
-        let response = format!(
-            r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
-            EWS_MSG_NS,
-            EWS_TYPE_NS,
-            xml_escape(&item_id),
-            xml_escape(&change_key)
-        );
-        soap_ok(response)
+        // Validate destination folder is a calendar folder
+        let dest_folder = match DistinguishedFolder::from_str(&to_folder_id) {
+            Ok(f) => f,
+            Err(_) => {
+                // Check if it's the explicit folder ID for the default calendar
+                let expected_cal_id = crate::ews_folders::folder_id_for(
+                    &auth.username,
+                    DistinguishedFolder::Calendar,
+                );
+                if to_folder_id == expected_cal_id {
+                    DistinguishedFolder::Calendar
+                } else {
+                    return operation_error_response(
+                        &EwsAction::MoveItem,
+                        "ErrorInvalidOperation",
+                        "Unsupported destination folder for calendar item",
+                        StatusCode::OK,
+                    );
+                }
+            }
+        };
+        if !dest_folder.is_calendar() {
+            return operation_error_response(
+                &EwsAction::MoveItem,
+                "ErrorInvalidOperation",
+                "Destination folder is not a calendar",
+                StatusCode::OK,
+            );
+        }
+
+        // Look up source item to get its resource_href and collection
+        let lookup = match state
+            .storage
+            .get_ews_item_by_server_id(&auth.username, &item_id)
+            .await
+        {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorItemNotFound",
+                    "Source calendar item not found",
+                    StatusCode::OK,
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: failed to fetch calendar item");
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "Failed to fetch source item",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+
+        // Source collection href (caldav_href) should be set
+        let src_collection_href = match &lookup.caldav_href {
+            Some(h) => h,
+            None => {
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInvalidOperation",
+                    "Source item has no calendar collection",
+                    StatusCode::OK,
+                );
+            }
+        };
+
+        // Extract the resource name (href relative to collection) from full resource_href
+        let src_href = lookup
+            .resource_href
+            .trim_start_matches(src_collection_href)
+            .trim_start_matches('/');
+
+        // Destination collection href: should be same as source because only default calendar supported
+        let dst_collection_href = src_collection_href;
+
+        // Initialize CalDAV client
+        let caldav = match CaldavClient::new(&state.cfg) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: CalDAV client init failed");
+                return operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "CalDAV unavailable",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+
+        // Perform the move. This returns a new ETag.
+        match caldav
+            .move_event(
+                src_href,
+                src_collection_href,
+                dst_collection_href,
+                &auth.username,
+                auth.password.expose_secret(),
+            )
+            .await
+        {
+            Ok(new_etag) => {
+                // If the move was within the same collection, server_id unchanged.
+                // If it were to a different collection, we'd need to update storage with new resource_href and server_id.
+                // For now, we only support same collection, so server_id remains the same.
+                // ChangeKey can be the new etag.
+                let change_key = new_etag;
+                let response = format!(
+                    r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
+                    EWS_MSG_NS,
+                    EWS_TYPE_NS,
+                    xml_escape(&item_id),
+                    xml_escape(&change_key)
+                );
+                soap_ok(response)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "MoveItem: CalDAV MOVE failed");
+                operation_error_response(
+                    &EwsAction::MoveItem,
+                    "ErrorInternalServerError",
+                    "Failed to move calendar item",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
     }
 }
 

@@ -23,6 +23,7 @@ use futures_util::future::join_all;
 use lru::LruCache;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use roxmltree::Document;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -1965,6 +1966,187 @@ async fn handle_item_operations(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
+/// Handle EAS MoveItems command.
+///
+/// Moves items between folders. Supports email (via JMAP) and calendar (within default calendar).
+/// If the destination is not supported, returns an appropriate error status.
+async fn handle_move_items(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    // Parse the MoveItems XML to extract each <Move> element
+    let doc = match Document::parse(xml) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::debug!(request_id = %request_id, "Failed to parse MoveItems XML: {}", e);
+            return bad_request_response(request_id, "Invalid MoveItems XML");
+        }
+    };
+
+    let mut responses = String::new();
+    let mut overall_status = 1u8; // Success by default; any failure sets to failure and continues
+
+    // Iterate over Move elements under MoveItems (any namespace prefix)
+    for move_elem in doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "Move")
+    {
+        let src_msg_id = move_elem
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "SrcMsgId")
+            .and_then(|n| n.text())
+            .map(String::from)
+            .unwrap_or_default();
+        let dst_fld_id = move_elem
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "DstFldId")
+            .and_then(|n| n.text())
+            .map(String::from)
+            .unwrap_or_default();
+        let _src_fld_id = move_elem
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "SrcFldId")
+            .and_then(|n| n.text())
+            .map(String::from);
+
+        if src_msg_id.is_empty() || dst_fld_id.is_empty() {
+            overall_status = 4; // ErrorInvalidIdMalformed or similar
+            responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
+            continue;
+        }
+
+        // Determine item type by server ID prefix
+        let is_email = crate::email::is_email_server_id(&src_msg_id);
+
+        // For email, move via JMAP
+        if is_email {
+            if !state.email_available() {
+                overall_status = 5; // ErrorInvalidRequest?
+                responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
+                continue;
+            }
+
+            // Map destination folder CollectionId to mailbox role
+            let target_role = match dst_fld_id.as_str() {
+                "2" => "inbox",
+                "3" => "drafts",
+                "4" => "trash",
+                "5" => "sent",
+                "6" => {
+                    // Outbox not a real mailbox; special handling
+                    responses.push_str(r#"<Status>4</Status>"#);
+                    continue;
+                }
+                "12" => "junk",
+                _ => {
+                    // Check if it's a distinguished folder ID string (like "inbox")
+                    match dst_fld_id.to_ascii_lowercase().as_str() {
+                        "inbox" => "inbox",
+                        "drafts" => "drafts",
+                        "deleteditems" => "trash",
+                        "sentitems" => "sent",
+                        "junkemail" => "junk",
+                        _ => {
+                            responses.push_str(r#"<Status>6</Status>"#);
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            // Get JMAP client and account ID
+            let Some(jmap) = state.jmap_client.as_ref() else {
+                responses.push_str(r#"<Status>8</Status>"#);
+                continue;
+            };
+
+            let account_id = match jmap.get_account_id(username, password).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(error = %e, "MoveItems: failed to get JMAP account ID");
+                    responses.push_str(r#"<Status>8</Status>"#);
+                    continue;
+                }
+            };
+
+            // Perform the move
+            match crate::email::move_email_via_jmap(
+                state,
+                jmap,
+                &account_id,
+                &src_msg_id,
+                target_role,
+                username,
+                password,
+            )
+            .await
+            {
+                Ok(_new_change_key) => {
+                    // Success: include SrcMsgId and DstMsgId (same server id)
+                    responses.push_str(&format!(
+                        r#"<Move><SrcMsgId>{}</SrcMsgId><DstMsgId>{}</DstMsgId></Move>"#,
+                        xml_escape(&src_msg_id),
+                        xml_escape(&src_msg_id) // DstMsgId equals moved item id
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "MoveItems email move failed");
+                    responses.push_str(r#"<Status>8</Status>"#);
+                }
+            }
+        } else {
+            // Calendar item move
+            // Only support moving to default calendar (collection ID "1")
+            // because only one calendar folder is exposed.
+            // Destination folder must be the Calendar folder (id "1" or distinguished "calendar").
+            // Also source must belong to the default calendar; we can check via DB if needed.
+            if dst_fld_id != "1" && !dst_fld_id.eq_ignore_ascii_case("calendar") {
+                // Unsupported destination
+                responses.push_str(r#"<Status>6</Status>"#);
+                continue;
+            }
+
+            // For calendar, moving within the same (only) collection is effectively a no-op
+            // since there is no other calendar. The Exchange protocol expects a new DstMsgId,
+            // but the item identifier does not change when moving within same calendar.
+            // We'll return the same server ID.
+            // However, if we had multiple calendars, we would perform a CalDAV MOVE here.
+            // For now, simply return success.
+            responses.push_str(&format!(
+                r#"<Move><SrcMsgId>{}</SrcMsgId><DstMsgId>{}</DstMsgId></Move>"#,
+                xml_escape(&src_msg_id),
+                xml_escape(&src_msg_id)
+            ));
+        }
+    }
+
+    // If no <Move> elements were processed, return error
+    if responses.is_empty() {
+        overall_status = 5; // ErrorInvalidRequest
+        responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
+    }
+
+    let payload = if overall_status == 1 {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><MoveItems xmlns="Move:"><Status>{}</Status>{}</MoveItems>"#,
+            overall_status, responses
+        )
+    } else {
+        // In case of errors, we can still return the fragment per element but overall might be failure
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><MoveItems xmlns="Move:"><Status>{}</Status>{}</MoveItems>"#,
+            overall_status, responses
+        )
+    };
+
+    xml_or_wbxml_response(wbxml, as_wbxml, &payload, request_id)
+}
+
 /// Fetch free-busy information via JMAP Calendar (urn:ietf:params:jmap:calendars).
 ///
 /// Uses `CalendarEvent/query` + `CalendarEvent/get` with the `iCalendar` property
@@ -2566,6 +2748,17 @@ async fn handle_sync_collections(
             .map(|c| c.eq_ignore_ascii_case("Calendar"))
             .unwrap_or_else(|| collection_id == "1"); // Default collection ID "1" is Calendar
 
+        // Determine if this is Contacts sync. Per MS-ASCMD, Contacts class is "Contacts".
+        // Collection ID for contacts is often "8" (the Contacts folder) or can be a distinguished ID.
+        let is_contacts = coll
+            .class
+            .as_deref()
+            .map(|c| c.eq_ignore_ascii_case("Contacts"))
+            .unwrap_or_else(|| {
+                // Some Android clients use collection ID "8" for contacts
+                collection_id == "8" || collection_id.eq_ignore_ascii_case("contacts")
+            });
+
         let coll_xml = if is_email {
             if state.can_read_email() {
                 match handle_email_sync(
@@ -2765,8 +2958,143 @@ async fn handle_sync_collections(
             } else {
                 result_xml
             }
+        } else if is_contacts {
+            // Contacts sync via CardDAV with client mutation support
+            let mut contact_mutation_responses = String::new();
+
+            // Setup permission enforcement for contacts
+            let coll_xml_ref = &coll.xml;
+            let owner = crate::ews::owner_from_username(username);
+            // Determine folder ID for permission checks (use collection_id)
+            let folder_id = if collection_id == "8" {
+                "8".to_string()
+            } else {
+                collection_id.to_string()
+            };
+            let enforcement = PermissionEnforcement::new(&state.storage);
+            let perm_ctx =
+                PermissionContext::new(username.to_string(), owner.to_string(), folder_id.clone());
+
+            // Detect if there are client mutations (Add/Change/Delete)
+            let has_mutations = coll_xml_ref.contains("<Add")
+                || coll_xml_ref.contains("<Change")
+                || coll_xml_ref.contains("<Delete")
+                || coll_xml_ref.contains(":Add")
+                || coll_xml_ref.contains(":Change")
+                || coll_xml_ref.contains(":Delete");
+
+            // Apply client mutations if present
+            if has_mutations {
+                // Permission checks similar to calendar
+                let mut ok = true;
+                if coll_xml_ref.contains("<Add") || coll_xml_ref.contains(":Add") {
+                    match enforcement.can_create_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, error = %e, "Permission check failed for can_create_item (contacts)");
+                            ok = false;
+                        }
+                    }
+                }
+                if ok && (coll_xml_ref.contains("<Change") || coll_xml_ref.contains(":Change")) {
+                    match enforcement.can_edit_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, error = %e, "Permission check failed for can_edit_item (contacts)");
+                            ok = false;
+                        }
+                    }
+                }
+                if ok && (coll_xml_ref.contains("<Delete") || coll_xml_ref.contains(":Delete")) {
+                    match enforcement.can_delete_item(&perm_ctx).await {
+                        Ok(allowed) => ok &= allowed,
+                        Err(e) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, error = %e, "Permission check failed for can_delete_item (contacts)");
+                            ok = false;
+                        }
+                    }
+                }
+
+                if !ok {
+                    // Permission denied for mutations
+                    let xml = format!(
+                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    );
+                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+                }
+
+                // Apply the client mutations
+                match crate::contacts::apply_contacts_mutations(
+                    state,
+                    username,
+                    password.expose_secret(),
+                    coll_xml_ref,
+                )
+                .await
+                {
+                    Ok(results) => {
+                        contact_mutation_responses =
+                            crate::contacts::render_contacts_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(request_id = %request_id, error = %e, "Failed to apply contacts mutations");
+                        let xml = format!(
+                            "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        );
+                        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+                    }
+                }
+            }
+
+            // Perform server-side sync to fetch changes (after applying client mutations)
+            match crate::contacts::sync_contacts(
+                state,
+                username,
+                password.expose_secret(),
+                Some(incoming_key),
+                device_id,
+            )
+            .await
+            {
+                Ok(server_changes_xml) => {
+                    // Fetch the new sync key stored by sync_contacts
+                    let new_sync_key = match state
+                        .storage
+                        .get_sync_key(username, &state_collection_id)
+                        .await
+                    {
+                        Ok(Some((key, _))) => key,
+                        Ok(None) => Uuid::new_v4().simple().to_string(),
+                        Err(_) => {
+                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, "Failed to get sync key for contacts, generating fresh");
+                            Uuid::new_v4().simple().to_string()
+                        }
+                    };
+                    let xml = format!(
+                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
+                        xml_escape(&new_sync_key),
+                        xml_escape(collection_id),
+                        contact_mutation_responses,
+                        server_changes_xml
+                    );
+                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Contacts sync failed");
+                    let xml = format!(
+                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    );
+                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+                }
+            }
         } else {
-            // Unsupported collection type: Contacts, Tasks, Notes, etc.
+            // Unsupported collection type: Tasks, Notes, etc.
             tracing::warn!(
                 request_id = %request_id,
                 collection_id = %collection_id,
@@ -3342,10 +3670,18 @@ pub async fn handle(
             handle_get_item_estimate(&state, &username, &req, &wbxml, wants_wbxml, &request_id)
                 .await
         }
-        "MoveItems" => bad_request_response(
-            &request_id,
-            "MoveItems is not supported for this calendar-only mailbox surface",
-        ),
+        "MoveItems" => {
+            handle_move_items(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
         "SendMail" | "SmartReply" | "SmartForward" => {
             handle_send_mail(
                 &state,

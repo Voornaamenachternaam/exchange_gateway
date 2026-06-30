@@ -25,6 +25,7 @@ const ENV_SMTP_PORT: &str = "GATEWAY_SMTP_PORT";
 const ENV_IMAP_HOST: &str = "GATEWAY_IMAP_HOST";
 const ENV_IMAP_PORT: &str = "GATEWAY_IMAP_PORT";
 const ENV_JMAP_BASE: &str = "GATEWAY_JMAP_BASE";
+const ENV_CARDDAV_BASE: &str = "GATEWAY_CARDDAV_BASE";
 const ENV_EMAIL_ENABLED: &str = "GATEWAY_EMAIL_ENABLED";
 const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
 const ENV_ADMIN_BASE: &str = "GATEWAY_ADMIN_BASE";
@@ -69,6 +70,9 @@ pub struct Config {
     // JMAP base URL for email read/sync via Stalwart
     #[serde(default)]
     pub jmap_base: String,
+    // CardDAV base URL for contacts (typically /carddav)
+    #[serde(default)]
+    pub carddav_base: String,
     // Master switch for email functionality
     #[serde(default = "default_email_enabled")]
     pub email_enabled: bool,
@@ -209,9 +213,23 @@ impl Config {
             cfg.jmap_base = derived;
         }
 
+        // Auto-derive carddav_base from caldav_base if CardDAV not explicitly set.
+        // Stalwart serves CardDAV at the same host: replace /dav with /carddav.
+        if cfg.carddav_base.is_empty() && !cfg.caldav_base.is_empty() {
+            let derived = cfg.caldav_base.replace("/dav", "/carddav");
+            tracing::info!(
+                target: "config",
+                caldav_base = %cfg.caldav_base,
+                derived_carddav_base = %derived,
+                "Auto-derived carddav_base from caldav_base"
+            );
+            cfg.carddav_base = derived;
+        }
+
         // Sanitize caldav_base to avoid logging embedded credentials
         let sanitized_caldav_base = sanitize_url_for_logging(&cfg.caldav_base);
         let sanitized_jmap_base = sanitize_url_for_logging(&cfg.jmap_base);
+        let sanitized_carddav_base = sanitize_url_for_logging(&cfg.carddav_base);
 
         tracing::info!(
             target: "config",
@@ -219,7 +237,8 @@ impl Config {
             gateway_host = cfg.gateway_host,
             mail_domain = cfg.mail_domain,
             caldav_base_sanitized = sanitized_caldav_base,
-        jmap_base_sanitized = sanitized_jmap_base,
+            jmap_base_sanitized = sanitized_jmap_base,
+            carddav_base_sanitized = sanitized_carddav_base,
             database_path = redact_path(&cfg.database_path),
             max_attachment_bytes = cfg.max_attachment_bytes,
             auth_cache_ttl_secs = cfg.auth_cache_ttl_secs,
@@ -470,6 +489,25 @@ fn apply_environment_overrides(cfg: &mut Config) {
     apply_env_string(cfg, get_env_with_fallback(ENV_JMAP_BASE, None), |c, v| {
         c.jmap_base = v;
     });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_CARDDAV_BASE, None),
+        |c, v| {
+            c.carddav_base = v;
+        },
+    );
+
+    // Auto-derive CardDAV base from CalDAV base if not explicitly set
+    if cfg.carddav_base.is_empty() && !cfg.caldav_base.is_empty() {
+        let derived = cfg.caldav_base.replace("/dav/", "/carddav/");
+        tracing::info!(
+            target: "config",
+            caldav_base = cfg.caldav_base,
+            derived_carddav_base = derived,
+            "GATEWAY_CARDDAV_BASE not set, derived from GATEWAY_CALDAV_BASE"
+        );
+        cfg.carddav_base = derived;
+    }
 
     if let Some(val) = get_env_with_fallback(ENV_EMAIL_ENABLED, None) {
         let lower = val.to_lowercase();
@@ -622,6 +660,7 @@ impl Default for Config {
             mail_domain: String::new(),
             bind: String::from("[::]:8134"),
             caldav_base: String::new(),
+            carddav_base: String::new(),
             database_path: String::from("/var/lib/exchange-gateway/gateway.db"),
             hmac_secret: SecretString::from(String::new()),
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
