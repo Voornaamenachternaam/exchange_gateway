@@ -3,7 +3,6 @@ use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 
 use crate::error::GatewayError as Error;
-use roxmltree::Document;
 use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
@@ -24,6 +23,7 @@ use futures_util::future::join_all;
 use lru::LruCache;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use roxmltree::Document;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -2016,10 +2016,7 @@ async fn handle_move_items(
 
         if src_msg_id.is_empty() || dst_fld_id.is_empty() {
             overall_status = 4; // ErrorInvalidIdMalformed or similar
-            responses.push_str(&format!(
-                r#"<Status>{}</Status>"#,
-                overall_status
-            ));
+            responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
             continue;
         }
 
@@ -2030,10 +2027,7 @@ async fn handle_move_items(
         if is_email {
             if !state.email_available() {
                 overall_status = 5; // ErrorInvalidRequest?
-                responses.push_str(&format!(
-                    r#"<Status>{}</Status>"#,
-                    overall_status
-                ));
+                responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
                 continue;
             }
 
@@ -2978,11 +2972,8 @@ async fn handle_sync_collections(
                 collection_id.to_string()
             };
             let enforcement = PermissionEnforcement::new(&state.storage);
-            let perm_ctx = PermissionContext::new(
-                username.to_string(),
-                owner.to_string(),
-                folder_id.clone(),
-            );
+            let perm_ctx =
+                PermissionContext::new(username.to_string(), owner.to_string(), folder_id.clone());
 
             // Detect if there are client mutations (Add/Change/Delete)
             let has_mutations = coll_xml_ref.contains("<Add")
@@ -3035,9 +3026,17 @@ async fn handle_sync_collections(
                 }
 
                 // Apply the client mutations
-                match crate::contacts::apply_contacts_mutations(state, username, password.expose_secret(), coll_xml_ref).await {
+                match crate::contacts::apply_contacts_mutations(
+                    state,
+                    username,
+                    password.expose_secret(),
+                    coll_xml_ref,
+                )
+                .await
+                {
                     Ok(results) => {
-                        contact_mutation_responses = crate::contacts::render_contacts_mutation_responses(&results);
+                        contact_mutation_responses =
+                            crate::contacts::render_contacts_mutation_responses(&results);
                     }
                     Err(e) => {
                         tracing::error!(request_id = %request_id, error = %e, "Failed to apply contacts mutations");
@@ -3052,10 +3051,22 @@ async fn handle_sync_collections(
             }
 
             // Perform server-side sync to fetch changes (after applying client mutations)
-            match crate::contacts::sync_contacts(state, username, password.expose_secret(), Some(incoming_key), device_id).await {
+            match crate::contacts::sync_contacts(
+                state,
+                username,
+                password.expose_secret(),
+                Some(incoming_key),
+                device_id,
+            )
+            .await
+            {
                 Ok(server_changes_xml) => {
                     // Fetch the new sync key stored by sync_contacts
-                    let new_sync_key = match state.storage.get_sync_key(username, &state_collection_id).await {
+                    let new_sync_key = match state
+                        .storage
+                        .get_sync_key(username, &state_collection_id)
+                        .await
+                    {
                         Ok(Some((key, _))) => key,
                         Ok(None) => Uuid::new_v4().simple().to_string(),
                         Err(_) => {

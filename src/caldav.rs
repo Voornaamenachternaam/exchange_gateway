@@ -372,14 +372,14 @@ impl CaldavClient {
 
         // After move, the resource is at the new destination. We need its new ETag.
         // The response may include ETag header directly; otherwise we can fetch via PROPFIND on destination.
-        if let Some(etag_val) = resp.headers().get("ETag")
-            .and_then(|v| v.to_str().ok())
-        {
+        if let Some(etag_val) = resp.headers().get("ETag").and_then(|v| v.to_str().ok()) {
             Ok(normalize_etag_to_internal(etag_val))
         } else {
             // Fallback: fetch the ETag from the new location
             let etag_opt = self.get_etag(&dst_url, username, password).await?;
-            etag_opt.ok_or_else(|| anyhow!("Moved resource not found at destination for ETag retrieval"))
+            etag_opt.ok_or_else(|| {
+                anyhow!("Moved resource not found at destination for ETag retrieval")
+            })
         }
     }
 
