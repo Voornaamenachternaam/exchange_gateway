@@ -489,9 +489,13 @@ fn apply_environment_overrides(cfg: &mut Config) {
     apply_env_string(cfg, get_env_with_fallback(ENV_JMAP_BASE, None), |c, v| {
         c.jmap_base = v;
     });
-    apply_env_string(cfg, get_env_with_fallback(ENV_CARDDAV_BASE, None), |c, v| {
-        c.carddav_base = v;
-    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_CARDDAV_BASE, None),
+        |c, v| {
+            c.carddav_base = v;
+        },
+    );
 
     // Auto-derive CardDAV base from CalDAV base if not explicitly set
     if cfg.carddav_base.is_empty() && !cfg.caldav_base.is_empty() {

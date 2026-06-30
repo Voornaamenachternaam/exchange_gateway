@@ -10,7 +10,7 @@ use crate::calendar::{
 };
 use crate::carddav::CarddavClient;
 use crate::contacts::render_eas_contact; // not needed for EWS; we have separate render
-use crate::vcard::{parse_vcard_from_data, Vcard};
+use crate::vcard::{Vcard, parse_vcard_from_data};
 
 use crate::delegate_ews::DelegateEwsHandler;
 use crate::ews_folders::{
@@ -1995,7 +1995,11 @@ async fn handle_find_email_item(
 }
 
 /// Handle EWS FindItem for Contacts using CardDAV.
-async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_find_contacts_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     let owner = owner_from_username(&auth.username);
     let max = extract_int(body, b"MaxEntriesReturned", 100);
     let offset = extract_int(body, b"Offset", 0);
@@ -2034,14 +2038,18 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
     // Map server IDs from DB, but for FindItem we can use CardDAV href to derive stable IDs.
     // We'll generate a server_id like "contact-{index}" but ensure consistency across calls.
     let total_items = carddav_contacts.len();
-    let paged_contacts = carddav_contacts.into_iter().skip(offset).take(max).collect::<Vec<_>>();
+    let paged_contacts = carddav_contacts
+        .into_iter()
+        .skip(offset)
+        .take(max)
+        .collect::<Vec<_>>();
 
     let mut items_xml = String::new();
     let mut actual_count = 0;
     for (idx, contact) in paged_contacts.iter().enumerate() {
         // Use a deterministic server_id based on href to avoid churn
         let server_id = format!("contact-{}", sha256_hash(&contact.href));
-        
+
         // Generate ChangeKey: include etag and a timestamp component to indicate changes.
         // Per RFC 7252, ChangeKey should change when content changes.
         // We'll use: format!("{}-{}", server_id, current timestamp in seconds)
@@ -2088,7 +2096,11 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
         EWS_MSG_NS,
         EWS_TYPE_NS,
         actual_count,
-        if offset + actual_count >= total_items { "true" } else { "false" },
+        if offset + actual_count >= total_items {
+            "true"
+        } else {
+            "false"
+        },
         offset,
         items_xml
     );
@@ -2096,7 +2108,11 @@ async fn handle_find_contacts_item(state: &Arc<AppState>, auth: &AuthContext, bo
 }
 
 /// Handle EWS GetItem for Contacts using CardDAV.
-async fn handle_get_contact_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_get_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     // Extract ItemId(s) from request
     let doc = match roxmltree::Document::parse(body) {
         Ok(d) => d,
@@ -2159,7 +2175,11 @@ async fn handle_get_contact_item(state: &Arc<AppState>, auth: &AuthContext, body
             // Fetch latest vCard from CardDAV using href (or use stored vCard if fetch fails)
             let vcard_str = match carddav
                 .client
-                .get(&format!("{}{}", carddav.addressbook_home(&auth.username), row.carddav_href))
+                .get(&format!(
+                    "{}{}",
+                    carddav.addressbook_home(&auth.username),
+                    row.carddav_href
+                ))
                 .basic_auth(&auth.username, Some(auth.password.expose_secret()))
                 .send()
                 .await
@@ -2201,7 +2221,12 @@ async fn handle_get_contact_item(state: &Arc<AppState>, auth: &AuthContext, body
 }
 
 /// Render a vCard as an EWS Contact element.
-fn render_ews_contact(server_id: &str, change_key: &str, vcard: &Vcard, shape: ItemShape) -> String {
+fn render_ews_contact(
+    server_id: &str,
+    change_key: &str,
+    vcard: &Vcard,
+    shape: ItemShape,
+) -> String {
     // Determine display name: use full_name if non-empty, else first N component
     let display_name = if !vcard.full_name.is_empty() {
         vcard.full_name.as_str()
@@ -2211,25 +2236,49 @@ fn render_ews_contact(server_id: &str, change_key: &str, vcard: &Vcard, shape: I
         ""
     };
     let email = vcard.email.first().map(|e| e.email.as_str()).unwrap_or("");
-    let phone = vcard.telephone.first().map(|t| t.number.as_str()).unwrap_or("");
+    let phone = vcard
+        .telephone
+        .first()
+        .map(|t| t.number.as_str())
+        .unwrap_or("");
     // ORG value is components joined by ';'
-    let org = vcard.org.first().map(|o| o.value.join(";")).unwrap_or_default();
+    let org = vcard
+        .org
+        .first()
+        .map(|o| o.value.join(";"))
+        .unwrap_or_default();
     let title = vcard.title.as_ref().map(|t| t.value.as_str()).unwrap_or("");
 
     let mut xml = String::new();
     xml.push_str("<t:Contact>");
-    xml.push_str(&format!("<t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>", xml_escape(server_id), xml_escape(change_key)));
+    xml.push_str(&format!(
+        "<t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>",
+        xml_escape(server_id),
+        xml_escape(change_key)
+    ));
     if !display_name.is_empty() {
-        xml.push_str(&format!("<t:DisplayName>{}</t:DisplayName>", xml_escape(display_name)));
+        xml.push_str(&format!(
+            "<t:DisplayName>{}</t:DisplayName>",
+            xml_escape(display_name)
+        ));
     }
     if !email.is_empty() {
-        xml.push_str(&format!("<t:EmailAddresses><t:Entry Key=\"EmailAddress1\">{}</t:Entry></t:EmailAddresses>", xml_escape(email)));
+        xml.push_str(&format!(
+            "<t:EmailAddresses><t:Entry Key=\"EmailAddress1\">{}</t:Entry></t:EmailAddresses>",
+            xml_escape(email)
+        ));
     }
     if !phone.is_empty() {
-        xml.push_str(&format!("<t:PhoneNumbers><t:Entry Key=\"Phone\">{}</t:Entry></t:PhoneNumbers>", xml_escape(phone)));
+        xml.push_str(&format!(
+            "<t:PhoneNumbers><t:Entry Key=\"Phone\">{}</t:Entry></t:PhoneNumbers>",
+            xml_escape(phone)
+        ));
     }
     if !org.is_empty() {
-        xml.push_str(&format!("<t:CompanyName>{}</t:CompanyName>", xml_escape(&org)));
+        xml.push_str(&format!(
+            "<t:CompanyName>{}</t:CompanyName>",
+            xml_escape(&org)
+        ));
     }
     if !title.is_empty() {
         xml.push_str(&format!("<t:JobTitle>{}</t:JobTitle>", xml_escape(title)));
@@ -2249,7 +2298,11 @@ fn sha256_hash(s: &str) -> String {
 }
 
 /// Handle EWS CreateItem for Contacts using CardDAV.
-async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_create_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     let carddav = match state.carddav_client.as_ref() {
         Some(c) => c,
         None => {
@@ -2354,7 +2407,13 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
     if let Err(e) = state
         .storage
-        .insert_contact(&auth.username, &href, &server_id, etag.as_deref(), Some(vcard_str.as_str()))
+        .insert_contact(
+            &auth.username,
+            &href,
+            &server_id,
+            etag.as_deref(),
+            Some(vcard_str.as_str()),
+        )
         .await
     {
         tracing::error!(error = %e, "Failed to store contact in DB");
@@ -2371,7 +2430,11 @@ async fn handle_create_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 }
 
 /// Handle EWS UpdateItem for Contacts using CardDAV.
-async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_update_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     let carddav = match state.carddav_client.as_ref() {
         Some(c) => c,
         None => {
@@ -2396,7 +2459,11 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     }
 
     // Look up contact by server_id to get href and etag
-    let db_contact = match state.storage.get_contact(&auth.username, item_id.as_deref().unwrap_or_default()).await {
+    let db_contact = match state
+        .storage
+        .get_contact(&auth.username, item_id.as_deref().unwrap_or_default())
+        .await
+    {
         Ok(Some(contact)) => contact,
         Ok(None) => {
             return operation_error_response(
@@ -2443,7 +2510,11 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
         Some(v) => v,
         None => {
             // Try fetching from CardDAV
-            let url = format!("{}{}", carddav.addressbook_home(&auth.username), db_contact.carddav_href);
+            let url = format!(
+                "{}{}",
+                carddav.addressbook_home(&auth.username),
+                db_contact.carddav_href
+            );
             match carddav
                 .client
                 .get(&url)
@@ -2451,7 +2522,9 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
                 .send()
                 .await
             {
-                Ok(resp) if resp.status().is_success() => resp.text().await.ok().unwrap_or_default(),
+                Ok(resp) if resp.status().is_success() => {
+                    resp.text().await.ok().unwrap_or_default()
+                }
                 _ => {
                     return operation_error_response(
                         &EwsAction::UpdateItem,
@@ -2491,7 +2564,9 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
             "DisplayName" => new_display_name = node.text().map(str::to_string),
             "EmailAddresses" => {
                 for entry in node.children() {
-                    if entry.has_tag_name("Entry") && entry.attribute("Key") == Some("EmailAddress1") {
+                    if entry.has_tag_name("Entry")
+                        && entry.attribute("Key") == Some("EmailAddress1")
+                    {
                         new_email = entry.text().map(str::to_string);
                     }
                 }
@@ -2520,40 +2595,63 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
             }
         }
         if !fn_found {
-            old_vcard.properties.push(vcard::Property::Fn(vcard::Fn { value: name }));
+            old_vcard
+                .properties
+                .push(vcard::Property::Fn(vcard::Fn { value: name }));
         }
     }
 
     if let Some(email) = new_email {
         // Replace or add EMAIL property
-        old_vcard.properties.retain(|p| !matches!(p, vcard::Property::Email(_)));
-        old_vcard.properties.push(vcard::Property::Email(vcard::Email { email }));
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Email(_)));
+        old_vcard
+            .properties
+            .push(vcard::Property::Email(vcard::Email { email }));
     }
 
     if let Some(phone) = new_phone {
-        old_vcard.properties.retain(|p| !matches!(p, vcard::Property::Tel(_)));
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Tel(_)));
         let tel = vcard::Tel {
             number: phone,
-            params: vec![vcard::Parameter::Type(vcard::Type::Work), vcard::Parameter::Type(vcard::Type::Voice)],
+            params: vec![
+                vcard::Parameter::Type(vcard::Type::Work),
+                vcard::Parameter::Type(vcard::Type::Voice),
+            ],
         };
         old_vcard.properties.push(vcard::Property::Tel(tel));
     }
 
     if let Some(org) = new_org {
-        old_vcard.properties.retain(|p| !matches!(p, vcard::Property::Org(_)));
-        old_vcard.properties.push(vcard::Property::Org(vcard::Org { value: vec![org] }));
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Org(_)));
+        old_vcard
+            .properties
+            .push(vcard::Property::Org(vcard::Org { value: vec![org] }));
     }
 
     if let Some(title) = new_title {
-        old_vcard.properties.retain(|p| !matches!(p, vcard::Property::Title(_)));
-        old_vcard.properties.push(vcard::Property::Title(vcard::Title { value: title }));
+        old_vcard
+            .properties
+            .retain(|p| !matches!(p, vcard::Property::Title(_)));
+        old_vcard
+            .properties
+            .push(vcard::Property::Title(vcard::Title { value: title }));
     }
 
     // Serialize updated vCard
     let updated_vcard_str = old_vcard.to_string();
 
     // PUT to CardDAV with If-Match header (use stored etag if available)
-    let url = format!("{}{}", carddav.addressbook_home(&auth.username), db_contact.carddav_href);
+    let url = format!(
+        "{}{}",
+        carddav.addressbook_home(&auth.username),
+        db_contact.carddav_href
+    );
     let mut request = carddav
         .client
         .put(&url)
@@ -2606,7 +2704,12 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 
     if let Err(e) = state
         .storage
-        .update_contact(&auth.username, &item_id, new_etag.as_deref(), Some(updated_vcard_str.as_str()))
+        .update_contact(
+            &auth.username,
+            &item_id,
+            new_etag.as_deref(),
+            Some(updated_vcard_str.as_str()),
+        )
         .await
     {
         tracing::error!(error = %e, "Failed to update contact in DB");
@@ -2620,7 +2723,11 @@ async fn handle_update_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
 }
 
 /// Handle EWS DeleteItem for Contacts using CardDAV.
-async fn handle_delete_contact_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+async fn handle_delete_contact_item(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
     let carddav = match state.carddav_client.as_ref() {
         Some(c) => c,
         None => {
@@ -2645,7 +2752,11 @@ async fn handle_delete_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     }
 
     // Look up contact to get href and etag
-    let db_contact = match state.storage.get_contact(&auth.username, item_id.as_deref().unwrap_or_default()).await {
+    let db_contact = match state
+        .storage
+        .get_contact(&auth.username, item_id.as_deref().unwrap_or_default())
+        .await
+    {
         Ok(Some(contact)) => contact,
         Ok(None) => {
             return operation_error_response(
@@ -2667,7 +2778,11 @@ async fn handle_delete_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     };
 
     // DELETE from CardDAV with If-Match if etag available
-    let url = format!("{}{}", carddav.addressbook_home(&auth.username), db_contact.carddav_href);
+    let url = format!(
+        "{}{}",
+        carddav.addressbook_home(&auth.username),
+        db_contact.carddav_href
+    );
     let mut request = carddav
         .client
         .delete(&url)
@@ -2710,11 +2825,7 @@ async fn handle_delete_contact_item(state: &Arc<AppState>, auth: &AuthContext, b
     }
 
     // Remove from DB
-    if let Err(e) = state
-        .storage
-        .delete_contact(&auth.username, &item_id)
-        .await
-    {
+    if let Err(e) = state.storage.delete_contact(&auth.username, &item_id).await {
         tracing::error!(error = %e, "Failed to delete contact from DB");
         // Continue anyway; contact already deleted on server.
     }
@@ -4802,7 +4913,10 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             Ok(f) => f,
             Err(_) => {
                 // Check if it's the explicit folder ID for the default calendar
-                let expected_cal_id = crate::ews_folders::folder_id_for(&auth.username, DistinguishedFolder::Calendar);
+                let expected_cal_id = crate::ews_folders::folder_id_for(
+                    &auth.username,
+                    DistinguishedFolder::Calendar,
+                );
                 if to_folder_id == expected_cal_id {
                     DistinguishedFolder::Calendar
                 } else {
@@ -4825,7 +4939,11 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         }
 
         // Look up source item to get its resource_href and collection
-        let lookup = match state.storage.get_ews_item_by_server_id(&auth.username, &item_id).await {
+        let lookup = match state
+            .storage
+            .get_ews_item_by_server_id(&auth.username, &item_id)
+            .await
+        {
             Ok(Some(row)) => row,
             Ok(None) => {
                 return operation_error_response(
@@ -4860,7 +4978,10 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         };
 
         // Extract the resource name (href relative to collection) from full resource_href
-        let src_href = lookup.resource_href.trim_start_matches(src_collection_href).trim_start_matches('/');
+        let src_href = lookup
+            .resource_href
+            .trim_start_matches(src_collection_href)
+            .trim_start_matches('/');
 
         // Destination collection href: should be same as source because only default calendar supported
         let dst_collection_href = src_collection_href;
