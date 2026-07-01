@@ -458,7 +458,7 @@ pub struct SetCalendarEventParams<'a> {
     pub account_id: &'a str,
     pub ics: &'a str,
     pub event_id: Option<&'a str>,
-    pub calendar_id: &'a str,
+    pub calendar_id: Option<&'a str>,
     pub username: &'a str,
     pub password: &'a SecretString,
 }
@@ -1919,11 +1919,6 @@ impl JmapClient {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
 
-        let create_obj = json!({
-            "iCalendar": params.ics,
-            "calendarIds": { (params.calendar_id): true },
-        });
-
         if let Some(existing_id) = params.event_id {
             // Update existing event — use /set update with the new ICS
             let method_calls = vec![(
@@ -1979,6 +1974,13 @@ impl JmapClient {
             Ok((existing_id.to_string(), String::new(), String::new()))
         } else {
             // Create new event
+            let Some(calendar_id) = params.calendar_id else {
+                return Err(anyhow!("calendar_id required for create"));
+            };
+            let create_obj = json!({
+                "iCalendar": params.ics,
+                "calendarIds": { (calendar_id): true },
+            });
             let method_calls = vec![(
                 "CalendarEvent/set",
                 json!({
