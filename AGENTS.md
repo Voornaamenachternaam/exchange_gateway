@@ -249,3 +249,41 @@
 - **New Outlook for Windows (20251205004.10)**: Connects directly to on-prem EWS. Gateway provides EWS ↔ JMAP/CalDAV translation. Works with JMAP Calendar for free-busy. Calendar CRUD still via CalDAV.
 - **Outlook Android (5.2618.2)**: Cloud-backed via AutoDetect. Without M365 tenant, falls back to IMAP for email. Native Android Exchange account works for EAS calendar sync directly.
 - **Android native Exchange account**: Direct EAS client, no cloud middle tier. Gateway provides EAS ↔ JMAP/CalDAV translation. Works with JMAP Calendar for free-busy.
+
+
+## Audit Gap Report - Outlook Win11 (EWS) + Android 16 native (EAS), calendar+email, Stalwart v0.16.11 (Jul 2026)
+
+Exhaustive compliance audit against files in `exchange_protocols/`. The gateway is NOT yet production-ready for this goal. Showstoppers are A1-A4. Code-priority order used: existing deps (1) -> new high-quality deps (2) -> Rust 1.96 stdlib (3) -> custom code (4).
+
+### Showstoppers (block core workflows)
+**A1. Calendar events stored without `ORGANIZER`.** `parse_ews_calendar_item` (`src/calendar.rs` ~1963,1999) leaves `organizer_email=None` because Outlook/Android never send `OrganizerEmail` on CreateItem/Sync-Add. `render_ics` (958-966) then emits NO `ORGANIZER` property. Result: Stalwart's RFC 6638 scheduler never fires (organizer identity missing), and `IsOrganizer` rendering (`src/ews.rs` 728-734) is wrong. Fix: default `organizer_email` to the authenticated user's primary SMTP (`active_user_emails(username, mail_domain)`) when None and attendees present; emit ORGANIZER in `render_ics`.
+**A2. `SendMeetingInvitations(OrCancellations)` / `SendMeetingCancellations` ignored.** Parsed only in test fixture (`src/ews.rs` 7275); never handled. Per [MS-OXWSCORE] S3.1.4.2.3.2 (`CreateItemType/@SendMeetingInvitations`), S3.1.4.9 (`UpdateItemType/@SendMeetingInvitationsOrCancellations`), S3.1.4.3 (`DeleteItemType/@SendMeetingCancellations`); enums in [MS-OXWSMTGS] S2.2.5.1/S2.2.5.3. Outlook sends `SendToAllAndSaveCopy` -> gateway writes the event but never triggers delivery. Fix: parse the attribute; do NOT hand-roll iTIP email -> let Stalwart's built-in scheduler deliver (see A3). For `SendToNone`, write without scheduling intent.
+**A3. JMAP Calendar scheduler is keyed on JSCalendar `participants`, but gateway submits only `iCalendar` blob.** `src/jmap.rs` `set_calendar_event` (1915-2050) sends `{"iCalendar": params.ics}` only. Per Stalwart maintainers (Discussion #2686), the authoritative scheduling property is structured `participants` with `roles.attendee`/`participationStatus`/`expectReply`; iCalendar blob alone does not reliably trigger the JMAP scheduler. Recommend: route organizer scheduling writes through **CalDAV RFC 6638** (Stalwart robustly fires from iCalendar ATTENDEEs); keep JMAP Calendar for reads + free-busy (`Principal/getAvailability`). Add `participants` if JMAP scheduling desired later.
+**A4. Outlook Windows TZ IDs are not converted to IANA -> events stored in UTC wall-clock.** `parse_ews_calendar_item` stores `StartTimeZone` raw (2001); `render_ics` does `tzid.parse::<chrono_tz::Tz>()` (884-889) which only accepts IANA names, so "Pacific Standard Time" fails and DTSTART falls back to UTC with no TZID/VTIMEZONE. Conversion helper `crate::timezone::windows_timezone_name_to_tz` exists but only used in `handle_get_server_time_zones` (5935). Per [MS-OXWSGTZ]/[MS-OXWSCDATA] `t:TimeZoneDefinitionType`. Fix: run `StartTimeZone`/`MeetingTimeZone` (and EAS `Timezone` blob via `eas_timezone_blob_to_iana`) through `windows_timezone_name_to_tz`, store IANA, render `DTSTART;TZID=<iana>`.
+
+### Stalwart protocol split recommended for v0.16.11
+- JMAP Email (RFC 8621, :8080): all mail read/sync, mark read/important, move/copy/destroy, draft save, EmailSubmission primary. KEEP.
+- SMTP (465/587): EmailSubmission fallback only. KEEP.
+- JMAP Calendar (`urn:ietf:params:jmap:calendars`): reads, query, free-busy (`Principal/getAvailability`), destroy-by-state. KEEP for these.
+- CalDAV RFC 6638 (:8080 /dav): calendar CRUD when user is organizer WITH attendees -> Stalwart's scheduler delivers iTIP/iMIP. PREFER over JMAP-CalendarEvent/set for scheduling writes (per A3).
+- CardDAV: contacts. KEEP (Stalwart CardDAV exposes no sync tokens; `sync_contacts` does full-fetch-diff -> perf concern for large address books).
+- ManageSieve: OOF. Currently admin-API via `GATEWAY_ADMIN_*`; consider per-user ManageSieve (:4190) for least-privilege.
+- IMAP: not needed by gateway (only referenced in EAS Provision policy `AllowPOPIMAPEmail`). Outlook uses EWS/ActiveSync directly per autodiscover.
+- JMAP is NOT wholly unsuited; it is the right choice for email. JMAP CalendarEvent/set-as-currently-used (iCalendar blob only) is unsuited for organizer scheduling until `participants` round-trips.
+
+### Significant fidelity gaps (next priority)
+**C1. Received-email attachments not delivered.** `JmapClient::get_emails` (`src/jmap.rs` 769-810) fetches `hasAttachment`/`blobId` metadata only; never calls `Email/get` `attachments`/`bodyStructure` nor the JMAP `/download/{accountId}/{blobId}` endpoint. `render_jmap_email_as_ews_message` omits `<t:Attachments>`. Per [MS-OXWSATT], [MS-ASAIRS], RFC 8621 S4.1.3 `attachments` + S4.1.2 `downloadUrl`. Fix: fetch `attachments` + `header:raw`; add `download_blob(blob_id)` using session `downloadUrl`; render EWS `<t:FileAttachment><t:Content>` and EAS `<AirSyncBase:Attachments>`.
+**C2. InternetMessageHeaders + raw MIME never surfaced.** `Email/get` omits `header:raw`; `IncludeMimeContent` intentionally ignored (`ews.rs:185`). Render omits `InternetMessageHeaders`, `InReplyTo`, `References`, `MessageId`, `ConversationId/Index`, `BccRecipients`, `Categories`, `IsDraft`, `DisplayTo/Cc`. Per [MS-OXWSMSG] S2.2, [MS-OXWSCORE] MessageType, RFC 8621 S4.1.3 `header:raw`. Fix: add `header:raw` to property list.
+**C3. `SendItem` of a saved draft returns `ErrorItemNotFound`.** `ews.rs` 4840-4862 - drafts ARE stored in Stalwart via JMAP (the "not stored" comment is stale). Fix: ItemId->JMAP id->`Email/get` `header:raw` (or `blobId`)->`EmailSubmission/set` emailId back-ref (no SMTP).
+**C4. EWS `AcceptItem`/`DeclineItem`/`TentativelyAcceptItem`/`CancelCalendarItem`/`RemoveItem` unimplemented; incoming meeting-request emails not auto-processed.** `ews.rs` 730-737 only renders `<t:ResponseObjects>` statically. Per [MS-OXWSMTGS] S2.2.4.1/4.11/4.27/4.10/4.26 + [MS-OXWSCORE] S3.1.4.2; RFC 6638 S3 mandates auto-add. EAS `MeetingResponse` (`apply_meeting_response`, `src/sync.rs` 541) only patches the user's own calendar PARTSTAT -> bypasses scheduler so organizer never gets a REPLY. Fix direction: route through Stalwart's scheduling-inbox/outbox (not direct calendar patch); rely on Stalwart RFC 6638 auto-add for inbound invites (do not strip `text/calendar` parts).
+**C5. Subscribe/Unsubscribe/GetEvents are stubs.** `ews.rs` 4017-4044 returns fake UUIDs; no `GetEvents` route; `notifications.rs` broadcast unused. Per [MS-OXWSNTIF]/[MS-OXWSPSNTIF]. Outlook falls back to `SyncFolderItems` polling -> functional, high-latency.
+**C6. Categories / custom properties don't round-trip** (no JMAP keyword equivalent for `Categories`). Minor.
+**C7. FindPeople / GetConversationItems / GetPersona / GetUserPhoto / MarkAsJunk / MailTips stubs** (`ews.rs` 6032-6340). Outlook mostly tolerates; GAL/People suggestions degraded when directory not configured.
+
+### Dead code to remove (avoid future misuse)
+- `src/meeting/scheduling.rs::build_itip_request` and `src/meeting/message.rs::MeetingMessageGenerator` are NEVER used outside `meeting/`. Their job (iTIP/iMIP email generation) belongs to Stalwart's scheduler -> the gateway should NOT build iTIP emails. Delete to prevent duplicate scheduling logic.
+
+### Notes on Stalwart
+- Stalwart v0.16.x scheduling is gated on `scheduling.enable=true`; written events must carry correct ORGANIZER + ATTENDEEs for either calendar path to schedule.
+- Stalwart `apiUrl` in the JMAP session points to the external URL -> gateway already overrides with `base_url` (internal Docker). KEEP.
+- Stalwart `Email/get` supports `header:raw`, `attachments`, `bodyStructure`, and `downloadUrl` for blobs -> all available; gateway just does not use them yet (C1/C2).
