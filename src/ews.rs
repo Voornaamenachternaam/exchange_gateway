@@ -589,6 +589,33 @@ fn extract_conflict_resolution(xml: &str) -> Option<String> {
     Some(value_rest[..value_end].to_string())
 }
 
+/// Extract an attribute value from an XML tag's opening element.
+///
+/// Useful for the attributes Outlook puts directly on the EWS request element,
+/// e.g. `<CreateItem SendMeetingInvitationsOrCancellations="SendToAllAndSaveCopy">`.
+/// `tag_substr` is matched case-insensitively inside the body; `attr` must be
+/// supplied WITHOUT the trailing `=`. Returns the (un-quoted) attribute value
+/// preserved in its original case.
+fn extract_open_tag_attr(xml: &str, tag_substr: &str, attr: &str) -> Option<String> {
+    let lower = xml.to_ascii_lowercase();
+    let tag_start = lower.find(tag_substr)?;
+    let tag_end = lower[tag_start..]
+        .find('>')
+        .map(|i| tag_start + i)
+        .unwrap_or(lower.len());
+    let tag_fragment = &lower[tag_start..tag_end];
+    let needle = format!("{attr}=");
+    let attr_pos = tag_fragment.find(&needle)?;
+    let value_start = attr_pos + needle.len();
+    let value_rest = &tag_fragment[value_start..];
+    let quote_char = value_rest.chars().next()?;
+    let value_rest = &value_rest[quote_char.len_utf8()..];
+    let value_end = value_rest.find(quote_char).unwrap_or(value_rest.len());
+    // Recover the original-case value from the un-lower-cased source by offset.
+    let offset_in_lower = tag_start + value_start + quote_char.len_utf8();
+    Some(xml[offset_in_lower..offset_in_lower + value_end].to_string())
+}
+
 fn validate_item_change_key(
     action: &EwsAction,
     body: &str,
@@ -1067,11 +1094,15 @@ fn render_ews_calendar_item_xml_with_shape(
         ));
     }
     if let Some(v) = &item.timezone {
+        // Outlook expects a Windows timezone id in StartTimeZone/EndTimeZone (per
+        // [MS-OXWSCDATA] t:TimeZoneDefinitionType). Our stored value is IANA, so
+        // convert back; fall back to the raw value if unmappable.
+        let win = crate::timezone::iana_to_windows_timezone_name(v).unwrap_or_else(|| v.clone());
         xml.push_str(&format!(
             "<t:StartTimeZone>{}</t:StartTimeZone>",
-            xml_escape(v)
+            xml_escape(&win)
         ));
-        xml.push_str(&format!("<t:EndTimeZone>{}</t:EndTimeZone>", xml_escape(v)));
+        xml.push_str(&format!("<t:EndTimeZone>{}</t:EndTimeZone>", xml_escape(&win)));
     }
     if let Some(v) = &item.timezone_blob {
         xml.push_str(&format!(
@@ -1596,8 +1627,8 @@ async fn load_current_calendar_items(
     window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 ) -> Result<Vec<CurrentCalendarItem>, anyhow::Error> {
     // Try JMAP Calendar first if preferred
-    if state.cfg.prefer_jmap_calendar {
-        if let Some(jmap) = &state.jmap_client {
+    if state.cfg.prefer_jmap_calendar
+        && let Some(jmap) = &state.jmap_client {
             let password_secret = SecretString::from(password);
             // Get calendar account ID
             let account_id = match jmap.get_calendar_account_id(owner, &password_secret).await {
@@ -1641,8 +1672,8 @@ async fn load_current_calendar_items(
             // Build output
             let mut out = Vec::new();
             for event_id in &event_ids {
-                if let Some((ics, etag)) = event_map.get(event_id) {
-                    if let Some(ci) = parse_ics_event(ics) {
+                if let Some((ics, etag)) = event_map.get(event_id)
+                    && let Some(ci) = parse_ics_event(ics) {
                         // Clone values we need before moving ci
                         let ci_uid = ci.uid.clone();
                         // Stable server_id: HMAC of owner + event_id
@@ -1670,18 +1701,16 @@ async fn load_current_calendar_items(
                                 &format!("jmap://calendar/{}/{}", account_id, event_id),
                                 &server_id,
                                 &ci_uid,
-                                &etag,
+                                etag,
                             )
                             .await
                         {
                             tracing::warn!(server_id = %server_id, error = %e, "Failed to upsert item map in load_current_calendar_items (JMAP)");
                         }
                     }
-                }
             }
             return Ok(out);
         }
-    }
     // Fallback to CalDAV implementation
     load_current_calendar_items_caldav(state, owner, password, window).await
 }
@@ -3270,7 +3299,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
             }
         };
         match jmap.get_calendar_event(account_id, event_id, &item_owner, &password_secret).await {
-            Ok((ics, _returned_event_id, etag)) => match parse_ics_event(&ics) {
+            Ok((ics, _returned_event_id, _etag)) => match parse_ics_event(&ics) {
                 Some(ci) => {
                     let att_list = state
                         .attachment_manager
@@ -4205,8 +4234,41 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     let password_secret = SecretString::from(auth.password.expose_secret());
 
-    // Try JMAP calendar first
-    let result = if state.cfg.prefer_jmap_calendar && state.jmap_client.is_some() {
+    // A1: Outlook omits ORGANIZER on newly-composed meetings; Stalwart's
+    // CalDAV scheduler (RFC 6638) requires it to route REQUESTs. Default the
+    // organizer to the authenticated user's primary SMTP whenever attendees are
+    // present.
+    let owner_email =
+        crate::util::user_primary_email(&auth.username, &state.cfg.mail_domain);
+    let mut item = item;
+    crate::calendar::ensure_organizer_for_scheduling(&mut item, owner_email.as_deref());
+
+    // A2/A3: Outlook sends SendMeetingInvitationsOrCancellations on CreateItem.
+    // Stalwart's CalDAV scheduler auto-delivers REQUESTs to attendees on a PUT,
+    // but a JMAP Calendar `iCalendar`-blob write does NOT trigger scheduling.
+    // So when scheduling is requested (attendees present, disposition != None),
+    // force the CalDAV backend; when SendToNone, strip scheduling context and
+    // use whichever backend is available (no invites get sent).
+    let disposition = crate::calendar::ScheduleDisposition::parse(
+        extract_open_tag_attr(body, "createitem", "SendMeetingInvitationsOrCancellations")
+            .or_else(|| extract_open_tag_attr(body, "createitem", "SendMeetingInvitations"))
+            .as_deref(),
+    );
+    let scheduling_needed = match disposition {
+        Some(d) => crate::calendar::scheduling_needed(&item, d),
+        None => false, // Default per [MS-OXWSICAL] is SendToNone when the attribute is absent.
+    };
+    if matches!(disposition, Some(crate::calendar::ScheduleDisposition::SendToNone)) {
+        // Suppress server-side scheduling but preserve the attendee list.
+        crate::calendar::mark_scheduling_client_side(&mut item);
+    }
+
+    // Try JMAP calendar first, but only when no server-side scheduling is
+    // required (otherwise the JMAP blob write silently drops the iTIP).
+    let result = if state.cfg.prefer_jmap_calendar
+        && state.jmap_client.is_some()
+        && !scheduling_needed
+    {
         match try_jmap_create_calendar(state, owner, &password_secret, &item).await {
             Ok(row) => Ok(row),
             Err(e) => {
@@ -4440,7 +4502,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let password_secret = SecretString::from(auth.password.expose_secret());
 
     // Parse the incoming item changes into a new CalendarItem struct.
-    let mut new_item = if let Some(existing_ics) = &stored_item.caldav_href {
+    let mut new_item = if let Some(_existing_ics) = &stored_item.caldav_href {
         // Might need to fetch via CalDAV later, but we can construct a blank template from stored UID
         crate::calendar::CalendarItem {
             uid: stored_item.uid.clone().unwrap_or_else(|| stored_item.server_id.clone()),
@@ -4535,7 +4597,8 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             new_item.rrule = parse_ews_recurrence(body);
         }
         if let Some(v) = extract_ews_field(body, b"StartTimeZone") {
-            new_item.timezone = Some(v);
+            // Outlook sends a Windows timezone name; normalise to IANA for render_ics.
+            new_item.timezone = Some(crate::calendar::normalize_timezone_to_iana(&v));
         }
         if let Some(v) = extract_ews_field(body, b"MeetingTimeZone") {
             new_item.timezone_blob = Some(v);
@@ -4554,8 +4617,37 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let conflict_resolution =
         extract_conflict_resolution(body).unwrap_or_else(|| "AutoResolve".to_string());
 
-    // Decide backend: JMAP if preferred and item looks like JMAP and client available, else CalDAV.
-    let use_jmap = state.cfg.prefer_jmap_calendar && state.jmap_client.is_some() && stored_item.resource_href.starts_with("jmap://");
+    // A1: ensure an ORGANIZER email is present whenever the updated item still
+    // has attendees; required by Stalwart's CalDAV scheduler.
+    let owner_email =
+        crate::util::user_primary_email(&auth.username, &state.cfg.mail_domain);
+    crate::calendar::ensure_organizer_for_scheduling(&mut new_item, owner_email.as_deref());
+
+    // A2/A3: honour SendMeetingInvitationsOrCancellations on UpdateItem. Outlook
+    // resends REQUESTs to attendees when it asks the server to schedule; a plain
+    // VEVENT PUT through CalDAV makes Stalwart auto-deliver those. JMAP calendar
+    // blob writes do NOT trigger scheduling, so route to CalDAV when the
+    // organizer wants invites re-sent. SendToNone marks attendees
+    // SCHEDULE-AGENT=CLIENT so the roster survives without auto-scheduling.
+    let upd_disposition = crate::calendar::ScheduleDisposition::parse(
+        extract_open_tag_attr(body, "updateitem", "SendMeetingInvitationsOrCancellations")
+            .or_else(|| extract_open_tag_attr(body, "updateitem", "SendMeetingInvitations"))
+            .as_deref(),
+    );
+    let upd_scheduling_needed = match upd_disposition {
+        Some(d) => crate::calendar::scheduling_needed(&new_item, d),
+        None => false,
+    };
+    if matches!(upd_disposition, Some(crate::calendar::ScheduleDisposition::SendToNone)) {
+        crate::calendar::mark_scheduling_client_side(&mut new_item);
+    }
+
+    // Decide backend: JMAP if preferred and item looks like JMAP and client
+    // available AND no scheduling is required; else CalDAV.
+    let use_jmap = state.cfg.prefer_jmap_calendar
+        && state.jmap_client.is_some()
+        && stored_item.resource_href.starts_with("jmap://")
+        && !upd_scheduling_needed;
 
     let updated_row = if use_jmap {
         match try_jmap_update_calendar(state, owner, &password_secret, &stored_item, &new_item, &conflict_resolution).await {
@@ -4751,8 +4843,36 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     let password_secret = SecretString::from(auth.password.expose_secret());
 
-    // Try JMAP delete first if preferred and item is JMAP-backed
-    let delete_result = if state.cfg.prefer_jmap_calendar && state.jmap_client.is_some() && existing.resource_href.starts_with("jmap://") {
+    // A2/A3: SendMeetingCancellations on DeleteItem decides whether Stalwart
+    // auto-delivers a CANCEL to attendees. Stalwart's CalDAV scheduler does this
+    // on DELETE of an organizer's event that carries attendees; a JMAP
+    // CalendarEvent/set destroy does NOT. So when the client wants attendees
+    // notified (default for a meeting the user owns), force CalDAV; otherwise
+    // JMAP delete is fine (no iTIP sent).
+    let del_disposition = crate::calendar::ScheduleDisposition::parse(
+        extract_open_tag_attr(body, "deleteitem", "SendMeetingCancellations").as_deref(),
+    );
+    let del_scheduling_needed = match del_disposition {
+        Some(d) => d.wants_scheduling(),
+        None => false,
+    };
+    // Whether the deleted item actually had attendees (fetched lazily only when
+    // scheduling matters — the stored row carries uid/etag but not the parsed
+    // ICS, so resolve via the current calendar event if we must schedule).
+    let had_attendees = if del_scheduling_needed {
+        event_has_attendees(state, owner, &password_secret, &existing).await
+    } else {
+        false
+    };
+    let cancellation_needed = del_scheduling_needed && had_attendees;
+
+    // Try JMAP delete first if preferred and item is JMAP-backed AND no
+    // cancellation scheduling is required.
+    let delete_result = if state.cfg.prefer_jmap_calendar
+        && state.jmap_client.is_some()
+        && existing.resource_href.starts_with("jmap://")
+        && !cancellation_needed
+    {
         match try_jmap_delete_calendar(state, owner, &password_secret, &existing).await {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -5386,7 +5506,7 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 xml_escape(&server_id),
                 xml_escape(&change_key)
             );
-            return soap_ok(response);
+            soap_ok(response)
         } else {
             // CalDAV fallback
             let caldav = match CaldavClient::new(&state.cfg) {
@@ -5398,7 +5518,7 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             };
 
             // Fetch source event
-            let (src_ics, src_etag) = match caldav.get_event(&lookup.resource_href, &auth.username, auth.password.expose_secret()).await {
+            let (src_ics, _src_etag) = match caldav.get_event(&lookup.resource_href, &auth.username, auth.password.expose_secret()).await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: CalDAV get_event failed");
@@ -5467,7 +5587,7 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 xml_escape(&server_id),
                 xml_escape(&change_key)
             );
-            return soap_ok(response);
+            soap_ok(response)
         }
     }
 }
@@ -6703,7 +6823,7 @@ async fn try_jmap_create_calendar(
     Ok(EwsItemRow {
         server_id: server_id.clone(),
         resource_href,
-        uid: Some(uid.is_empty().then(|| item.uid.clone()).unwrap_or(uid)),
+        uid: Some(if uid.is_empty() { item.uid.clone() } else { uid }),
         caldav_href: None,
         etag: Some(etag.to_string()),
         updated_at: None,
@@ -6730,7 +6850,7 @@ async fn update_calendar_via_caldav(
     })?;
 
     // Fetch existing event data to merge changes if AutoResolve/AlwaysOverwrite (optimistic concurrency handling)
-    let (existing_ics, existing_etag) = match caldav
+    let (_existing_ics, existing_etag) = match caldav
         .get_event(&stored_item.resource_href, owner, password.expose_secret())
         .await
     {
@@ -6776,7 +6896,7 @@ async fn update_calendar_via_caldav(
     // Perform the PUT
     let (href, new_etag) = caldav
         .put_event(
-            &stored_item.caldav_href.as_ref().unwrap_or(&stored_item.resource_href),
+            stored_item.caldav_href.as_ref().unwrap_or(&stored_item.resource_href),
             if_match_etag,
             &new_ics,
             owner,
@@ -6889,11 +7009,58 @@ async fn try_jmap_update_calendar(
     Ok(EwsItemRow {
         server_id,
         resource_href,
-        uid: Some(uid.is_empty().then(|| new_item.uid.clone()).unwrap_or(uid)),
+        uid: Some(if uid.is_empty() { new_item.uid.clone() } else { uid }),
         caldav_href: None,
         etag: Some(etag.to_string()),
         updated_at: None,
     })
+}
+
+/// Resolve whether a stored calendar item currently has ATTENDEE lines.
+/// Used by DeleteItem scheduling dispatch to decide whether Stalwart would
+/// auto-send a CANCEL. Cheaper than re-parsing the full event.
+async fn event_has_attendees(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    item: &EwsItemRow,
+) -> bool {
+    // Prefer the cheaper CalDAV GET when the item has an href, since Stalwart's
+    // GET returns the full ICS without scheduling side-effects.
+    if let Some(href) = &item.caldav_href
+        && !href.is_empty()
+    {
+        let caldav = match CaldavClient::new(&state.cfg) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to build CalDAV client while checking attendees");
+                return false;
+            }
+        };
+        match caldav.get_event(href, owner, password.expose_secret()).await {
+            Ok((ics, _)) => return ics.lines().any(|l| l.starts_with("ATTENDEE")),
+            Err(e) => {
+                tracing::warn!(error = %e, "CalDAV GET while checking attendees failed");
+            }
+        }
+    }
+    // Fall back to JMAP CalendarEvent/get with the iCalendar property.
+    if let Some(jmap) = state.jmap_client.as_ref()
+        && item.resource_href.starts_with("jmap://")
+    {
+        let parts: Vec<&str> = item
+            .resource_href
+            .trim_start_matches("jmap://calendar/")
+            .split('/')
+            .collect();
+        if let [account_id, event_id] = parts.as_slice()
+            && let Ok((ics, _, _)) =
+                jmap.get_calendar_event(account_id, event_id, owner, password).await
+        {
+            return ics.lines().any(|l| l.starts_with("ATTENDEE"));
+        }
+    }
+    false
 }
 
 /// Delete a calendar item via CalDAV.

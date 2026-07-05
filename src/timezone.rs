@@ -113,6 +113,30 @@ pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
     find_windows_timezone(name).map(Tz::from)
 }
 
+/// Convert an Outlook/Windows timezone display name (e.g. "Pacific Standard Time")
+/// into its canonical IANA identifier (e.g. "America/Los_Angeles").
+///
+/// Outlook EWS `StartTimeZone`/`MeetingTimeZone` and EAS `TimezoneName` carry
+/// Windows timezone names; Stalwart and the icalendar crate require IANA names.
+/// Returns `None` for unrecognised names so callers can fall back to UTC.
+pub fn windows_timezone_name_to_iana(name: &str) -> Option<String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+    if let Some(iana) = parse_utc_offset_name(&n.to_ascii_lowercase()) {
+        return Some(iana.to_string());
+    }
+    find_windows_timezone(n).map(|tz| tz.tzdb_id().to_string())
+}
+
+/// Convert an IANA timezone identifier back to the Windows timezone display
+/// name Outlook expects in `StartTimeZone`/`EndTimeZone`. Returns `None` for
+/// unrecognised identifiers.
+pub fn iana_to_windows_timezone_name(iana: &str) -> Option<String> {
+    iana_to_windows_params(iana).map(|(_, win_name, _, _, _, _, _)| win_name)
+}
+
 pub fn iana_to_eas_timezone_blob(iana: &str) -> Option<String> {
     let (bias, std_name, dst_name, std_date, dst_date, std_bias, dst_bias) =
         iana_to_windows_params(iana)?;

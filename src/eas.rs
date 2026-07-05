@@ -769,12 +769,9 @@ fn parse_search_request(xml: &str) -> SearchRequest {
 /// GATEWAY_MAIL_DOMAIN regardless of the domain the client supplied during
 /// authentication (e.g. `contact@exchange.com` → `contact@example.com`).
 fn active_user_emails(username: &str, mail_domain: &str) -> Vec<String> {
-    let local = match username.rsplit_once('@') {
-        Some((local, domain)) if !domain.is_empty() => local,
-        Some((local, _)) => local,
-        None => username,
-    };
-    vec![format!("{}@{}", local, mail_domain)]
+    crate::util::user_primary_email(username, mail_domain)
+        .map(|e| vec![e])
+        .unwrap_or_default()
 }
 
 fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> bool {
@@ -1920,9 +1917,9 @@ async fn handle_item_operations(
 
         // Try JMAP Calendar first if enabled and item is JMAP-backed
         let mut jmap_ics: Option<String> = None;
-        if state.cfg.prefer_jmap_calendar {
-            if let Some(jmap) = &state.jmap_client {
-                if lookup.resource_href.starts_with("jmap://") {
+        if state.cfg.prefer_jmap_calendar
+            && let Some(jmap) = &state.jmap_client
+                && lookup.resource_href.starts_with("jmap://") {
                     // Parse: jmap://calendar/{account_id}/{event_id}
                     let after = lookup.resource_href.trim_start_matches("jmap://calendar/");
                     let parts: Vec<&str> = after.split('/').collect();
@@ -1937,11 +1934,9 @@ async fn handle_item_operations(
                         }
                     }
                 }
-            }
-        }
 
         // Fetch from CalDAV if JMAP didn't yield data
-        let (ics, mut etag) = if let Some(ics) = jmap_ics {
+        let (ics, _etag) = if let Some(ics) = jmap_ics {
             (ics, None)
         } else {
             let get_future = caldav.get_event(
@@ -2275,8 +2270,8 @@ async fn merged_freebusy_for_mailbox(
 
     // Try JMAP Calendar first (urn:ietf:params:jmap:calendars) unless configured to prefer CalDAV.
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
-    if !state.cfg.prefer_caldav_freebusy {
-        if let Some(jmap) = &state.jmap_client {
+    if !state.cfg.prefer_caldav_freebusy
+        && let Some(jmap) = &state.jmap_client {
             if let Some(result) =
                 fetch_freebusy_jmap_eas(jmap, mailbox, password, start, end, safe_interval).await
             {
@@ -2284,7 +2279,6 @@ async fn merged_freebusy_for_mailbox(
             }
             tracing::debug!(target: "eas", "JMAP Calendar free-busy failed, falling back to CalDAV");
         }
-    }
 
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,

@@ -154,6 +154,13 @@ pub async fn apply_client_sync_mutations(
                         .clone()
                         .unwrap_or_else(|| Uuid::new_v4().to_string());
                 }
+                // A1: default ORGANIZER to the user's primary SMTP for meetings.
+                let owner_email =
+                    crate::util::user_primary_email(username, &state.cfg.mail_domain);
+                crate::calendar::ensure_organizer_for_scheduling(
+                    &mut item,
+                    owner_email.as_deref(),
+                );
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(&collection_href, None, &ics, username, password, None)
@@ -346,6 +353,13 @@ pub async fn apply_client_sync_mutations(
                 if let Some(v) = patch.exceptions {
                     item.exceptions = v;
                 }
+                // A1: default ORGANIZER to the user's primary SMTP for meetings.
+                let owner_email =
+                    crate::util::user_primary_email(username, &state.cfg.mail_domain);
+                crate::calendar::ensure_organizer_for_scheduling(
+                    &mut item,
+                    owner_email.as_deref(),
+                );
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(
@@ -580,6 +594,7 @@ pub async fn apply_meeting_response(args: &MeetingResponseArgs<'_>) -> Result<()
             attendee_type: Some(1),
             attendee_status: Some(status),
             partstat: Some(partstat.to_string()),
+            schedule_agent: None,
         });
     }
     item.response_type = Some(status);
@@ -1000,10 +1015,15 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     if !item.all_day
         && let Some(v) = &item.timezone
     {
-        xml.push_str(&format!(
-            "<Calendar:Timezone>{}</Calendar:Timezone>",
-            xml_escape(v)
-        ));
+        // EAS Timezone is a base64 Windows timezone blob (MS-ASSETTINGS).
+        // Convert from the stored IANA id; if unmappable omit the element (Android
+        // then interprets times as UTC, matching the prior behaviour).
+        if let Some(blob) = crate::timezone::iana_to_eas_timezone_blob(v) {
+            xml.push_str(&format!(
+                "<Calendar:Timezone>{}</Calendar:Timezone>",
+                xml_escape(&blob)
+            ));
+        }
     }
     if let Some(v) = item.busy_status {
         xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v));

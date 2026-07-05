@@ -66,6 +66,25 @@ pub fn normalize_email(email: &str) -> String {
     normalized
 }
 
+/// Derive the primary SMTP address for a user given their auth username and the
+/// configured mail domain. The local part of the username is kept (the domain
+/// is canonicalised to `GATEWAY_MAIL_DOMAIN`), matching Stalwart's per-account
+/// primary address (`{local}@{mail_domain}`).
+///
+/// Returns `None` when the resulting address is empty.
+pub fn user_primary_email(username: &str, mail_domain: &str) -> Option<String> {
+    let local = match username.rsplit_once('@') {
+        Some((local, domain)) if !domain.is_empty() => local,
+        Some((local, _)) => local,
+        None => username,
+    };
+    let local = local.trim();
+    if local.is_empty() || mail_domain.trim().is_empty() {
+        return None;
+    }
+    Some(format!("{}@{}", local, mail_domain.trim()))
+}
+
 pub fn escape_ical_text(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + s.len() / 10);
     for c in s.chars() {

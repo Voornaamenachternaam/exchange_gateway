@@ -287,3 +287,31 @@ Exhaustive compliance audit against files in `exchange_protocols/`. The gateway 
 - Stalwart v0.16.x scheduling is gated on `scheduling.enable=true`; written events must carry correct ORGANIZER + ATTENDEEs for either calendar path to schedule.
 - Stalwart `apiUrl` in the JMAP session points to the external URL -> gateway already overrides with `base_url` (internal Docker). KEEP.
 - Stalwart `Email/get` supports `header:raw`, `attachments`, `bodyStructure`, and `downloadUrl` for blobs -> all available; gateway just does not use them yet (C1/C2).
+
+## Protocol-Compliance Audit Resolution (PR #1765, Jul 2026)
+Resolved gaps from the audit above. Build: `cargo build --release` OK, `cargo test --workspace` 250 passing, `cargo clippy --all-targets -- -D warnings` zero errors.
+
+### A2 — Scheduling dispatch (Create/Update/Delete) — RESOLVED
+- Added `ScheduleDisposition` enum (`calendar.rs`) parsing `SendMeetingInvitations` / `SendMeetingInvitationsOrCancellations` (Create/Update) and `SendMeetingCancellations` (Delete) via `extract_open_tag_attr` on the raw EWS body (`ews.rs`), covering Outlook's `<soap:Body>` wrapper.
+- `scheduling_needed(item, disposition)` decides CalDAV vs JMAP: JMAP Calendar `iCalendar`-blob writes via `CalendarEvent/set` do NOT trigger Stalwart's scheduler; only CalDAV PUT delivers the iTIP to attendees. So **when attendees are present and the disposition asks to send, force CalDAV**; otherwise JMAP is fine.
+- `SendToNone` honoured without destroying the attendee roster: `mark_scheduling_client_side()` annotates every ATTENDEE with RFC 6638 §7.1 `SCHEDULE-AGENT=CLIENT` (Stalwart then MUST NOT auto-schedule, Outlook still shows the planned invitees). This replaces the earlier `strip_scheduling_for_personal_copy` (which deleted attendees).
+- `ensure_organizer_for_scheduling(item, owner_email)` synthesizes ORGANIZER = authenticated user's primary SMTP when attendees exist and none is set (Stalwart scheduling requires a valid ORGANIZER).
+- DeleteItem: `event_has_attendees()` resolves the live event (CalDAV GET, JMAP `CalendarEvent/get` fallback) because the stored DB row carries uid/etag but not the parsed ICS — needed to decide whether a CANCEL must be sent.
+- New `src/calendar.rs::scheduling_tests` module (8 tests): SCHEDULE-AGENT=CLIENT emission, attendee-count preservation, disposition parsing, scheduling_needed matrix, ensure_organizer no-op-without-attendees. Note: `icalendar` line-folds `SCHEDULE-AGENT=CLIENT` at 75 chars (RFC 5545) — unfold before string assertions.
+
+### A4 — Timezone IANA normalization — RESOLVED
+- `timezone::windows_timezone_name_to_iana` + `iana_to_windows_timezone_name` round-trip Outlook `StartTimeZone`/`MeetingTimeZone` Windows names <-> IANA. `calendar::normalize_timezone_to_iana(&str)` converts at EWS parse + UpdateItem field time; falls back to the raw value (render_ics then UTC-fallbacks) rather than dropping the tz hint.
+
+### A3 — AcceptItem/DeclineItem/TentativelyAcceptItem — DEFERRED (documented, not blocking Win11)
+- The gateway STILL relies on Stalwart RFC 6638 auto-add for inbound meeting-request emails (correct: do not strip `text/calendar` MIME parts). Outbound `AcceptItem`/etc. handlers are NOT yet wired (C4 remains open for organizers-need-REPLY scenarios). Acceptable for the stated use-case where Stalwart's scheduler owns delivery; flagged for a follow-up if Outlook sends those by default.
+
+### Backend-split recommendation (apply config in deployment)
+- Calendar CRUD with attendees → CalDAV (`prefer_jmap_calendar` must NOT schedule via JMAP for attendee-bearing events; code now forces CalDAV in that case).
+- Calendar free-busy → JMAP Calendar (`Principal/getAvailability`) with CalDAV fallback.
+- Email read/sync/send → JMAP Email + EmailSubmission (SMTP fallback optional).
+- Contacts → CardDAV.
+- JMAP is NOT "wholly unsuited" — it is the right primary path for everything EXCEPT scheduled calendar writes with attendees (where CalDAV->Stalwart scheduler is required).
+
+### Lint debt cleanup (also applied)
+- `cargo clippy --fix` removed pre-existing branch lint debt (unused `etag`/`existing_ics`/`src_etag` underscores, collapsible-if → let-chains, redundant returns, immediate-deref). Repo now clippy-clean under `-D warnings`.
+

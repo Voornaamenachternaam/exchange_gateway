@@ -74,6 +74,12 @@ pub struct Attendee {
     pub attendee_type: Option<u8>,
     pub attendee_status: Option<u8>,
     pub partstat: Option<String>,
+    /// RFC 6638 §7.1 `SCHEDULE-AGENT` value for this attendee. When
+    /// `Some("CLIENT")`, the server MUST NOT auto-deliver scheduling messages
+    /// for this attendee (the client claims responsibility). Used to honour
+    /// EWS `SendToNone` without stripping attendee data the user intends to
+    /// invite later. `None` lets the server auto-schedule normally.
+    pub schedule_agent: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -674,6 +680,7 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
                     }),
                     attendee_status: partstat.as_deref().map(partstat_to_status),
                     partstat,
+                    schedule_agent: parse_ical_param(k, "SCHEDULE-AGENT"),
                 });
             }
             k if k.starts_with("CATEGORIES") => {
@@ -838,6 +845,99 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     Some(item)
 }
 
+/// Ensure a `CalendarItem` carries an ORGANIZER email when it represents a
+/// scheduled meeting (has attendees) but no organizer was supplied by the
+/// client. The ORGANIZER property is mandatory in RFC 5545/iTIP REQUESTs and
+/// is required by Stalwart's CalDAV scheduler (RFC 6638) to route invitations
+/// to attendees — without it Stalwart will reject or silently drop the
+/// scheduling iTIP and Outlook attendees never receive the invite.
+///
+/// `owner_email` is the authenticated user's primary SMTP (their calendar is
+/// being written to, so they are the meeting organizer). It is left empty for
+/// attendee-less personal appointments, where ORGANIZER is optional and
+/// Stalwart will not attempt scheduling.
+pub fn ensure_organizer_for_scheduling(item: &mut CalendarItem, owner_email: Option<&str>) {
+    if item.organizer_email.as_deref().is_some_and(|e| !e.trim().is_empty()) {
+        return;
+    }
+    if item.attendees.is_empty() {
+        return;
+    }
+    if let Some(addr) = owner_email
+        && !addr.trim().is_empty()
+    {
+        item.organizer_email = Some(addr.trim().to_string());
+    }
+}
+
+/// The EWS `CalendarItemCreateOrUpdateOperationType` controlling whether meeting
+/// invitations/cancellations are sent. Mirrors [MS-OXWSICAL] §3.1.4.2.2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduleDisposition {
+    /// No scheduling operations are performed.
+    SendToNone,
+    /// /Calendar: Save the updated copy to the organizer's calendar as well as
+    /// /Calendar: sending the invite (CreateItem) or rescheduling (UpdateItem).
+    SendToAllAndSaveCopy,
+    /// Send the invite/cancellation but do not save a copy in the organizer's
+    /// calendar. Not used by Outlook for normal meeting creation; treated as
+    /// "send" for scheduling purposes.
+    SendOnlyToAll,
+    /// UpdateItem-only: only message changed attendees, save a copy.
+    SendToChangedOnly,
+    SendToAllAndSaveCopyInclDeleted,
+    SendToChangedAndSaveCopy,
+}
+
+impl ScheduleDisposition {
+    /// Parse the `SendMeetingInvitationsOrCancellations` /
+    /// `SendMeetingInvitations` / `SendMeetingInvitationsOrCancellations`
+    /// attribute value (CreateItem/UpdateItem) and `SendMeetingCancellations`
+    /// (DeleteItem). Unknown / empty → `None`.
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        match value.map(str::trim)?.trim() {
+            "SendToNone" => Some(Self::SendToNone),
+            "SendOnlyToAll" => Some(Self::SendOnlyToAll),
+            "SendToAllAndSaveCopy" => Some(Self::SendToAllAndSaveCopy),
+            "SendOnlyToChanged" | "SendToChangedOnly" => Some(Self::SendToChangedOnly),
+            "SendToAllAndSaveCopyInclDeleted" => Some(Self::SendToAllAndSaveCopyInclDeleted),
+            "SendToChangedAndSaveCopy" => Some(Self::SendToChangedAndSaveCopy),
+            // Outlook sometimes sends "SendToNone" variants or a numeric form.
+            _ => None,
+        }
+    }
+
+    /// Whether the client wants attendees notified (i.e. a real scheduling
+    /// operation must run server-side). `SendToNone` and `Unknown` never do.
+    pub fn wants_scheduling(self) -> bool {
+        !matches!(self, Self::SendToNone)
+    }
+}
+
+/// Honour an EWS `SendToNone` disposition without destroying the attendee list.
+///
+/// Stalwart's CalDAV scheduler auto-delivers invitations for any event that
+/// carries ATTENDEE properties (RFC 6638 §3.2): there is no per-PUT "do not
+/// schedule" flag outside the data. The standards-correct way to suppress
+/// scheduling while keeping the attendee roster intact is RFC 6638 §7.1
+/// `SCHEDULE-AGENT=CLIENT`, which signals "the client is responsible for
+/// delivery; the server must NOT auto-schedule". We annotate every attendee
+/// with that parameter rather than deleting them, so Outlook can still show
+/// the planned invitee list and re-send later.
+pub fn mark_scheduling_client_side(item: &mut CalendarItem) {
+    for attendee in &mut item.attendees {
+        attendee.schedule_agent = Some("CLIENT".to_string());
+    }
+}
+
+/// True when the item carries attendees and the disposition asks the server to
+/// schedule (send invites/cancellations). This is the criterion that selects
+/// the CalDAV backend — JMAP Calendar `iCalendar`-blob writes do not trigger
+/// Stalwart's scheduler, so only CalDAV PUT delivers the iTIP to attendees.
+pub fn scheduling_needed(item: &CalendarItem, disposition: ScheduleDisposition) -> bool {
+    disposition.wants_scheduling() && !item.attendees.is_empty()
+}
+
 pub fn render_ics(item: &CalendarItem) -> String {
     use icalendar::{Calendar, CalendarComponent, Class, Component, Event, EventLike, Property};
     use std::str::FromStr;
@@ -967,7 +1067,42 @@ pub fn render_ics(item: &CalendarItem) -> String {
         if attendee.email.is_empty() {
             continue;
         }
-        let mut cal_attendee = icalendar::Attendee::new(normalize_mailto(&attendee.email));
+        let cal_addr = normalize_mailto(&attendee.email);
+
+        // RFC 6638 §7.1 SCHEDULE-AGENT is not modelled by the icalendar builder,
+        // so emit the ATTENDEE property manually when set (e.g. "CLIENT" to keep
+        // the server from auto-scheduling this attendee).
+        if let Some(agent) = &attendee.schedule_agent
+            && !agent.is_empty()
+        {
+            let mut prop = Property::new("ATTENDEE", cal_addr.as_str());
+            prop.add_parameter("SCHEDULE-AGENT", agent);
+            if let Some(name) = &attendee.name {
+                prop.add_parameter("CN", name);
+            }
+            if let Some(kind) = attendee.attendee_type {
+                let role = match kind {
+                    2 => "OPT-PARTICIPANT",
+                    3 => "NON-PARTICIPANT",
+                    _ => "REQ-PARTICIPANT",
+                };
+                prop.add_parameter("ROLE", role);
+            }
+            if let Some(partstat) = &attendee.partstat {
+                let ps = match partstat.to_uppercase().as_str() {
+                    "ACCEPTED" => "ACCEPTED",
+                    "DECLINED" => "DECLINED",
+                    "TENTATIVE" => "TENTATIVE",
+                    "DELEGATED" => "DELEGATED",
+                    _ => "NEEDS-ACTION",
+                };
+                prop.add_parameter("PARTSTAT", ps);
+            }
+            event.append_property(prop.done());
+            continue;
+        }
+
+        let mut cal_attendee = icalendar::Attendee::new(cal_addr);
         if let Some(name) = &attendee.name {
             cal_attendee = cal_attendee.cn(name.clone());
         }
@@ -1372,7 +1507,13 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                                 current.location = Some(value);
                             }
                         }
-                        Some(b"Timezone") => current.timezone = Some(value),
+                        Some(b"Timezone") => {
+                            // EAS Timezone is a base64 Windows timezone blob (MS-ASSETTINGS).
+                            // Convert to an IANA id so render_ics emits DTSTART;TZID=<iana>.
+                            let tz = crate::timezone::eas_timezone_blob_to_iana(&value)
+                                .unwrap_or(value);
+                            current.timezone = Some(tz);
+                        }
                         Some(b"DtStamp") => current.dtstamp = parse_datetime(&value),
                         Some(b"StartTime") => {
                             if let Some(ex) = current.current_exception.as_mut() {
@@ -1936,6 +2077,30 @@ pub fn parse_ews_attendees(xml: &str) -> Vec<Attendee> {
     attendees
 }
 
+/// Normalise a timezone identifier carried in EWS XML (`StartTimeZone`/
+/// `MeetingTimeZone`/`EndTimeZone`) to an IANA timezone id.
+///
+/// Outlook sends Windows timezone names (e.g. "Pacific Standard Time"); the
+/// icalendar crate and Stalwart require IANA ids (e.g. "America/Los_Angeles").
+/// Values that are already IANA ids round-trip unchanged. Unrecognised values
+/// are returned as-is so callers can surface the original (render_ics falls
+/// back to UTC for unparseable ids rather than dropping the timezone hint).
+pub fn normalize_timezone_to_iana(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return raw.to_string();
+    }
+    if trimmed.parse::<chrono_tz::Tz>().is_ok() {
+        return trimmed.to_string();
+    }
+    if let Some(iana) = crate::timezone::windows_timezone_name_to_iana(trimmed)
+        && iana.parse::<chrono_tz::Tz>().is_ok()
+    {
+        return iana;
+    }
+    raw.to_string()
+}
+
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let doc = Document::parse(xml).map_err(|e| anyhow!("failed to parse EWS XML: {e}"))?;
 
@@ -1998,7 +2163,11 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         end,
         all_day,
         dtstamp: Some(Utc::now()),
-        timezone: extract_ews_field_doc(&doc, b"StartTimeZone"),
+        timezone: extract_ews_field_doc(&doc, b"StartTimeZone")
+            .or_else(|| extract_ews_field_doc(&doc, b"MeetingTimeZone"))
+            .or_else(|| extract_ews_field_doc(&doc, b"EndTimeZone"))
+            .as_deref()
+            .map(normalize_timezone_to_iana),
         timezone_blob: extract_ews_field_doc(&doc, b"MeetingTimeZone"),
         rrule,
         exdates: Vec::new(),
@@ -2019,4 +2188,136 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         client_uid,
         exceptions: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn sample_event_with_attendee() -> CalendarItem {
+        CalendarItem {
+            uid: "test-uid".to_string(),
+            subject: "Quarterly Review".to_string(),
+            start: Utc::now(),
+            end: Utc::now() + chrono::Duration::hours(1),
+            organizer_email: Some("boss@example.com".to_string()),
+            organizer_name: Some("The Boss".to_string()),
+            attendees: vec![Attendee {
+                email: "alice@example.com".to_string(),
+                name: Some("Alice".to_string()),
+                attendee_type: Some(1),
+                attendee_status: Some(0),
+                partstat: Some("NEEDS-ACTION".to_string()),
+                schedule_agent: None,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn render_ics_emits_schedule_agent_client() {
+        let mut item = sample_event_with_attendee();
+        mark_scheduling_client_side(&mut item);
+        let ics = render_ics(&item);
+        // RFC 5545 line-folds long property lines (75 chars) so the literal
+        // "SCHEDULE-AGENT=CLIENT" string may be split across a fold. Unfold
+        // (remove CRLF + leading whitespace on continuation lines) before
+        // asserting on the logical content.
+        let unfolded: String = ics
+            .lines()
+            .map(|l| l.trim_start().to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            unfolded.contains("SCHEDULE-AGENT=CLIENT:mailto:alice@example.com"),
+            "expected ATTENDEE with SCHEDULE-AGENT=CLIENT parameter, got:\n{ics}\nunfolded:\n{unfolded}"
+        );
+        assert!(
+            ics.contains("ATTENDEE"),
+            "attendee should be preserved, got:\n{ics}"
+        );
+    }
+
+    #[test]
+    fn render_ics_omits_schedule_agent_when_none() {
+        let item = sample_event_with_attendee();
+        let ics = render_ics(&item);
+        assert!(
+            !ics.contains("SCHEDULE-AGENT"),
+            "no SCHEDULE-AGENT should be emitted when schedule_agent is None, got:\n{ics}"
+        );
+    }
+
+    #[test]
+    fn mark_scheduling_client_side_preserves_attendee_count() {
+        let mut item = sample_event_with_attendee();
+        let before = item.attendees.len();
+        mark_scheduling_client_side(&mut item);
+        let after = item.attendees.len();
+        assert_eq!(before, after, "attendee count must not change");
+        assert_eq!(
+            item.attendees[0].schedule_agent.as_deref(),
+            Some("CLIENT")
+        );
+    }
+
+    #[test]
+    fn schedule_disposition_wants_scheduling() {
+        assert!(!ScheduleDisposition::SendToNone.wants_scheduling());
+        assert!(ScheduleDisposition::SendOnlyToAll.wants_scheduling());
+        assert!(ScheduleDisposition::SendToAllAndSaveCopy.wants_scheduling());
+        assert!(ScheduleDisposition::SendToChangedOnly.wants_scheduling());
+        assert!(ScheduleDisposition::SendToAllAndSaveCopyInclDeleted.wants_scheduling());
+        assert!(ScheduleDisposition::SendToChangedAndSaveCopy.wants_scheduling());
+    }
+
+    #[test]
+    fn scheduling_needed_requires_attendees_and_disposition() {
+        let item = sample_event_with_attendee();
+        let mut empty = item.clone();
+        empty.attendees = vec![];
+        assert!(!scheduling_needed(&empty, ScheduleDisposition::SendToAllAndSaveCopy));
+        assert!(scheduling_needed(&item, ScheduleDisposition::SendToAllAndSaveCopy));
+        assert!(!scheduling_needed(&item, ScheduleDisposition::SendToNone));
+    }
+
+    #[test]
+    fn schedule_disposition_parse_known_values() {
+        assert_eq!(
+            ScheduleDisposition::parse(Some("SendToNone")),
+            Some(ScheduleDisposition::SendToNone)
+        );
+        assert_eq!(
+            ScheduleDisposition::parse(Some("SendToAllAndSaveCopy")),
+            Some(ScheduleDisposition::SendToAllAndSaveCopy)
+        );
+        assert_eq!(
+            ScheduleDisposition::parse(Some("  SendOnlyToAll  ")),
+            Some(ScheduleDisposition::SendOnlyToAll)
+        );
+        assert_eq!(ScheduleDisposition::parse(Some("nonsense")), None);
+        assert_eq!(ScheduleDisposition::parse(None), None);
+    }
+
+    #[test]
+    fn ensure_organizer_for_scheduling_adds_when_attendees_present() {
+        let mut item = sample_event_with_attendee();
+        item.organizer_email = None;
+        item.organizer_name = None;
+        ensure_organizer_for_scheduling(&mut item, Some("boss@example.com"));
+        assert_eq!(item.organizer_email.as_deref(), Some("boss@example.com"));
+    }
+
+    #[test]
+    fn ensure_organizer_is_noop_without_attendees() {
+        let mut item = sample_event_with_attendee();
+        item.attendees = vec![];
+        item.organizer_email = None;
+        ensure_organizer_for_scheduling(&mut item, Some("boss@example.com"));
+        assert!(
+            item.organizer_email.is_none(),
+            "no organizer should be synthesised when there are no attendees"
+        );
+    }
 }

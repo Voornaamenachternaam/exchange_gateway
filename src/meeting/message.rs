@@ -518,6 +518,7 @@ mod tests {
                 attendee_type: Some(1),
                 attendee_status: Some(0),
                 partstat: None,
+                schedule_agent: None,
             }],
             ..Default::default()
         }
