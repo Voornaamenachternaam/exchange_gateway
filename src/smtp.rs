@@ -217,6 +217,113 @@ impl SmtpClient {
         }
     }
 
+    /// Send an iMIP (RFC 6047) meeting response — a `text/calendar;
+    /// method=REPLY` MIME part addressed to the meeting organizer.
+    ///
+    /// Used by C4 (EWS AcceptItem/DeclineItem/TentativelyAcceptItem and EAS
+    /// meeting-response) to deliver the attendee's PARTSTAT back to the
+    /// organizer via SMTP. The `ics` body is the full VCALENDAR with
+    /// `METHOD:REPLY` produced by [`crate::meeting::MeetingMessageGenerator`].
+    /// Optional `text_body` is sent as an alternative `text/plain` part so
+    /// mail clients without calendar support still render a readable reply.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_imip(
+        &self,
+        from: &str,
+        to: Vec<String>,
+        subject: &str,
+        ics: &str,
+        text_body: Option<&str>,
+        username: &str,
+        password: &SecretString,
+    ) -> anyhow::Result<SendResult> {
+        if to.is_empty() {
+            return Err(anyhow::anyhow!("iMIP reply has no recipients (organizer)"));
+        }
+        if from.is_empty() {
+            return Err(anyhow::anyhow!("iMIP reply has no sender (responder)"));
+        }
+        let from_mailbox: Mailbox = from
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid from address '{}': {}", from, e))?;
+
+        let mut builder = Message::builder()
+            .from(from_mailbox)
+            .subject(subject)
+            .date_now()
+            .header(lettre::message::header::ContentDisposition::inline())
+            // RFC 6047 §3.2: iMIP messages MUST set MIME-Version and a
+            // Content-Type of text/calendar; method=REPLY.
+            .header(lettre::message::header::ContentType::parse(
+                "text/calendar; method=REPLY; charset=utf-8",
+            )
+            .map_err(|e| anyhow::anyhow!("Invalid iMIP content-type: {}", e))?);
+
+        for recipient in &to {
+            let mailbox: Mailbox = recipient
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid recipient '{}': {}", recipient, e))?;
+            builder = builder.to(mailbox);
+        }
+
+        let calendar_part = SinglePart::builder()
+            .header(lettre::message::header::ContentType::parse(
+                "text/calendar; method=REPLY; charset=utf-8",
+            )
+            .map_err(|e| anyhow::anyhow!("Invalid iMIP part content-type: {}", e))?)
+            .header(lettre::message::header::ContentDisposition::inline())
+            .body(ics.to_string());
+
+        let message = if let Some(text) = text_body {
+            // multipart/alternative with text/plain fallback — clients that do
+            // not understand text/calendar render the human-readable reply.
+            builder.multipart(
+                MultiPart::alternative()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_PLAIN)
+                            .body(text.to_string()),
+                    )
+                    .singlepart(calendar_part),
+            )?
+        } else {
+            builder.singlepart(calendar_part)?
+        };
+
+        let transport = self.build_transport(username, password)?;
+        let message_id = message
+            .headers()
+            .get::<lettre::message::header::MessageId>()
+            .map(|h| h.as_ref().to_string())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}-{}",
+                    chrono::Utc::now().timestamp_millis(),
+                    uuid::Uuid::new_v4().simple()
+                )
+            });
+        match transport.send(message).await {
+            Ok(response) => {
+                info!(
+                    target: "smtp",
+                    host = %self.host,
+                    from = %from,
+                    recipient_count = to.len(),
+                    response_code = %response.code(),
+                    "iMIP reply sent via SMTP"
+                );
+                Ok(SendResult {
+                    message_id,
+                    submitted_at: chrono::Utc::now(),
+                })
+            }
+            Err(e) => {
+                error!(target: "smtp", host = %self.host, from = %from, error = %e, "Failed to send iMIP reply");
+                Err(anyhow::anyhow!("SMTP iMIP send failed: {}", e))
+            }
+        }
+    }
+
     /// Health check: verify SMTP server is reachable.
     ///
     /// Attempts a connection without sending mail.

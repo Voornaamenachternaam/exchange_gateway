@@ -27,6 +27,7 @@ use crate::util::xml_escape;
 use anyhow::anyhow;
 use secrecy::SecretString;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
 
@@ -270,10 +271,38 @@ pub fn render_ews_message_item_xml(server_id: &str, change_key: &str, msg: &EwsM
 /// Render a JMAP email as an EWS MessageType XML element.
 ///
 /// Converts JMAP email fields to EWS Message XML for GetItem/FindItem responses.
+/// Renders only attachment *metadata* (`<t:HasAttachments>` plus the
+/// `<t:Attachments>` roster of names/content-types/sizes) — the base64
+/// content is fetched separately for GetItem via
+/// [`render_jmap_email_as_ews_message_with_attachments`]. Surfacing the
+/// metadata in list/sync responses lets Outlook show the paperclip and
+/// attachment names without paying the per-blob download cost on every sync.
 pub fn render_jmap_email_as_ews_message(
     email: &JmapEmail,
     server_id: &str,
     change_key: &str,
+) -> String {
+    render_jmap_email_as_ews_message_inner(email, server_id, change_key, None)
+}
+
+/// Render the same EWS Message but inline the supplied attachment *content*
+/// as base64 `<t:FileAttachment><t:Content>` blocks. Use this from GetItem so
+/// Outlook can open attachments directly. `attachment_blobs` is keyed by
+/// attachment `blobId` (or `id` when `blobId` is absent).
+pub fn render_jmap_email_as_ews_message_with_attachments(
+    email: &JmapEmail,
+    server_id: &str,
+    change_key: &str,
+    attachment_blobs: &HashMap<String, Vec<u8>>,
+) -> String {
+    render_jmap_email_as_ews_message_inner(email, server_id, change_key, Some(attachment_blobs))
+}
+
+fn render_jmap_email_as_ews_message_inner(
+    email: &JmapEmail,
+    server_id: &str,
+    change_key: &str,
+    attachment_blobs: Option<&HashMap<String, Vec<u8>>>,
 ) -> String {
     let subject = sanitize_for_xml(email.subject.as_deref().unwrap_or("(No Subject)"));
     let sender = email.from.as_ref().and_then(|v| v.first());
@@ -310,6 +339,17 @@ pub fn render_jmap_email_as_ews_message(
         }).collect::<String>()
     }).unwrap_or_default();
 
+    // C2: BccRecipients (InternetHeaders-only field; clients display on drafts/sent)
+    let bcc_xml = email.bcc.as_ref().map(|recipients| {
+        recipients.iter().map(|r| {
+            let name_san = sanitize_for_xml(r.name.as_deref().unwrap_or(""));
+            let addr_san = sanitize_for_xml(r.email.as_deref().unwrap_or(""));
+            let name = xml_escape(&name_san);
+            let addr = xml_escape(&addr_san);
+            format!("<t:Mailbox><t:Name>{name}</t:Name><t:EmailAddress>{addr}</t:EmailAddress></t:Mailbox>")
+        }).collect::<String>()
+    }).unwrap_or_default();
+
     let body_preview = sanitize_for_xml(email.preview.as_deref().unwrap_or(""));
     let (body_text_raw, is_html) = extract_jmap_body(email);
     let body_text_sanitized = sanitize_for_xml(body_text_raw);
@@ -323,21 +363,193 @@ pub fn render_jmap_email_as_ews_message(
         .keywords
         .as_ref()
         .is_some_and(|k| k.contains_key("$seen"));
+    let is_draft = email.is_draft();
+    let importance = if email
+        .keywords
+        .as_ref()
+        .is_some_and(|k| k.contains_key("$important"))
+    {
+        "High"
+    } else {
+        "Normal"
+    };
+
+    // Body of the message — must be wrapped after the BccRecipients to satisfy
+    // the MS-OXWSMSG MessageType element ordering.
+    let attachments_xml = render_ews_attachments_xml(email, attachment_blobs);
+    let internet_headers_xml = render_ews_internet_headers_xml(email);
+
+    let size_xml = email
+        .size
+        .map(|s| format!("<t:Size>{}</t:Size>", s))
+        .unwrap_or_default();
+    let message_id_xml = email
+        .message_id
+        .as_deref()
+        .map(|m| format!("<t:InternetMessageId>{}</t:InternetMessageId>", xml_escape(&sanitize_for_xml(m))))
+        .unwrap_or_default();
+    let in_reply_to_xml = email
+        .in_reply_to
+        .as_ref()
+        .and_then(|v| v.first())
+        .map(|m| format!("<t:InReplyTo>{}</t:InReplyTo>", xml_escape(&sanitize_for_xml(m))))
+        .unwrap_or_default();
+    let references_xml = email
+        .references
+        .as_ref()
+        .and_then(|v| v.first())
+        .map(|m| format!("<t:References>{}</t:References>", xml_escape(&sanitize_for_xml(m))))
+        .unwrap_or_default();
+    let convo_id_xml = email
+        .thread_id
+        .as_deref()
+        .map(|t| format!("<t:ConversationId Id=\"{}\" ChangeKey=\"{}\" />",
+            xml_escape(&sanitize_for_xml(t)), xml_escape(change_key)))
+        .unwrap_or_default();
 
     format!(
-        r#"<t:Message><t:ItemId Id="{server_id}" ChangeKey="{change_key}" /><t:Subject>{subject}</t:Subject><t:Sender><t:Mailbox><t:Name>{sender_name}</t:Name><t:EmailAddress>{sender_email}</t:EmailAddress></t:Mailbox></t:Sender><t:ToRecipients>{to_xml}</t:ToRecipients><t:CcRecipients>{cc_xml}</t:CcRecipients><t:DateTimeReceived>{received_at}</t:DateTimeReceived><t:DateTimeSent>{sent_at}</t:DateTimeSent><t:IsRead>{is_read}</t:IsRead><t:HasAttachments>{has_attachment}</t:HasAttachments><t:Preview>{body_preview}</t:Preview><t:Body BodyType="{body_type}">{body_text}</t:Body></t:Message>"#,
+        r#"<t:Message><t:ItemId Id="{server_id}" ChangeKey="{change_key}" />{convo_id_xml}<t:Subject>{subject}</t:Subject><t:Sender><t:Mailbox><t:Name>{sender_name}</t:Name><t:EmailAddress>{sender_email}</t:EmailAddress></t:Mailbox></t:Sender><t:ToRecipients>{to_xml}</t:ToRecipients><t:CcRecipients>{cc_xml}</t:CcRecipients><t:BccRecipients>{bcc_xml}</t:BccRecipients>{size_xml}<t:DateTimeReceived>{received_at}</t:DateTimeReceived><t:DateTimeSent>{sent_at}</t:DateTimeSent><t:Importance>{importance}</t:Importance><t:IsRead>{is_read}</t:IsRead><t:IsDraft>{is_draft}</t:IsDraft><t:HasAttachments>{has_attachment}</t:HasAttachments><t:Preview>{body_preview}</t:Preview>{message_id_xml}{in_reply_to_xml}{references_xml}<t:Body BodyType="{body_type}">{body_text}</t:Body>{attachments_xml}{internet_headers_xml}</t:Message>"#,
+        convo_id_xml = convo_id_xml,
+        size_xml = size_xml,
         server_id = xml_escape(server_id),
         change_key = xml_escape(change_key),
         subject = xml_escape(&subject),
         sender_name = xml_escape(&sender_name),
         sender_email = xml_escape(&sender_email),
+        to_xml = to_xml,
+        cc_xml = cc_xml,
+        bcc_xml = bcc_xml,
         received_at = xml_escape(&received_at),
         sent_at = xml_escape(&sent_at),
+        importance = importance,
         is_read = is_read,
+        is_draft = is_draft,
         has_attachment = has_attachment,
         body_preview = xml_escape(&body_preview),
+        message_id_xml = message_id_xml,
+        in_reply_to_xml = in_reply_to_xml,
+        references_xml = references_xml,
+        body_type = body_type,
         body_text = xml_escape(&body_text_sanitized),
+        attachments_xml = attachments_xml,
+        internet_headers_xml = internet_headers_xml,
     )
+}
+
+/// Render the `<t:Attachments>` block per [MS-OXWSATT]. Includes base64
+/// `<t:Content>` only when `attachment_blobs` provides bytes for the
+/// attachment's blobId (GetItem); otherwise metadata-only (FindItem/Sync).
+fn render_ews_attachments_xml(
+    email: &JmapEmail,
+    attachment_blobs: Option<&HashMap<String, Vec<u8>>>,
+) -> String {
+    let Some(atts) = email.attachments.as_ref() else {
+        return String::new();
+    };
+    if atts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<t:Attachments>");
+    for a in atts {
+        let key = a.blob_id.clone().unwrap_or_else(|| a.id.clone().unwrap_or_default());
+        let name = sanitize_for_xml(a.name.as_deref().unwrap_or("attachment"));
+        let content_type = sanitize_for_xml(a.content_type.as_deref().unwrap_or("application/octet-stream"));
+        let size = a.size.unwrap_or(0);
+        let content_xml = match attachment_blobs.and_then(|m| m.get(&key)) {
+            Some(bytes) => {
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                format!("<t:Content>{}</t:Content>", b64)
+            }
+            None => String::new(),
+        };
+        out.push_str(&format!(
+            r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Name>{}</t:Name><t:ContentType>{}</t:ContentType><t:Size>{}</t:Size>{}</t:FileAttachment>"#,
+            xml_escape(&key),
+            xml_escape(&name),
+            xml_escape(&content_type),
+            size,
+            content_xml,
+        ));
+    }
+    out.push_str("</t:Attachments>");
+    out
+}
+
+/// Render `<t:InternetMessageHeaders>` from the raw header blob (RFC 5322
+/// folded-headers, CRLF-delimited). De-duplicates the headers already surfaced
+/// as first-class MessageType children (Message-ID, In-Reply-To, References,
+/// Subject, From, To, Cc, Bcc, Date) so clients don't display duplicates.
+fn render_ews_internet_headers_xml(email: &JmapEmail) -> String {
+    let Some(raw) = email.header_raw.as_ref() else {
+        return String::new();
+    };
+    // Parse folded RFC 5322 headers into (name, value) pairs without a full MIME
+    // parser dependency: split on CRLF, join continuation lines (those that start
+    // with whitespace), then split name/value on the first ':'.
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut folded = String::new();
+    // Use \r\n when present (canonical RFC 5322), else fall back to bare \n.
+    let use_crlf = raw.contains("\r\n");
+    let lines_iter: Box<dyn Iterator<Item = &str>> = if use_crlf {
+        Box::new(raw.split("\r\n"))
+    } else {
+        Box::new(raw.split('\n'))
+    };
+    for line in lines_iter {
+        if line.is_empty() {
+            continue;
+        }
+        let is_continuation = line.starts_with(' ') || line.starts_with('\t');
+        if is_continuation {
+            if !folded.is_empty() {
+                folded.push(' ');
+                folded.push_str(line.trim_start());
+            }
+            continue;
+        }
+        // Non-continuation line: flush the previous folded header, then start a new one.
+        if let Some((n, v)) = folded.split_once(':') {
+            headers.push((n.trim().to_string(), v.trim().to_string()));
+        }
+        folded = line.to_string();
+    }
+    if let Some((n, v)) = folded.split_once(':') {
+        headers.push((n.trim().to_string(), v.trim().to_string()));
+    }
+
+    // Suppress headers we already surface as first-class MessageType children
+    // to avoid duplicate display per [MS-OXWSMSG] §2.2.1.56.
+    const SUPPRESSED: &[&str] = &[
+        "message-id",
+        "in-reply-to",
+        "references",
+        "subject",
+        "from",
+        "to",
+        "cc",
+        "bcc",
+        "date",
+        "mime-version",
+        "content-type",
+        "content-transfer-encoding",
+    ];
+    let mut out = String::from("<t:InternetMessageHeaders>");
+    for (name, value) in headers {
+        if SUPPRESSED.iter().any(|s| s.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        out.push_str(&format!(
+            r#"<t:InternetMessageHeader HeaderName="{}">{}</t:InternetMessageHeader>"#,
+            xml_escape(&sanitize_for_xml(&name)),
+            xml_escape(&sanitize_for_xml(&value)),
+        ));
+    }
+    if out == "<t:InternetMessageHeaders>" {
+        return String::new();
+    }
+    out.push_str("</t:InternetMessageHeaders>");
+    out
 }
 
 /// Render a JMAP email as an EAS ApplicationData XML element.
@@ -431,8 +643,33 @@ pub fn render_jmap_email_as_eas_application_data(
         }
     });
 
+    // C1/C2: EAS attachments roster (metadata-only; full content fetched on
+    // demand via ItemOperations:Fetch). Per [MS-ASAIRS] §2.2.2.15,
+    // AirSyncBase:Attachments contains one AirSyncBase:Attachment per
+    // attachment with DisplayName, FileReference, Method, Content-type and
+    // EstimatedDataSize. FileReference carries the JMAP blobId so the
+    // ItemOperations:Fetch handler can request bytes via download_blob.
+    let attachments_xml = render_eas_attachments_xml(email);
+    let message_id_xml = email
+        .message_id
+        .as_deref()
+        .map(|m| format!("<Email:MessageID>{}</Email:MessageID>", xml_escape(&sanitize_for_xml(m))))
+        .unwrap_or_default();
+    let in_reply_to_xml = email
+        .in_reply_to
+        .as_ref()
+        .and_then(|v| v.first())
+        .map(|m| format!("<Email:InReplyTo>{}</Email:InReplyTo>", xml_escape(&sanitize_for_xml(m))))
+        .unwrap_or_default();
+    let references_xml = email
+        .references
+        .as_ref()
+        .and_then(|v| v.first())
+        .map(|m| format!("<Email:References>{}</Email:References>", xml_escape(&sanitize_for_xml(m))))
+        .unwrap_or_default();
+
     format!(
-        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachments>{has_attachment_int}</Email:HasAttachments><AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body></ApplicationData>"#,
+        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} <{sender_email}></Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachments>{has_attachment_int}</Email:HasAttachments>{message_id_xml}{in_reply_to_xml}{references_xml}<AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body>{attachments_xml}</ApplicationData>"#,
         server_id = xml_escape(server_id),
         subject = xml_escape(&subject),
         sender_name = xml_escape(&sender_name),
@@ -441,8 +678,45 @@ pub fn render_jmap_email_as_eas_application_data(
         importance = importance,
         is_read_int = if is_read { "1" } else { "0" },
         has_attachment_int = if has_attachment { "1" } else { "0" },
+        message_id_xml = message_id_xml,
+        in_reply_to_xml = in_reply_to_xml,
+        references_xml = references_xml,
         body_text = xml_escape(&body_text_sanitized),
+        attachments_xml = attachments_xml,
     )
+}
+
+/// Render the `<AirSyncBase:Attachments>` block per [MS-ASAIRS] §2.2.2.15.
+/// Metadata-only: `<AirSyncBase:Content>` is fetched on demand via
+/// ItemOperations:Fetch (EAS) rather than inline-embedding the base64 to keep
+/// the Sync XML compact. `FileReference` carries the JMAP blobId so the
+/// ItemOperations:Fetch handler can request the bytes via JMAP download_blob.
+fn render_eas_attachments_xml(email: &JmapEmail) -> String {
+    let Some(atts) = email.attachments.as_ref() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for a in atts {
+        let ref_id = a.blob_id.clone().unwrap_or_else(|| a.id.clone().unwrap_or_default());
+        if ref_id.is_empty() {
+            continue;
+        }
+        let name = sanitize_for_xml(a.name.as_deref().unwrap_or("attachment"));
+        let content_type = sanitize_for_xml(a.content_type.as_deref().unwrap_or("application/octet-stream"));
+        let size = a.size.unwrap_or(0);
+        out.push_str(&format!(
+            "<AirSyncBase:Attachment><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName><AirSyncBase:FileReference>{}</AirSyncBase:FileReference><AirSyncBase:Method>1</AirSyncBase:Method><AirSyncBase:Content-type>{}</AirSyncBase:Content-type><AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize></AirSyncBase:Attachment>",
+            xml_escape(&name),
+            xml_escape(&ref_id),
+            xml_escape(&content_type),
+            size,
+        ));
+    }
+    if out.is_empty() {
+        String::new()
+    } else {
+        format!("<AirSyncBase:Attachments>{}</AirSyncBase:Attachments>", out)
+    }
 }
 
 /// Send an email on behalf of a user.
@@ -1165,6 +1439,36 @@ pub fn jmap_id_from_email_server_id(server_id: &str) -> Option<&str> {
 /// Check whether a server ID belongs to an email item (has `"em-"` prefix).
 pub fn is_email_server_id(id: &str) -> bool {
     id.starts_with(EMAIL_ID_PREFIX)
+}
+
+/// Extract an iCalendar `METHOD:REQUEST` body from a JMAP email's raw MIME.
+///
+/// Per RFC 6047, meeting invitations arrive as a `text/calendar; METHOD=REQUEST`
+/// MIME part — either in the message body or as an attachment. JMAP gives us the
+/// email's `blobId`; downloading it yields the full RFC 5322 MIME, which
+/// [`mail_parser::MessageParser`] parses. We walk every MIME part (body and
+/// attachments), returning the first `text/calendar` payload containing
+/// `METHOD:REQUEST`. Returns `None` when the email carries no calendar invite.
+pub fn extract_meeting_request_ics(raw_mime: &[u8]) -> Option<String> {
+    let parsed = mail_parser::MessageParser::default().parse(raw_mime)?;
+    // Body parts first (most invites put the calendar part inline), then attachments.
+    for part in parsed.parts.iter() {
+        let ics = calendar_part_ics(part)?;
+        if ics.starts_with("BEGIN:") && ics.contains("METHOD:REQUEST") {
+            return Some(ics);
+        }
+    }
+    None
+}
+
+/// Inspect a single MIME part; if it is `text/calendar`, return its text body.
+fn calendar_part_ics(part: &mail_parser::MessagePart<'_>) -> Option<String> {
+    use mail_parser::MimeHeaders;
+    let ct = part.content_type()?;
+    let is_calendar = ct.ctype().eq_ignore_ascii_case("text")
+        && ct.subtype().map(|s| s.eq_ignore_ascii_case("calendar")).unwrap_or(false);
+    let text = part.text_contents()?;
+    is_calendar.then(|| text.to_string())
 }
 
 #[cfg(test)]

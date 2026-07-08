@@ -172,6 +172,50 @@ pub struct JmapEmail {
     pub html_body: Option<Vec<JmapBodyPart>>,
     #[serde(default)]
     pub attachments: Option<Vec<JmapAttachment>>,
+    /// Full MIME structure (RFC 8621 §4.1.3 `bodyStructure`). Only populated
+    /// when `bodyStructure` is requested via the Email/get property list. Kept
+    /// as a generic JSON value because the structure is recursive and the
+    /// gateway only needs it to locate attachment part ids, not full typing.
+    #[serde(default)]
+    pub body_structure: Option<Value>,
+    /// Raw RFC 5322 message headers as a single CRLF-delimited blob (RFC 8621
+    /// §4.1.3 `header:raw`). Only populated when explicitly requested.
+    #[serde(default, rename = "header:raw")]
+    pub header_raw: Option<String>,
+    /// Sender envelope (RFC 8621 §4.1.3 `sender`).
+    #[serde(default, deserialize_with = "one_or_array")]
+    pub sender: Option<Vec<JmapEmailAddress>>,
+    /// Message-ID header value, sans angle brackets (RFC 8621 §4.1.3 `messageId`).
+    #[serde(default)]
+    pub message_id: Option<String>,
+    /// In-Reply-To header value(s) (RFC 8621 §4.1.3 `inReplyTo`).
+    #[serde(default)]
+    pub in_reply_to: Option<Vec<String>>,
+    /// References header value(s) (RFC 8621 §4.1.3 `references`).
+    #[serde(default)]
+    pub references: Option<Vec<String>>,
+}
+
+impl JmapEmail {
+    /// True if the email has the `$draft` keyword (RFC 8621 §4.1.1).
+    pub fn is_draft(&self) -> bool {
+        self.keywords.as_ref().is_some_and(|k| k.contains_key("$draft"))
+    }
+
+    /// Reaction keywords (`$draft`, `$seen`, `$important`, `$recent`) and any
+    /// labels are not a 1:1 map to EWS Categories; this helper exposes the raw
+    /// key list for callers that choose to surface custom labels as Categories.
+    pub fn category_labels(&self) -> Vec<String> {
+        self.keywords
+            .as_ref()
+            .map(|k| {
+                k.keys()
+                    .filter(|k| !matches!(k.as_str(), "$draft" | "$seen" | "$important" | "$recent"))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -479,6 +523,40 @@ pub struct JmapClient {
 }
 
 impl JmapClient {
+    /// Standard Email/get property list (RFC 8621 §4.1.3) covering everything
+    /// the gateway needs to render EWS/EAS: the metadata used by SyncFolderItems
+    /// / FindItem / Sync plus the richer fields (`attachments`, `header:raw`,
+    /// `bodyStructure`) required for full-fidelity GetItem rendering.
+    fn mail_properties() -> Vec<&'static str> {
+        vec![
+            "id",
+            "blobId",
+            "threadId",
+            "mailboxIds",
+            "keywords",
+            "size",
+            "receivedAt",
+            "sentAt",
+            "hasAttachment",
+            "from",
+            "sender",
+            "to",
+            "cc",
+            "bcc",
+            "replyTo",
+            "subject",
+            "preview",
+            "bodyValues",
+            "textBody",
+            "htmlBody",
+            "attachments",
+            "bodyStructure",
+            "messageId",
+            "inReplyTo",
+            "references",
+            "header:raw",
+        ]
+    }
     /// Create a new JMAP client pointing at the Stalwart JMAP endpoint.
     pub fn new(base_url: &str) -> Result<Self> {
         let client = reqwest::Client::builder()
@@ -523,6 +601,69 @@ impl JmapClient {
             password.expose_secret()
         ));
         format!("Basic {}", encoded)
+    }
+
+    /// Swap the scheme+host[+port] of a JMAP URL template (e.g. `downloadUrl`
+    /// or `uploadUrl`) with the configured internal `base_url`, preserving the
+    /// path, query, and `{accountId}`/`{blobId}` placeholders.
+    ///
+    /// Returns `None` if `template` is not a valid URL with a host part.
+    fn internalize_template(template: &str, base_url: &str) -> Option<String> {
+        // Find where the path begins (3rd '/' after the scheme, or first '/' overall).
+        let scheme_end = template.find("://")?;
+        let after_scheme = &template[scheme_end + 3..];
+        let path_start = after_scheme.find('/').map(|p| scheme_end + 3 + p)?;
+        let template_path = &template[path_start..];
+        let base = base_url.trim_end_matches('/');
+        Some(format!("{base}{template_path}"))
+    }
+
+    /// Download a raw blob by `blobId` (RFC 8621 §4.1.3 `downloadUrl`).
+    ///
+    /// The session `downloadUrl` template contains `{accountId}` and
+    /// `{blobId}` placeholders; Stalwart expects the path
+    /// `/download/{accountId}/{blobId}` with optional `?name=`/`?type=`.
+    /// Returns the raw bytes of the attachment (or the full MIME body when
+    /// `blobId` is the email's own `blobId`).
+    pub async fn download_blob(
+        &self,
+        account_id: &str,
+        blob_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Vec<u8>> {
+        let session = self.get_session(username, password).await?;
+        let template = if session.download_url.is_empty() {
+            format!("{}/download/{{accountId}}/{{blobId}}", self.base_url.trim_end_matches('/'))
+        } else {
+            session.download_url.clone()
+        };
+        let url = template
+            .replace("{accountId}", account_id)
+            .replace("{blobId}", blob_id);
+        let auth = Self::basic_auth_header(username, password);
+
+        trace!(target: "jmap", url = %url, blob_id = %blob_id, "Downloading JMAP blob");
+
+        let resp = self
+            .client
+            .get(&url)
+            .header(AUTHORIZATION, &auth)
+            .send()
+            .await
+            .map_err(|e| anyhow!("JMAP blob download failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("JMAP blob download returned {}: {}", status, body));
+        }
+
+        Ok(resp
+            .bytes()
+            .await
+            .map_err(|e| anyhow!("JMAP blob download body read failed: {}", e))?
+            .to_vec())
     }
 
     /// Fetch the JMAP session object (RFC 8621 §2.1).
@@ -585,6 +726,24 @@ impl JmapClient {
                 "Overriding session apiUrl with configured base_url for internal routing"
             );
             session.api_url = self.base_url.clone();
+        }
+
+        // Likewise override the download URL host with the configured internal
+        // base_url so attachment/blob downloads (RFC 8621 §4.1.3 `downloadUrl`,
+        // `Email/get` `attachments[].blobId`) stay on the Docker network. The
+        // session `downloadUrl` template has the shape
+        //   https://stalwart.example.com/jmap/download/{accountId}/{blobId}[?type=...&name=...]
+        // We only swap the scheme+host+port with the configured base, keeping
+        // the path and (encoded) query intact.
+        if let Some(internal) = Self::internalize_template(&session.download_url, &self.base_url)
+            && internal != session.download_url
+        {
+            debug!(
+                target: "jmap",
+                session_download_url = %session.download_url,
+                "Overriding session downloadUrl with internal base for blob downloads"
+            );
+            session.download_url = internal;
         }
 
         // Cache the session with expiry
@@ -660,27 +819,7 @@ impl JmapClient {
             .sort
             .unwrap_or_else(|| vec![json!({"property": "receivedAt", "isAscending": false})]);
 
-        let properties = json!([
-            "id",
-            "blobId",
-            "threadId",
-            "mailboxIds",
-            "keywords",
-            "size",
-            "receivedAt",
-            "sentAt",
-            "hasAttachment",
-            "from",
-            "to",
-            "cc",
-            "bcc",
-            "replyTo",
-            "subject",
-            "preview",
-            "bodyValues",
-            "textBody",
-            "htmlBody"
-        ]);
+        let properties = json!(Self::mail_properties());
 
         // Batch Email/query + Email/get in a single request (RFC 8621 §3.6).
         // The Email/get ids are a back-reference to Email/query's /ids result.
@@ -777,29 +916,7 @@ impl JmapClient {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
-        let props = properties.unwrap_or_else(|| {
-            json!([
-                "id",
-                "blobId",
-                "threadId",
-                "mailboxIds",
-                "keywords",
-                "size",
-                "receivedAt",
-                "sentAt",
-                "hasAttachment",
-                "from",
-                "to",
-                "cc",
-                "bcc",
-                "replyTo",
-                "subject",
-                "preview",
-                "bodyValues",
-                "textBody",
-                "htmlBody"
-            ])
-        });
+        let props = properties.unwrap_or_else(|| json!(Self::mail_properties()));
 
         let method_calls = vec![(
             "Email/get",
@@ -847,27 +964,7 @@ impl JmapClient {
             .get_emails(
                 account_id,
                 &[email_id.to_string()],
-                Some(json!([
-                    "id",
-                    "blobId",
-                    "threadId",
-                    "mailboxIds",
-                    "keywords",
-                    "size",
-                    "receivedAt",
-                    "sentAt",
-                    "hasAttachment",
-                    "from",
-                    "to",
-                    "cc",
-                    "bcc",
-                    "replyTo",
-                    "subject",
-                    "preview",
-                    "bodyValues",
-                    "textBody",
-                    "htmlBody"
-                ])),
+                Some(json!(Self::mail_properties())),
                 username,
                 password,
             )

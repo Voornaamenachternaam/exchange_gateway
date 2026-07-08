@@ -621,6 +621,67 @@ pub async fn apply_meeting_response(args: &MeetingResponseArgs<'_>) -> Result<()
             &etag,
         )
         .await?;
+
+    // C4: emit the iTIP REPLY to the organizer when the client asked for it
+    // (EAS `MeetingResponse` RequestDisposition SendResponse=1, per
+    // MS-ASCMD §2.2.3.110 / MS-ASCAL §2.2.2.21). The local calendar copy is
+    // already patched above; this delivers the attendee's decision back over
+    // iMIP/SMTP so the organizer's roster updates. Failures here are logged,
+    // not fatal — the local copy is authoritative for the responding user.
+    if args.send_response {
+        let decision = match args.user_response {
+            1 => Some(crate::meeting::ResponseDecision::Accept),
+            2 => Some(crate::meeting::ResponseDecision::Tentative),
+            3 => Some(crate::meeting::ResponseDecision::Decline),
+            _ => None,
+        };
+        if let Some(decision) = decision
+            && let Some(org_email) = item.organizer_email.as_ref().filter(|e| !e.is_empty())
+        {
+            let inv = crate::meeting::MeetingInvitation {
+                uid: item.uid.clone(),
+                sequence: 0,
+                organizer_email: org_email.clone(),
+                organizer_name: item.organizer_name.clone(),
+                subject: item.subject.clone(),
+                start: item.start,
+                end: item.end,
+            };
+            let pw = SecretString::from(args.password.to_string());
+            match crate::meeting::submit_meeting_response(
+                &args.state,
+                &inv,
+                decision,
+                args.username,
+                &pw,
+            )
+            .await
+            {
+                Ok(mid) => {
+                    tracing::info!(
+                        target: "eas",
+                        uid = %inv.uid,
+                        decision = ?decision,
+                        message_id = %mid,
+                        "EAS: delivered iTIP reply for meeting response"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        uid = %inv.uid,
+                        "EAS: iTIP reply delivery failed; local PARTSTAT still updated"
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                uid = %item.uid,
+                "EAS: cannot send meeting reply — organizer email missing from event"
+            );
+        }
+    }
+
     Ok(())
 }
 
