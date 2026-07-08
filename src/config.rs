@@ -550,17 +550,20 @@ fn apply_environment_overrides(cfg: &mut Config) {
     if let Some(val) = get_env_with_fallback(ENV_FORCE_CALDAV_CALENDAR, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_FORCE_CALDAV_CALENDAR);
-        cfg.force_caldav_calendar = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        cfg.force_caldav_calendar =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
     if let Some(val) = get_env_with_fallback(ENV_PREFER_JMAP_CALENDAR, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_PREFER_JMAP_CALENDAR);
-        cfg.prefer_jmap_calendar = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        cfg.prefer_jmap_calendar =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
     if let Some(val) = get_env_with_fallback(ENV_PREFER_CALDAV_FREEBUSY, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_PREFER_CALDAV_FREEBUSY);
-        cfg.prefer_caldav_freebusy = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        cfg.prefer_caldav_freebusy =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
 
     apply_env_string(cfg, get_env_with_fallback(ENV_MAIL_HOST, None), |c, v| {

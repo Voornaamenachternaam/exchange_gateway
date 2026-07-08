@@ -328,8 +328,8 @@ impl MeetingMessageGenerator {
                 .responder_email
                 .as_deref()
                 .unwrap_or(&msg.organizer_email);
-            let mut cal_attendee = icalendar::Attendee::new(format!("mailto:{}", responder_addr))
-                .partstat(partstat);
+            let mut cal_attendee =
+                icalendar::Attendee::new(format!("mailto:{}", responder_addr)).partstat(partstat);
             if let Some(ref name) = msg.responder_name {
                 cal_attendee = cal_attendee.cn(name.clone());
             }

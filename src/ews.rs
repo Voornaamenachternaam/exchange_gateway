@@ -28,10 +28,10 @@ use crate::room::{
 };
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
-use anyhow::anyhow;
 use crate::util::{
     canonicalize_username, format_ews_datetime, nfc, normalize_username, xml_escape,
 };
+use anyhow::anyhow;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -1102,7 +1102,10 @@ fn render_ews_calendar_item_xml_with_shape(
             "<t:StartTimeZone>{}</t:StartTimeZone>",
             xml_escape(&win)
         ));
-        xml.push_str(&format!("<t:EndTimeZone>{}</t:EndTimeZone>", xml_escape(&win)));
+        xml.push_str(&format!(
+            "<t:EndTimeZone>{}</t:EndTimeZone>",
+            xml_escape(&win)
+        ));
     }
     if let Some(v) = &item.timezone_blob {
         xml.push_str(&format!(
@@ -1628,93 +1631,94 @@ async fn load_current_calendar_items(
 ) -> Result<Vec<CurrentCalendarItem>, anyhow::Error> {
     // Try JMAP Calendar first if preferred
     if state.cfg.prefer_jmap_calendar
-        && let Some(jmap) = &state.jmap_client {
-            let password_secret = SecretString::from(password);
-            // Get calendar account ID
-            let account_id = match jmap.get_calendar_account_id(owner, &password_secret).await {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::debug!(target: "ews", error = %e, "JMAP get_calendar_account_id failed, falling back to CalDAV");
-                    return load_current_calendar_items_caldav(state, owner, password, window).await;
-                }
-            };
-            // Determine time window
-            let (start, end) = window.unwrap_or_else(|| {
-                (
-                    chrono::Utc::now() - chrono::Duration::weeks(104),
-                    chrono::Utc::now() + chrono::Duration::weeks(104),
-                )
-            });
-            // Query events
-            let query_params = QueryCalendarEventsParams {
-                account_id: &account_id,
-                calendar_id: None,
-                start: &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                end: &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                limit: 10000, // large enough to capture all events in window
-                username: owner,
-                password: &password_secret,
-            };
-            let query_result = jmap.query_calendar_events(query_params).await?;
-            // Filter out events without IDs; collect as Vec<String>
-            let event_ids: Vec<String> = query_result
-                .events
-                .iter()
-                .filter_map(|e| e.id.clone())
-                .collect();
-            if event_ids.is_empty() {
-                return Ok(vec![]);
+        && let Some(jmap) = &state.jmap_client
+    {
+        let password_secret = SecretString::from(password);
+        // Get calendar account ID
+        let account_id = match jmap.get_calendar_account_id(owner, &password_secret).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::debug!(target: "ews", error = %e, "JMAP get_calendar_account_id failed, falling back to CalDAV");
+                return load_current_calendar_items_caldav(state, owner, password, window).await;
             }
-            // Batch fetch events
-            let event_map = jmap
-                .get_calendar_events(&account_id, &event_ids, owner, &password_secret)
-                .await?;
-            // Build output
-            let mut out = Vec::new();
-            for event_id in &event_ids {
-                if let Some((ics, etag)) = event_map.get(event_id)
-                    && let Some(ci) = parse_ics_event(ics) {
-                        // Clone values we need before moving ci
-                        let ci_uid = ci.uid.clone();
-                        // Stable server_id: HMAC of owner + event_id
-                        let server_id = generate_server_id(
-                            state.cfg.hmac_secret(),
-                            &format!("jmap:{}:{}", owner, event_id),
-                        );
-                        out.push(CurrentCalendarItem {
-                            row: EwsItemRow {
-                                server_id: server_id.clone(),
-                                caldav_href: None,
-                                resource_href: format!("jmap://calendar/{}/{}", account_id, event_id),
-                                uid: Some(ci_uid.clone()),
-                                etag: Some(etag.clone()),
-                                updated_at: None,
-                            },
-                            item: ci,
-                        });
-                        // Upsert into storage for future lookups
-                        if let Err(e) = state
-                            .storage
-                            .upsert_item_map(
-                                owner,
-                                "", // caldav_href empty for JMAP
-                                &format!("jmap://calendar/{}/{}", account_id, event_id),
-                                &server_id,
-                                &ci_uid,
-                                etag,
-                            )
-                            .await
-                        {
-                            tracing::warn!(server_id = %server_id, error = %e, "Failed to upsert item map in load_current_calendar_items (JMAP)");
-                        }
-                    }
-            }
-            return Ok(out);
+        };
+        // Determine time window
+        let (start, end) = window.unwrap_or_else(|| {
+            (
+                chrono::Utc::now() - chrono::Duration::weeks(104),
+                chrono::Utc::now() + chrono::Duration::weeks(104),
+            )
+        });
+        // Query events
+        let query_params = QueryCalendarEventsParams {
+            account_id: &account_id,
+            calendar_id: None,
+            start: &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            end: &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            limit: 10000, // large enough to capture all events in window
+            username: owner,
+            password: &password_secret,
+        };
+        let query_result = jmap.query_calendar_events(query_params).await?;
+        // Filter out events without IDs; collect as Vec<String>
+        let event_ids: Vec<String> = query_result
+            .events
+            .iter()
+            .filter_map(|e| e.id.clone())
+            .collect();
+        if event_ids.is_empty() {
+            return Ok(vec![]);
         }
+        // Batch fetch events
+        let event_map = jmap
+            .get_calendar_events(&account_id, &event_ids, owner, &password_secret)
+            .await?;
+        // Build output
+        let mut out = Vec::new();
+        for event_id in &event_ids {
+            if let Some((ics, etag)) = event_map.get(event_id)
+                && let Some(ci) = parse_ics_event(ics)
+            {
+                // Clone values we need before moving ci
+                let ci_uid = ci.uid.clone();
+                // Stable server_id: HMAC of owner + event_id
+                let server_id = generate_server_id(
+                    state.cfg.hmac_secret(),
+                    &format!("jmap:{}:{}", owner, event_id),
+                );
+                out.push(CurrentCalendarItem {
+                    row: EwsItemRow {
+                        server_id: server_id.clone(),
+                        caldav_href: None,
+                        resource_href: format!("jmap://calendar/{}/{}", account_id, event_id),
+                        uid: Some(ci_uid.clone()),
+                        etag: Some(etag.clone()),
+                        updated_at: None,
+                    },
+                    item: ci,
+                });
+                // Upsert into storage for future lookups
+                if let Err(e) = state
+                    .storage
+                    .upsert_item_map(
+                        owner,
+                        "", // caldav_href empty for JMAP
+                        &format!("jmap://calendar/{}/{}", account_id, event_id),
+                        &server_id,
+                        &ci_uid,
+                        etag,
+                    )
+                    .await
+                {
+                    tracing::warn!(server_id = %server_id, error = %e, "Failed to upsert item map in load_current_calendar_items (JMAP)");
+                }
+            }
+        }
+        return Ok(out);
+    }
     // Fallback to CalDAV implementation
     load_current_calendar_items_caldav(state, owner, password, window).await
 }
-
 
 async fn load_current_calendar_items_caldav(
     state: &Arc<AppState>,
@@ -3190,8 +3194,7 @@ async fn handle_meeting_response_object(
     };
 
     // Step 2: locate the referenced meeting-request email ItemId.
-    let Some(reference_id) = extract_first_attr(body, b"ReferenceItemId", b"Id")
-    else {
+    let Some(reference_id) = extract_first_attr(body, b"ReferenceItemId", b"Id") else {
         return operation_error_response(
             &EwsAction::CreateItem,
             "ErrorSchemaValidation",
@@ -3347,7 +3350,11 @@ async fn handle_meeting_response_object(
 
     // Build a CreateItemResponse echoing a new ItemId for the response object
     // (Outlook expects a created item for the meeting-response message class).
-    let new_id = format!("mr-{}-{}", &invitation.uid, chrono::Utc::now().timestamp_millis());
+    let new_id = format!(
+        "mr-{}-{}",
+        &invitation.uid,
+        chrono::Utc::now().timestamp_millis()
+    );
     let change_key = new_id.clone();
     let message_class = match decision {
         crate::meeting::ResponseDecision::Accept => "IPM.Schedule.Meeting.Resp.Pos",
@@ -3487,7 +3494,11 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     // Choose backend: JMAP if resource_href indicates jmap://, else CalDAV
     let calendar_item_xml = if item.resource_href.starts_with("jmap://") {
         // Parse resource_href: jmap://calendar/{account_id}/{event_id}
-        let parts: Vec<&str> = item.resource_href.trim_start_matches("jmap://calendar/").split('/').collect();
+        let parts: Vec<&str> = item
+            .resource_href
+            .trim_start_matches("jmap://calendar/")
+            .split('/')
+            .collect();
         if parts.len() != 2 {
             tracing::warn!(resource_href = %item.resource_href, "Invalid JMAP resource href");
             return operation_error_response(
@@ -3512,7 +3523,10 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                 );
             }
         };
-        match jmap.get_calendar_event(account_id, event_id, &item_owner, &password_secret).await {
+        match jmap
+            .get_calendar_event(account_id, event_id, &item_owner, &password_secret)
+            .await
+        {
             Ok((ics, _returned_event_id, _etag)) => match parse_ics_event(&ics) {
                 Some(ci) => {
                     let att_list = state
@@ -3521,7 +3535,8 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                         .await
                         .unwrap_or_default();
                     let has_atts = !att_list.is_empty();
-                    let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+                    let att_summaries: Vec<_> =
+                        att_list.iter().map(|a| a.to_ews_summary()).collect();
                     let att_ref = if att_summaries.is_empty() {
                         None
                     } else {
@@ -3559,7 +3574,14 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                         );
                     }
                 };
-                match caldav.get_event(&item.resource_href, &item_owner, auth.password.expose_secret()).await {
+                match caldav
+                    .get_event(
+                        &item.resource_href,
+                        &item_owner,
+                        auth.password.expose_secret(),
+                    )
+                    .await
+                {
                     Ok((ics, _)) => match parse_ics_event(&ics) {
                         Some(ci) => {
                             let att_list = state
@@ -3568,7 +3590,8 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                                 .await
                                 .unwrap_or_default();
                             let has_atts = !att_list.is_empty();
-                            let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+                            let att_summaries: Vec<_> =
+                                att_list.iter().map(|a| a.to_ews_summary()).collect();
                             let att_ref = if att_summaries.is_empty() {
                                 None
                             } else {
@@ -3614,7 +3637,14 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                 );
             }
         };
-        match caldav.get_event(&item.resource_href, &item_owner, auth.password.expose_secret()).await {
+        match caldav
+            .get_event(
+                &item.resource_href,
+                &item_owner,
+                auth.password.expose_secret(),
+            )
+            .await
+        {
             Ok((ics, _)) => match parse_ics_event(&ics) {
                 Some(ci) => {
                     let att_list = state
@@ -3623,7 +3653,8 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
                         .await
                         .unwrap_or_default();
                     let has_atts = !att_list.is_empty();
-                    let att_summaries: Vec<_> = att_list.iter().map(|a| a.to_ews_summary()).collect();
+                    let att_summaries: Vec<_> =
+                        att_list.iter().map(|a| a.to_ews_summary()).collect();
                     let att_ref = if att_summaries.is_empty() {
                         None
                     } else {
@@ -4465,8 +4496,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     // CalDAV scheduler (RFC 6638) requires it to route REQUESTs. Default the
     // organizer to the authenticated user's primary SMTP whenever attendees are
     // present.
-    let owner_email =
-        crate::util::user_primary_email(&auth.username, &state.cfg.mail_domain);
+    let owner_email = crate::util::user_primary_email(&auth.username, &state.cfg.mail_domain);
     let mut item = item;
     crate::calendar::ensure_organizer_for_scheduling(&mut item, owner_email.as_deref());
 
@@ -4485,7 +4515,10 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         Some(d) => crate::calendar::scheduling_needed(&item, d),
         None => false, // Default per [MS-OXWSICAL] is SendToNone when the attribute is absent.
     };
-    if matches!(disposition, Some(crate::calendar::ScheduleDisposition::SendToNone)) {
+    if matches!(
+        disposition,
+        Some(crate::calendar::ScheduleDisposition::SendToNone)
+    ) {
         // Suppress server-side scheduling but preserve the attendee list.
         crate::calendar::mark_scheduling_client_side(&mut item);
     }
@@ -4732,7 +4765,10 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let mut new_item = if let Some(_existing_ics) = &stored_item.caldav_href {
         // Might need to fetch via CalDAV later, but we can construct a blank template from stored UID
         crate::calendar::CalendarItem {
-            uid: stored_item.uid.clone().unwrap_or_else(|| stored_item.server_id.clone()),
+            uid: stored_item
+                .uid
+                .clone()
+                .unwrap_or_else(|| stored_item.server_id.clone()),
             start: chrono::Utc::now(),
             end: chrono::Utc::now() + chrono::Duration::hours(1),
             dtstamp: Some(chrono::Utc::now()),
@@ -4742,7 +4778,10 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         // JMAP item: we still need to fetch existing via JMAP? But we can build a minimal item for rendering
         // Use the stored UID or server_id as UID to keep consistency.
         crate::calendar::CalendarItem {
-            uid: stored_item.uid.clone().unwrap_or_else(|| stored_item.server_id.clone()),
+            uid: stored_item
+                .uid
+                .clone()
+                .unwrap_or_else(|| stored_item.server_id.clone()),
             start: chrono::Utc::now(),
             end: chrono::Utc::now() + chrono::Duration::hours(1),
             dtstamp: Some(chrono::Utc::now()),
@@ -4846,8 +4885,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     // A1: ensure an ORGANIZER email is present whenever the updated item still
     // has attendees; required by Stalwart's CalDAV scheduler.
-    let owner_email =
-        crate::util::user_primary_email(&auth.username, &state.cfg.mail_domain);
+    let owner_email = crate::util::user_primary_email(&auth.username, &state.cfg.mail_domain);
     crate::calendar::ensure_organizer_for_scheduling(&mut new_item, owner_email.as_deref());
 
     // A2/A3: honour SendMeetingInvitationsOrCancellations on UpdateItem. Outlook
@@ -4865,7 +4903,10 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         Some(d) => crate::calendar::scheduling_needed(&new_item, d),
         None => false,
     };
-    if matches!(upd_disposition, Some(crate::calendar::ScheduleDisposition::SendToNone)) {
+    if matches!(
+        upd_disposition,
+        Some(crate::calendar::ScheduleDisposition::SendToNone)
+    ) {
         crate::calendar::mark_scheduling_client_side(&mut new_item);
     }
 
@@ -4877,7 +4918,16 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         && !upd_scheduling_needed;
 
     let updated_row = if use_jmap {
-        match try_jmap_update_calendar(state, owner, &password_secret, &stored_item, &new_item, &conflict_resolution).await {
+        match try_jmap_update_calendar(
+            state,
+            owner,
+            &password_secret,
+            &stored_item,
+            &new_item,
+            &conflict_resolution,
+        )
+        .await
+        {
             Ok(row) => row,
             Err(e) => {
                 tracing::warn!(error = %e, "JMAP calendar update failed, falling back to CalDAV");
@@ -4886,14 +4936,32 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                 // It's simpler: we need the existing_ics to compute new state; but we can just apply the changes on top of whatever we have.
                 // However, CalDAV update requires existing_etag for If-Match unless conflict_resolution says skip.
                 // We can attempt CalDAV update by performing get_event then put_event with the combined ICS.
-                match update_calendar_via_caldav(state, owner, &password_secret, &stored_item, &new_item, &conflict_resolution).await {
+                match update_calendar_via_caldav(
+                    state,
+                    owner,
+                    &password_secret,
+                    &stored_item,
+                    &new_item,
+                    &conflict_resolution,
+                )
+                .await
+                {
                     Ok(row) => row,
                     Err(resp) => return resp,
                 }
             }
         }
     } else {
-        match update_calendar_via_caldav(state, owner, &password_secret, &stored_item, &new_item, &conflict_resolution).await {
+        match update_calendar_via_caldav(
+            state,
+            owner,
+            &password_secret,
+            &stored_item,
+            &new_item,
+            &conflict_resolution,
+        )
+        .await
+        {
             Ok(row) => row,
             Err(resp) => return resp,
         }
@@ -5591,7 +5659,13 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         // Validate destination folder is a calendar.
         let dest_folder_is_calendar = {
             let to_lower = to_folder_id.to_ascii_lowercase();
-            to_lower == "1" || to_lower == "calendar" || to_folder_id == crate::ews_folders::folder_id_for(&auth.username, crate::ews_folders::DistinguishedFolder::Calendar)
+            to_lower == "1"
+                || to_lower == "calendar"
+                || to_folder_id
+                    == crate::ews_folders::folder_id_for(
+                        &auth.username,
+                        crate::ews_folders::DistinguishedFolder::Calendar,
+                    )
         };
         if !dest_folder_is_calendar {
             return operation_error_response(
@@ -5603,14 +5677,28 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         }
 
         // Fetch source item from DB
-        let lookup = match state.storage.get_ews_item_by_server_id(&auth.username, &item_id).await {
+        let lookup = match state
+            .storage
+            .get_ews_item_by_server_id(&auth.username, &item_id)
+            .await
+        {
             Ok(Some(row)) => row,
             Ok(None) => {
-                return operation_error_response(&EwsAction::CopyItem, "ErrorItemNotFound", "Source calendar item not found", StatusCode::OK);
+                return operation_error_response(
+                    &EwsAction::CopyItem,
+                    "ErrorItemNotFound",
+                    "Source calendar item not found",
+                    StatusCode::OK,
+                );
             }
             Err(e) => {
                 tracing::error!(error = %e, "CopyItem: failed to fetch source calendar item");
-                return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Failed to fetch source item", StatusCode::INTERNAL_SERVER_ERROR);
+                return operation_error_response(
+                    &EwsAction::CopyItem,
+                    "ErrorInternalServerError",
+                    "Failed to fetch source item",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
             }
         };
 
@@ -5620,7 +5708,12 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             let jmap = match state.jmap_client.as_ref() {
                 Some(j) => j,
                 None => {
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "JMAP client not available", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "JMAP client not available",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
 
@@ -5628,17 +5721,30 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             let after = lookup.resource_href.trim_start_matches("jmap://calendar/");
             let parts: Vec<&str> = after.split('/').collect();
             if parts.len() != 2 {
-                return operation_error_response(&EwsAction::CopyItem, "ErrorInvalidOperation", "Invalid JMAP resource ID", StatusCode::OK);
+                return operation_error_response(
+                    &EwsAction::CopyItem,
+                    "ErrorInvalidOperation",
+                    "Invalid JMAP resource ID",
+                    StatusCode::OK,
+                );
             }
             let src_account_id = parts[0];
             let src_event_id = parts[1];
 
             // Fetch source event ICS
-            let (src_ics, _event_id, _src_etag) = match jmap.get_calendar_event(src_account_id, src_event_id, &auth.username, &auth.password).await {
+            let (src_ics, _event_id, _src_etag) = match jmap
+                .get_calendar_event(src_account_id, src_event_id, &auth.username, &auth.password)
+                .await
+            {
                 Ok((ics, _event_id, _src_etag)) => (ics, _event_id, _src_etag),
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: JMAP fetch failed");
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Failed to fetch source event", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "Failed to fetch source event",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
 
@@ -5646,7 +5752,12 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             let src_item = match parse_ics_event(&src_ics) {
                 Some(item) => item,
                 None => {
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInvalidOperation", "Failed to parse source event", StatusCode::OK);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInvalidOperation",
+                        "Failed to parse source event",
+                        StatusCode::OK,
+                    );
                 }
             };
 
@@ -5661,23 +5772,43 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: failed to get JMAP account ID");
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Failed to get calendar account", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "Failed to get calendar account",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
             let calendars = match jmap.query_calendars(&auth.username, &auth.password).await {
                 Ok(cal) => cal,
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: failed to query calendars");
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Failed to get calendars", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "Failed to get calendars",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
             let Some(calendar) = calendars.calendars.first() else {
-                return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "No calendar available", StatusCode::INTERNAL_SERVER_ERROR);
+                return operation_error_response(
+                    &EwsAction::CopyItem,
+                    "ErrorInternalServerError",
+                    "No calendar available",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
             };
             let calendar_id = match calendar.id {
                 Some(ref id) => id,
                 None => {
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Calendar missing ID", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "Calendar missing ID",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
 
@@ -5696,23 +5827,35 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 Ok(res) => res,
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: JMAP create event failed");
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Failed to create calendar event", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "Failed to create calendar event",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
 
             // Construct server_id and resource_href
-            let server_id = generate_server_id(state.cfg.hmac_secret(), &format!("jmap:{}:{}", account_id, event_id));
+            let server_id = generate_server_id(
+                state.cfg.hmac_secret(),
+                &format!("jmap:{}:{}", account_id, event_id),
+            );
             let resource_href = format!("jmap://calendar/{}/{}", account_id, event_id);
 
             // Upsert mapping into storage
-            if let Err(e) = state.storage.upsert_item_map(
-                &auth.username,
-                "",
-                &resource_href,
-                &server_id,
-                &copied_item.uid,
-                &etag,
-            ).await {
+            if let Err(e) = state
+                .storage
+                .upsert_item_map(
+                    &auth.username,
+                    "",
+                    &resource_href,
+                    &server_id,
+                    &copied_item.uid,
+                    &etag,
+                )
+                .await
+            {
                 tracing::error!(error = %e, "CopyItem: failed to upsert item map");
             }
 
@@ -5740,16 +5883,33 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: CalDAV client init failed");
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "CalDAV unavailable", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "CalDAV unavailable",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
 
             // Fetch source event
-            let (src_ics, _src_etag) = match caldav.get_event(&lookup.resource_href, &auth.username, auth.password.expose_secret()).await {
+            let (src_ics, _src_etag) = match caldav
+                .get_event(
+                    &lookup.resource_href,
+                    &auth.username,
+                    auth.password.expose_secret(),
+                )
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: CalDAV get_event failed");
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Failed to get source event", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "Failed to get source event",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
 
@@ -5757,7 +5917,12 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             let src_item = match parse_ics_event(&src_ics) {
                 Some(item) => item,
                 None => {
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInvalidOperation", "Failed to parse source event", StatusCode::OK);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInvalidOperation",
+                        "Failed to parse source event",
+                        StatusCode::OK,
+                    );
                 }
             };
 
@@ -5772,13 +5937,25 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 
             // Create new event via PUT (no If-Match)
             let (new_href, new_etag) = match caldav
-                .put_event(dest_collection, None, &new_ics, &auth.username, auth.password.expose_secret(), None)
+                .put_event(
+                    dest_collection,
+                    None,
+                    &new_ics,
+                    &auth.username,
+                    auth.password.expose_secret(),
+                    None,
+                )
                 .await
             {
                 Ok(res) => res,
                 Err(e) => {
                     tracing::error!(error = %e, "CopyItem: CalDAV put_event failed");
-                    return operation_error_response(&EwsAction::CopyItem, "ErrorInternalServerError", "Failed to create copy", StatusCode::INTERNAL_SERVER_ERROR);
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorInternalServerError",
+                        "Failed to create copy",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
                 }
             };
 
@@ -5786,14 +5963,18 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             let server_id = generate_server_id(state.cfg.hmac_secret(), &new_href);
 
             // Upsert mapping
-            if let Err(e) = state.storage.upsert_item_map(
-                &auth.username,
-                "",
-                &new_href,
-                &server_id,
-                &copied_item.uid,
-                &new_etag,
-            ).await {
+            if let Err(e) = state
+                .storage
+                .upsert_item_map(
+                    &auth.username,
+                    "",
+                    &new_href,
+                    &server_id,
+                    &copied_item.uid,
+                    &new_etag,
+                )
+                .await
+            {
                 tracing::error!(error = %e, "CopyItem: failed to upsert item map");
             }
 
@@ -6935,15 +7116,17 @@ async fn create_calendar_via_caldav(
             )
         })?;
 
-    let collection_href = calendars.first().ok_or_else(|| {
-        operation_error_response(
-            &EwsAction::CreateItem,
-            "ErrorFolderNotFound",
-            "No writable calendar collection discovered",
-            StatusCode::OK,
-        )
-    })?
-    .clone();
+    let collection_href = calendars
+        .first()
+        .ok_or_else(|| {
+            operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorFolderNotFound",
+                "No writable calendar collection discovered",
+                StatusCode::OK,
+            )
+        })?
+        .clone();
 
     let ics = render_ics(item);
     let (href, etag) = caldav
@@ -6998,9 +7181,10 @@ async fn try_jmap_create_calendar(
     password: &SecretString,
     item: &crate::calendar::CalendarItem,
 ) -> Result<EwsItemRow, anyhow::Error> {
-    let jmap = state.jmap_client.as_ref().ok_or_else(|| {
-        anyhow!("JMAP client not available")
-    })?;
+    let jmap = state
+        .jmap_client
+        .as_ref()
+        .ok_or_else(|| anyhow!("JMAP client not available"))?;
 
     // Ensure JMAP Calendar is supported
     if !jmap.supports_calendar(owner, password).await {
@@ -7015,9 +7199,10 @@ async fn try_jmap_create_calendar(
     let Some(calendar) = calendars.calendars.first() else {
         return Err(anyhow!("No calendars available in JMAP"));
     };
-    let calendar_id = calendar.id.as_ref().ok_or_else(|| {
-        anyhow!("Calendar lacks an ID")
-    })?;
+    let calendar_id = calendar
+        .id
+        .as_ref()
+        .ok_or_else(|| anyhow!("Calendar lacks an ID"))?;
 
     // Render iCalendar data from the EWS calendar item
     let ics = render_ics(item);
@@ -7035,7 +7220,10 @@ async fn try_jmap_create_calendar(
         .await?;
 
     // Construct the server_id and resource_href consistent with JMAP integration
-    let server_id = generate_server_id(state.cfg.hmac_secret(), &format!("jmap:{}:{}", account_id, event_id));
+    let server_id = generate_server_id(
+        state.cfg.hmac_secret(),
+        &format!("jmap:{}:{}", account_id, event_id),
+    );
     let resource_href = format!("jmap://calendar/{}/{}", account_id, event_id);
 
     // Persist mapping
@@ -7050,7 +7238,11 @@ async fn try_jmap_create_calendar(
     Ok(EwsItemRow {
         server_id: server_id.clone(),
         resource_href,
-        uid: Some(if uid.is_empty() { item.uid.clone() } else { uid }),
+        uid: Some(if uid.is_empty() {
+            item.uid.clone()
+        } else {
+            uid
+        }),
         caldav_href: None,
         etag: Some(etag.to_string()),
         updated_at: None,
@@ -7118,12 +7310,19 @@ async fn update_calendar_via_caldav(
     );
 
     // Use existing etag for If-Match unless skipping validation
-    let if_match_etag = if skip_ck { None } else { etag_for_if_match.as_deref() };
+    let if_match_etag = if skip_ck {
+        None
+    } else {
+        etag_for_if_match.as_deref()
+    };
 
     // Perform the PUT
     let (href, new_etag) = caldav
         .put_event(
-            stored_item.caldav_href.as_ref().unwrap_or(&stored_item.resource_href),
+            stored_item
+                .caldav_href
+                .as_ref()
+                .unwrap_or(&stored_item.resource_href),
             if_match_etag,
             &new_ics,
             owner,
@@ -7181,9 +7380,10 @@ async fn try_jmap_update_calendar(
     new_item: &crate::calendar::CalendarItem,
     _conflict_resolution: &str,
 ) -> Result<EwsItemRow, anyhow::Error> {
-    let jmap = state.jmap_client.as_ref().ok_or_else(|| {
-        anyhow!("JMAP client not available")
-    })?;
+    let jmap = state
+        .jmap_client
+        .as_ref()
+        .ok_or_else(|| anyhow!("JMAP client not available"))?;
 
     if !jmap.supports_calendar(owner, password).await {
         return Err(anyhow!("JMAP Calendar not supported"));
@@ -7196,7 +7396,10 @@ async fn try_jmap_update_calendar(
     if !href.starts_with("jmap://calendar/") {
         return Err(anyhow!("Invalid JMAP resource_href format: {}", href));
     }
-    let parts: Vec<&str> = href.trim_start_matches("jmap://calendar/").split('/').collect();
+    let parts: Vec<&str> = href
+        .trim_start_matches("jmap://calendar/")
+        .split('/')
+        .collect();
     if parts.len() != 2 {
         return Err(anyhow!("Invalid JMAP resource_href parts: {}", href));
     }
@@ -7218,11 +7421,18 @@ async fn try_jmap_update_calendar(
         .await?;
 
     // The returned event_id should match the input; if empty, use the input
-    let final_event_id = if updated_event_id.is_empty() { event_id } else { &updated_event_id };
+    let final_event_id = if updated_event_id.is_empty() {
+        event_id
+    } else {
+        &updated_event_id
+    };
 
     // Build consistent resource_href and server_id
     let resource_href = format!("jmap://calendar/{}/{}", account_id, final_event_id);
-    let server_id = generate_server_id(state.cfg.hmac_secret(), &format!("jmap:{}:{}", account_id, final_event_id));
+    let server_id = generate_server_id(
+        state.cfg.hmac_secret(),
+        &format!("jmap:{}:{}", account_id, final_event_id),
+    );
 
     // Upsert mapping
     if let Err(e) = state
@@ -7236,7 +7446,11 @@ async fn try_jmap_update_calendar(
     Ok(EwsItemRow {
         server_id,
         resource_href,
-        uid: Some(if uid.is_empty() { new_item.uid.clone() } else { uid }),
+        uid: Some(if uid.is_empty() {
+            new_item.uid.clone()
+        } else {
+            uid
+        }),
         caldav_href: None,
         etag: Some(etag.to_string()),
         updated_at: None,
@@ -7264,7 +7478,10 @@ async fn event_has_attendees(
                 return false;
             }
         };
-        match caldav.get_event(href, owner, password.expose_secret()).await {
+        match caldav
+            .get_event(href, owner, password.expose_secret())
+            .await
+        {
             Ok((ics, _)) => return ics.lines().any(|l| l.starts_with("ATTENDEE")),
             Err(e) => {
                 tracing::warn!(error = %e, "CalDAV GET while checking attendees failed");
@@ -7281,8 +7498,9 @@ async fn event_has_attendees(
             .split('/')
             .collect();
         if let [account_id, event_id] = parts.as_slice()
-            && let Ok((ics, _, _)) =
-                jmap.get_calendar_event(account_id, event_id, owner, password).await
+            && let Ok((ics, _, _)) = jmap
+                .get_calendar_event(account_id, event_id, owner, password)
+                .await
         {
             return ics.lines().any(|l| l.starts_with("ATTENDEE"));
         }
@@ -7359,9 +7577,10 @@ async fn try_jmap_delete_calendar(
     password: &SecretString,
     stored_item: &EwsItemRow,
 ) -> Result<(), anyhow::Error> {
-    let jmap = state.jmap_client.as_ref().ok_or_else(|| {
-        anyhow!("JMAP client not available")
-    })?;
+    let jmap = state
+        .jmap_client
+        .as_ref()
+        .ok_or_else(|| anyhow!("JMAP client not available"))?;
 
     if !jmap.supports_calendar(owner, password).await {
         return Err(anyhow!("JMAP Calendar not supported"));
@@ -7373,7 +7592,10 @@ async fn try_jmap_delete_calendar(
     if !href.starts_with("jmap://calendar/") {
         return Err(anyhow!("Invalid JMAP resource_href format: {}", href));
     }
-    let parts: Vec<&str> = href.trim_start_matches("jmap://calendar/").split('/').collect();
+    let parts: Vec<&str> = href
+        .trim_start_matches("jmap://calendar/")
+        .split('/')
+        .collect();
     if parts.len() != 2 {
         return Err(anyhow!("Invalid JMAP resource_href parts: {}", href));
     }
