@@ -160,8 +160,8 @@ pub async fn submit_meeting_response(
     owner_username: &str,
     password: &secrecy::SecretString,
 ) -> Result<String> {
-    let responder_email =
-        user_primary_email(owner_username, &state.cfg.mail_domain).unwrap_or_else(|| {
+    let responder_email = user_primary_email(owner_username, &state.cfg.mail_domain)
+        .unwrap_or_else(|| {
             // Last-resort: assume owner is already a full email address.
             owner_username.to_string()
         });
@@ -245,18 +245,31 @@ mod tests {
     #[test]
     fn parse_request_without_organizer_returns_none() {
         let bad = [
-            "BEGIN:VCALENDAR", "VERSION:2.0", "METHOD:REQUEST",
-            "BEGIN:VEVENT", "UID:x@example.com", "SUMMARY:n",
-            "DTSTART:20260710T100000Z", "DTEND:20260710T110000Z",
-            "END:VEVENT", "END:VCALENDAR", "",
-        ].join("\r\n");
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "METHOD:REQUEST",
+            "BEGIN:VEVENT",
+            "UID:x@example.com",
+            "SUMMARY:n",
+            "DTSTART:20260710T100000Z",
+            "DTEND:20260710T110000Z",
+            "END:VEVENT",
+            "END:VCALENDAR",
+            "",
+        ]
+        .join("\r\n");
         assert!(parse_meeting_request(&bad).is_none());
     }
 
     #[test]
     fn reply_ics_has_method_reply_and_attendee_is_responder() {
         let inv = parse_meeting_request(&sample_request()).unwrap();
-        let ics = build_reply_ics(&inv, ResponseDecision::Accept, "bob@example.com", Some("Bob"));
+        let ics = build_reply_ics(
+            &inv,
+            ResponseDecision::Accept,
+            "bob@example.com",
+            Some("Bob"),
+        );
         assert!(ics.contains("METHOD:REPLY"), "missing METHOD:REPLY: {ics}");
         assert!(ics.contains("UID:event-123@example.com"), "{}", ics);
         // ORGANIZER points at the meeting organizer; ATTENDEE points at the responder.
@@ -265,8 +278,12 @@ mod tests {
         assert!(ics.contains("PARTSTAT=ACCEPTED"), "{ics}");
         // Must NOT include the organizer as the attendee (the original bug).
         let responder_block = ics
-            .split("ATTENDEE").nth(1).unwrap_or("")
-            .split(char::is_whitespace).next().unwrap_or("");
+            .split("ATTENDEE")
+            .nth(1)
+            .unwrap_or("")
+            .split(char::is_whitespace)
+            .next()
+            .unwrap_or("");
         assert!(responder_block.contains("bob@example.com"), "{ics}");
     }
 
@@ -290,8 +307,7 @@ mod tests {
     #[test]
     fn sequence_extractor_reads_numeric_sequence() {
         assert_eq!(parse_sequence_from_ics(&sample_request()), 2);
-        let no_seq = ["BEGIN:VEVENT","UID:x@y","END:VEVENT",""].join("\r\n");
+        let no_seq = ["BEGIN:VEVENT", "UID:x@y", "END:VEVENT", ""].join("\r\n");
         assert_eq!(parse_sequence_from_ics(&no_seq), 0);
     }
 }
-
