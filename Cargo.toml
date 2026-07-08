@@ -63,19 +63,19 @@ smartstring = "^1.0.1"
 const-hex = "^1.19.1"
 bitflags = "^2.13.0"
 unicode-normalization = "^0.1.25"
-phf = { version = "^0.13.1", features = ["macros"] }
+phf = "^0.14.0"
 icalendar = { version = "^0.17.12", features = ["parser", "chrono-tz"] }
 email_address = "^0.2.9"
 iso8601-duration = "^0.2.0"
 roxmltree = "^0.21.1"
-itertools = "^0.14.0"
+itertools = "^0.15.0"
 hex = "^0.4.3"
 derive_more = { version = "^2.1", features = ["full"] }
 bstr = "^1.12.3"
 sqlx = { version = "^0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
 lettre = { version = "^0.11.22", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 rustls-pki-types = "^1.15.0"
-prometheus = { version = "^0.13.4", features = ["process"] }
+prometheus = "^0.14.0"
 governor = "^0.10.4"
 mail-parser = "^0.11.5"
 
