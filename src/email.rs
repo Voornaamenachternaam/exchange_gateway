@@ -386,25 +386,45 @@ fn render_jmap_email_as_ews_message_inner(
     let message_id_xml = email
         .message_id
         .as_deref()
-        .map(|m| format!("<t:InternetMessageId>{}</t:InternetMessageId>", xml_escape(&sanitize_for_xml(m))))
+        .map(|m| {
+            format!(
+                "<t:InternetMessageId>{}</t:InternetMessageId>",
+                xml_escape(&sanitize_for_xml(m))
+            )
+        })
         .unwrap_or_default();
     let in_reply_to_xml = email
         .in_reply_to
         .as_ref()
         .and_then(|v| v.first())
-        .map(|m| format!("<t:InReplyTo>{}</t:InReplyTo>", xml_escape(&sanitize_for_xml(m))))
+        .map(|m| {
+            format!(
+                "<t:InReplyTo>{}</t:InReplyTo>",
+                xml_escape(&sanitize_for_xml(m))
+            )
+        })
         .unwrap_or_default();
     let references_xml = email
         .references
         .as_ref()
         .and_then(|v| v.first())
-        .map(|m| format!("<t:References>{}</t:References>", xml_escape(&sanitize_for_xml(m))))
+        .map(|m| {
+            format!(
+                "<t:References>{}</t:References>",
+                xml_escape(&sanitize_for_xml(m))
+            )
+        })
         .unwrap_or_default();
     let convo_id_xml = email
         .thread_id
         .as_deref()
-        .map(|t| format!("<t:ConversationId Id=\"{}\" ChangeKey=\"{}\" />",
-            xml_escape(&sanitize_for_xml(t)), xml_escape(change_key)))
+        .map(|t| {
+            format!(
+                "<t:ConversationId Id=\"{}\" ChangeKey=\"{}\" />",
+                xml_escape(&sanitize_for_xml(t)),
+                xml_escape(change_key)
+            )
+        })
         .unwrap_or_default();
 
     format!(
@@ -451,9 +471,16 @@ fn render_ews_attachments_xml(
     }
     let mut out = String::from("<t:Attachments>");
     for a in atts {
-        let key = a.blob_id.clone().unwrap_or_else(|| a.id.clone().unwrap_or_default());
+        let key = a
+            .blob_id
+            .clone()
+            .unwrap_or_else(|| a.id.clone().unwrap_or_default());
         let name = sanitize_for_xml(a.name.as_deref().unwrap_or("attachment"));
-        let content_type = sanitize_for_xml(a.content_type.as_deref().unwrap_or("application/octet-stream"));
+        let content_type = sanitize_for_xml(
+            a.content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream"),
+        );
         let size = a.size.unwrap_or(0);
         let content_xml = match attachment_blobs.and_then(|m| m.get(&key)) {
             Some(bytes) => {
@@ -653,19 +680,34 @@ pub fn render_jmap_email_as_eas_application_data(
     let message_id_xml = email
         .message_id
         .as_deref()
-        .map(|m| format!("<Email:MessageID>{}</Email:MessageID>", xml_escape(&sanitize_for_xml(m))))
+        .map(|m| {
+            format!(
+                "<Email:MessageID>{}</Email:MessageID>",
+                xml_escape(&sanitize_for_xml(m))
+            )
+        })
         .unwrap_or_default();
     let in_reply_to_xml = email
         .in_reply_to
         .as_ref()
         .and_then(|v| v.first())
-        .map(|m| format!("<Email:InReplyTo>{}</Email:InReplyTo>", xml_escape(&sanitize_for_xml(m))))
+        .map(|m| {
+            format!(
+                "<Email:InReplyTo>{}</Email:InReplyTo>",
+                xml_escape(&sanitize_for_xml(m))
+            )
+        })
         .unwrap_or_default();
     let references_xml = email
         .references
         .as_ref()
         .and_then(|v| v.first())
-        .map(|m| format!("<Email:References>{}</Email:References>", xml_escape(&sanitize_for_xml(m))))
+        .map(|m| {
+            format!(
+                "<Email:References>{}</Email:References>",
+                xml_escape(&sanitize_for_xml(m))
+            )
+        })
         .unwrap_or_default();
 
     format!(
@@ -697,12 +739,19 @@ fn render_eas_attachments_xml(email: &JmapEmail) -> String {
     };
     let mut out = String::new();
     for a in atts {
-        let ref_id = a.blob_id.clone().unwrap_or_else(|| a.id.clone().unwrap_or_default());
+        let ref_id = a
+            .blob_id
+            .clone()
+            .unwrap_or_else(|| a.id.clone().unwrap_or_default());
         if ref_id.is_empty() {
             continue;
         }
         let name = sanitize_for_xml(a.name.as_deref().unwrap_or("attachment"));
-        let content_type = sanitize_for_xml(a.content_type.as_deref().unwrap_or("application/octet-stream"));
+        let content_type = sanitize_for_xml(
+            a.content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream"),
+        );
         let size = a.size.unwrap_or(0);
         out.push_str(&format!(
             "<AirSyncBase:Attachment><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName><AirSyncBase:FileReference>{}</AirSyncBase:FileReference><AirSyncBase:Method>1</AirSyncBase:Method><AirSyncBase:Content-type>{}</AirSyncBase:Content-type><AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize></AirSyncBase:Attachment>",
@@ -1466,7 +1515,10 @@ fn calendar_part_ics(part: &mail_parser::MessagePart<'_>) -> Option<String> {
     use mail_parser::MimeHeaders;
     let ct = part.content_type()?;
     let is_calendar = ct.ctype().eq_ignore_ascii_case("text")
-        && ct.subtype().map(|s| s.eq_ignore_ascii_case("calendar")).unwrap_or(false);
+        && ct
+            .subtype()
+            .map(|s| s.eq_ignore_ascii_case("calendar"))
+            .unwrap_or(false);
     let text = part.text_contents()?;
     is_calendar.then(|| text.to_string())
 }

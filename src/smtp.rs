@@ -254,10 +254,12 @@ impl SmtpClient {
             .header(lettre::message::header::ContentDisposition::inline())
             // RFC 6047 §3.2: iMIP messages MUST set MIME-Version and a
             // Content-Type of text/calendar; method=REPLY.
-            .header(lettre::message::header::ContentType::parse(
-                "text/calendar; method=REPLY; charset=utf-8",
-            )
-            .map_err(|e| anyhow::anyhow!("Invalid iMIP content-type: {}", e))?);
+            .header(
+                lettre::message::header::ContentType::parse(
+                    "text/calendar; method=REPLY; charset=utf-8",
+                )
+                .map_err(|e| anyhow::anyhow!("Invalid iMIP content-type: {}", e))?,
+            );
 
         for recipient in &to {
             let mailbox: Mailbox = recipient
@@ -267,10 +269,12 @@ impl SmtpClient {
         }
 
         let calendar_part = SinglePart::builder()
-            .header(lettre::message::header::ContentType::parse(
-                "text/calendar; method=REPLY; charset=utf-8",
+            .header(
+                lettre::message::header::ContentType::parse(
+                    "text/calendar; method=REPLY; charset=utf-8",
+                )
+                .map_err(|e| anyhow::anyhow!("Invalid iMIP part content-type: {}", e))?,
             )
-            .map_err(|e| anyhow::anyhow!("Invalid iMIP part content-type: {}", e))?)
             .header(lettre::message::header::ContentDisposition::inline())
             .body(ics.to_string());
 
