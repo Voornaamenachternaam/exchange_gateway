@@ -1919,21 +1919,27 @@ async fn handle_item_operations(
         let mut jmap_ics: Option<String> = None;
         if state.cfg.prefer_jmap_calendar
             && let Some(jmap) = &state.jmap_client
-                && lookup.resource_href.starts_with("jmap://") {
-                    // Parse: jmap://calendar/{account_id}/{event_id}
-                    let after = lookup.resource_href.trim_start_matches("jmap://calendar/");
-                    let parts: Vec<&str> = after.split('/').collect();
-                    if parts.len() == 2 {
-                        let account_id = parts[0];
-                        let event_id = parts[1];
-                        match jmap.get_calendar_event(account_id, event_id, &owner_lower, &password).await {
-                            Ok((ics, _event_id, _etag)) => { jmap_ics = Some(ics); }
-                            Err(e) => {
-                                tracing::debug!(error = %e, "ItemOperations: JMAP fetch failed, falling back to CalDAV");
-                            }
-                        }
+            && lookup.resource_href.starts_with("jmap://")
+        {
+            // Parse: jmap://calendar/{account_id}/{event_id}
+            let after = lookup.resource_href.trim_start_matches("jmap://calendar/");
+            let parts: Vec<&str> = after.split('/').collect();
+            if parts.len() == 2 {
+                let account_id = parts[0];
+                let event_id = parts[1];
+                match jmap
+                    .get_calendar_event(account_id, event_id, &owner_lower, &password)
+                    .await
+                {
+                    Ok((ics, _event_id, _etag)) => {
+                        jmap_ics = Some(ics);
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "ItemOperations: JMAP fetch failed, falling back to CalDAV");
                     }
                 }
+            }
+        }
 
         // Fetch from CalDAV if JMAP didn't yield data
         let (ics, _etag) = if let Some(ics) = jmap_ics {
@@ -2271,14 +2277,15 @@ async fn merged_freebusy_for_mailbox(
     // Try JMAP Calendar first (urn:ietf:params:jmap:calendars) unless configured to prefer CalDAV.
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     if !state.cfg.prefer_caldav_freebusy
-        && let Some(jmap) = &state.jmap_client {
-            if let Some(result) =
-                fetch_freebusy_jmap_eas(jmap, mailbox, password, start, end, safe_interval).await
-            {
-                return result;
-            }
-            tracing::debug!(target: "eas", "JMAP Calendar free-busy failed, falling back to CalDAV");
+        && let Some(jmap) = &state.jmap_client
+    {
+        if let Some(result) =
+            fetch_freebusy_jmap_eas(jmap, mailbox, password, start, end, safe_interval).await
+        {
+            return result;
         }
+        tracing::debug!(target: "eas", "JMAP Calendar free-busy failed, falling back to CalDAV");
+    }
 
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,

@@ -857,7 +857,11 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
 /// attendee-less personal appointments, where ORGANIZER is optional and
 /// Stalwart will not attempt scheduling.
 pub fn ensure_organizer_for_scheduling(item: &mut CalendarItem, owner_email: Option<&str>) {
-    if item.organizer_email.as_deref().is_some_and(|e| !e.trim().is_empty()) {
+    if item
+        .organizer_email
+        .as_deref()
+        .is_some_and(|e| !e.trim().is_empty())
+    {
         return;
     }
     if item.attendees.is_empty() {
@@ -1510,8 +1514,8 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
                         Some(b"Timezone") => {
                             // EAS Timezone is a base64 Windows timezone blob (MS-ASSETTINGS).
                             // Convert to an IANA id so render_ics emits DTSTART;TZID=<iana>.
-                            let tz = crate::timezone::eas_timezone_blob_to_iana(&value)
-                                .unwrap_or(value);
+                            let tz =
+                                crate::timezone::eas_timezone_blob_to_iana(&value).unwrap_or(value);
                             current.timezone = Some(tz);
                         }
                         Some(b"DtStamp") => current.dtstamp = parse_datetime(&value),
@@ -2256,10 +2260,7 @@ mod scheduling_tests {
         mark_scheduling_client_side(&mut item);
         let after = item.attendees.len();
         assert_eq!(before, after, "attendee count must not change");
-        assert_eq!(
-            item.attendees[0].schedule_agent.as_deref(),
-            Some("CLIENT")
-        );
+        assert_eq!(item.attendees[0].schedule_agent.as_deref(), Some("CLIENT"));
     }
 
     #[test]
@@ -2277,8 +2278,14 @@ mod scheduling_tests {
         let item = sample_event_with_attendee();
         let mut empty = item.clone();
         empty.attendees = vec![];
-        assert!(!scheduling_needed(&empty, ScheduleDisposition::SendToAllAndSaveCopy));
-        assert!(scheduling_needed(&item, ScheduleDisposition::SendToAllAndSaveCopy));
+        assert!(!scheduling_needed(
+            &empty,
+            ScheduleDisposition::SendToAllAndSaveCopy
+        ));
+        assert!(scheduling_needed(
+            &item,
+            ScheduleDisposition::SendToAllAndSaveCopy
+        ));
         assert!(!scheduling_needed(&item, ScheduleDisposition::SendToNone));
     }
 

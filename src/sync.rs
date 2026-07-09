@@ -155,12 +155,8 @@ pub async fn apply_client_sync_mutations(
                         .unwrap_or_else(|| Uuid::new_v4().to_string());
                 }
                 // A1: default ORGANIZER to the user's primary SMTP for meetings.
-                let owner_email =
-                    crate::util::user_primary_email(username, &state.cfg.mail_domain);
-                crate::calendar::ensure_organizer_for_scheduling(
-                    &mut item,
-                    owner_email.as_deref(),
-                );
+                let owner_email = crate::util::user_primary_email(username, &state.cfg.mail_domain);
+                crate::calendar::ensure_organizer_for_scheduling(&mut item, owner_email.as_deref());
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(&collection_href, None, &ics, username, password, None)
@@ -354,12 +350,8 @@ pub async fn apply_client_sync_mutations(
                     item.exceptions = v;
                 }
                 // A1: default ORGANIZER to the user's primary SMTP for meetings.
-                let owner_email =
-                    crate::util::user_primary_email(username, &state.cfg.mail_domain);
-                crate::calendar::ensure_organizer_for_scheduling(
-                    &mut item,
-                    owner_email.as_deref(),
-                );
+                let owner_email = crate::util::user_primary_email(username, &state.cfg.mail_domain);
+                crate::calendar::ensure_organizer_for_scheduling(&mut item, owner_email.as_deref());
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(
@@ -1505,7 +1497,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         } else {
             jmap_failed = true;
         }
-    
     }
     // Fallback to CalDAV only if JMAP Calendar failed (not if it returned zero events)
     // Zero events is a valid JMAP result; falling back would cause unnecessary
