@@ -199,7 +199,9 @@ pub struct JmapEmail {
 impl JmapEmail {
     /// True if the email has the `$draft` keyword (RFC 8621 §4.1.1).
     pub fn is_draft(&self) -> bool {
-        self.keywords.as_ref().is_some_and(|k| k.contains_key("$draft"))
+        self.keywords
+            .as_ref()
+            .is_some_and(|k| k.contains_key("$draft"))
     }
 
     /// Reaction keywords (`$draft`, `$seen`, `$important`, `$recent`) and any
@@ -210,7 +212,9 @@ impl JmapEmail {
             .as_ref()
             .map(|k| {
                 k.keys()
-                    .filter(|k| !matches!(k.as_str(), "$draft" | "$seen" | "$important" | "$recent"))
+                    .filter(|k| {
+                        !matches!(k.as_str(), "$draft" | "$seen" | "$important" | "$recent")
+                    })
                     .cloned()
                     .collect()
             })
@@ -634,7 +638,10 @@ impl JmapClient {
     ) -> Result<Vec<u8>> {
         let session = self.get_session(username, password).await?;
         let template = if session.download_url.is_empty() {
-            format!("{}/download/{{accountId}}/{{blobId}}", self.base_url.trim_end_matches('/'))
+            format!(
+                "{}/download/{{accountId}}/{{blobId}}",
+                self.base_url.trim_end_matches('/')
+            )
         } else {
             session.download_url.clone()
         };
