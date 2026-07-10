@@ -73,6 +73,12 @@ pub struct MeetingMessage {
     pub response_status: Option<AttendeeStatus>,
     pub proposed_start: Option<DateTime<Utc>>,
     pub proposed_end: Option<DateTime<Utc>>,
+    /// Email address of the responding attendee (iTIP REPLY ATTENDEE).
+    /// Only set for `MeetingMessageType::Response`.
+    pub responder_email: Option<String>,
+    /// Display name of the responding attendee (iTIP REPLY ATTENDEE CN).
+    /// Only set for `MeetingMessageType::Response`.
+    pub responder_name: Option<String>,
 }
 
 pub struct CounterParams {
@@ -105,6 +111,8 @@ impl MeetingMessage {
             response_status: None,
             proposed_start: None,
             proposed_end: None,
+            responder_email: None,
+            responder_name: None,
         }
     }
 
@@ -115,6 +123,7 @@ impl MeetingMessage {
         msg
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_response(
         uid: &str,
         organizer_email: &str,
@@ -123,6 +132,8 @@ impl MeetingMessage {
         end: DateTime<Utc>,
         status: AttendeeStatus,
         sequence: u32,
+        responder_email: &str,
+        responder_name: Option<&str>,
     ) -> Self {
         Self {
             message_type: MeetingMessageType::Response,
@@ -141,6 +152,8 @@ impl MeetingMessage {
             response_status: Some(status),
             proposed_start: None,
             proposed_end: None,
+            responder_email: Some(responder_email.to_string()),
+            responder_name: responder_name.map(|n| n.to_string()),
         }
     }
 
@@ -162,6 +175,8 @@ impl MeetingMessage {
             response_status: None,
             proposed_start: None,
             proposed_end: None,
+            responder_email: None,
+            responder_name: None,
         }
     }
 
@@ -183,6 +198,8 @@ impl MeetingMessage {
             response_status: Some(AttendeeStatus::Tentative),
             proposed_start: Some(params.proposed_start),
             proposed_end: Some(params.proposed_end),
+            responder_email: None,
+            responder_name: None,
         }
     }
 }
@@ -304,8 +321,18 @@ impl MeetingMessageGenerator {
                 AttendeeStatus::Tentative => icalendar::PartStat::Tentative,
                 _ => icalendar::PartStat::NeedsAction,
             };
-            let cal_attendee = icalendar::Attendee::new(format!("mailto:{}", msg.organizer_email))
-                .partstat(partstat);
+            // iTIP REPLY: the ATTENDEE is the responder (local user), not the
+            // organizer. The ORGANIZER above is the meeting organizer that the
+            // reply is being sent back to (per RFC 5546 §3.2.3).
+            let responder_addr = msg
+                .responder_email
+                .as_deref()
+                .unwrap_or(&msg.organizer_email);
+            let mut cal_attendee =
+                icalendar::Attendee::new(format!("mailto:{}", responder_addr)).partstat(partstat);
+            if let Some(ref name) = msg.responder_name {
+                cal_attendee = cal_attendee.cn(name.clone());
+            }
             event.attendee(cal_attendee);
         }
 
@@ -518,6 +545,7 @@ mod tests {
                 attendee_type: Some(1),
                 attendee_status: Some(0),
                 partstat: None,
+                schedule_agent: None,
             }],
             ..Default::default()
         }
@@ -553,12 +581,16 @@ mod tests {
             Utc::now() + Duration::hours(1),
             AttendeeStatus::Accepted,
             1,
+            "attendee@example.com",
+            Some("Attendee Name"),
         );
 
         let ics = generator.generate_ical(&msg);
 
         assert!(ics.contains("METHOD:REPLY"));
         assert!(ics.contains("PARTSTAT=ACCEPTED"));
+        // iTIP REPLY: ATTENDEE must be the responder, not the organizer.
+        assert!(ics.contains("mailto:attendee@example.com"), "{ics}");
     }
 
     #[test]

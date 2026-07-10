@@ -28,6 +28,9 @@ const ENV_JMAP_BASE: &str = "GATEWAY_JMAP_BASE";
 const ENV_CARDDAV_BASE: &str = "GATEWAY_CARDDAV_BASE";
 const ENV_EMAIL_ENABLED: &str = "GATEWAY_EMAIL_ENABLED";
 const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
+const ENV_FORCE_CALDAV_CALENDAR: &str = "GATEWAY_FORCE_CALDAV_CALENDAR";
+const ENV_PREFER_CALDAV_FREEBUSY: &str = "GATEWAY_PREFER_CALDAV_FREEBUSY";
+const ENV_PREFER_JMAP_CALENDAR: &str = "GATEWAY_PREFER_JMAP_CALENDAR";
 const ENV_ADMIN_BASE: &str = "GATEWAY_ADMIN_BASE";
 const ENV_ADMIN_USERNAME: &str = "GATEWAY_ADMIN_USERNAME";
 const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
@@ -80,6 +83,18 @@ pub struct Config {
     // (e.g., "mail.example.com"). Falls back to "mail.{mail_domain}".
     #[serde(default)]
     pub mail_host: String,
+    // Force calendar operations to use CalDAV instead of JMAP Calendar.
+    // Recommended for Stalwart v0.16.10 due to partial JMAP Calendar support.
+    #[serde(default = "default_force_caldav_calendar")]
+    pub force_caldav_calendar: bool,
+    // Prefer JMAP Calendar over CalDAV when available.
+    // Set to false to force CalDAV (same effect as force_caldav_calendar=true).
+    #[serde(default = "default_prefer_jmap_calendar")]
+    pub prefer_jmap_calendar: bool,
+    // Prefer CalDAV over JMAP for free/busy queries.
+    // Recommended for Stalwart v0.16.10 to avoid JMAP Calendar bugs.
+    #[serde(default = "default_prefer_caldav_freebusy")]
+    pub prefer_caldav_freebusy: bool,
     // Admin API configuration for GAL/ResolveNames (Stalwart admin endpoints)
     #[serde(default)]
     pub admin_base: String,
@@ -137,6 +152,22 @@ fn default_imap_port() -> u16 {
 }
 
 fn default_email_enabled() -> bool {
+    true
+}
+
+fn default_force_caldav_calendar() -> bool {
+    // Use JMAP Calendar by default when Stalwart supports it; fallback to CalDAV if not.
+    false
+}
+
+fn default_prefer_jmap_calendar() -> bool {
+    // Prefer JMAP Calendar over CalDAV when available.
+    // For Stalwart v0.16.10 with full JMAP Calendar support, default to true.
+    true
+}
+
+fn default_prefer_caldav_freebusy() -> bool {
+    // For Stalwart v0.16.10, prefer CalDAV free/busy to avoid JMAP Calendar bugs
     true
 }
 
@@ -515,6 +546,26 @@ fn apply_environment_overrides(cfg: &mut Config) {
         cfg.email_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
 
+    // Calendar backend selection: force_caldav_calendar and prefer_jmap_calendar
+    if let Some(val) = get_env_with_fallback(ENV_FORCE_CALDAV_CALENDAR, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_FORCE_CALDAV_CALENDAR);
+        cfg.force_caldav_calendar =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+    if let Some(val) = get_env_with_fallback(ENV_PREFER_JMAP_CALENDAR, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_PREFER_JMAP_CALENDAR);
+        cfg.prefer_jmap_calendar =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+    if let Some(val) = get_env_with_fallback(ENV_PREFER_CALDAV_FREEBUSY, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_PREFER_CALDAV_FREEBUSY);
+        cfg.prefer_caldav_freebusy =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+
     apply_env_string(cfg, get_env_with_fallback(ENV_MAIL_HOST, None), |c, v| {
         c.mail_host = v;
     });
@@ -592,6 +643,12 @@ fn apply_environment_overrides(cfg: &mut Config) {
     // Derive mail_host from mail_domain if not explicitly set
     if cfg.mail_host.is_empty() && !cfg.mail_domain.is_empty() {
         cfg.mail_host = format!("mail.{}", cfg.mail_domain);
+    }
+
+    // Calendar backend selection normalization:
+    // ForceCaldavCalendar (old flag) overrides PreferJmapCalendar.
+    if cfg.force_caldav_calendar {
+        cfg.prefer_jmap_calendar = false;
     }
 }
 
@@ -675,6 +732,9 @@ impl Default for Config {
             jmap_base: String::new(),
             email_enabled: true,
             mail_host: String::new(),
+            force_caldav_calendar: true,
+            prefer_jmap_calendar: default_prefer_jmap_calendar(),
+            prefer_caldav_freebusy: true,
             admin_base: String::new(),
             admin_username: String::new(),
             admin_password: String::new(),
