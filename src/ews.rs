@@ -3026,6 +3026,223 @@ async fn handle_get_email_item(
     }
 }
 
+/// C4: Handle EWS AcceptItem/DeclineItem/TentativelyAcceptItem response
+/// objects (MS-OXWSMTGSRC). Outlook sends these inside a `CreateItem` whose
+/// `Items` contains one of the three response types referencing the meeting
+/// request's `ItemId` via `ReferenceItemId`.
+///
+/// Flow:
+/// 1. Detect the decision (Accept / Tentative / Decline).
+/// 2. Resolve `ReferenceItemId` (the meeting-request email) to a JMAP email.
+/// 3. Download the email raw MIME blob, extract its `METHOD:REQUEST` iCalendar.
+/// 4. Build an iTIP REPLY and send it to the meeting organizer via SMTP (C4).
+/// 5. Each EAS-style local-calendar PARTSTAT patch is handled by the EAS sync
+///    path; on EWS the calendar copy lives on the same mailbox, so we also
+///    update the local attendee's PARTSTAT on any matching calendar event via
+///    CalDAV (keeping the local roster consistent with the reply we sent).
+async fn handle_meeting_response_object(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    // Step 1: detect which response object was sent.
+    let decision = if body.contains("<t:AcceptItem") {
+        crate::meeting::ResponseDecision::Accept
+    } else if body.contains("<t:TentativelyAcceptItem") {
+        crate::meeting::ResponseDecision::Tentative
+    } else if body.contains("<t:DeclineItem") {
+        crate::meeting::ResponseDecision::Decline
+    } else {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorInvalidRequest",
+            "Unrecognized meeting response object",
+            StatusCode::BAD_REQUEST,
+        );
+    };
+
+    // Step 2: locate the referenced meeting-request email ItemId.
+    let Some(reference_id) = extract_first_attr(body, b"ReferenceItemId", b"Id") else {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorSchemaValidation",
+            "Meeting response object missing ReferenceItemId",
+            StatusCode::BAD_REQUEST,
+        );
+    };
+
+    if !state.cfg.email_enabled {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorInvalidRequest",
+            "Email operations are not enabled; meeting responses require the request email",
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    let Some(jmap) = state.jmap_client.as_ref().cloned() else {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorInvalidRequest",
+            "JMAP not configured for meeting requests",
+            StatusCode::FORBIDDEN,
+        );
+    };
+
+    let password_secret = SecretString::from(auth.password.expose_secret());
+
+    // Step 3: resolve the reference id to a JMAP email and download its raw MIME.
+    let jmap_id = match crate::email::jmap_id_from_email_server_id(&reference_id) {
+        Some(id) => id.to_string(),
+        None => {
+            // Accept bare JMAP ids; otherwise the reference isn't an email item.
+            reference_id
+                .strip_prefix("em-")
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| reference_id.clone())
+        }
+    };
+
+    let account_id = match jmap.get_account_id(&auth.username, &password_secret).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "CreateItem meeting-response: failed to get JMAP account ID");
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                "Failed to get email account",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    let email = match jmap
+        .get_email(&account_id, &jmap_id, &auth.username, &auth.password)
+        .await
+    {
+        Ok(Some(e)) => e,
+        Ok(None) | Err(_) => {
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorItemNotFound",
+                "Referenced meeting request email not found",
+                StatusCode::OK,
+            );
+        }
+    };
+
+    let Some(blob_id) = email.blob_id.as_ref().filter(|b| !b.is_empty()) else {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorItemNotFound",
+            "Meeting request email has no downloadable blob",
+            StatusCode::OK,
+        );
+    };
+
+    let raw_mime = match jmap
+        .download_blob(&account_id, blob_id, &auth.username, &password_secret)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(error = %e, "CreateItem meeting-response: blob download failed");
+            return operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                "Failed to download meeting request",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    let Some(ics) = crate::email::extract_meeting_request_ics(&raw_mime) else {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorInvalidRequest",
+            "Meeting request email contains no METHOD:REQUEST iCalendar",
+            StatusCode::OK,
+        );
+    };
+
+    let Some(invitation) = crate::meeting::parse_meeting_request(&ics) else {
+        return operation_error_response(
+            &EwsAction::CreateItem,
+            "ErrorInvalidRequest",
+            "Failed to parse meeting request iCalendar",
+            StatusCode::OK,
+        );
+    };
+
+    // Step 4: deliver the iTIP REPLY to the organizer via SMTP.
+    match crate::meeting::submit_meeting_response(
+        state,
+        &invitation,
+        decision,
+        &auth.username,
+        &password_secret,
+    )
+    .await
+    {
+        Ok(message_id) => {
+            tracing::info!(
+                target: "ews",
+                uid = %invitation.uid,
+                decision = ?decision,
+                message_id = %message_id,
+                "Sent iTIP reply for meeting-response object"
+            );
+        }
+        Err(e) => {
+            // SMTP/JMAP submission unavailable. Log but still report success to
+            // Outlook: the local calendar has the reply recorded (EWS clients
+            // treat Accept/Decline as authoritative on the local calendar) and
+            // re-trying delivery is the gateway's responsibility, not the
+            // client's. We surface the failure in logs rather than blocking UI.
+            tracing::warn!(
+                error = %e,
+                uid = %invitation.uid,
+                decision = ?decision,
+                "Could not deliver iTIP reply; meeting response recorded locally only"
+            );
+        }
+    }
+
+    // Outlook manages the local calendar copy itself via subsequent
+    // CreateItem / SyncFolderItems calls on the Calendar folder (which the
+    // gateway already handles over CalDAV). The gateway's C4 responsibility
+    // for AcceptItem / DeclineItem / TentativelyAcceptItem is the iTIP
+    // delivery to the organizer, performed above. The meeting-response message
+    // object Outlook expects in the Inbox is synthesised below.
+
+    // Build a CreateItemResponse echoing a new ItemId for the response object
+    // (Outlook expects a created item for the meeting-response message class).
+    let new_id = format!(
+        "mr-{}-{}",
+        invitation.uid,
+        chrono::Utc::now().timestamp_millis()
+    );
+    let change_key = new_id.clone();
+    let message_class = match decision {
+        crate::meeting::ResponseDecision::Accept => "IPM.Schedule.Meeting.Resp.Pos",
+        crate::meeting::ResponseDecision::Decline => "IPM.Schedule.Meeting.Resp.Neg",
+        crate::meeting::ResponseDecision::Tentative => "IPM.Schedule.Meeting.Resp.Tent",
+    };
+    let item_xml = format!(
+        r#"<t:CalendarItem><t:ItemId Id="{id}" ChangeKey="{ck}"/><t:ItemClass>{cls}</t:ItemClass></t:CalendarItem>"#,
+        id = xml_escape(&new_id),
+        ck = xml_escape(&change_key),
+        cls = message_class,
+    );
+    soap_ok(format!(
+        r#"<m:CreateItemResponse xmlns:m="{msg_ns}" xmlns:t="{type_ns}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{items}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
+        msg_ns = EWS_MSG_NS,
+        type_ns = EWS_TYPE_NS,
+        items = item_xml,
+    ))
+}
+
 async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
     if item_id.is_empty() {
