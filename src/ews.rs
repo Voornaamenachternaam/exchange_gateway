@@ -3352,7 +3352,7 @@ async fn handle_meeting_response_object(
     // (Outlook expects a created item for the meeting-response message class).
     let new_id = format!(
         "mr-{}-{}",
-        &invitation.uid,
+        invitation.uid,
         chrono::Utc::now().timestamp_millis()
     );
     let change_key = new_id.clone();
