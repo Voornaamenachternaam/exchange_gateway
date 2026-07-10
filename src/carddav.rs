@@ -301,7 +301,7 @@ impl CarddavClient {
                         vc
                     } else {
                         // Fallback: GET the vCard (rare)
-                        let contact_url = format!("{}{}", home, &href);
+                        let contact_url = format!("{}{}", home, href);
                         match self
                             .client
                             .get(&contact_url)
