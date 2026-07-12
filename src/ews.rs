@@ -4327,6 +4327,92 @@ async fn handle_sync_folder_hierarchy(
     soap_ok(response)
 }
 
+/// The subscription request element carried inside a `<Subscribe>` body,
+/// identified purely from the XML structure (not raw substring matching) so the
+/// determination is namespace- and whitespace-insensitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectedSubscriptionRequest {
+    Pull,
+    Streaming,
+    /// Push subscription: declared but unsupported by this gateway.
+    Push,
+}
+
+/// Determine the subscription kind from the request's XML *structure* rather
+/// than from raw `body.contains("…SubscriptionRequest")` substring matching.
+///
+/// A `Subscribe` request contains exactly one of `PullSubscriptionRequest`,
+/// `StreamingSubscriptionRequest`, or `PushSubscriptionRequest` as a child of
+/// its envelope body (MS-OXWSNTIF 3.1.4.3.3.2). Instead of brittle string
+/// matching (which is namespace- and formatting-sensitive — a renamed prefix,
+/// extra whitespace or a comment could misroute the request), we walk the XML
+/// event stream with `quick-xml` and pick the first such element that is
+/// nested within a `Subscribe` ancestor. Element names are matched by local
+/// name only, so any namespace prefix works.
+fn detect_subscription_request_kind(body: &str) -> Option<DetectedSubscriptionRequest> {
+    let mut reader = Reader::from_str(body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    // Depth of the innermost `Subscribe` element we're currently inside; only a
+    // request element nested under Subscribe is accepted so a stray element of
+    // the same name elsewhere cannot misroute detection.
+    let mut subscribe_depth: i32 = 0;
+    let mut kind: Option<DetectedSubscriptionRequest> = None;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.name().local_name();
+                if name.as_ref() == b"Subscribe" {
+                    subscribe_depth += 1;
+                } else if kind.is_none()
+                    && subscribe_depth > 0
+                    && matches!(
+                        name.as_ref(),
+                        b"PullSubscriptionRequest"
+                            | b"StreamingSubscriptionRequest"
+                            | b"PushSubscriptionRequest"
+                    )
+                {
+                    kind = Some(match name.as_ref() {
+                        b"PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
+                        b"StreamingSubscriptionRequest" => {
+                            DetectedSubscriptionRequest::Streaming
+                        }
+                        // unreachable: guarded by the `matches!` above.
+                        _ => DetectedSubscriptionRequest::Push,
+                    });
+                }
+            }
+            Ok(Event::Empty(e)) if kind.is_none() && subscribe_depth > 0 => {
+                let name = e.name().local_name();
+                if matches!(
+                    name.as_ref(),
+                    b"PullSubscriptionRequest"
+                        | b"StreamingSubscriptionRequest"
+                        | b"PushSubscriptionRequest"
+                ) {
+                    kind = Some(match name.as_ref() {
+                        b"PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
+                        b"StreamingSubscriptionRequest" => {
+                            DetectedSubscriptionRequest::Streaming
+                        }
+                        _ => DetectedSubscriptionRequest::Push,
+                    });
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Subscribe" => {
+                if subscribe_depth > 0 {
+                    subscribe_depth -= 1;
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    kind
+}
+
 /// Parse the per-subscription request configuration shared by the pull and
 /// streaming request types (MS-OXWSNTIF 3.1.4.3.3.3).
 struct ParsedSubscriptionRequest {
@@ -4582,31 +4668,36 @@ fn publish_event(state: &AppState, event: NotificationEvent) {
 async fn handle_subscribe(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let parsed = parse_subscription_request(body);
 
-    // Determine subscription kind. The presence of PullSubscriptionRequest vs
-    // StreamingSubscriptionRequest selects pull vs streaming (MS-OXWSNTIF
-    // 3.1.4.3.3.2). Push subscriptions are not supported (the audit notes push
-    // is out of scope for this gateway), so a Push registration returns an error.
-    let (kind, timeout_minutes) = if body.contains("PullSubscriptionRequest") {
-        let minutes = extract_first_tag_text(body, b"Timeout")
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|&m| (1..=1440).contains(&m));
-        (SubscriptionKind::Pull, minutes)
-    } else if body.contains("StreamingSubscriptionRequest") {
-        (SubscriptionKind::Streaming, None)
-    } else if body.contains("PushSubscriptionRequest") {
-        return operation_error_response(
-            &EwsAction::Subscribe,
-            "ErrorInvalidSubscriptionRequest",
-            "Push subscriptions are not supported by this gateway",
-            StatusCode::NOT_IMPLEMENTED,
-        );
-    } else {
-        return operation_error_response(
-            &EwsAction::Subscribe,
-            "ErrorInvalidRequest",
-            "Subscribe request must contain a Pull, Streaming, or Push subscription request",
-            StatusCode::BAD_REQUEST,
-        );
+    // Determine subscription kind from the XML *structure* (the actual child
+    // element of `<Subscribe>`), not from raw `body.contains(…)` substring
+    // matching, which is namespace- and formatting-sensitive. Pull vs Streaming
+    // selects the subscription kind (MS-OXWSNTIF 3.1.4.3.3.2); Push
+    // subscriptions are not supported by this gateway, so a Push registration
+    // returns ErrorInvalidSubscriptionRequest.
+    let (kind, timeout_minutes) = match detect_subscription_request_kind(body) {
+        Some(DetectedSubscriptionRequest::Pull) => {
+            let minutes = extract_first_tag_text(body, b"Timeout")
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|&m| (1..=1440).contains(&m));
+            (SubscriptionKind::Pull, minutes)
+        }
+        Some(DetectedSubscriptionRequest::Streaming) => (SubscriptionKind::Streaming, None),
+        Some(DetectedSubscriptionRequest::Push) => {
+            return operation_error_response(
+                &EwsAction::Subscribe,
+                "ErrorInvalidSubscriptionRequest",
+                "Push subscriptions are not supported by this gateway",
+                StatusCode::NOT_IMPLEMENTED,
+            );
+        }
+        None => {
+            return operation_error_response(
+                &EwsAction::Subscribe,
+                "ErrorInvalidRequest",
+                "Subscribe request must contain a Pull, Streaming, or Push subscription request",
+                StatusCode::BAD_REQUEST,
+            );
+        }
     };
 
     let sub_id = state
@@ -4671,11 +4762,12 @@ async fn handle_get_events(state: &Arc<AppState>, auth: &AuthContext, body: &str
     };
     // MS-OXWSNTIF 3.1.4.1.2.1 requires a Watermark element; tolerate its
     // absence (treat as sequence 0) because some clients omit it on the first
-    // call after Subscribe.
+    // call after Subscribe. When present, decode it and reconcile the internal
+    // watermark to it so we never re-emit events the client already consumed
+    // (avoids duplicate / skipped notifications after a restart or when the
+    // client talks to an implementation that owns the watermark cursor).
     let client_watermark = extract_first_tag_text(body, b"Watermark");
-    if let Some(ref wm) = client_watermark {
-        let _ = decode_watermark(wm); // validated for linter; tolerated either way
-    }
+    let client_seq = client_watermark.as_deref().map(decode_watermark);
 
     // Reject if the subscription is actually a streaming subscription: EWS
     // returns ErrorInvalidSubscription for GetEvents on a streaming subscription.
@@ -4705,7 +4797,7 @@ async fn handle_get_events(state: &Arc<AppState>, auth: &AuthContext, body: &str
 
     let Some((events, prev_seq, last_seq, more)) = state
         .subscription_manager
-        .pull_events(&sub_id, &auth.username)
+        .pull_events_from(&sub_id, &auth.username, client_seq)
         .await
     else {
         return operation_error_response(
@@ -4834,31 +4926,54 @@ async fn handle_get_streaming_events(
             .map(|id| format!("<t:SubscriptionId>{}</t:SubscriptionId>", xml_escape(id)))
             .collect();
         let mut first = true;
+        let mut closed_fragment_sent = false;
         loop {
             let now = std::time::Instant::now();
             if now >= deadline {
-                let final_xml = streaming_fragment("", &err_ids_xml, "Closed");
-                let _ = tx
-                    .send(Ok(Bytes::from(final_xml)))
-                    .await;
+                // Terminal fragment: ConnectionStatus=Closed followed by the
+                // closing SOAP envelope tags so the streamed XML is well-formed.
+                let final_xml = format!(
+                    "{}{}",
+                    streaming_fragment("", &err_ids_xml, "Closed"),
+                    streaming_footer()
+                );
+                let _ = tx.send(Ok(Bytes::from(final_xml))).await;
+                closed_fragment_sent = true;
                 break;
             }
 
             let remaining = deadline - now;
             let turn = remaining.min(turn_timeout);
 
-            // Poll each served subscription for up to `turn`.
+            // Poll *all* served subscriptions concurrently (item 6). The
+            // previous sequential `for sid { … .await }` serialized the per-turn
+            // waits, so an event for the Nth subscription was delayed by the sum
+            // of the prior subscriptions' waits (up to N × turn); concurrent
+            // polling bounds a turn to a single `turn` regardless of how many
+            // subscriptions are served.
+            let futs = served_clone.iter().map(|sid| {
+                let mgr = mgr.clone();
+                let owner = owner.clone();
+                let recv_sid = sid.clone();
+                let tuple_sid = sid.clone();
+                async move {
+                    let outcome = mgr.recv_one_streaming(&recv_sid, &owner, turn).await;
+                    (tuple_sid, outcome)
+                }
+            });
+            let results = futures_util::future::join_all(futs).await;
+
             let mut notifications_xml = String::new();
-            for sid in &served_clone {
-                match mgr.recv_one_streaming(sid, &owner, turn).await {
+            for (sid, outcome) in results {
+                match outcome {
                     Ok(Some((event, watermark))) => {
                         let ts_xml = format_ews_datetime(&Utc::now());
                         let wm = encode_watermark(watermark);
                         let event_xml = render_notification_event(&event, &wm, &ts_xml);
-                        let notif = render_notification(sid, None, false, &event_xml);
+                        let notif = render_notification(&sid, None, false, &event_xml);
                         notifications_xml.push_str(&notif);
                     }
-                    Ok(None) => {} // idle or filtered
+                    Ok(None) => {} // idle: no matching event this turn
                     Err(_) => {
                         // Subscription vanished mid-stream; surfaced via
                         // ErrorSubscriptionIds in subsequent fragments.
@@ -4900,6 +5015,18 @@ async fn handle_get_streaming_events(
             // Small breather so the runtime can service cancellation/flush.
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+
+        // Ensure the SOAP envelope is always closed when the stream terminates
+        // (item 7). On the graceful deadline path the closing tags ride along
+        // with the terminal `Closed` fragment above (`closed_fragment_sent`),
+        // so only synthesize a bare footer when we exited via client disconnect
+        // (or any other non-deadline break) before sending it. If the receiver
+        // is already gone the send fails harmlessly and the drop closes the body.
+        if !closed_fragment_sent {
+            let _ = tx
+                .send(Ok(Bytes::from(streaming_footer())))
+                .await;
+        }
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -4926,6 +5053,13 @@ fn streaming_header() -> String {
 "#,
         type_ns = EWS_TYPE_NS
     )
+}
+
+/// Closing tags that balance [`streaming_header`], emitted exactly once when the
+/// streaming connection terminates so the streamed XML is a well-formed SOAP
+/// envelope instead of being left open mid-`<s:Body>`.
+fn streaming_footer() -> String {
+    "  </s:Body>\n</s:Envelope>".to_string()
 }
 
 fn streaming_fragment(
@@ -8765,5 +8899,113 @@ mod tests {
         let n2 = render_notification("sub-1", None, false, "");
         assert!(!n2.contains("PreviousWatermark"));
         assert!(n2.contains("<t:MoreEvents>false</t:MoreEvents>"));
+    }
+
+    // --- subscription-kind detection from XML structure (item 1) ---
+
+    #[test]
+    fn test_detect_subscription_request_kind_from_structure() {
+        // The default `m:`-prefixed bodies.
+        let pull = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:PullSubscriptionRequest><m:Timeout>30</m:Timeout></m:PullSubscriptionRequest></m:Subscribe>"#;
+        assert_eq!(
+            detect_subscription_request_kind(pull),
+            Some(DetectedSubscriptionRequest::Pull)
+        );
+        let streaming = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:StreamingSubscriptionRequest/></m:Subscribe>"#;
+        assert_eq!(
+            detect_subscription_request_kind(streaming),
+            Some(DetectedSubscriptionRequest::Streaming)
+        );
+        let push = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:PushSubscriptionRequest><m:URL>http://example/cb</m:URL></m:PushSubscriptionRequest></m:Subscribe>"#;
+        assert_eq!(
+            detect_subscription_request_kind(push),
+            Some(DetectedSubscriptionRequest::Push)
+        );
+
+        // Self-closing (empty-element) form: <PullSubscriptionRequest/>.
+        let pull_empty = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:PullSubscriptionRequest/></m:Subscribe>"#;
+        assert_eq!(
+            detect_subscription_request_kind(pull_empty),
+            Some(DetectedSubscriptionRequest::Pull)
+        );
+
+        // No request element -> None.
+        let bare = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"></m:Subscribe>"#;
+        assert_eq!(detect_subscription_request_kind(bare), None);
+
+        // The element name appearing *outside* a Subscribe ancestor must not
+        // be mis-detected (structure-based gating).
+        let outside = r#"<m:SomethingElse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:PullSubscriptionRequest/></m:SomethingElse>"#;
+        assert_eq!(detect_subscription_request_kind(outside), None);
+    }
+
+    #[test]
+    fn test_detect_subscription_request_kind_is_namespace_insensitive() {
+        // A different/absent namespace prefix must still be detected because
+        // matching is on the local element name, not the raw substring. This is
+        // the exact brittleness the review flagged for `body.contains(…)`.
+        let pull_alt = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><tns:Subscribe xmlns:tns="urn:something"><tns:PullSubscriptionRequest>
+  <tns:Timeout>10</tns:Timeout>
+</tns:PullSubscriptionRequest></tns:Subscribe></soap:Body></soap:Envelope>"#;
+        assert_eq!(
+            detect_subscription_request_kind(pull_alt),
+            Some(DetectedSubscriptionRequest::Pull)
+        );
+        // Whitespace/formatting noise must not misroute detection (would defeat
+        // a naïve `body.contains("PullSubscriptionRequest")` that could also
+        // accidentally match a stray occurrence in a comment).
+        let with_comment = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><!-- not a PullSubscriptionRequest --><m:StreamingSubscriptionRequest/></m:Subscribe>"#;
+        assert_eq!(
+            detect_subscription_request_kind(with_comment),
+            Some(DetectedSubscriptionRequest::Streaming)
+        );
+    }
+
+    // --- streaming SOAP envelope is well-formed (item 7) ---
+
+    #[test]
+    fn test_streaming_header_and_footer_balance_envelope() {
+        let header = streaming_header();
+        assert!(header.contains("<s:Envelope"));
+        assert!(header.contains("<s:Body>"));
+        assert!(
+            !header.contains("</s:Body>"),
+            "header must not pre-close the body"
+        );
+
+        let footer = streaming_footer();
+        assert!(footer.contains("</s:Body>"));
+        assert!(footer.contains("</s:Envelope>"));
+        assert!(
+            !footer.contains("<s:Envelope"),
+            "footer must not reopen an envelope"
+        );
+
+        let fragment = streaming_fragment("<t:Notification/>", "", "OK");
+        // A non-terminal fragment must not itself open or close the envelope
+        // (envelope open/close is owned solely by header/footer).
+        assert!(!fragment.contains("<s:Envelope"));
+        assert!(!fragment.contains("</s:Envelope>"));
+        assert!(
+            fragment.contains("<m:GetStreamingEventsResponse"),
+            "fragment carries the response element"
+        );
+        assert!(fragment.contains("ConnectionStatus>OK<"));
+
+        let closed = streaming_fragment("", "", "Closed");
+        assert!(closed.contains("ConnectionStatus>Closed<"));
+
+        // header + a fragment + footer must form balanced envelope tags.
+        let full = format!("{header}{fragment}{footer}");
+        assert_eq!(
+            full.matches("<s:Envelope").count(),
+            full.matches("</s:Envelope>").count(),
+            "envelope open/close balanced"
+        );
+        assert_eq!(
+            full.matches("<s:Body").count(),
+            full.matches("</s:Body>").count(),
+            "body open/close balanced"
+        );
     }
 }
