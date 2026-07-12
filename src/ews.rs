@@ -21,6 +21,7 @@ use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::jmap::{JmapClient, QueryCalendarEventsParams, SetCalendarEventParams};
 use crate::models::AppState;
 
+use crate::notifications::{NotificationEvent, SubscriptionKind};
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::room::{
@@ -39,6 +40,7 @@ use axum::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use const_hex;
 use hex;
@@ -51,6 +53,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use tracing::warn;
 
 #[derive(Clone)]
@@ -77,6 +80,8 @@ enum EwsAction {
     SyncFolderHierarchy,
     Subscribe,
     Unsubscribe,
+    GetEvents,
+    GetStreamingEvents,
     CreateItem,
     UpdateItem,
     DeleteItem,
@@ -134,6 +139,8 @@ impl EwsAction {
             EwsAction::SyncFolderHierarchy => "SyncFolderHierarchyResponseMessage",
             EwsAction::Subscribe => "SubscribeResponseMessage",
             EwsAction::Unsubscribe => "UnsubscribeResponseMessage",
+            EwsAction::GetEvents => "GetEventsResponseMessage",
+            EwsAction::GetStreamingEvents => "GetStreamingEventsResponseMessage",
             EwsAction::CreateItem => "CreateItemResponseMessage",
             EwsAction::UpdateItem => "UpdateItemResponseMessage",
             EwsAction::DeleteItem => "DeleteItemResponseMessage",
@@ -290,6 +297,10 @@ pub async fn handle(
         EwsAction::SyncFolderHierarchy => handle_sync_folder_hierarchy(&state, &auth, &body).await,
         EwsAction::Subscribe => handle_subscribe(&state, &auth, &body).await,
         EwsAction::Unsubscribe => handle_unsubscribe(&state, &auth, &body).await,
+        EwsAction::GetEvents => handle_get_events(&state, &auth, &body).await,
+        EwsAction::GetStreamingEvents => {
+            handle_get_streaming_events(state, auth, body).await
+        }
         EwsAction::CreateItem => handle_create_item(&state, &auth, &body).await,
         EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
         EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
@@ -384,6 +395,8 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     b"SyncFolderHierarchy" => EwsAction::SyncFolderHierarchy,
                     b"Subscribe" => EwsAction::Subscribe,
                     b"Unsubscribe" => EwsAction::Unsubscribe,
+                    b"GetEvents" => EwsAction::GetEvents,
+                    b"GetStreamingEvents" => EwsAction::GetStreamingEvents,
                     b"CreateItem" => EwsAction::CreateItem,
                     b"UpdateItem" => EwsAction::UpdateItem,
                     b"DeleteItem" => EwsAction::DeleteItem,
@@ -2548,6 +2561,15 @@ async fn handle_create_contact_item(
     } else {
         etag
     };
+    publish_event(
+        state,
+        NotificationEvent::ItemCreated {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Contacts),
+            item_id: server_id.clone(),
+            change_key: change_key.clone(),
+        },
+    );
     let response_xml = format!(
         r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Contact><t:ItemId Id="{}" ChangeKey="{}"/></t:Contact></m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS, server_id, change_key
@@ -2845,6 +2867,15 @@ async fn handle_update_contact_item(
     {
         tracing::error!(error = %e, "Failed to update contact in DB");
     }
+    publish_event(
+        state,
+        NotificationEvent::ItemModified {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Contacts),
+            item_id: item_id.clone().unwrap_or_default(),
+            change_key: new_etag.clone().unwrap_or_default(),
+        },
+    );
 
     let response_xml = format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
@@ -2964,6 +2995,14 @@ async fn handle_delete_contact_item(
         tracing::error!(error = %e, "Failed to delete contact from DB");
         // Continue anyway; contact already deleted on server.
     }
+    publish_event(
+        state,
+        NotificationEvent::ItemDeleted {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Contacts),
+            item_id: item_id.clone().unwrap_or_default(),
+        },
+    );
 
     let response_xml = format!(
         r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
@@ -4288,36 +4327,625 @@ async fn handle_sync_folder_hierarchy(
     soap_ok(response)
 }
 
-async fn handle_subscribe(_state: &Arc<AppState>, _auth: &AuthContext, _body: &str) -> Response {
-    // In a production implementation, we would parse <FolderIds> to subscribe to specific folders.
-    // For now, we'll create a subscription that receives all events.
+/// Parse the per-subscription request configuration shared by the pull and
+/// streaming request types (MS-OXWSNTIF 3.1.4.3.3.3).
+struct ParsedSubscriptionRequest {
+    folders: Option<HashSet<String>>,
+    event_types: Option<HashSet<String>>,
+}
 
-    let subscription_id = uuid::Uuid::new_v4().to_string();
-    let watermark = STANDARD.encode(subscription_id.as_bytes());
+/// Parse the `<FolderIds>` and `<EventTypes>` children of a subscription
+/// request body. Returns folders `None` when `SubscribeToAllFolders="true"`.
+fn parse_subscription_request(body: &str) -> ParsedSubscriptionRequest {
+    let subscribe_to_all = extract_first_attr(
+        body,
+        b"PullSubscriptionRequest",
+        b"SubscribeToAllFolders",
+    )
+    .map(|v| v == "true")
+    .or_else(|| {
+        extract_first_attr(
+            body,
+            b"StreamingSubscriptionRequest",
+            b"SubscribeToAllFolders",
+        )
+        .map(|v| v == "true")
+    })
+    .unwrap_or(false);
 
-    // Register the subscription in the manager so that when events are broadcast,
-    // they can be matched to this subscriber. The manager itself doesn't store per-subscription state,
-    // but we use the global broadcast channel. The subscription_id is returned to the client,
-    // which will present it in subsequent GetEvents requests.
+    let folders = if subscribe_to_all {
+        None
+    } else {
+        let ids = extract_folder_ids_from_block(body);
+        if ids.is_empty() {
+            None
+        } else {
+            Some(ids)
+        }
+    };
+    let event_types = {
+        let types = extract_event_types(body);
+        if types.is_empty() {
+            None
+        } else {
+            Some(types)
+        }
+    };
+    ParsedSubscriptionRequest {
+        folders,
+        event_types,
+    }
+}
 
-    // We don't need to do anything else now; the GetEvents handler will call receive on the broadcast channel.
+/// Extract `<t:FolderId Id="…"/>` / `<t:DistinguishedFolderId Id="…"/>`
+/// values appearing inside any `*SubscriptionRequest` block.
+fn extract_folder_ids_from_block(body: &str) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    let mut reader = Reader::from_str(body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_folder_ids = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"FolderIds" => {
+                in_folder_ids = true;
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"FolderIds" => {
+                in_folder_ids = false;
+            }
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if in_folder_ids
+                    && (e.name().local_name().as_ref() == b"FolderId"
+                        || e.name().local_name().as_ref() == b"DistinguishedFolderId") =>
+            {
+                for a in e.attributes().flatten() {
+                    if a.key.local_name().as_ref() == b"Id" {
+                        if let Ok(v) = a.decode_and_unescape_value(reader.decoder()) {
+                            ids.insert(v.into_owned());
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    ids
+}
+
+/// Extract `<t:EventType>…</t:EventType>` textual values.
+fn extract_event_types(body: &str) -> HashSet<String> {
+    extract_tag_texts(body, b"EventType")
+        .into_iter()
+        .collect()
+}
+
+/// Encode a per-subscription watermark counter as an opaque, URL-safe-ish string
+/// the client echoes back verbatim. EWS watermarks are server-opaque.
+fn encode_watermark(seq: u64) -> String {
+    STANDARD.encode(seq.to_be_bytes())
+}
+
+/// Decode a client-supplied watermark back to a monotonic sequence, if it is one
+/// of ours. Unknown watermarks (e.g. from a restarted server, or from a
+/// different implementation) are tolerated: we treat them as "before any
+/// event" (sequence 0).
+fn decode_watermark(wm: &str) -> u64 {
+    STANDARD
+        .decode(wm.trim())
+        .ok()
+        .filter(|b| b.len() == std::mem::size_of::<u64>())
+        .and_then(|b| {
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&b);
+            Some(u64::from_be_bytes(arr))
+        })
+        .unwrap_or(0)
+}
+
+/// Render a single MS-OXWSNTIF notification event element (one of the choices
+/// under `t:NotificationType`).
+fn render_notification_event(event: &NotificationEvent, watermark: &str, timestamp: &str) -> String {
+    let ts = format!("<t:TimeStamp>{}</t:TimeStamp>", timestamp);
+    let watermark_xml = format!("<t:Watermark>{}</t:Watermark>", watermark);
+    match event {
+        NotificationEvent::ItemCreated {
+            folder_id,
+            item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:CreatedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:CreatedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                ck = xml_escape(change_key),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::ItemModified {
+            folder_id,
+            item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:ModifiedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:ModifiedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                ck = xml_escape(change_key),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::ItemDeleted {
+            folder_id, item_id, ..
+        } => {
+            format!(
+                "<t:DeletedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\"/><t:ParentFolderId Id=\"{fid}\"/></t:DeletedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::NewMail {
+            folder_id,
+            item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:NewMailEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:NewMailEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                ck = xml_escape(change_key),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::ItemMoved {
+            old_folder_id,
+            old_item_id,
+            new_folder_id,
+            new_item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:MovedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:MovedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(new_item_id),
+                ck = xml_escape(change_key),
+                nfid = xml_escape(new_folder_id),
+                oid = xml_escape(old_item_id),
+                ofid = xml_escape(old_folder_id),
+            )
+        }
+        NotificationEvent::ItemCopied {
+            old_folder_id,
+            old_item_id,
+            new_folder_id,
+            new_item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:CopiedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:CopiedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(new_item_id),
+                ck = xml_escape(change_key),
+                nfid = xml_escape(new_folder_id),
+                oid = xml_escape(old_item_id),
+                ofid = xml_escape(old_folder_id),
+            )
+        }
+    }
+}
+
+/// Render a complete `t:Notification` (one per subscription per GetEvents turn,
+/// or per delivered batch in streaming).
+fn render_notification(
+    sub_id: &str,
+    previous_watermark: Option<&str>,
+    more_events: bool,
+    events_xml: &str,
+) -> String {
+    let prev = match previous_watermark {
+        Some(w) => format!("<t:PreviousWatermark>{}</t:PreviousWatermark>", w),
+        None => String::new(),
+    };
+    let more = format!("<t:MoreEvents>{}</t:MoreEvents>", if more_events { "true" } else { "false" });
+    format!(
+        "<t:Notification><t:SubscriptionId>{}</t:SubscriptionId>{prev}{more}{events}</t:Notification>",
+        xml_escape(sub_id),
+        prev = prev,
+        more = more,
+        events = events_xml,
+    )
+}
+
+/// Publish a mailbox store change event to all active EWS subscriptions.
+///
+/// This is the single hook that makes the Subscribe/GetEvents pipeline real:
+/// every item CRUD handler that successfully mutates the Stalwart backend calls
+/// this so subscribers observe `CreatedEvent`/`ModifiedEvent`/`DeletedEvent`
+/// (and `NewMailEvent` for mail arrival).
+fn publish_event(state: &AppState, event: NotificationEvent) {
+    state.subscription_manager.publish(event);
+}
+
+async fn handle_subscribe(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let parsed = parse_subscription_request(body);
+
+    // Determine subscription kind. The presence of PullSubscriptionRequest vs
+    // StreamingSubscriptionRequest selects pull vs streaming (MS-OXWSNTIF
+    // 3.1.4.3.3.2). Push subscriptions are not supported (the audit notes push
+    // is out of scope for this gateway), so a Push registration returns an error.
+    let (kind, timeout_minutes) = if body.contains("PullSubscriptionRequest") {
+        let minutes = extract_first_tag_text(body, b"Timeout")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&m| (1..=1440).contains(&m));
+        (SubscriptionKind::Pull, minutes)
+    } else if body.contains("StreamingSubscriptionRequest") {
+        (SubscriptionKind::Streaming, None)
+    } else if body.contains("PushSubscriptionRequest") {
+        return operation_error_response(
+            &EwsAction::Subscribe,
+            "ErrorInvalidSubscriptionRequest",
+            "Push subscriptions are not supported by this gateway",
+            StatusCode::NOT_IMPLEMENTED,
+        );
+    } else {
+        return operation_error_response(
+            &EwsAction::Subscribe,
+            "ErrorInvalidRequest",
+            "Subscribe request must contain a Pull, Streaming, or Push subscription request",
+            StatusCode::BAD_REQUEST,
+        );
+    };
+
+    let sub_id = state
+        .subscription_manager
+        .subscribe(
+            &auth.username,
+            kind,
+            parsed.folders,
+            parsed.event_types,
+            timeout_minutes,
+        )
+        .await;
+
+    // The initial watermark is the "subscription created" marker; subsequent
+    // GetEvents calls echo the last watermark they received.
+    let watermark = encode_watermark(0);
 
     let response = format!(
         r#"<m:SubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SubscriptionId>{}</m:SubscriptionId><m:Watermark>{}</m:Watermark></m:SubscribeResponseMessage></m:ResponseMessages></m:SubscribeResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&subscription_id),
+        xml_escape(&sub_id),
         xml_escape(&watermark)
     );
     soap_ok(response)
 }
 
-async fn handle_unsubscribe(_state: &Arc<AppState>, _auth: &AuthContext, _body: &str) -> Response {
+async fn handle_unsubscribe(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let Some(sub_id) = extract_first_tag_text(body, b"SubscriptionId") else {
+        return operation_error_response(
+            &EwsAction::Unsubscribe,
+            "ErrorInvalidRequest",
+            "Unsubscribe request must contain a SubscriptionId",
+            StatusCode::BAD_REQUEST,
+        );
+    };
+    let removed = state.subscription_manager.unsubscribe(&sub_id, &auth.username).await;
+    if removed {
+        let response = format!(
+            r#"<m:UnsubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UnsubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UnsubscribeResponseMessage></m:ResponseMessages></m:UnsubscribeResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS
+        );
+        soap_ok(response)
+    } else {
+        operation_error_response(
+            &EwsAction::Unsubscribe,
+            "ErrorSubscriptionNotFound",
+            "The specified subscription does not exist",
+            StatusCode::NOT_FOUND,
+        )
+    }
+}
+
+async fn handle_get_events(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let Some(sub_id) = extract_first_tag_text(body, b"SubscriptionId") else {
+        return operation_error_response(
+            &EwsAction::GetEvents,
+            "ErrorInvalidRequest",
+            "GetEvents request must contain a SubscriptionId",
+            StatusCode::BAD_REQUEST,
+        );
+    };
+    // MS-OXWSNTIF 3.1.4.1.2.1 requires a Watermark element; tolerate its
+    // absence (treat as sequence 0) because some clients omit it on the first
+    // call after Subscribe.
+    let client_watermark = extract_first_tag_text(body, b"Watermark");
+    if let Some(ref wm) = client_watermark {
+        let _ = decode_watermark(wm); // validated for linter; tolerated either way
+    }
+
+    // Reject if the subscription is actually a streaming subscription: EWS
+    // returns ErrorInvalidSubscription for GetEvents on a streaming subscription.
+    match state
+        .subscription_manager
+        .subscription_kind(&sub_id, &auth.username)
+        .await
+    {
+        Some(SubscriptionKind::Pull) => {}
+        Some(SubscriptionKind::Streaming) => {
+            return operation_error_response(
+                &EwsAction::GetEvents,
+                "ErrorInvalidSubscription",
+                "GetEvents is not valid for a streaming subscription",
+                StatusCode::BAD_REQUEST,
+            );
+        }
+        None => {
+            return operation_error_response(
+                &EwsAction::GetEvents,
+                "ErrorSubscriptionNotFound",
+                "The specified subscription does not exist or has expired",
+                StatusCode::NOT_FOUND,
+            );
+        }
+    }
+
+    let Some((events, prev_seq, last_seq, more)) = state
+        .subscription_manager
+        .pull_events(&sub_id, &auth.username)
+        .await
+    else {
+        return operation_error_response(
+            &EwsAction::GetEvents,
+            "ErrorSubscriptionNotFound",
+            "The specified subscription does not exist or has expired",
+            StatusCode::NOT_FOUND,
+        );
+    };
+
+    let timestamp = Utc::now();
+    let ts_xml = format_ews_datetime(&timestamp);
+    let mut events_xml = String::new();
+    for (i, event) in events.iter().enumerate() {
+        let wm = encode_watermark(prev_seq + 1 + i as u64);
+        events_xml.push_str(&render_notification_event(event, &wm, &ts_xml));
+    }
+    // If no events were buffered, EWS sends a StatusEvent keep-alive so the
+    // client knows the subscription is still alive (MS-OXWSNTIF 2.2.4.8).
+    if events.is_empty() {
+        let wm = encode_watermark(last_seq);
+        events_xml.push_str(&format!(
+            "<t:StatusEvent><t:Watermark>{}</t:Watermark></t:StatusEvent>",
+            wm
+        ));
+    }
+
+    let prev_wm = (prev_seq > 0).then(|| encode_watermark(prev_seq));
+    let notification = render_notification(&sub_id, prev_wm.as_deref(), more, &events_xml);
+
+    let last_wm = if events.is_empty() {
+        encode_watermark(last_seq)
+    } else {
+        encode_watermark(last_seq)
+    };
+
     let response = format!(
-        r#"<m:UnsubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UnsubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UnsubscribeResponseMessage></m:ResponseMessages></m:UnsubscribeResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        r#"<m:GetEventsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetEventsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>{}</m:GetEventsResponseMessage></m:ResponseMessages></m:GetEventsResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        notification
     );
+    // last_wm is the watermark the client should echo back next; it is already
+    // embedded per-event or in the StatusEvent above. The variable is retained
+    // for clarity of the watermark accounting (no separate top-level element).
+    let _ = last_wm;
     soap_ok(response)
+}
+
+/// Maximum number of distinct subscription IDs honoured by a single
+/// GetStreamingEvents call (MS-OXWSNTIF 3.1.4.2.3.1 implies at least one).
+const STREAMING_MAX_SUBSCRIPTIONS: usize = 32;
+
+async fn handle_get_streaming_events(
+    state: Arc<AppState>,
+    auth: AuthContext,
+    body: String,
+) -> Response {
+    // Parse <SubscriptionIds><t:SubscriptionId>…</t:SubscriptionId></…>
+    let mut sub_ids: Vec<String> = extract_tag_texts(&body, b"SubscriptionId");
+    if sub_ids.is_empty() {
+        return operation_error_response(
+            &EwsAction::GetStreamingEvents,
+            "ErrorInvalidRequest",
+            "GetStreamingEvents request must contain at least one SubscriptionId",
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    if sub_ids.len() > STREAMING_MAX_SUBSCRIPTIONS {
+        sub_ids.truncate(STREAMING_MAX_SUBSCRIPTIONS);
+    }
+
+    // ConnectionTimeout is in minutes, clamped to 1..=30
+    // (StreamingSubscriptionConnectionTimeoutType, MS-OXWSNTIF 3.1.4.2.4.1).
+    let timeout_minutes = extract_first_tag_text(&body, b"ConnectionTimeout")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1)
+        .clamp(1, 30);
+    let deadline_total = Duration::from_secs(timeout_minutes * 60);
+    // Per-turn wait is short so the server can emit periodic StatusEvent
+    // keep-alives and the connection stays responsive to cancellation.
+    let turn_timeout = Duration::from_secs(10);
+
+    // Validate that every requested subscription belongs to the caller and is a
+    // streaming subscription. Collect the ids we will actually serve.
+    let mut served: Vec<String> = Vec::new();
+    let mut error_ids: Vec<String> = Vec::new();
+    for sid in &sub_ids {
+        match state
+            .subscription_manager
+            .subscription_kind(sid, &auth.username)
+            .await
+        {
+            Some(SubscriptionKind::Streaming) => served.push(sid.clone()),
+            _ => error_ids.push(sid.clone()),
+        }
+    }
+    if served.is_empty() {
+        let err_xml: String = error_ids
+            .iter()
+            .map(|id| format!("<t:SubscriptionId>{}</t:SubscriptionId>", xml_escape(id)))
+            .collect();
+        let response = format!(
+            r#"<m:GetStreamingEventsResponse xmlns:m="{msg}" xmlns:t="{typ}"><m:ResponseMessages><m:GetStreamingEventsResponseMessage ResponseClass="Error"><m:MessageText>None of the requested subscriptions are valid streaming subscriptions</m:MessageText><m:ResponseCode>ErrorSubscriptionNotFound</m:ResponseCode><m:ErrorSubscriptionIds>{err}</m:ErrorSubscriptionIds></m:GetStreamingEventsResponseMessage></m:ResponseMessages></m:GetStreamingEventsResponse>"#,
+            msg = EWS_MSG_NS,
+            typ = EWS_TYPE_NS,
+            err = err_xml
+        );
+        return soap_ok(response);
+    }
+
+    let mgr = state.subscription_manager.clone();
+    let owner = auth.username.clone();
+    let served_clone = served.clone();
+    let served_err = error_ids.clone();
+
+    // Drive the long-lived GetStreamingEvents connection from a background task
+    // writing chunk Bytes to an mpsc channel consumed by a ReceiverStream. This
+    // avoids pulling in a macro dependency and keeps the HTTP body as a plain
+    // stream of Bytes.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
+    tokio::spawn(async move {
+        let deadline = std::time::Instant::now() + deadline_total;
+        let err_ids_xml: String = served_err
+            .iter()
+            .map(|id| format!("<t:SubscriptionId>{}</t:SubscriptionId>", xml_escape(id)))
+            .collect();
+        let mut first = true;
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                let final_xml = streaming_fragment("", &err_ids_xml, "Closed");
+                let _ = tx
+                    .send(Ok(Bytes::from(final_xml)))
+                    .await;
+                break;
+            }
+
+            let remaining = deadline - now;
+            let turn = remaining.min(turn_timeout);
+
+            // Poll each served subscription for up to `turn`.
+            let mut notifications_xml = String::new();
+            for sid in &served_clone {
+                match mgr.recv_one_streaming(sid, &owner, turn).await {
+                    Ok(Some((event, watermark))) => {
+                        let ts_xml = format_ews_datetime(&Utc::now());
+                        let wm = encode_watermark(watermark);
+                        let event_xml = render_notification_event(&event, &wm, &ts_xml);
+                        let notif = render_notification(sid, None, false, &event_xml);
+                        notifications_xml.push_str(&notif);
+                    }
+                    Ok(None) => {} // idle or filtered
+                    Err(_) => {
+                        // Subscription vanished mid-stream; surfaced via
+                        // ErrorSubscriptionIds in subsequent fragments.
+                        tracing::warn!(
+                            subscription_id = %sid,
+                            "Streaming subscription disappeared mid-connection"
+                        );
+                    }
+                }
+            }
+
+            if notifications_xml.is_empty() {
+                // Keep-alive StatusEvent per served subscription so the client
+                // knows the connection is healthy between real events.
+                for sid in &served_clone {
+                    let status = format!(
+                        "<t:Notification><t:SubscriptionId>{sid}</t:SubscriptionId><t:StatusEvent><t:Watermark>{wm}</t:Watermark></t:StatusEvent></t:Notification>",
+                        sid = xml_escape(sid),
+                        wm = encode_watermark(0),
+                    );
+                    notifications_xml.push_str(&status);
+                }
+            }
+
+            let header = if first {
+                first = false;
+                streaming_header()
+            } else {
+                String::new()
+            };
+            let err_for_fragment = if served_err.is_empty() { "" } else { &err_ids_xml };
+            let fragment = streaming_fragment(&notifications_xml, err_for_fragment, "OK");
+            let chunk = format!("{header}{fragment}");
+            if tx.send(Ok(Bytes::from(chunk))).await.is_err() {
+                // Client disconnected; stop the connection.
+                break;
+            }
+
+            // Small breather so the runtime can service cancellation/flush.
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = axum::body::Body::from_stream(stream);
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/xml; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
+/// XML prologue/soap envelope opening for the streaming response. Each
+/// subsequent chunk appends more fragment bodies; the connection end is marked
+/// by a `ConnectionStatus=Closed` fragment.
+fn streaming_header() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" />
+  </s:Header>
+  <s:Body>
+"#,
+        type_ns = EWS_TYPE_NS
+    )
+}
+
+fn streaming_fragment(
+    notifications_xml: &str,
+    error_ids_xml: &str,
+    connection_status: &str,
+) -> String {
+    let err_block = if error_ids_xml.is_empty() {
+        String::new()
+    } else {
+        format!("<m:ErrorSubscriptionIds>{}</m:ErrorSubscriptionIds>", error_ids_xml)
+    };
+    format!(
+        r#"<m:GetStreamingEventsResponse xmlns:m="{msg}" xmlns:t="{typ}"><m:ResponseMessages><m:GetStreamingEventsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Notifications>{notifs}</m:Notifications>{err}<m:ConnectionStatus>{status}</m:ConnectionStatus></m:GetStreamingEventsResponseMessage></m:ResponseMessages></m:GetStreamingEventsResponse>"#,
+        msg = EWS_MSG_NS,
+        typ = EWS_TYPE_NS,
+        notifs = notifications_xml,
+        err = err_block,
+        status = connection_status,
+    )
 }
 
 async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
@@ -4344,6 +4972,15 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     let change_key = server_id.clone();
                     let items_xml =
                         crate::email::render_ews_message_item_xml(&server_id, &change_key, &msg);
+                    publish_event(
+                        state,
+                        NotificationEvent::ItemCreated {
+                            owner: auth.username.clone(),
+                            folder_id: folder_id_for(&auth.username, DistinguishedFolder::SentItems),
+                            item_id: server_id.clone(),
+                            change_key: change_key.clone(),
+                        },
+                    );
                     let response = format!(
                         r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
                         EWS_MSG_NS, EWS_TYPE_NS, items_xml
@@ -4551,11 +5188,21 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     };
 
     let server_id = response_row.server_id.clone();
+    let change_key = changekey_for_item(&response_row);
+    publish_event(
+        state,
+        NotificationEvent::ItemCreated {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+            item_id: server_id.clone(),
+            change_key: change_key.clone(),
+        },
+    );
     let response = format!(
         r#"<m:CreateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:CreateItemResponseMessage></m:ResponseMessages></m:CreateItemResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        render_ews_calendar_item_xml(&server_id, &changekey_for_item(&response_row), &item)
+        render_ews_calendar_item_xml(&server_id, &change_key, &item)
     );
     soap_ok(response)
 }
@@ -4645,7 +5292,15 @@ async fn handle_update_email_item(
     }
 
     let change_key = item_id.to_string();
-
+    publish_event(
+        state,
+        NotificationEvent::ItemModified {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Inbox),
+            item_id: item_id.to_string(),
+            change_key: change_key.clone(),
+        },
+    );
     let response = format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
         EWS_MSG_NS,
@@ -4974,6 +5629,15 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         etag: updated_row.etag.clone(),
         updated_at: None,
     };
+    publish_event(
+        state,
+        NotificationEvent::ItemModified {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+            item_id: stored_item.server_id.clone(),
+            change_key: changekey_for_item(&response_row),
+        },
+    );
     let response = format!(
         r#"<m:UpdateItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UpdateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items>{}</m:Items></m:UpdateItemResponseMessage></m:ResponseMessages></m:UpdateItemResponse>"#,
         EWS_MSG_NS,
@@ -5040,6 +5704,14 @@ async fn handle_delete_email_item(
         // Still return success — the client may retry, and the email may have
         // already been deleted from JMAP by another path.
     }
+    publish_event(
+        state,
+        NotificationEvent::ItemDeleted {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Inbox),
+            item_id: item_id.to_string(),
+        },
+    );
 
     let response = format!(
         r#"<m:DeleteItemResponse xmlns:m="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
@@ -5210,6 +5882,14 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::INTERNAL_SERVER_ERROR,
         );
     }
+    publish_event(
+        state,
+        NotificationEvent::ItemDeleted {
+            owner: auth.username.clone(),
+            folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+            item_id: item_id.clone(),
+        },
+    );
     let response = format!(
         r#"<m:DeleteItemResponse xmlns:m="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
         EWS_MSG_NS
@@ -5372,6 +6052,19 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         .await
         {
             Ok(new_change_key) => {
+                // Emit a ModifiedEvent: the item still exists with a new ChangeKey.
+                // (EWS would normally emit a MovedEvent; we use ModifiedEvent because
+                // this handler doesn't track the precise source folder, and a
+                // ModifiedEvent is a valid, client-actionable notification.)
+                publish_event(
+                    state,
+                    NotificationEvent::ItemModified {
+                        owner: auth.username.clone(),
+                        folder_id: folder_id_for(&auth.username, DistinguishedFolder::Inbox),
+                        item_id: item_id.clone(),
+                        change_key: new_change_key.clone(),
+                    },
+                );
                 // Return the same ItemId, but with a new ChangeKey
                 let response = format!(
                     r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
@@ -5455,6 +6148,15 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         if state.cfg.prefer_jmap_calendar && lookup.resource_href.starts_with("jmap://") {
             // Compute ChangeKey from server_id and etag
             let change_key = changekey_for_item(&lookup);
+            publish_event(
+                state,
+                NotificationEvent::ItemModified {
+                    owner: auth.username.clone(),
+                    folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+                    item_id: item_id.clone(),
+                    change_key: change_key.clone(),
+                },
+            );
             let response = format!(
                 r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
                 EWS_MSG_NS,
@@ -5518,6 +6220,15 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 // For now, we only support same collection, so server_id remains the same.
                 // ChangeKey can be the new etag.
                 let change_key = new_etag;
+                publish_event(
+                    state,
+                    NotificationEvent::ItemModified {
+                        owner: auth.username.clone(),
+                        folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+                        item_id: item_id.clone(),
+                        change_key: change_key.clone(),
+                    },
+                );
                 let response = format!(
                     r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
                     EWS_MSG_NS,
@@ -5634,6 +6345,15 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         .await
         {
             Ok(_new_change_key) => {
+                publish_event(
+                    state,
+                    NotificationEvent::ItemCreated {
+                        owner: auth.username.clone(),
+                        folder_id: folder_id_for(&auth.username, DistinguishedFolder::Inbox),
+                        item_id: item_id.clone(),
+                        change_key: _new_change_key.clone(),
+                    },
+                );
                 let response = format!(
                     r#"<m:CopyItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CopyItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:CopyItemResponseMessage></m:ResponseMessages></m:CopyItemResponse>"#,
                     EWS_MSG_NS,
@@ -5868,6 +6588,15 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 etag: Some(etag.to_string()),
                 updated_at: None,
             });
+            publish_event(
+                state,
+                NotificationEvent::ItemCreated {
+                    owner: auth.username.clone(),
+                    folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+                    item_id: server_id.clone(),
+                    change_key: change_key.clone(),
+                },
+            );
 
             let response = format!(
                 r#"<m:CopyItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CopyItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:CopyItemResponseMessage></m:ResponseMessages></m:CopyItemResponse>"#,
@@ -5987,6 +6716,15 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 etag: Some(new_etag),
                 updated_at: None,
             });
+            publish_event(
+                state,
+                NotificationEvent::ItemCreated {
+                    owner: auth.username.clone(),
+                    folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+                    item_id: server_id.clone(),
+                    change_key: change_key.clone(),
+                },
+            );
 
             let response = format!(
                 r#"<m:CopyItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CopyItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:CopyItemResponseMessage></m:ResponseMessages></m:CopyItemResponse>"#,
@@ -7901,5 +8639,131 @@ mod tests {
             extract_conflict_resolution(xml).as_deref(),
             Some("alwaysoverwrite")
         );
+    }
+
+    // --- EWS notifications (MS-OXWSNTIF) wire-format tests ---
+
+    #[test]
+    fn test_detect_action_recognizes_notification_operations() {
+        // Each of the four notification operations must be detected from a SOAP
+        // envelope body, with both the `m:` and bare-tag conventions.
+        let subscribe = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:PullSubscriptionRequest/></m:Subscribe>"#;
+        assert_eq!(detect_action(subscribe), Some(EwsAction::Subscribe));
+
+        let unsubscribe = r#"<m:Unsubscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:SubscriptionId>abc</m:SubscriptionId></m:Unsubscribe>"#;
+        assert_eq!(detect_action(unsubscribe), Some(EwsAction::Unsubscribe));
+
+        let get_events = r#"<m:GetEvents xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:SubscriptionId>abc</m:SubscriptionId></m:GetEvents>"#;
+        assert_eq!(detect_action(get_events), Some(EwsAction::GetEvents));
+
+        let streaming = r#"<m:GetStreamingEvents xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:SubscriptionIds/></m:GetStreamingEvents>"#;
+        assert_eq!(
+            detect_action(streaming),
+            Some(EwsAction::GetStreamingEvents)
+        );
+    }
+
+    #[test]
+    fn test_response_message_names_for_notifications() {
+        assert_eq!(EwsAction::Subscribe.response_message_name(), "SubscribeResponseMessage");
+        assert_eq!(
+            EwsAction::Unsubscribe.response_message_name(),
+            "UnsubscribeResponseMessage"
+        );
+        assert_eq!(
+            EwsAction::GetEvents.response_message_name(),
+            "GetEventsResponseMessage"
+        );
+        assert_eq!(
+            EwsAction::GetStreamingEvents.response_message_name(),
+            "GetStreamingEventsResponseMessage"
+        );
+    }
+
+    #[test]
+    fn test_watermark_round_trip() {
+        // encode/decode is a bijection over u64 (server-opaque to the client).
+        for seq in [0u64, 1, 42, u64::MAX / 2, u64::MAX] {
+            let wm = encode_watermark(seq);
+            assert_eq!(decode_watermark(&wm), seq, "round-trip failed for {seq}");
+        }
+        // Unknown / malformed watermarks degrade gracefully to 0 (treated as
+        // "before any event"), never panic.
+        assert_eq!(decode_watermark("not-base64!!"), 0);
+        assert_eq!(decode_watermark(""), 0);
+        assert_eq!(decode_watermark("AAAA"), 0); // wrong length
+    }
+
+    #[test]
+    fn test_parse_subscription_request_all_folders() {
+        let body = r#"<m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:PullSubscriptionRequest SubscribeToAllFolders="true"><m:FolderIds/><m:EventTypes><t:EventType>CopiedEvent</t:EventType></m:EventTypes></m:PullSubscriptionRequest></m:Subscribe>"#;
+        let parsed = parse_subscription_request(body);
+        assert!(parsed.folders.is_none(), "SubscribeToAllFolders=>None");
+        let types = parsed.event_types.expect("event types");
+        assert_eq!(types, HashSet::from(["CopiedEvent".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_subscription_request_explicit_folders() {
+        let body = r#"<m:PullSubscriptionRequest xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+            <m:FolderIds>
+                <t:FolderId Id="inbox-1" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"/>
+                <t:DistinguishedFolderId Id="calendar" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"/>
+            </m:FolderIds>
+            <m:EventTypes>
+                <t:EventType>NewMailEvent</t:EventType>
+                <t:EventType>CreatedEvent</t:EventType>
+            </m:EventTypes>
+        </m:PullSubscriptionRequest>"#;
+        let parsed = parse_subscription_request(body);
+        let folders = parsed.folders.expect("explicit folders");
+        assert!(folders.contains("inbox-1"));
+        assert!(folders.contains("calendar"));
+        let types = parsed.event_types.expect("event types");
+        assert!(types.contains("NewMailEvent"));
+        assert!(types.contains("CreatedEvent"));
+    }
+
+    #[test]
+    fn test_render_notification_event_created() {
+        let event = NotificationEvent::ItemCreated {
+            owner: "alice".to_string(),
+            folder_id: "inbox-1".to_string(),
+            item_id: "item-1".to_string(),
+            change_key: "ck-1".to_string(),
+        };
+        let xml = render_notification_event(&event, "AAAAAA==", "2026-01-01T00:00:00Z");
+        assert!(xml.contains("<t:CreatedEvent>"));
+        assert!(xml.contains("<t:Watermark>AAAAAA==</t:Watermark>"));
+        assert!(xml.contains("Id=\"item-1\""));
+        assert!(xml.contains("ChangeKey=\"ck-1\""));
+        assert!(xml.contains("Id=\"inbox-1\""));
+    }
+
+    #[test]
+    fn test_render_notification_event_deleted_omits_changekey() {
+        // DeletedEvent carries no ChangeKey per MS-OXWSNTIF.
+        let event = NotificationEvent::ItemDeleted {
+            owner: "alice".to_string(),
+            folder_id: "inbox-1".to_string(),
+            item_id: "item-1".to_string(),
+        };
+        let xml = render_notification_event(&event, "Wm=", "2026-01-01T00:00:00Z");
+        assert!(xml.contains("<t:DeletedEvent>"));
+        assert!(!xml.contains("ChangeKey"));
+    }
+
+    #[test]
+    fn test_render_notification_includes_subscription_id_and_more_events() {
+        let events_xml = "<t:CreatedEvent/>";
+        let n = render_notification("sub-1", Some("PREV"), true, events_xml);
+        assert!(n.contains("<t:SubscriptionId>sub-1</t:SubscriptionId>"));
+        assert!(n.contains("<t:PreviousWatermark>PREV</t:PreviousWatermark>"));
+        assert!(n.contains("<t:MoreEvents>true</t:MoreEvents>"));
+        assert!(n.contains("<t:CreatedEvent/>"));
+
+        let n2 = render_notification("sub-1", None, false, "");
+        assert!(!n2.contains("PreviousWatermark"));
+        assert!(n2.contains("<t:MoreEvents>false</t:MoreEvents>"));
     }
 }
