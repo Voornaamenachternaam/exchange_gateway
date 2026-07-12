@@ -118,10 +118,7 @@ impl NotificationEvent {
                 if set.contains(this_folder) {
                     return true;
                 }
-                match other_folder {
-                    Some(of) if set.contains(of) => true,
-                    _ => false,
-                }
+                matches!(other_folder, Some(of) if set.contains(of))
             }
         }
     }

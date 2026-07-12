@@ -4819,11 +4819,7 @@ async fn handle_get_events(state: &Arc<AppState>, auth: &AuthContext, body: &str
     let prev_wm = (prev_seq > 0).then(|| encode_watermark(prev_seq));
     let notification = render_notification(&sub_id, prev_wm.as_deref(), more, &events_xml);
 
-    let last_wm = if events.is_empty() {
-        encode_watermark(last_seq)
-    } else {
-        encode_watermark(last_seq)
-    };
+    let last_wm = encode_watermark(last_seq);
 
     let response = format!(
         r#"<m:GetEventsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetEventsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>{}</m:GetEventsResponseMessage></m:ResponseMessages></m:GetEventsResponse>"#,

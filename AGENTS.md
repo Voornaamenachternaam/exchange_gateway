@@ -37,12 +37,15 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
 - Rust is installed persistently under `/workspace`:
   - `CARGO_HOME=/workspace/.cargo`
   - `RUSTUP_HOME=/workspace/.rustup`
-  - Toolchain: Rust 1.96.1 (matches the project requirement).
+  - Toolchain: Rust 1.97.0 (matches the project requirement).
 - ALWAYS prefix build/test commands with:
   `export CARGO_HOME=/workspace/.cargo RUSTUP_HOME=/workspace/.rustup && . /workspace/.cargo/env`
-- If `cargo` is reported missing, reinstall once with:
-  `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.1 --profile minimal`
-  (deploys into `/workspace/.cargo` so it survives future sessions).
+- If `cargo` is reported missing, reinstall once with (the rustup-init binary
+  does NOT accept `--cargo-home`/`--rustup-home` flags, so set them as env
+  vars first, and add `clippy` so `cargo clippy` works):
+  `export RUSTUP_HOME=/workspace/.rustup CARGO_HOME=/workspace/.cargo &&`
+  `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.0 --profile minimal --component clippy`
+  (deploys into `/workspace/.cargo`/`/workspace/.rustup` so it survives future sessions).
 
 ## Build / test
 - Clean build (no warnings, no suppression): `RUSTFLAGS="-D warnings" cargo build --bin exchange_gateway`
