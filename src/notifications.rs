@@ -4,10 +4,10 @@
 // active subscriptions; each subscription filters by owner, requested folders,
 // requested event types and exposes a monotonic per-subscription watermark.
 
+use parking_lot::Mutex as SyncMutex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Mutex, broadcast};
 
 /// Maximum lifetime of a pull (GetEvents) subscription, in minutes, matching
@@ -782,7 +782,10 @@ mod tests {
         let timeout = Duration::from_millis(300);
         // Nothing published at all → genuine idle → Ok(None) after ~timeout.
         let t0 = std::time::Instant::now();
-        let idle = mgr.recv_one_streaming(&sub_id, "alice", timeout).await.unwrap();
+        let idle = mgr
+            .recv_one_streaming(&sub_id, "alice", timeout)
+            .await
+            .unwrap();
         let elapsed_idle = t0.elapsed();
         assert!(idle.is_none(), "no events at all => idle None");
         assert!(
