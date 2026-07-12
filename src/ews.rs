@@ -298,9 +298,7 @@ pub async fn handle(
         EwsAction::Subscribe => handle_subscribe(&state, &auth, &body).await,
         EwsAction::Unsubscribe => handle_unsubscribe(&state, &auth, &body).await,
         EwsAction::GetEvents => handle_get_events(&state, &auth, &body).await,
-        EwsAction::GetStreamingEvents => {
-            handle_get_streaming_events(state, auth, body).await
-        }
+        EwsAction::GetStreamingEvents => handle_get_streaming_events(state, auth, body).await,
         EwsAction::CreateItem => handle_create_item(&state, &auth, &body).await,
         EwsAction::UpdateItem => handle_update_item(&state, &auth, &body).await,
         EwsAction::DeleteItem => handle_delete_item(&state, &auth, &body).await,
@@ -4375,9 +4373,7 @@ fn detect_subscription_request_kind(body: &str) -> Option<DetectedSubscriptionRe
                 {
                     kind = Some(match name.as_ref() {
                         b"PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
-                        b"StreamingSubscriptionRequest" => {
-                            DetectedSubscriptionRequest::Streaming
-                        }
+                        b"StreamingSubscriptionRequest" => DetectedSubscriptionRequest::Streaming,
                         // unreachable: guarded by the `matches!` above.
                         _ => DetectedSubscriptionRequest::Push,
                     });
@@ -4393,9 +4389,7 @@ fn detect_subscription_request_kind(body: &str) -> Option<DetectedSubscriptionRe
                 ) {
                     kind = Some(match name.as_ref() {
                         b"PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
-                        b"StreamingSubscriptionRequest" => {
-                            DetectedSubscriptionRequest::Streaming
-                        }
+                        b"StreamingSubscriptionRequest" => DetectedSubscriptionRequest::Streaming,
                         _ => DetectedSubscriptionRequest::Push,
                     });
                 }
@@ -4423,39 +4417,28 @@ struct ParsedSubscriptionRequest {
 /// Parse the `<FolderIds>` and `<EventTypes>` children of a subscription
 /// request body. Returns folders `None` when `SubscribeToAllFolders="true"`.
 fn parse_subscription_request(body: &str) -> ParsedSubscriptionRequest {
-    let subscribe_to_all = extract_first_attr(
-        body,
-        b"PullSubscriptionRequest",
-        b"SubscribeToAllFolders",
-    )
-    .map(|v| v == "true")
-    .or_else(|| {
-        extract_first_attr(
-            body,
-            b"StreamingSubscriptionRequest",
-            b"SubscribeToAllFolders",
-        )
-        .map(|v| v == "true")
-    })
-    .unwrap_or(false);
+    let subscribe_to_all =
+        extract_first_attr(body, b"PullSubscriptionRequest", b"SubscribeToAllFolders")
+            .map(|v| v == "true")
+            .or_else(|| {
+                extract_first_attr(
+                    body,
+                    b"StreamingSubscriptionRequest",
+                    b"SubscribeToAllFolders",
+                )
+                .map(|v| v == "true")
+            })
+            .unwrap_or(false);
 
     let folders = if subscribe_to_all {
         None
     } else {
         let ids = extract_folder_ids_from_block(body);
-        if ids.is_empty() {
-            None
-        } else {
-            Some(ids)
-        }
+        if ids.is_empty() { None } else { Some(ids) }
     };
     let event_types = {
         let types = extract_event_types(body);
-        if types.is_empty() {
-            None
-        } else {
-            Some(types)
-        }
+        if types.is_empty() { None } else { Some(types) }
     };
     ParsedSubscriptionRequest {
         folders,
@@ -4485,10 +4468,10 @@ fn extract_folder_ids_from_block(body: &str) -> HashSet<String> {
                         || e.name().local_name().as_ref() == b"DistinguishedFolderId") =>
             {
                 for a in e.attributes().flatten() {
-                    if a.key.local_name().as_ref() == b"Id" {
-                        if let Ok(v) = a.decode_and_unescape_value(reader.decoder()) {
-                            ids.insert(v.into_owned());
-                        }
+                    if a.key.local_name().as_ref() == b"Id"
+                        && let Ok(v) = a.decode_and_unescape_value(reader.decoder())
+                    {
+                        ids.insert(v.into_owned());
                     }
                 }
             }
@@ -4502,9 +4485,7 @@ fn extract_folder_ids_from_block(body: &str) -> HashSet<String> {
 
 /// Extract `<t:EventType>…</t:EventType>` textual values.
 fn extract_event_types(body: &str) -> HashSet<String> {
-    extract_tag_texts(body, b"EventType")
-        .into_iter()
-        .collect()
+    extract_tag_texts(body, b"EventType").into_iter().collect()
 }
 
 /// Encode a per-subscription watermark counter as an opaque, URL-safe-ish string
@@ -4522,17 +4503,21 @@ fn decode_watermark(wm: &str) -> u64 {
         .decode(wm.trim())
         .ok()
         .filter(|b| b.len() == std::mem::size_of::<u64>())
-        .and_then(|b| {
+        .map(|b| {
             let mut arr = [0u8; 8];
             arr.copy_from_slice(&b);
-            Some(u64::from_be_bytes(arr))
+            u64::from_be_bytes(arr)
         })
         .unwrap_or(0)
 }
 
 /// Render a single MS-OXWSNTIF notification event element (one of the choices
 /// under `t:NotificationType`).
-fn render_notification_event(event: &NotificationEvent, watermark: &str, timestamp: &str) -> String {
+fn render_notification_event(
+    event: &NotificationEvent,
+    watermark: &str,
+    timestamp: &str,
+) -> String {
     let ts = format!("<t:TimeStamp>{}</t:TimeStamp>", timestamp);
     let watermark_xml = format!("<t:Watermark>{}</t:Watermark>", watermark);
     match event {
@@ -4645,7 +4630,10 @@ fn render_notification(
         Some(w) => format!("<t:PreviousWatermark>{}</t:PreviousWatermark>", w),
         None => String::new(),
     };
-    let more = format!("<t:MoreEvents>{}</t:MoreEvents>", if more_events { "true" } else { "false" });
+    let more = format!(
+        "<t:MoreEvents>{}</t:MoreEvents>",
+        if more_events { "true" } else { "false" }
+    );
     format!(
         "<t:Notification><t:SubscriptionId>{}</t:SubscriptionId>{prev}{more}{events}</t:Notification>",
         xml_escape(sub_id),
@@ -4734,7 +4722,10 @@ async fn handle_unsubscribe(state: &Arc<AppState>, auth: &AuthContext, body: &st
             StatusCode::BAD_REQUEST,
         );
     };
-    let removed = state.subscription_manager.unsubscribe(&sub_id, &auth.username).await;
+    let removed = state
+        .subscription_manager
+        .unsubscribe(&sub_id, &auth.username)
+        .await;
     if removed {
         let response = format!(
             r#"<m:UnsubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:UnsubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:UnsubscribeResponseMessage></m:ResponseMessages></m:UnsubscribeResponse>"#,
@@ -4836,9 +4827,7 @@ async fn handle_get_events(state: &Arc<AppState>, auth: &AuthContext, body: &str
 
     let response = format!(
         r#"<m:GetEventsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetEventsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>{}</m:GetEventsResponseMessage></m:ResponseMessages></m:GetEventsResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        notification
+        EWS_MSG_NS, EWS_TYPE_NS, notification
     );
     // last_wm is the watermark the client should echo back next; it is already
     // embedded per-event or in the StatusEvent above. The variable is retained
@@ -5004,7 +4993,11 @@ async fn handle_get_streaming_events(
             } else {
                 String::new()
             };
-            let err_for_fragment = if served_err.is_empty() { "" } else { &err_ids_xml };
+            let err_for_fragment = if served_err.is_empty() {
+                ""
+            } else {
+                &err_ids_xml
+            };
             let fragment = streaming_fragment(&notifications_xml, err_for_fragment, "OK");
             let chunk = format!("{header}{fragment}");
             if tx.send(Ok(Bytes::from(chunk))).await.is_err() {
@@ -5023,9 +5016,7 @@ async fn handle_get_streaming_events(
         // (or any other non-deadline break) before sending it. If the receiver
         // is already gone the send fails harmlessly and the drop closes the body.
         if !closed_fragment_sent {
-            let _ = tx
-                .send(Ok(Bytes::from(streaming_footer())))
-                .await;
+            let _ = tx.send(Ok(Bytes::from(streaming_footer()))).await;
         }
     });
 
@@ -5070,7 +5061,10 @@ fn streaming_fragment(
     let err_block = if error_ids_xml.is_empty() {
         String::new()
     } else {
-        format!("<m:ErrorSubscriptionIds>{}</m:ErrorSubscriptionIds>", error_ids_xml)
+        format!(
+            "<m:ErrorSubscriptionIds>{}</m:ErrorSubscriptionIds>",
+            error_ids_xml
+        )
     };
     format!(
         r#"<m:GetStreamingEventsResponse xmlns:m="{msg}" xmlns:t="{typ}"><m:ResponseMessages><m:GetStreamingEventsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Notifications>{notifs}</m:Notifications>{err}<m:ConnectionStatus>{status}</m:ConnectionStatus></m:GetStreamingEventsResponseMessage></m:ResponseMessages></m:GetStreamingEventsResponse>"#,
@@ -5110,7 +5104,10 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                         state,
                         NotificationEvent::ItemCreated {
                             owner: auth.username.clone(),
-                            folder_id: folder_id_for(&auth.username, DistinguishedFolder::SentItems),
+                            folder_id: folder_id_for(
+                                &auth.username,
+                                DistinguishedFolder::SentItems,
+                            ),
                             item_id: server_id.clone(),
                             change_key: change_key.clone(),
                         },
@@ -8799,7 +8796,10 @@ mod tests {
 
     #[test]
     fn test_response_message_names_for_notifications() {
-        assert_eq!(EwsAction::Subscribe.response_message_name(), "SubscribeResponseMessage");
+        assert_eq!(
+            EwsAction::Subscribe.response_message_name(),
+            "SubscribeResponseMessage"
+        );
         assert_eq!(
             EwsAction::Unsubscribe.response_message_name(),
             "UnsubscribeResponseMessage"
