@@ -4300,7 +4300,299 @@ async fn handle_subscribe(_state: &Arc<AppState>, _auth: &AuthContext, _body: &s
     // but we use the global broadcast channel. The subscription_id is returned to the client,
     // which will present it in subsequent GetEvents requests.
 
-    // We don't need to do anything else now; the GetEvents handler will call receive on the broadcast channel.
+/// Parse the `<FolderIds>` and `<EventTypes>` children of a subscription
+/// request body. Returns folders `None` when `SubscribeToAllFolders="true"`.
+fn parse_subscription_request(body: &str) -> ParsedSubscriptionRequest {
+    let subscribe_to_all = extract_first_attr(
+        body,
+        b"PullSubscriptionRequest",
+        b"SubscribeToAllFolders",
+    )
+    .map(|v| v == "true")
+    .or_else(|| {
+        extract_first_attr(
+            body,
+            b"StreamingSubscriptionRequest",
+            b"SubscribeToAllFolders",
+        )
+        .map(|v| v == "true")
+    })
+    .unwrap_or(false);
+
+    let folders = if subscribe_to_all {
+        None
+    } else {
+        let ids = extract_folder_ids_from_block(body);
+        if ids.is_empty() {
+            None
+        } else {
+            Some(ids)
+        }
+    };
+    let event_types = {
+        let types = extract_event_types(body);
+        if types.is_empty() {
+            None
+        } else {
+            Some(types)
+        }
+    };
+    ParsedSubscriptionRequest {
+        folders,
+        event_types,
+    }
+}
+
+/// Extract `<t:FolderId Id="…"/>` / `<t:DistinguishedFolderId Id="…"/>`
+/// values appearing inside any `*SubscriptionRequest` block.
+fn extract_folder_ids_from_block(body: &str) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    let mut reader = Reader::from_str(body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_folder_ids = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"FolderIds" => {
+                in_folder_ids = true;
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"FolderIds" => {
+                in_folder_ids = false;
+            }
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if in_folder_ids
+                    && (e.name().local_name().as_ref() == b"FolderId"
+                        || e.name().local_name().as_ref() == b"DistinguishedFolderId") =>
+            {
+                for a in e.attributes().flatten() {
+                    if a.key.local_name().as_ref() == b"Id"
+                        && let Ok(v) = a.decode_and_unescape_value(reader.decoder()) {
+                            ids.insert(v.into_owned());
+                        }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    ids
+}
+
+/// Extract `<t:EventType>…</t:EventType>` textual values.
+fn extract_event_types(body: &str) -> HashSet<String> {
+    extract_tag_texts(body, b"EventType")
+        .into_iter()
+        .collect()
+}
+
+/// Encode a per-subscription watermark counter as an opaque, URL-safe-ish string
+/// the client echoes back verbatim. EWS watermarks are server-opaque.
+fn encode_watermark(seq: u64) -> String {
+    STANDARD.encode(seq.to_be_bytes())
+}
+
+/// Decode a client-supplied watermark back to a monotonic sequence, if it is one
+/// of ours. Unknown watermarks (e.g. from a restarted server, or from a
+/// different implementation) are tolerated: we treat them as "before any
+/// event" (sequence 0).
+fn decode_watermark(wm: &str) -> u64 {
+    STANDARD
+        .decode(wm.trim())
+        .ok()
+        .filter(|b| b.len() == std::mem::size_of::<u64>())
+        .map(|b| {
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&b);
+            u64::from_be_bytes(arr)
+        })
+        .unwrap_or(0)
+}
+
+/// Render a single MS-OXWSNTIF notification event element (one of the choices
+/// under `t:NotificationType`).
+fn render_notification_event(event: &NotificationEvent, watermark: &str, timestamp: &str) -> String {
+    let ts = format!("<t:TimeStamp>{}</t:TimeStamp>", timestamp);
+    let watermark_xml = format!("<t:Watermark>{}</t:Watermark>", watermark);
+    match event {
+        NotificationEvent::ItemCreated {
+            folder_id,
+            item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:CreatedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:CreatedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                ck = xml_escape(change_key),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::ItemModified {
+            folder_id,
+            item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:ModifiedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:ModifiedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                ck = xml_escape(change_key),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::ItemDeleted {
+            folder_id, item_id, ..
+        } => {
+            format!(
+                "<t:DeletedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\"/><t:ParentFolderId Id=\"{fid}\"/></t:DeletedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::NewMail {
+            folder_id,
+            item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:NewMailEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:NewMailEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(item_id),
+                ck = xml_escape(change_key),
+                fid = xml_escape(folder_id),
+            )
+        }
+        NotificationEvent::ItemMoved {
+            old_folder_id,
+            old_item_id,
+            new_folder_id,
+            new_item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:MovedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:MovedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(new_item_id),
+                ck = xml_escape(change_key),
+                nfid = xml_escape(new_folder_id),
+                oid = xml_escape(old_item_id),
+                ofid = xml_escape(old_folder_id),
+            )
+        }
+        NotificationEvent::ItemCopied {
+            old_folder_id,
+            old_item_id,
+            new_folder_id,
+            new_item_id,
+            change_key,
+            ..
+        } => {
+            format!(
+                "<t:CopiedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:CopiedEvent>",
+                ts = ts,
+                wm = watermark_xml,
+                iid = xml_escape(new_item_id),
+                ck = xml_escape(change_key),
+                nfid = xml_escape(new_folder_id),
+                oid = xml_escape(old_item_id),
+                ofid = xml_escape(old_folder_id),
+            )
+        }
+    }
+}
+
+/// Render a complete `t:Notification` (one per subscription per GetEvents turn,
+/// or per delivered batch in streaming).
+fn render_notification(
+    sub_id: &str,
+    previous_watermark: Option<&str>,
+    more_events: bool,
+    events_xml: &str,
+) -> String {
+    let prev = match previous_watermark {
+        Some(w) => format!("<t:PreviousWatermark>{}</t:PreviousWatermark>", w),
+        None => String::new(),
+    };
+    let more = format!("<t:MoreEvents>{}</t:MoreEvents>", if more_events { "true" } else { "false" });
+    format!(
+        "<t:Notification><t:SubscriptionId>{}</t:SubscriptionId>{prev}{more}{events}</t:Notification>",
+        xml_escape(sub_id),
+        prev = prev,
+        more = more,
+        events = events_xml,
+    )
+}
+
+/// Publish a mailbox store change event to all active EWS subscriptions.
+///
+/// This is the single hook that makes the Subscribe/GetEvents pipeline real:
+/// every item CRUD handler that successfully mutates the Stalwart backend calls
+/// this so subscribers observe `CreatedEvent`/`ModifiedEvent`/`DeletedEvent`
+/// (and `NewMailEvent` for mail arrival).
+fn publish_event(state: &AppState, event: NotificationEvent) {
+    state.subscription_manager.publish(event);
+}
+
+async fn handle_subscribe(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let parsed = parse_subscription_request(body);
+
+    // Determine subscription kind from the XML *structure* (the actual child
+    // element of `<Subscribe>`), not from raw `body.contains(…)` substring
+    // matching, which is namespace- and formatting-sensitive. Pull vs Streaming
+    // selects the subscription kind (MS-OXWSNTIF 3.1.4.3.3.2); Push
+    // subscriptions are not supported by this gateway, so a Push registration
+    // returns ErrorInvalidSubscriptionRequest.
+    let (kind, timeout_minutes) = match detect_subscription_request_kind(body) {
+        Some(DetectedSubscriptionRequest::Pull) => {
+            let minutes = extract_first_tag_text(body, b"Timeout")
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|&m| (1..=1440).contains(&m));
+            (SubscriptionKind::Pull, minutes)
+        }
+        Some(DetectedSubscriptionRequest::Streaming) => (SubscriptionKind::Streaming, None),
+        Some(DetectedSubscriptionRequest::Push) => {
+            return operation_error_response(
+                &EwsAction::Subscribe,
+                "ErrorInvalidSubscriptionRequest",
+                "Push subscriptions are not supported by this gateway",
+                StatusCode::NOT_IMPLEMENTED,
+            );
+        }
+        None => {
+            return operation_error_response(
+                &EwsAction::Subscribe,
+                "ErrorInvalidRequest",
+                "Subscribe request must contain a Pull, Streaming, or Push subscription request",
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+
+    let sub_id = state
+        .subscription_manager
+        .subscribe(
+            &auth.username,
+            kind,
+            parsed.folders,
+            parsed.event_types,
+            timeout_minutes,
+        )
+        .await;
+
+    // The initial watermark is the "subscription created" marker; subsequent
+    // GetEvents calls echo the last watermark they received.
+    let watermark = encode_watermark(0);
 
     let response = format!(
         r#"<m:SubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SubscriptionId>{}</m:SubscriptionId><m:Watermark>{}</m:Watermark></m:SubscribeResponseMessage></m:ResponseMessages></m:SubscribeResponse>"#,
