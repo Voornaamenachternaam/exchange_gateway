@@ -303,6 +303,111 @@ fn build_response(
     resp
 }
 
+/// MAPI/HTTP (MS-OXCMAPIHTTP) route handler. Two endpoints share this
+/// handler: `/mapi/emsmdb` (mailbox RPCs) and `/mapi/nspi` (address-book
+/// RPCs). When `GATEWAY_MAPI_ENABLED=false`, `AppState.mapi` is `None` and
+/// the handler returns 404 so the surface is invisible unless opted in.
+///
+/// Phase 0 wires the transport parse → orchestrator → render pipeline.
+/// The orchestrator (`mapi::handler::handle`) currently implements
+/// Connect/Disconnect/Execute-skeleton; deeper ROPs land in Phase 1.
+async fn mapi_http(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let start = std::time::Instant::now();
+    let mapi_state = match state.mapi.as_ref() {
+        Some(s) => s.clone(),
+        None => {
+            // Endpoint not enabled — return 404 so the route is invisible
+            // to clients that did not receive a MAPI <Protocol> block from
+            // Autodiscover.
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    };
+
+    let enabled = state.cfg.mapi_enabled;
+    let basic_password = extract_basic_password(&headers);
+    let mut req = match exchange_gateway::mapi::transport::parse_request(
+        &headers,
+        body.to_vec(),
+        enabled,
+    ) {
+        Ok(r) => r,
+        Err(hdr_err) => {
+            let code = hdr_err.to_response_code();
+            let request_id = headers
+                .get("x-requestid")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let resp = exchange_gateway::mapi::transport::MapiResponse::error(code, request_id);
+            let (status, hdrs_out, ct, body_out) = resp.render();
+            info!(
+                target: "http",
+                path = "/mapi/...",
+                response_code = code.as_u8(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "MAPI/HTTP transport header-reject"
+            );
+            return render_mapi(status, hdrs_out, ct, body_out);
+        }
+    };
+    req.password = basic_password;
+
+    let resp = exchange_gateway::mapi::handler::handle(req, &mapi_state).await;
+    let response_code = resp.code.as_u8();
+    let (status, hdrs_out, ct, body_out) = resp.render();
+    info!(
+        target: "http",
+        path = "/mapi/...",
+        response_code = response_code,
+        elapsed_ms = start.elapsed().as_millis(),
+        "MAPI/HTTP request completed"
+    );
+    render_mapi(status, hdrs_out, ct, body_out)
+}
+
+/// Render a MAPI/HTTP response tuple (status, headers, content-type, body)
+/// into an axum `Response`. The content-type is `application/mapi-http` per
+/// MS-OXCMAPIHTTP §2.2.3.2.2.
+fn render_mapi(
+    status: StatusCode,
+    hdrs: axum::http::HeaderMap,
+    content_type: &'static str,
+    body: Vec<u8>,
+) -> Response {
+    let mut resp = (status, body).into_response();
+    resp.headers_mut().extend(hdrs);
+    if let Ok(ct) = HeaderValue::from_str(content_type) {
+        resp.headers_mut().insert(
+            header::CONTENT_TYPE,
+            ct,
+        );
+    }
+    resp
+}
+
+/// Extract the password from an `Authorization: Basic <b64>` header, returning
+/// only the password component (the username lives in the ROP's Essdn). Returns
+/// `None` for absent, malformed, non-Basic, or invalid base64/UTF-8 — the
+/// MAPI logon handler treats `None` as anonymous and rejects with
+/// `AnonymousNotAllowed`.
+fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
+    use base64::Engine;
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let rest = raw.strip_prefix("Basic ").or_else(|| raw.strip_prefix("basic "))?;
+    let decoded = base64::engine::general_purpose::STANDARD.decode(rest).ok()?;
+    let plain = String::from_utf8(decoded).ok()?;
+    let (_user, pass) = plain.split_once(':')?;
+    if pass.is_empty() {
+        None
+    } else {
+        Some(pass.to_string())
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize advanced logging system with fallback to basic logging on error
@@ -352,6 +457,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/EWS/Exchange.asmx", post(ews::handle))
         .route("/EWS/{*path}", post(ews::handle))
         .route("/Microsoft-Server-ActiveSync", any(eas::handle))
+        .route("/mapi/emsmdb", post(mapi_http))
+        .route("/mapi/nspi", post(mapi_http))
         .route("/autodiscover/autodiscover.xml", any(autodiscover_xml))
         .route("/Autodiscover/Autodiscover.xml", any(autodiscover_xml))
         .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))

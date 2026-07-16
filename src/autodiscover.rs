@@ -416,6 +416,22 @@ fn handle_outlook_xml(
 <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
 <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
 </Protocol>
+<Protocol>
+<Type>mapiHttp</Type>
+<Server>{host}</Server>
+<ServerExclusiveConnect>on</ServerExclusiveConnect>
+<SSL>on</SSL>
+<AuthRequired>on</AuthRequired>
+<LoginName>{email}</LoginName>
+<MailStore>
+<ExternalUrl>https://{host}/mapi/emsmdb?MailboxId={email}</ExternalUrl>
+<InternalUrl>https://{host}/mapi/emsmdb?MailboxId={email}</InternalUrl>
+</MailStore>
+<AddressBook>
+<ExternalUrl>https://{host}/mapi/nspi?MailboxId={email}</ExternalUrl>
+<InternalUrl>https://{host}/mapi/nspi?MailboxId={email}</InternalUrl>
+</AddressBook>
+</Protocol>
 {imap_smtp_protocols}
 </Account>
 </Response>
@@ -585,6 +601,27 @@ mod tests {
         assert!(body.contains("<Type>EXCH</Type>"));
         assert!(body.contains("<Type>EXPR</Type>"));
         assert!(body.contains("<ServerExclusiveConnect>on</ServerExclusiveConnect>"));
+    }
+
+    #[test]
+    fn test_outlook_response_includes_mapi_http_block() {
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            false,
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<Type>mapiHttp</Type>"));
+        // MailStore ExternalUrl points to the MAPI/HTTP mailbox endpoint and
+        // carries the MailboxId query parameter per MS-OXDSCLI §2.2.4.1.1.2.6.29.
+        assert!(body.contains(
+            "https://mail.example.com/mapi/emsmdb?MailboxId=user@example.com"
+        ));
+        // AddressBook ExternalUrl points to the NSPI endpoint separately.
+        assert!(body.contains(
+            "https://mail.example.com/mapi/nspi?MailboxId=user@example.com"
+        ));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use crate::carddav::CarddavClient;
 use crate::config::Config;
 use crate::directory::{self, DirectoryLookup};
 use crate::jmap::JmapClient;
+use crate::mapi::handler::MapiState;
 use crate::metrics::AppMetrics;
 use crate::notifications::SubscriptionManager;
 use crate::oof::{self, OofManager};
@@ -42,6 +43,8 @@ pub struct AppState {
     pub metrics: Arc<AppMetrics>,
     /// Global rate limiter to protect against floods. None if rate limiting is disabled.
     pub rate_limiter: Option<Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
+    /// MAPI/HTTP (MS-OXCMAPIHTTP) session state. None if `mapi_enabled` is false.
+    pub mapi: Option<Arc<MapiState>>,
 }
 
 impl AppState {
@@ -156,6 +159,16 @@ impl AppState {
             None
         };
 
+        // MAPI/HTTP (MS-OXCMAPIHTTP) surface. Constructed only when
+        // `mapi_enabled`; the session/logon runtime is in `crate::mapi`.
+        // We clone the Config and the shared AuthVerifier — the Config is a
+        // cheap Clone (mostly small Strings), and AuthVerifier is `Arc`-shared.
+        let mapi = if cfg.mapi_enabled {
+            Some(Arc::new(MapiState::new(cfg.clone(), auth_verifier.clone())))
+        } else {
+            None
+        };
+
         Self {
             cfg,
             storage,
@@ -170,6 +183,7 @@ impl AppState {
             carddav_client,
             metrics,
             rate_limiter,
+            mapi,
         }
     }
 
