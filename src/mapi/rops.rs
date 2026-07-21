@@ -271,7 +271,11 @@ impl<'a> Buf<'a> {
         rest
     }
     pub fn take_u8(&mut self) -> Result<u8, DecodeError> {
-        let b = self.buf.get(self.pos).copied().ok_or(DecodeError::Insufficient)?;
+        let b = self
+            .buf
+            .get(self.pos)
+            .copied()
+            .ok_or(DecodeError::Insufficient)?;
         self.pos += 1;
         Ok(b)
     }
@@ -724,7 +728,9 @@ impl RopGetStatusRequest {
     pub fn decode(_cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         // Body only (the RopHeader is consumed by the dispatcher). GetStatus
         // has no fields beyond the header.
-        Ok(Self { input_handle_index: 0 })
+        Ok(Self {
+            input_handle_index: 0,
+        })
     }
 }
 
@@ -1214,8 +1220,6 @@ impl RopGetPropertiesSuccess {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,8 +1229,8 @@ mod tests {
         // Every assigned id decodes and re-encodes. Spot-check the Phase 0
         // set plus a representative sample across the id space.
         for b in [
-            0x01u8, 0x02, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0C, 0x11, 0x12, 0x15, 0x16,
-            0x1E, 0x1F, 0x29, 0x2A, 0x2B, 0x33, 0x4B, 0x5E, 0x66, 0x70, 0x82, 0x90, 0xF9, 0xFE, 0xFF,
+            0x01u8, 0x02, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0C, 0x11, 0x12, 0x15, 0x16, 0x1E, 0x1F,
+            0x29, 0x2A, 0x2B, 0x33, 0x4B, 0x5E, 0x66, 0x70, 0x82, 0x90, 0xF9, 0xFE, 0xFF,
         ] {
             let id = RopId::from_u8(b);
             assert_eq!(id.to_u8(), b, "round-trip failed for 0x{b:02X}");
@@ -1244,15 +1248,8 @@ mod tests {
     #[test]
     fn rop_error_code_roundtrips() {
         for v in [
-            0u32,
-            0x80070005,
-            0x80070057,
-            0x8007000E,
-            0x80040109,
-            0x80040115,
-            0x80040108,
-            0x8004010F,
-            0x12345678,
+            0u32, 0x80070005, 0x80070057, 0x8007000E, 0x80040109, 0x80040115, 0x80040108,
+            0x8004010F, 0x12345678,
         ] {
             assert_eq!(RopErrorCode::from_u32(v).to_u32(), v, "v={v:#x}");
         }
@@ -1287,13 +1284,22 @@ mod tests {
         // essdn payload.
         let buf: Vec<u8> = vec![
             RopId::ROP_LOGON.to_u8(),
-            0, // logon id
-            0, // output handle index
+            0,    // logon id
+            0,    // output handle index
             0x01, // logon flags
-            0x02, 0x00, 0x00, 0x00, // open flags = 2
-            0x01, 0x00, 0x00, 0x00, // store state = 1 (invalid)
-            0x03, 0x00, // essdn size incl nul = 3
-            b'a', b'b', 0x00, // essdn "ab\0"
+            0x02,
+            0x00,
+            0x00,
+            0x00, // open flags = 2
+            0x01,
+            0x00,
+            0x00,
+            0x00, // store state = 1 (invalid)
+            0x03,
+            0x00, // essdn size incl nul = 3
+            b'a',
+            b'b',
+            0x00, // essdn "ab\0"
         ];
         let mut cur = Buf::new(&buf);
         let err = RopLogonRequest::decode(&mut cur).unwrap_err();

@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 
 /// Maximum number of bytes we accept in a single MAPI/HTTP request body.
 ///
@@ -238,7 +238,8 @@ pub fn parse_request(
         return Err(HeaderError::Malformed("Content-Type"));
     }
 
-    let rt_raw = header_value(headers, "x-requesttype").ok_or(HeaderError::Missing("X-RequestType"))?;
+    let rt_raw =
+        header_value(headers, "x-requesttype").ok_or(HeaderError::Missing("X-RequestType"))?;
     if rt_raw.len() > 64 {
         return Err(HeaderError::Malformed("X-RequestType"));
     }
@@ -526,7 +527,10 @@ mod tests {
 
     #[test]
     fn parse_request_type_exact_match() {
-        assert_eq!(MapiRequestType::parse("Connect"), Some(MapiRequestType::Connect));
+        assert_eq!(
+            MapiRequestType::parse("Connect"),
+            Some(MapiRequestType::Connect)
+        );
         assert_eq!(MapiRequestType::parse("PING"), Some(MapiRequestType::Ping));
         // Case-sensitive per the spec table.
         assert_eq!(MapiRequestType::parse("connect"), None);
@@ -536,7 +540,9 @@ mod tests {
 
     #[test]
     fn request_id_validation() {
-        assert!(valid_request_id("{E2EA6C1C-E61B-49E9-9CFB-38184F907552}:123456"));
+        assert!(valid_request_id(
+            "{E2EA6C1C-E61B-49E9-9CFB-38184F907552}:123456"
+        ));
         assert!(!valid_request_id("no-colon"));
         assert!(!valid_request_id("guid:"));
         assert!(!valid_request_id(":123"));
@@ -562,11 +568,7 @@ mod tests {
 
     #[test]
     fn parse_request_happy_path() {
-        let h = headers_with(
-            "application/mapi-http",
-            "Connect",
-            "{GUID}:1",
-        );
+        let h = headers_with("application/mapi-http", "Connect", "{GUID}:1");
         let req = parse_request(&h, Vec::new(), true).expect("parse");
         assert_eq!(req.kind, RpcKind::Mailbox(MapiRequestType::Connect));
         assert_eq!(req.request_id, "{GUID}:1");
@@ -577,7 +579,10 @@ mod tests {
     #[test]
     fn parse_request_missing_header() {
         let mut h = HeaderMap::new();
-        h.insert("content-type", HeaderValue::from_static("application/mapi-http"));
+        h.insert(
+            "content-type",
+            HeaderValue::from_static("application/mapi-http"),
+        );
         // no X-RequestType
         h.insert("x-requestid", HeaderValue::from_static("{GUID}:1"));
         let err = parse_request(&h, Vec::new(), true).unwrap_err();

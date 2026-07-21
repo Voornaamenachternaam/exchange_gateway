@@ -30,8 +30,7 @@ use std::time::Duration;
 
 use jsonwebtoken::jwk::{AlgorithmParameters, Jwk, JwkSet};
 use jsonwebtoken::{
-    Algorithm, DecodingKey, Validation, decode, decode_header,
-    errors::Error as JwtError,
+    Algorithm, DecodingKey, Validation, decode, decode_header, errors::Error as JwtError,
 };
 use parking_lot::RwLock;
 use serde::Deserialize;
@@ -181,8 +180,7 @@ impl TokenVerifier {
             return Err(VerifyError::JwksFetch);
         }
         let body = resp.bytes().await.map_err(|_| VerifyError::JwksFetch)?;
-        let jwks: JwkSet =
-            serde_json::from_slice(&body).map_err(|_| VerifyError::JwksFetch)?;
+        let jwks: JwkSet = serde_json::from_slice(&body).map_err(|_| VerifyError::JwksFetch)?;
         *self.cache.write() = Some(jwks);
         *self.last_fetch.write() = Some(std::time::Instant::now());
         Ok(())
@@ -216,7 +214,14 @@ impl TokenVerifier {
         let header = decode_header(token).map_err(|_| VerifyError::Malformed)?;
         let alg = header.alg;
         // Only accept asymmetric algorithms on the HMA path.
-        if !matches!(alg, Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 | Algorithm::ES256 | Algorithm::ES384) {
+        if !matches!(
+            alg,
+            Algorithm::RS256
+                | Algorithm::RS384
+                | Algorithm::RS512
+                | Algorithm::ES256
+                | Algorithm::ES384
+        ) {
             return Err(VerifyError::Malformed);
         }
         let Some(kid) = header.kid else {
@@ -230,7 +235,8 @@ impl TokenVerifier {
         // either form provided the configured audience is present.
         validation.set_audience(&[&self.audience]);
         // jsonwebtoken validates exp/nbf by default; we leave them on.
-        let token_data = decode::<EntraClaims>(token, &key, &validation).map_err(VerifyError::from)?;
+        let token_data =
+            decode::<EntraClaims>(token, &key, &validation).map_err(VerifyError::from)?;
         let claims = token_data.claims;
         let upn = claims
             .preferred_username
@@ -247,9 +253,7 @@ impl TokenVerifier {
 
 fn decoding_key_from_jwk(jwk: &Jwk) -> Option<DecodingKey> {
     match &jwk.algorithm {
-        AlgorithmParameters::RSA(rsa) => {
-            DecodingKey::from_rsa_components(&rsa.n, &rsa.e).ok()
-        }
+        AlgorithmParameters::RSA(rsa) => DecodingKey::from_rsa_components(&rsa.n, &rsa.e).ok(),
         AlgorithmParameters::EllipticCurve(ec) => {
             DecodingKey::from_ec_components(&ec.x, &ec.y).ok()
         }

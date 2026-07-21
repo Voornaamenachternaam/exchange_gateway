@@ -79,8 +79,14 @@ impl PropertyType {
     pub const fn fixed_size(self) -> Option<usize> {
         Some(match self {
             Self::PTYP_INTEGER16 | Self::PTYP_UNSPECIFIED | Self::PTYP_NULL => 2,
-            Self::PTYP_INTEGER32 | Self::PTYP_FLOATING32 | Self::PTYP_FLOATING_TIME | Self::PTYP_ERROR_CODE => 4,
-            Self::PTYP_INTEGER64 | Self::PTYP_FLOATING64 | Self::PTYP_CURRENCY | Self::PTYP_TIME => 8,
+            Self::PTYP_INTEGER32
+            | Self::PTYP_FLOATING32
+            | Self::PTYP_FLOATING_TIME
+            | Self::PTYP_ERROR_CODE => 4,
+            Self::PTYP_INTEGER64
+            | Self::PTYP_FLOATING64
+            | Self::PTYP_CURRENCY
+            | Self::PTYP_TIME => 8,
             Self::PTYP_BOOLEAN => 1,
             Self::PTYP_GUID => 16,
             _ => return None,
@@ -142,9 +148,9 @@ pub enum PropertyValue {
     Time(u64), // FILETIME: 100ns ticks since 1601-01-01
     Guid([u8; 16]),
     ErrorCode(u32),
-    String(String),     // PtypString: UTF-16LE wire form
-    String8(String),    // PtypString8: lossy ASCII on the wire
-    Binary(Vec<u8>),    // PtypBinary
+    String(String),  // PtypString: UTF-16LE wire form
+    String8(String), // PtypString8: lossy ASCII on the wire
+    Binary(Vec<u8>), // PtypBinary
     /// Any property type we do not yet decode carries the raw bytes verbatim
     /// so a future phase can pass them through unchanged.
     Opaque {
@@ -253,10 +259,9 @@ mod tests {
     #[test]
     fn property_type_roundtrips() {
         for v in [
-            0x0000u16, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007,
-            0x000A, 0x000B, 0x0014, 0x001E, 0x001F, 0x0040, 0x0048, 0x00FB,
-            0x00FD, 0x00FE, 0x0102, 0x1002, 0x1003, 0x1004, 0x1005, 0x1006,
-            0x1007, 0x1014, 0x101E, 0x101F, 0x1040, 0x1048, 0x1102, 0x2002,
+            0x0000u16, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x000A, 0x000B,
+            0x0014, 0x001E, 0x001F, 0x0040, 0x0048, 0x00FB, 0x00FD, 0x00FE, 0x0102, 0x1002, 0x1003,
+            0x1004, 0x1005, 0x1006, 0x1007, 0x1014, 0x101E, 0x101F, 0x1040, 0x1048, 0x1102, 0x2002,
         ] {
             let t = PropertyType::from_u16(v);
             assert_eq!(t.to_u16(), v, "v={v:#06x}");

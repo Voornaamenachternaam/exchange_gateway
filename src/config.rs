@@ -690,9 +690,13 @@ fn apply_environment_overrides(cfg: &mut Config) {
         tracing::debug!("Applying {} from environment", ENV_MAPI_HMA_ENABLED);
         cfg.mapi_hma_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
-    apply_env_string(cfg, get_env_with_fallback(ENV_MAPI_OIDC_ISSUER, None), |c, v| {
-        c.mapi_oidc_issuer = v;
-    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_MAPI_OIDC_ISSUER, None),
+        |c, v| {
+            c.mapi_oidc_issuer = v;
+        },
+    );
     apply_env_string(
         cfg,
         get_env_with_fallback(ENV_MAPI_OIDC_AUDIENCE, None),

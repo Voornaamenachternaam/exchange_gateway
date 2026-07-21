@@ -615,13 +615,9 @@ mod tests {
         assert!(body.contains("<Type>mapiHttp</Type>"));
         // MailStore ExternalUrl points to the MAPI/HTTP mailbox endpoint and
         // carries the MailboxId query parameter per MS-OXDSCLI §2.2.4.1.1.2.6.29.
-        assert!(body.contains(
-            "https://mail.example.com/mapi/emsmdb?MailboxId=user@example.com"
-        ));
+        assert!(body.contains("https://mail.example.com/mapi/emsmdb?MailboxId=user@example.com"));
         // AddressBook ExternalUrl points to the NSPI endpoint separately.
-        assert!(body.contains(
-            "https://mail.example.com/mapi/nspi?MailboxId=user@example.com"
-        ));
+        assert!(body.contains("https://mail.example.com/mapi/nspi?MailboxId=user@example.com"));
     }
 
     #[test]

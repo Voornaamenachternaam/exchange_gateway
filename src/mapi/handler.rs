@@ -27,12 +27,12 @@
 
 use crate::auth::AuthVerifier;
 use crate::config::Config;
-use crate::mapi::logon::{logon_basic, LogonOutcome};
+use crate::mapi::logon::{LogonOutcome, logon_basic};
 use crate::mapi::rops::{
     Buf, DecodeError, RopErrorCode, RopErrorResponse, RopGetPropertiesAllRequest,
     RopGetPropertiesSpecificRequest, RopGetStatusRequest, RopHeader4, RopId, RopLogonRequest,
-    RopLogonSuccess, RopOpenTableRequest, RopQueryRowsRequest, RopReleaseRequest, RopSetColumnsRequest,
-    RopSetMessageReadFlagRequest,
+    RopLogonSuccess, RopOpenTableRequest, RopQueryRowsRequest, RopReleaseRequest,
+    RopSetColumnsRequest, RopSetMessageReadFlagRequest,
 };
 use crate::mapi::session::{FolderKind, Handle, SessionManager};
 use crate::mapi::store;
@@ -98,9 +98,7 @@ async fn handle_connect(req: MapiRequest, state: &MapiState) -> MapiResponse {
     };
     // Phase 0 authenticates via Basic auth only. The password is supplied by
     // the router (in `main.rs`) from the request Authorization header.
-    let password = req
-        .password
-        .as_deref();
+    let password = req.password.as_deref();
     match logon_basic(&rop, password, &state.cfg, &state.auth, &state.sessions).await {
         LogonOutcome::Success {
             logon_id: _,
@@ -416,7 +414,10 @@ async fn execute_one_rop(
             let input_handle_index = cur.take_u8()?;
             let req = RopSetColumnsRequest::decode(cur)?;
             sessions.with_session_mut(session_id, |s| {
-                if let Some(Handle::Table { column_set, rows, .. }) = s.handle_mut(input_handle_index) {
+                if let Some(Handle::Table {
+                    column_set, rows, ..
+                }) = s.handle_mut(input_handle_index)
+                {
                     *column_set = req.property_tags.clone();
                     // Invalidate the per-row cached cells so the next QueryRows
                     // re-materialises against the new column set. The cached
@@ -445,22 +446,32 @@ async fn execute_one_rop(
             // row ids; the property cells come from Email/get on demand).
             let (row_data, served, origin) = sessions
                 .with_session_mut(session_id, |s| {
-                    let Some(Handle::Table { rows, cursor, column_set, kind, parent_backend_id, .. }) =
-                        s.handle_mut(input_handle_index)
+                    let Some(Handle::Table {
+                        rows,
+                        cursor,
+                        column_set,
+                        kind,
+                        parent_backend_id,
+                        ..
+                    }) = s.handle_mut(input_handle_index)
                     else {
                         return (Vec::new(), 0u16, 0u8);
                     };
                     let cs = column_set.clone();
                     let pk = *kind;
                     let mailbox_id = parent_backend_id.clone();
-                    let want = usize::from(req.row_count).min(rows.len() - (*cursor).min(rows.len()));
+                    let want =
+                        usize::from(req.row_count).min(rows.len() - (*cursor).min(rows.len()));
                     let mut buf = Vec::new();
                     let served = u16::try_from(want).unwrap_or(0);
                     for r in rows.iter_mut().skip(*cursor).take(want) {
                         // Lazily materialise cells for the current column
                         // set from the cached backend object carried on the
                         // row, then drop the cached source to bound memory.
-                        if r.cells.is_empty() && !cs.is_empty() && let Some(src) = r.source.take() {
+                        if r.cells.is_empty()
+                            && !cs.is_empty()
+                            && let Some(src) = r.source.take()
+                        {
                             if let Some(e) = src.downcast_ref::<crate::jmap::JmapEmail>() {
                                 r.cells = store::email_to_cells(e, &cs, pk, mailbox_id.as_str());
                             } else if let Some(m) = src.downcast_ref::<crate::jmap::JmapMailbox>() {
@@ -516,32 +527,63 @@ async fn execute_one_rop(
             // FolderKind discriminant can mean either over the live session.
             let (handle_shape, kind, backend_id, mailbox_id) = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
-                    Handle::Message { backend_id, mailbox_id, kind, .. } => {
-                        (HandleShape::Message, *kind, backend_id.clone(), mailbox_id.clone())
-                    }
-                    Handle::Folder { backend_id, kind } => {
-                        (HandleShape::Folder, *kind, backend_id.clone(), String::new())
-                    }
-                    _ => (HandleShape::Neither, FolderKind::Root, String::new(), String::new()),
+                    Handle::Message {
+                        backend_id,
+                        mailbox_id,
+                        kind,
+                        ..
+                    } => (
+                        HandleShape::Message,
+                        *kind,
+                        backend_id.clone(),
+                        mailbox_id.clone(),
+                    ),
+                    Handle::Folder { backend_id, kind } => (
+                        HandleShape::Folder,
+                        *kind,
+                        backend_id.clone(),
+                        String::new(),
+                    ),
+                    _ => (
+                        HandleShape::Neither,
+                        FolderKind::Root,
+                        String::new(),
+                        String::new(),
+                    ),
                 })
-                .unwrap_or((HandleShape::Neither, FolderKind::Root, String::new(), String::new()));
+                .unwrap_or((
+                    HandleShape::Neither,
+                    FolderKind::Root,
+                    String::new(),
+                    String::new(),
+                ));
             let cells = match (handle_shape, jmap, password) {
                 // Mail message handle -> Email/get -> email_to_cells (body,
                 // sender, subject, flags, entry-id, etc.).
-                (HandleShape::Message, Some(jc), Some(pw)) if kind == FolderKind::Mail && !backend_id.is_empty() => {
-                    let account_id = jc.get_account_id(username, pw).await.ok().unwrap_or_default();
+                (HandleShape::Message, Some(jc), Some(pw))
+                    if kind == FolderKind::Mail && !backend_id.is_empty() =>
+                {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
                     if account_id.is_empty() {
                         Vec::new()
                     } else {
                         match jc.get_email(&account_id, &backend_id, username, pw).await {
-                            Ok(Some(e)) => store::email_to_cells(&e, &req.property_tags, kind, &mailbox_id),
+                            Ok(Some(e)) => {
+                                store::email_to_cells(&e, &req.property_tags, kind, &mailbox_id)
+                            }
                             _ => Vec::new(),
                         }
                     }
                 }
                 // Mail folder handle -> Mailbox/query -> mailbox_to_cells
                 // (DisplayName, ParentFolderId, ContentCount, ...).
-                (HandleShape::Folder, Some(jc), Some(pw)) if kind == FolderKind::Mail && !backend_id.is_empty() => {
+                (HandleShape::Folder, Some(jc), Some(pw))
+                    if kind == FolderKind::Mail && !backend_id.is_empty() =>
+                {
                     match jc.query_mailboxes(username, pw).await {
                         Ok(ml) => ml
                             .mailboxes
@@ -616,7 +658,11 @@ async fn execute_one_rop(
                 .unwrap_or_default();
             let want_read = !(req.read_flag & RF_CLEAR_READ_FLAG != 0
                 || req.read_flag & RF_GENERATE_RECEIPT_ONLY != 0);
-            let backend_owned = if backend_id.is_empty() { None } else { Some(backend_id.as_str()) };
+            let backend_owned = if backend_id.is_empty() {
+                None
+            } else {
+                Some(backend_id.as_str())
+            };
             // Distinguishing ROP failures from transport success: when we
             // cannot apply the patch (no JMAP config, no creds, no account
             // id, missing message handle), return ROP-level `DiskError`
@@ -645,7 +691,7 @@ async fn execute_one_rop(
                 }
                 (None, _, _) => RopErrorCode::NotFound, // no JMAP backend configured
                 (_, None, _) => RopErrorCode::AccessDenied, // no credentials
-                (_, _, None) => RopErrorCode::NotFound,  // message handle not bound
+                (_, _, None) => RopErrorCode::NotFound, // message handle not bound
             };
             // ResponseHandleIndex echoes the request's ResponseHandleIndex
             // (MS-OXCROPS §2.2.6.11.2), NOT the InputHandleIndex used to
@@ -678,7 +724,9 @@ async fn execute_one_rop(
 
 /// Decode `RopOpenFolder` body (`FolderId(8) + OpenModeFlags(1)`) after the
 /// 4-byte header has been consumed.
-fn decode_open_folder_body(cur: &mut Buf<'_>) -> Result<crate::mapi::rops::RopOpenFolderRequest, DecodeError> {
+fn decode_open_folder_body(
+    cur: &mut Buf<'_>,
+) -> Result<crate::mapi::rops::RopOpenFolderRequest, DecodeError> {
     let input_handle_index = 0u8;
     let output_handle_index = 0u8;
     let folder_id = cur.take_u64_le()?;
@@ -734,12 +782,18 @@ async fn fetch_contents_rows(
 /// Map a folder backend id back to a FolderKind using the live session
 /// snapshot. For the synthetic "ROOT" id we return Root; otherwise we
 /// consult the existing handles for a Folder with that backend id.
-fn folder_kind_for_backend(backend_id: &str, snap: &crate::mapi::session::SessionSnapshot) -> FolderKind {
+fn folder_kind_for_backend(
+    backend_id: &str,
+    snap: &crate::mapi::session::SessionSnapshot,
+) -> FolderKind {
     if backend_id == "ROOT" {
         return FolderKind::Root;
     }
     for h in snap.handles.values() {
-        if let Handle::Folder { backend_id: bid, kind } = h
+        if let Handle::Folder {
+            backend_id: bid,
+            kind,
+        } = h
             && bid == backend_id
         {
             return *kind;
@@ -776,12 +830,18 @@ fn encode_cell_for_row(
 /// across the QueryRows / GetProperties paths. For `PR_FOLDER_ID`/`PR_MID` /
 /// `PR_PARENT_FOLDER_ID` the cell is overridden to the row id so the client
 /// always gets a stable identity even when the backend didn't supply it.
-fn encode_typed_null(out: &mut Vec<u8>, tag: &crate::mapi::data::PropertyTag, row: &crate::mapi::session::TableRow) {
+fn encode_typed_null(
+    out: &mut Vec<u8>,
+    tag: &crate::mapi::data::PropertyTag,
+    row: &crate::mapi::session::TableRow,
+) {
     let mut v = store::typed_null_for_tag(tag);
     if tag.property_type == crate::mapi::data::PropertyType::PTYP_INTEGER64
         && matches!(
             tag.property_id,
-            crate::mapi::store::PR_FOLDER_ID | crate::mapi::store::PR_MID | crate::mapi::store::PR_PARENT_FOLDER_ID
+            crate::mapi::store::PR_FOLDER_ID
+                | crate::mapi::store::PR_MID
+                | crate::mapi::store::PR_PARENT_FOLDER_ID
         )
     {
         v = crate::mapi::data::PropertyValue::Integer64(row.row_id as i64);
@@ -797,9 +857,9 @@ async fn handle_disconnect(req: MapiRequest, state: &MapiState) -> MapiResponse 
     let id = crate::mapi::transport::cookie_value(&req.cookies, "MapiContext")
         .and_then(|v| uuid::Uuid::parse_str(v).ok())
         .or_else(|| {
-            req.client_info.as_deref().and_then(|info| {
-                uuid::Uuid::parse_str(info.split(':').next().unwrap_or(info)).ok()
-            })
+            req.client_info
+                .as_deref()
+                .and_then(|info| uuid::Uuid::parse_str(info.split(':').next().unwrap_or(info)).ok())
         });
     if let Some(id) = id {
         state.sessions.remove(&id);
@@ -817,7 +877,10 @@ mod tests {
     async fn endpoint_disabled_returns_16() {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = false;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
         let req = MapiRequest {
             kind: RpcKind::Mailbox(MapiRequestType::Connect),
             request_id: "{G}:1".into(),
@@ -837,7 +900,10 @@ mod tests {
     async fn ping_returns_success() {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
         let req = MapiRequest {
             kind: RpcKind::Mailbox(MapiRequestType::Ping),
             request_id: "{G}:1".into(),
@@ -855,7 +921,10 @@ mod tests {
     async fn connect_with_empty_body_is_invalid() {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
         let req = MapiRequest {
             kind: RpcKind::Mailbox(MapiRequestType::Connect),
             request_id: "{G}:1".into(),
@@ -876,7 +945,10 @@ mod tests {
         // transport-level InvalidRequestBody.
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
         let req = MapiRequest {
             kind: RpcKind::Mailbox(MapiRequestType::Execute),
             request_id: "{G}:1".into(),
@@ -898,7 +970,10 @@ mod tests {
         // correctly: transport success, ROP failure.
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
         let stray = uuid::Uuid::new_v4();
         let body: Vec<u8> = vec![0xFF, 7]; // RopId(0xFF) + handle index
         let req = MapiRequest {
@@ -927,16 +1002,24 @@ mod tests {
         // InputHandleIndex + Success return value).
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
-        let sid = state.sessions.create(crate::mapi::session::SessionPrincipal {
-            email: "u@example.com".into(),
-            basic_auth: true,
-        });
-        state.sessions.with_session_mut(&sid, |s| {
-            s.set_handle(3, crate::mapi::session::Handle::Folder {
-                backend_id: "I".into(),
-                kind: crate::mapi::session::FolderKind::Mail,
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
             });
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                3,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "I".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
         });
         // RopRelease wire: RopId(0x01) · LogonId(0) · InputHandleIndex(3)
         let body: Vec<u8> = vec![0x01, 0, 3];
@@ -971,11 +1054,16 @@ mod tests {
     async fn query_rows_materialises_email_subject_and_mid() {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
-        let sid = state.sessions.create(crate::mapi::session::SessionPrincipal {
-            email: "u@example.com".into(),
-            basic_auth: true,
-        });
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
 
         // Build a JmapEmail with a known subject + JMAP id, then install a
         // Table handle (index 5) whose single row carries it as the source.
@@ -989,17 +1077,22 @@ mod tests {
             let row = crate::mapi::session::TableRow {
                 row_id: expected_mid,
                 cells: Vec::new(),
-                source: Some(std::sync::Arc::new(email) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+                source: Some(
+                    std::sync::Arc::new(email) as std::sync::Arc<dyn std::any::Any + Send + Sync>
+                ),
             };
-            s.set_handle(5, crate::mapi::session::Handle::Table {
-                kind: crate::mapi::session::FolderKind::Mail,
-                parent_handle: -1,
-                parent_backend_id: "I".into(),
-                column_set: Vec::new(),
-                rows: vec![row],
-                cursor: 0,
-                total: 1,
-            });
+            s.set_handle(
+                5,
+                crate::mapi::session::Handle::Table {
+                    kind: crate::mapi::session::FolderKind::Mail,
+                    parent_handle: -1,
+                    parent_backend_id: "I".into(),
+                    column_set: Vec::new(),
+                    rows: vec![row],
+                    cursor: 0,
+                    total: 1,
+                },
+            );
         });
 
         // Column set: PR_SUBJECT (PtypString=0x001F + id 0x0037) + PR_MID (PtypInteger64=0x0014 + id 0x6748).
@@ -1009,9 +1102,17 @@ mod tests {
             // RopId(0x06) · LogonId(0) · InputHandleIndex(5) · SetColumnFlags(0)
             // · PropertyTagCount(2 LE = 2) · [tag1][tag2]
             b.extend_from_slice(&[0x06, 0, 5, 0, 2, 0]);
-            b.extend_from_slice(&crate::mapi::data::PropertyType::PTYP_STRING.to_u16().to_le_bytes());
+            b.extend_from_slice(
+                &crate::mapi::data::PropertyType::PTYP_STRING
+                    .to_u16()
+                    .to_le_bytes(),
+            );
             b.extend_from_slice(&0x0037u16.to_le_bytes()); // PR_SUBJECT id
-            b.extend_from_slice(&crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16().to_le_bytes());
+            b.extend_from_slice(
+                &crate::mapi::data::PropertyType::PTYP_INTEGER64
+                    .to_u16()
+                    .to_le_bytes(),
+            );
             b.extend_from_slice(&0x6748u16.to_le_bytes()); // PR_MID id
             b
         };
@@ -1032,7 +1133,8 @@ mod tests {
             None,
             0,
         )
-        .await.expect("set_columns dispatch");
+        .await
+        .expect("set_columns dispatch");
 
         // QueryRows: RopId(0x15) · LogonId(0) · InputHandleIndex(5) ·
         // QueryRowsFlags(0) · ForwardRead(0) · RowCount(2 LE = 1)
@@ -1054,14 +1156,18 @@ mod tests {
             None,
             0,
         )
-        .await.expect("query_rows dispatch");
+        .await
+        .expect("query_rows dispatch");
 
         // Response: RopId(0x15) · InputHandleIndex(5) · ReturnValue(4 LE=0)
         // · Origin(1) · RowCount(2 LE=1) · flag(1)=0 · <subject cell> · <mid cell>
         assert_eq!(out_qr[0], 0x15);
         assert_eq!(out_qr[1], 5);
         let rv = u32::from_le_bytes([out_qr[2], out_qr[3], out_qr[4], out_qr[5]]);
-        assert_eq!(crate::mapi::rops::RopErrorCode::from_u32(rv), crate::mapi::rops::RopErrorCode::Success);
+        assert_eq!(
+            crate::mapi::rops::RopErrorCode::from_u32(rv),
+            crate::mapi::rops::RopErrorCode::Success
+        );
         // off 6 = Origin; off 7..9 = RowCount.
         let row_count = u16::from_le_bytes([out_qr[7], out_qr[8]]);
         assert_eq!(row_count, 1, "row_count");
@@ -1071,19 +1177,27 @@ mod tests {
         // INCLUDING the 0x0000 terminator, with NO length prefix.
         // "Hello MAPI" is 10 code units → 22 bytes (no length word).
         let subj_u16: Vec<u16> = (0..10)
-            .map(|i| {
-                u16::from_le_bytes([out_qr[10 + 2 * i], out_qr[11 + 2 * i]])
-            })
+            .map(|i| u16::from_le_bytes([out_qr[10 + 2 * i], out_qr[11 + 2 * i]]))
             .collect();
         let subj = String::from_utf16_lossy(&subj_u16);
         assert_eq!(subj, "Hello MAPI");
         // Terminating NUL (0x0000) at out_qr[30..32].
-        assert_eq!(u16::from_le_bytes([out_qr[30], out_qr[31]]), 0, "subject NUL");
+        assert_eq!(
+            u16::from_le_bytes([out_qr[30], out_qr[31]]),
+            0,
+            "subject NUL"
+        );
         // PR_MID cell: 8-byte LE Integer64 == expected_mid immediately after.
         let mid_off = 10 + 10 * 2 + 2; // skip body(20) + NUL(2)
         let packed = i64::from_le_bytes([
-            out_qr[mid_off], out_qr[mid_off + 1], out_qr[mid_off + 2], out_qr[mid_off + 3],
-            out_qr[mid_off + 4], out_qr[mid_off + 5], out_qr[mid_off + 6], out_qr[mid_off + 7],
+            out_qr[mid_off],
+            out_qr[mid_off + 1],
+            out_qr[mid_off + 2],
+            out_qr[mid_off + 3],
+            out_qr[mid_off + 4],
+            out_qr[mid_off + 5],
+            out_qr[mid_off + 6],
+            out_qr[mid_off + 7],
         ]);
         assert_eq!(packed as u64, expected_mid, "PR_MID matches row id");
     }
@@ -1101,19 +1215,27 @@ mod tests {
     async fn execute_rop_open_folder_handles_header_after_ropid() {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
-        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
-        let sid = state.sessions.create(crate::mapi::session::SessionPrincipal {
-            email: "u@example.com".into(),
-            basic_auth: true,
-        });
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
         const INPUT_HANDLE: u8 = 7;
         const OUTPUT_HANDLE: u8 = 11;
         const FOLDER_ID: u64 = 0x0123_4567_89AB_CDEF;
         state.sessions.with_session_mut(&sid, |s| {
-            s.set_handle(INPUT_HANDLE, crate::mapi::session::Handle::Folder {
-                backend_id: "I".into(),
-                kind: crate::mapi::session::FolderKind::Mail,
-            });
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "I".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
         });
 
         // Wire: RopId·LogonId·Input·Output·FolderId(8 LE)·OpenModeFlags(1) = 13 bytes.
@@ -1148,7 +1270,8 @@ mod tests {
         assert_eq!(out[1], OUTPUT_HANDLE, "output handle index (NOT shifted)");
         let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
         assert_eq!(
-            RopErrorCode::from_u32(rv), RopErrorCode::Success,
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::Success,
             "open_folder return value"
         );
         assert_eq!(out[6], 0, "has_rules");

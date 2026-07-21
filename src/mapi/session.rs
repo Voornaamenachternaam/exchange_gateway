@@ -20,8 +20,8 @@
 //     a new session.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
@@ -45,7 +45,6 @@ fn epoch_nanos(t: Instant) -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(u64::MAX)
 }
-
 
 /// Default idle TTL for a MAPI/HTTP session. Outlook keeps connect sessions
 /// open for the lifetime of the app window; we expire after this idle window
@@ -223,7 +222,8 @@ impl Session {
         // potential for lock-ordering surprises across `get`, `with_*`, and
         // `sweep_idle`. The atomic is monotonic enough for idle-TTL
         // comparisons; sub-millisecond precision loss at startup is fine.
-        self.last_seen.store(epoch_nanos(Instant::now()), Ordering::Relaxed);
+        self.last_seen
+            .store(epoch_nanos(Instant::now()), Ordering::Relaxed);
     }
 
     /// Pick the lowest free handle index in `[0, 255]`, install `handle`
@@ -286,7 +286,6 @@ impl SessionManager {
         DEFAULT_SESSION_IDLE_TTL.as_secs()
     }
 
-
     /// Allocate a new session for `principal` and return its id.
     pub fn create(&self, principal: SessionPrincipal) -> Uuid {
         let id = Uuid::new_v4();
@@ -341,11 +340,7 @@ impl SessionManager {
     /// this closure so the lock is held for the atomic duration of the
     /// change. `f` receives the `Session` and is expected to keep its
     /// mutations lock-local (no awaiting).
-    pub fn with_session_mut<R>(
-        &self,
-        id: &Uuid,
-        f: impl FnOnce(&mut Session) -> R,
-    ) -> Option<R> {
+    pub fn with_session_mut<R>(&self, id: &Uuid, f: impl FnOnce(&mut Session) -> R) -> Option<R> {
         let mut guard = self.inner.write();
         guard.get_mut(id).map(|s| {
             s.touch();
@@ -361,7 +356,9 @@ impl SessionManager {
         f: impl FnOnce(&Handle) -> R,
     ) -> Option<R> {
         let guard = self.inner.read();
-        guard.get(id).and_then(|s| s.handles.get(&handle_index).map(f))
+        guard
+            .get(id)
+            .and_then(|s| s.handles.get(&handle_index).map(f))
     }
 
     /// Remove a session (called by `Disconnect` or on idle expiry).
@@ -470,16 +467,20 @@ mod tests {
         let mgr = SessionManager::new();
         let id = mgr.create(principal("u@example.com"));
         let idx = mgr
-            .with_session_mut(&id, |s| s.alloc_handle(Handle::Folder {
-                backend_id: "inbox".into(),
-                kind: FolderKind::Mail,
-            }))
+            .with_session_mut(&id, |s| {
+                s.alloc_handle(Handle::Folder {
+                    backend_id: "inbox".into(),
+                    kind: FolderKind::Mail,
+                })
+            })
             .expect("session");
         assert_eq!(idx, Some(0));
         let snap = mgr.get(&id).expect("session");
         assert!(snap.handles.contains_key(&0));
         // free it
-        let freed = mgr.with_session_mut(&id, |s| s.free_handle(0)).expect("session");
+        let freed = mgr
+            .with_session_mut(&id, |s| s.free_handle(0))
+            .expect("session");
         assert!(freed);
         let snap = mgr.get(&id).expect("session");
         assert!(!snap.handles.contains_key(&0));
@@ -496,7 +497,10 @@ mod tests {
         .expect("session");
         // Replace the column set and advance the cursor atomically.
         mgr.with_session_mut(&id, |s| {
-            if let Some(Handle::Table { column_set, cursor, .. }) = s.handle_mut(5) {
+            if let Some(Handle::Table {
+                column_set, cursor, ..
+            }) = s.handle_mut(5)
+            {
                 column_set.push(crate::mapi::data::PropertyTag::new(
                     crate::mapi::data::PropertyType::PTYP_STRING,
                     0x0037,
@@ -507,7 +511,10 @@ mod tests {
         .expect("session");
         // Verify via the read-snapshot.
         let snap = mgr.get(&id).expect("session");
-        let Handle::Table { column_set, cursor, .. } = snap.handles.get(&5).unwrap() else {
+        let Handle::Table {
+            column_set, cursor, ..
+        } = snap.handles.get(&5).unwrap()
+        else {
             panic!("expected table handle");
         };
         assert_eq!(column_set.len(), 1);
@@ -519,12 +526,15 @@ mod tests {
         let mgr = SessionManager::new();
         let id = mgr.create(principal("u@example.com"));
         mgr.with_session_mut(&id, |s| {
-            s.set_handle(2, Handle::Message {
-                backend_id: "M-123".into(),
-                mailbox_id: "I".into(),
-                kind: FolderKind::Mail,
-                is_new: false,
-            });
+            s.set_handle(
+                2,
+                Handle::Message {
+                    backend_id: "M-123".into(),
+                    mailbox_id: "I".into(),
+                    kind: FolderKind::Mail,
+                    is_new: false,
+                },
+            );
         })
         .expect("session");
         let kind = mgr
@@ -539,13 +549,25 @@ mod tests {
     fn alloc_handle_fills_lowest_free_index() {
         let mgr = SessionManager::new();
         let id = mgr.create(principal("u@example.com"));
-        let a = mgr.with_session_mut(&id, |s| s.alloc_handle(table_handle())).unwrap().unwrap();
-        let b = mgr.with_session_mut(&id, |s| s.alloc_handle(table_handle())).unwrap().unwrap();
-        let c = mgr.with_session_mut(&id, |s| s.alloc_handle(table_handle())).unwrap().unwrap();
+        let a = mgr
+            .with_session_mut(&id, |s| s.alloc_handle(table_handle()))
+            .unwrap()
+            .unwrap();
+        let b = mgr
+            .with_session_mut(&id, |s| s.alloc_handle(table_handle()))
+            .unwrap()
+            .unwrap();
+        let c = mgr
+            .with_session_mut(&id, |s| s.alloc_handle(table_handle()))
+            .unwrap()
+            .unwrap();
         assert_eq!([a, b, c], [0u8, 1, 2]);
         // Free index 1, the next alloc reuses 1.
         mgr.with_session_mut(&id, |s| s.free_handle(1)).unwrap();
-        let d = mgr.with_session_mut(&id, |s| s.alloc_handle(table_handle())).unwrap().unwrap();
+        let d = mgr
+            .with_session_mut(&id, |s| s.alloc_handle(table_handle()))
+            .unwrap()
+            .unwrap();
         assert_eq!(d, 1u8);
     }
 
