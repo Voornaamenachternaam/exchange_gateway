@@ -207,25 +207,19 @@ pub fn canonical_folder_ids(_email: &str) -> [[u8; 52]; 9] {
 }
 
 /// Whether the gateway is configured with an organisation prefix to enforce
-/// on incoming DNs. Returns the prefix (`""` if unconfigured; the absence of
-/// a configuration disables the gate).
+/// on incoming DNs. Returns the prefix (`None` if unconfigured; the absence
+/// of a configuration disables the gate). The org name is taken verbatim
+/// from `Config::mapi_org` (set via `GATEWAY_MAPI_ORG`); it is *not* derived
+/// from `mail_domain`, which previously produced a DNS label that never
+/// matched Outlook's `legacyExchangeDN` org name and rejected every
+/// legitimate logon.
 fn cfg_org_prefix(cfg: &Config) -> Option<String> {
-    // Reuse the legacyExchangeDN field if one exists; otherwise treat as
-    // unconfigured. The Config surface does not currently expose a
-    // per-gateway org name; we derive one from mail_domain for the bench
-    // test here. Phase 1 will add an explicit `GATEWAY_MAPI_ORG` knob.
-    if cfg.mail_domain.is_empty() {
-        return None;
+    let org = cfg.mapi_org.trim();
+    if org.is_empty() {
+        None
+    } else {
+        Some(org.to_string())
     }
-    let first = cfg.mail_domain.split('.').next().unwrap_or("");
-    let capped: String = first
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    if capped.is_empty() {
-        return None;
-    }
-    Some(capped)
 }
 
 /// Returns the set of valid directory-name segments the gateway will accept
@@ -239,6 +233,38 @@ pub fn allowed_ou_segments() -> HashSet<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cfg_org_prefix_disabled_by_default() {
+        // The default Config has no `GATEWAY_MAPI_ORG` set, so the
+        // cross-tenant DN gate MUST be disabled. This is the regression
+        // for the previous `mail_domain`-derived implementation, which
+        // produced a DNS label (e.g. `example`) that never matched a real
+        // legacyExchangeDN org name and rejected every legitimate logon.
+        let cfg = Config::test_with_mail_domain("example.com");
+        assert_eq!(cfg_org_prefix(&cfg), None);
+    }
+
+    #[test]
+    fn cfg_org_prefix_uses_explicit_knob() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_org = "First Organization".into();
+        assert_eq!(cfg_org_prefix(&cfg).as_deref(), Some("First Organization"));
+    }
+
+    #[test]
+    fn cfg_org_prefix_trims_whitespace() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_org = "  ExampleOrg  ".into();
+        assert_eq!(cfg_org_prefix(&cfg).as_deref(), Some("ExampleOrg"));
+    }
+
+    #[test]
+    fn cfg_org_prefix_ignores_mail_domain() {
+        // mail_domain alone must NOT enable the gate.
+        let cfg = Config::test_with_mail_domain("contoso.com");
+        assert_eq!(cfg_org_prefix(&cfg), None);
+    }
 
     #[test]
     fn extracts_recipient_local_name() {

@@ -188,8 +188,12 @@ impl<'a> Tokenizer<'a> {
         }
         let tag = self.read_tag()?;
         let marker = Marker::from_u32(tag);
-        let is_marker = !matches!(marker, Marker::Unknown(_)) || is_known_marker_value(tag);
-        if is_marker {
+        // `Marker::from_u32` is total: every known marker value maps to a
+        // concrete variant, anything else maps to `Unknown(v)`. The earlier
+        // additional `is_known_marker_value(tag)` re-check was dead logic
+        // (it could never flip a `Unknown` back into a marker), so an
+        // `Unknown(v)` here is unambiguously a property, not a marker.
+        if !matches!(marker, Marker::Unknown(_)) {
             self.balance(marker)?;
             return Ok(Some(FxEvent::Marker(marker)));
         }
@@ -203,20 +207,44 @@ impl<'a> Tokenizer<'a> {
         Ok(Some(FxEvent::Property { tag, bytes }))
     }
 
-    /// Read the value payload for a property type. For fixed-size scalar
-    /// types, read the fixed number of bytes. For variable-length types,
-    /// read a 2-byte LE length then that many bytes. Bounded by the
-    /// remaining buffer so an exaggerated length fails closed.
+    /// Read the value payload for a property type in a FastTransfer stream
+    /// (MS-OXCFXICS §2.2.4.1). For fixed-size scalar types, read the fixed
+    /// number of bytes — note PtypBoolean is 2 bytes in FastTransfer (not 1).
+    /// For variable-length types the outer `length` lexeme is a 4-byte
+    /// PtypInteger32, EXCEPT for PtypBinary/PtypServerId (§2.2.4.1.1) which
+    /// omits the outer length and serializes via their own 2-byte count per
+    /// MS-OXCDATA §2.11. Bounded by the remaining buffer so an exaggerated
+    /// length must fail closed.
     fn read_property_payload(&mut self, property_type: crate::mapi::data::PropertyType) -> Result<Vec<u8>, DecodeError> {
+        use crate::mapi::data::PropertyType as Pt;
+        // PtypBoolean is 2 bytes in FastTransfer per §2.2.4.1.3, not the 1
+        // byte MS-OXCDATA fixed_size() returns for the property-row path.
+        if property_type == Pt::PTYP_BOOLEAN {
+            let bytes = self.buf.get(self.pos..self.pos + 2).ok_or(DecodeError::Insufficient)?;
+            self.pos += 2;
+            return Ok(bytes.to_vec());
+        }
         if let Some(n) = property_type.fixed_size() {
             let bytes = self.buf.get(self.pos..self.pos + n).ok_or(DecodeError::Insufficient)?;
             self.pos += n;
             return Ok(bytes.to_vec());
         }
-        // Variable-length read: 2-byte LE count, capped to the remaining
-        // buffer to prevent pathological length fields.
-        let count = self.read_u16_le()?;
-        let count = usize::from(count);
+        // PtypBinary/PtypServerId carry NO outer length lexeme — they use the
+        // MS-OXCDATA 2-byte count followed by the bytes.
+        if property_type == Pt::PTYP_BINARY || property_type == Pt::PTYP_SERVER_ID {
+            let count = self.read_u16_le()?;
+            let count = usize::from(count);
+            if count > self.remaining() {
+                return Err(DecodeError::ExcessLength);
+            }
+            let bytes = self.buf.get(self.pos..self.pos + count).ok_or(DecodeError::Insufficient)?.to_vec();
+            self.pos += count;
+            return Ok(bytes);
+        }
+        // PtypString/PtypString8/PtypObject and code-page string variants:
+        // 4-byte LE outer `length` lexeme then that many bytes.
+        let count = self.read_u32_le()?;
+        let count = usize::try_from(count).map_err(|_| DecodeError::ExcessLength)?;
         if count > self.remaining() {
             return Err(DecodeError::ExcessLength);
         }
@@ -229,6 +257,20 @@ impl<'a> Tokenizer<'a> {
         Ok(bytes)
     }
 
+    fn read_u32_le(&mut self) -> Result<u32, DecodeError> {
+        if self.remaining() < 4 {
+            return Err(DecodeError::Insufficient);
+        }
+        let v = u32::from_le_bytes([
+            self.buf[self.pos],
+            self.buf[self.pos + 1],
+            self.buf[self.pos + 2],
+            self.buf[self.pos + 3],
+        ]);
+        self.pos += 4;
+        Ok(v)
+    }
+
     fn read_u16_le(&mut self) -> Result<u16, DecodeError> {
         if self.remaining() < 2 {
             return Err(DecodeError::Insufficient);
@@ -236,6 +278,18 @@ impl<'a> Tokenizer<'a> {
         let v = u16::from_le_bytes([self.buf[self.pos], self.buf[self.pos + 1]]);
         self.pos += 2;
         Ok(v)
+    }
+
+    /// After exhausting the stream (`next_event` returning `Ok(None)`), call
+    /// this to assert that no start marker was left open. A truncated stream
+    /// (`StartMessage` then EOF; `StartTopFld` then `IncrSyncEnd`; etc.) is
+    /// rejected with `DecodeError::InvalidValue` so Outlook cannot reach its
+    /// "still inside a hierarchy/message" rollback path on attacker input.
+    pub fn assert_complete(&self) -> Result<(), DecodeError> {
+        if !self.open.is_empty() {
+            return Err(DecodeError::InvalidValue);
+        }
+        Ok(())
     }
 
     /// Validate the start/end marker balance and record open markers.
@@ -272,8 +326,10 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
-/// Whether a 4-byte word names a known marker. Unknown words are treated as
-/// regular properties. (Marker::Unknown wraps the value, so we re-check.)
+/// Whether a 4-byte word names a known marker. Used only as an oracle in
+/// the `marker_roundtrip` proptest (the live code uses `Marker::from_u32`,
+/// which already returns a typed variant for every value in this set).
+#[cfg(test)]
 fn is_known_marker_value(v: u32) -> bool {
     matches!(
         v,
@@ -318,8 +374,25 @@ impl IcsStreamBuilder {
     pub fn push_marker(&mut self, m: Marker) {
         self.out.extend_from_slice(&m.value().to_le_bytes());
     }
+    /// Push a `propValue` element whose wire format (MS-OXCFXICS §2.2.4.1)
+    /// is `<tag(4)> <value>` for fixed types and PtypBinary/PtypServerId,
+    /// or `<tag(4)> <length(4 LE)> <value>` for the other varPropType
+    /// strings. The caller passes the *value bytes* (no length) and the
+    /// tag's low 16 bits identify the property type, so this builder
+    /// dispatches the length lexeme on the caller's behalf.
     pub fn push_property(&mut self, tag: u32, bytes: &[u8]) {
         self.out.extend_from_slice(&tag.to_le_bytes());
+        let pt = crate::mapi::data::PropertyType::from_u16((tag & 0xFFFF) as u16);
+        let needs_length = !matches!(pt, crate::mapi::data::PropertyType::PTYP_BINARY)
+            && !matches!(pt, crate::mapi::data::PropertyType::PTYP_SERVER_ID)
+            && pt.fixed_size().is_none();
+        if needs_length {
+            // bytes.len() fits in a usize on the target platform; cap to u32
+            // to honour the wire width (any value above u32::MAX can never
+            // legitimately transit a 4-byte length lexeme).
+            let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+            self.out.extend_from_slice(&len.to_le_bytes());
+        }
         self.out.extend_from_slice(bytes);
     }
     /// Finalise the builder with `IncrSyncEnd` and return the buffer.
@@ -394,6 +467,25 @@ mod tests {
         let mut t = Tokenizer::new(&buf);
         t.next_event().unwrap(); // StartMessage
         assert_eq!(t.next_event().unwrap_err(), DecodeError::InvalidValue);
+    }
+
+    #[test]
+    fn tokenizer_rejects_open_marker_eof() {
+        // StartTopFld then EOF: balance stack still holds an open folder.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&Marker::StartTopFld.value().to_le_bytes());
+        let mut t = Tokenizer::new(&buf);
+        // Consume StartTopFld (push onto open stack), then EOF.
+        assert!(matches!(
+            t.next_event().unwrap(),
+            Some(FxEvent::Marker(Marker::StartTopFld))
+        ));
+        assert!(t.next_event().unwrap().is_none());
+        assert_eq!(
+            t.assert_complete().unwrap_err(),
+            DecodeError::InvalidValue,
+            "truncated stream with an open start marker must fail-closed"
+        );
     }
 
     #[test]

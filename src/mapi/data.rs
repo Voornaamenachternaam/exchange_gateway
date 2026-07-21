@@ -171,25 +171,37 @@ impl PropertyValue {
             Self::Time(v) => out.extend_from_slice(&v.to_le_bytes()),
             Self::Guid(g) => out.extend_from_slice(g),
             Self::ErrorCode(v) => out.extend_from_slice(&v.to_le_bytes()),
+            // Per MS-OXCDATA §2.11.2.1 PropertyValue Structure, a PtypString
+            // is the UTF-16LE code units INCLUDING the terminating 0x0000,
+            // with NO length prefix — the client walks to the NUL. A length
+            // prefix here would be misread as the first UTF-16 character.
             Self::String(s) => {
-                let units = u16::try_from(s.encode_utf16().count()).unwrap_or(0);
-                out.extend_from_slice(&(units + 1).to_le_bytes());
-                for u in s.encode_utf16() {
+                // Cap at u16::MAX code units so the NUL terminator fits within
+                // the u16-domain string size Outlook tolerates; `.take` enforces
+                // the cap without materialising a Vec or hand-rolling a counter.
+                let max_units = u16::MAX as usize / 2;
+                for u in s.encode_utf16().take(max_units) {
                     out.extend_from_slice(&u.to_le_bytes());
                 }
                 out.extend_from_slice(&0u16.to_le_bytes()); // terminating NUL
             }
+            // PtypString8 is likewise the bytes INCLUDING the terminating 0x00,
+            // with NO length prefix.
             Self::String8(s) => {
-                let len = u16::try_from(s.len()).unwrap_or(0);
-                let len = len.checked_add(1).unwrap_or(1);
-                out.extend_from_slice(&len.to_le_bytes());
-                out.extend_from_slice(s.as_bytes()); // ASCII for Phase 0
+                let max = u16::MAX as usize;
+                let bytes = s.as_bytes();
+                let take = bytes.len().min(max);
+                out.extend_from_slice(&bytes[..take]);
                 out.push(0); // terminating NUL
             }
+            // PtypBinary is a 16-bit byte-count (§2.11.1.1) followed by the
+            // bytes. Cap both the prefix and the payload to keep them in lock
+            // step (a 0 / oversized split would desynchronise the row stream).
             Self::Binary(b) => {
-                let n = u16::try_from(b.len()).unwrap_or(0);
-                out.extend_from_slice(&n.to_le_bytes());
-                out.extend_from_slice(b);
+                let max = u16::MAX as usize;
+                let take = b.len().min(max);
+                out.extend_from_slice(&u16::try_from(take).unwrap_or(u16::MAX).to_le_bytes());
+                out.extend_from_slice(&b[..take]);
             }
             Self::Opaque { bytes, .. } => {
                 out.extend_from_slice(bytes);
@@ -287,14 +299,23 @@ mod tests {
 
     #[test]
     fn string_value_includes_terminator() {
+        // Per MS-OXCDATA §2.11.2.1 a PtypString PropertyValue is the UTF-16LE
+        // code units INCLUDING the 0x0000 terminator, with NO length prefix.
         let mut b = Vec::new();
         PropertyValue::String("AB".into()).encode(&mut b);
-        // 2 units + 1 terminator = 3 words.
-        assert_eq!(u16::from_le_bytes([b[0], b[1]]), 3);
-        // 'A', 'B', then NUL.
-        assert_eq!(u16::from_le_bytes([b[2], b[3]]), b'A' as u16);
-        assert_eq!(u16::from_le_bytes([b[4], b[5]]), b'B' as u16);
-        assert_eq!(u16::from_le_bytes([b[6], b[7]]), 0);
+        // 'A', 'B', then single terminating NUL (0x0000).
+        assert_eq!(u16::from_le_bytes([b[0], b[1]]), b'A' as u16);
+        assert_eq!(u16::from_le_bytes([b[2], b[3]]), b'B' as u16);
+        assert_eq!(u16::from_le_bytes([b[4], b[5]]), 0);
+        assert_eq!(b.len(), 6);
+    }
+
+    #[test]
+    fn string8_value_includes_terminator() {
+        // PtypString8: bytes + single trailing 0x00, no length prefix.
+        let mut b = Vec::new();
+        PropertyValue::String8("AB".into()).encode(&mut b);
+        assert_eq!(b, vec![b'A', b'B', 0x00]);
     }
 
     #[test]

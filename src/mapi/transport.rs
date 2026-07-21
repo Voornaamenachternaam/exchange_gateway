@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 
 /// Maximum number of bytes we accept in a single MAPI/HTTP request body.
 ///
@@ -161,6 +161,11 @@ pub struct MapiRequest {
     pub client_application: Option<String>,
     /// Optional client-supplied GUID:counter (§2.2.3.3.4).
     pub client_info: Option<String>,
+    /// Cookies parsed from the `Cookie:` header (§2.2.3.2.4), name=value.
+    /// MS-OXCMAPIHTTP §4.1 shows the session-context cookie is named
+    /// `MapiContext=<opaque>`. Execute/Disconnect carry this; Connect does
+    /// not.
+    pub cookies: Vec<(String, String)>,
     /// Basic-auth password, if the request carried an `Authorization: Basic`
     /// header; plumbed to `logon.rs`. Set by the router before dispatch.
     pub password: Option<String>,
@@ -175,6 +180,12 @@ pub enum HeaderError {
     Missing(&'static str),
     #[error("malformed header: {0}")]
     Malformed(&'static str),
+    /// A recognised-but-unsupported request type (e.g. an address-book
+    /// RPC to /mapi/emsmdb, or any NSPI RPC at Phase 0). The spec
+    /// distinguishes `InvalidRequestType` (code 5) from `InvalidHeader`
+    /// (code 4); route known-but-unsupported types through this variant.
+    #[error("unsupported request type")]
+    UnsupportedRequestType,
     #[error("endpoint disabled")]
     Disabled,
     #[error("request too large")]
@@ -186,6 +197,7 @@ impl HeaderError {
         match self {
             Self::Missing(_) => ResponseCode::MissingHeader,
             Self::Malformed(_) => ResponseCode::InvalidHeader,
+            Self::UnsupportedRequestType => ResponseCode::InvalidRequestType,
             Self::Disabled => ResponseCode::EndpointDisabled,
             Self::TooLarge => ResponseCode::TooLarge,
         }
@@ -233,11 +245,12 @@ pub fn parse_request(
     let kind = match MapiRequestType::parse(rt_raw) {
         Some(t) => RpcKind::Mailbox(t),
         None => {
-            // Address-book endpoint RPCs (§2.2.5.*) are a closed set:
-            // recognise them so we return InvalidRequestType (5) rather
-            // than InvalidHeader (4) — the spec distinguishes the two.
+            // Address-book endpoint RPCs (§2.2.5.*) are a closed set.
+            // Recognise them so we return InvalidRequestType (code 5) rather
+            // than InvalidHeader (code 4) — the spec distinguishes the two.
+            // Unknown / unrecognised verbs still fall back to InvalidHeader.
             if is_address_book_rpc(rt_raw) {
-                return Err(HeaderError::Malformed("X-RequestType"));
+                return Err(HeaderError::UnsupportedRequestType);
             }
             return Err(HeaderError::Malformed("X-RequestType"));
         }
@@ -257,15 +270,50 @@ pub fn parse_request(
     let client_info = header_value(headers, "x-clientinfo")
         .filter(|v| !v.is_empty() && v.len() <= 128)
         .map(str::to_string);
+    let cookies = parse_cookie_header(header_value(headers, "cookie"));
 
     Ok(MapiRequest {
         kind,
         request_id,
         client_application,
         client_info,
+        cookies,
         password: None,
         body,
     })
+}
+
+/// Parse an HTTP `Cookie:` header value (§2.2.3.2.4) into name/value pairs.
+/// Each pair is delimited by `;`, the name and value by `=`. Whitespace and
+/// sk are trimmed. Names/values are bounded to resist abuse.
+fn parse_cookie_header(raw: Option<&str>) -> Vec<(String, String)> {
+    let Some(raw) = raw else { return Vec::new() };
+    if raw.len() > 8192 {
+        return Vec::new();
+    }
+    raw.split(';')
+        .filter_map(|p| {
+            let p = p.trim();
+            if p.is_empty() {
+                return None;
+            }
+            let (k, v) = p.split_once('=')?;
+            let k = k.trim();
+            let v = v.trim();
+            if k.is_empty() || k.len() > 256 || v.len() > 1024 {
+                return None;
+            }
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+/// Look up the named cookie in a parsed cookie list.
+pub fn cookie_value<'a>(cookies: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    cookies
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
 }
 
 /// Whether a raw X-RequestType value names one of the address-book ROPs.
@@ -277,6 +325,8 @@ fn is_address_book_rpc(raw: &str) -> bool {
         "Bind"
             | "Unbind"
             | "CompareMIds"
+            // Per MS-OXCMAPIHTTP §2.2.3.3.1 the request type is spelled
+            // "DNToMId" (capital N) — older code used "DnToMId".
             | "DNToMId"
             | "GetMatches"
             | "GetPropList"
@@ -327,6 +377,10 @@ pub struct MapiResponse {
     pub body: Vec<u8>,
     /// The X-RequestType echoed back, when known.
     pub request_type: Option<&'static str>,
+    /// Optional session-context cookie to emit as `Set-Cookie: MapiContext=…`
+    /// on the Connect response (MS-OXCMAPIHTTP §3.2.5.1, §4.1). Successive
+    /// Execute/Disconnect requests MUST echo it back as a `Cookie:` header.
+    pub session_cookie: Option<String>,
 }
 
 impl MapiResponse {
@@ -344,6 +398,7 @@ impl MapiResponse {
             server_application,
             body,
             request_type: Some(request_type),
+            session_cookie: None,
         }
     }
 
@@ -356,7 +411,15 @@ impl MapiResponse {
             server_application: None,
             body: Vec::new(),
             request_type: None,
+            session_cookie: None,
         }
+    }
+
+    /// Attach the session-context cookie to this response so `render`
+    /// emits a `Set-Cookie: MapiContext=<opaque>` header (§3.2.5.1).
+    pub fn with_session_cookie(mut self, cookie: String) -> Self {
+        self.session_cookie = Some(cookie);
+        self
     }
 
     /// Render the response into the four HTTP components (status code, header
@@ -377,6 +440,7 @@ impl MapiResponse {
             server_application,
             body,
             request_type,
+            session_cookie,
         } = self;
 
         let mut headers = HeaderMap::new();
@@ -398,6 +462,11 @@ impl MapiResponse {
             && let Ok(v) = HeaderValue::from_str(&app)
         {
             headers.insert(HeaderName::from_static("x-serverapplication"), v);
+        }
+        if let Some(cookie) = session_cookie
+            && let Ok(v) = HeaderValue::from_str(&cookie)
+        {
+            headers.insert(header::SET_COOKIE, v);
         }
 
         let framed_body = if code.is_success() {

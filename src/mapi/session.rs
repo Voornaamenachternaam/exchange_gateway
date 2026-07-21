@@ -20,12 +20,32 @@
 //     a new session.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use uuid::Uuid;
 use zeroize::Zeroize;
+
+/// A fixed monotonic-epoch reference (process startup) for converting
+/// `Instant`s into `u64` nanos without a lock. Established once and read
+/// lock-free thereafter; the value is monotonic per host and unique across
+/// restarts, so its absolute value does not need to be stable.
+static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn epoch() -> Instant {
+    *EPOCH.get_or_init(Instant::now)
+}
+
+/// Nanos since `EPOCH`. Caps at `u64::MAX` past ~584 years (overflow is a
+/// non-issue in practice and saturates rather than wrapping).
+fn epoch_nanos(t: Instant) -> u64 {
+    t.checked_duration_since(epoch())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(u64::MAX)
+}
+
 
 /// Default idle TTL for a MAPI/HTTP session. Outlook keeps connect sessions
 /// open for the lifetime of the app window; we expire after this idle window
@@ -188,14 +208,22 @@ pub struct Session {
     /// `[0, 255]`. The handle 0 is conventionally bound to the mailbox root
     /// at RopLogon time; `with_session_mut` is the supported mutation path.
     pub handles: HashMap<u8, Handle>,
-    pub last_seen: parking_lot::Mutex<Instant>,
+    /// Last-seen timestamp encoded as nanos since `EPOCH` to avoid a
+    /// `parking_lot::Mutex` here — read/written from paths that already
+    /// hold the `SessionManager` `RwLock` guard.
+    pub last_seen: AtomicU64,
     pub created_at: Instant,
 }
 
 impl Session {
     pub fn touch(&self) {
-        let now = Instant::now();
-        *self.last_seen.lock() = now;
+        // Lock-free: store nanos since `EPOCH` into the atomic. This avoids
+        // acquiring a Mutex while the caller may already hold the
+        // `SessionManager` RwLock (read or write) — eliminating the
+        // potential for lock-ordering surprises across `get`, `with_*`, and
+        // `sweep_idle`. The atomic is monotonic enough for idle-TTL
+        // comparisons; sub-millisecond precision loss at startup is fine.
+        self.last_seen.store(epoch_nanos(Instant::now()), Ordering::Relaxed);
     }
 
     /// Pick the lowest free handle index in `[0, 255]`, install `handle`
@@ -252,6 +280,12 @@ impl SessionManager {
             idle_ttl,
         }
     }
+    /// The default idle-TTL in whole seconds. The background sweeper in
+    /// `main.rs` uses this to set its tick cadence.
+    pub fn default_idle_secs() -> u64 {
+        DEFAULT_SESSION_IDLE_TTL.as_secs()
+    }
+
 
     /// Allocate a new session for `principal` and return its id.
     pub fn create(&self, principal: SessionPrincipal) -> Uuid {
@@ -261,7 +295,7 @@ impl SessionManager {
             principal,
             logon_id: None,
             handles: HashMap::new(),
-            last_seen: parking_lot::Mutex::new(Instant::now()),
+            last_seen: AtomicU64::new(epoch_nanos(Instant::now())),
             created_at: Instant::now(),
         };
         self.inner.write().insert(id, session);
@@ -345,14 +379,17 @@ impl SessionManager {
     /// Sweep sessions whose last-seen is older than the idle TTL. Returns the
     /// count removed. Called periodically by the handler.
     pub fn sweep_idle(&self) -> usize {
-        let now = Instant::now();
+        let now_nanos = epoch_nanos(Instant::now());
         let ttl = self.idle_ttl;
         let mut guard = self.inner.write();
         let to_remove: Vec<_> = guard
             .iter()
             .filter_map(|(k, v)| {
-                let last = *v.last_seen.lock();
-                if now.duration_since(last) > ttl {
+                let last_nanos = v.last_seen.load(Ordering::Relaxed);
+                // Age in nanos since last-seen; saturating on the
+                // (impossible-in-practice) backwards clock.
+                let age_nanos = now_nanos.saturating_sub(last_nanos);
+                if Duration::from_nanos(age_nanos) > ttl {
                     Some(*k)
                 } else {
                     None

@@ -42,6 +42,7 @@ const ENV_MAPI_ENABLED: &str = "GATEWAY_MAPI_ENABLED";
 const ENV_MAPI_HMA_ENABLED: &str = "GATEWAY_MAPI_HMA_ENABLED";
 const ENV_MAPI_OIDC_ISSUER: &str = "GATEWAY_MAPI_OIDC_ISSUER";
 const ENV_MAPI_OIDC_AUDIENCE: &str = "GATEWAY_MAPI_OIDC_AUDIENCE";
+const ENV_MAPI_ORG: &str = "GATEWAY_MAPI_ORG";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -127,6 +128,15 @@ pub struct Config {
     pub mapi_oidc_issuer: String,
     #[serde(default)]
     pub mapi_oidc_audience: String,
+    /// Optional organisation name that the gateway requires in the `/o=...`
+    /// slot of incoming `legacyExchangeDN`s at `RopLogon`. When empty
+    /// (the default), the cross-tenant DN gate is disabled. Configured via
+    /// `GATEWAY_MAPI_ORG`. The previous derivation from `mail_domain` was
+    /// unsafe: it produced a DNS label (e.g. `example`) that never matches
+    /// the org name Outlook sends (`First Organization`, `ExampleOrg`),
+    /// rejecting every legitimate logon.
+    #[serde(default)]
+    pub mapi_org: String,
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -690,6 +700,9 @@ fn apply_environment_overrides(cfg: &mut Config) {
             c.mapi_oidc_audience = v;
         },
     );
+    apply_env_string(cfg, get_env_with_fallback(ENV_MAPI_ORG, None), |c, v| {
+        c.mapi_org = v;
+    });
     // Co-validation: enabling HMA requires an issuer and an audience.
     if cfg.mapi_hma_enabled
         && (cfg.mapi_oidc_issuer.is_empty() || cfg.mapi_oidc_audience.is_empty())
@@ -801,6 +814,7 @@ impl Default for Config {
             mapi_hma_enabled: false,
             mapi_oidc_issuer: String::new(),
             mapi_oidc_audience: String::new(),
+            mapi_org: String::new(),
         }
     }
 }

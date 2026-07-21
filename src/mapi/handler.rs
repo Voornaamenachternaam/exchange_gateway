@@ -105,16 +105,26 @@ async fn handle_connect(req: MapiRequest, state: &MapiState) -> MapiResponse {
         LogonOutcome::Success {
             logon_id: _,
             envelope,
-            ..
+            session_id,
         } => {
             let mut body = Vec::new();
             encode_logon_success(&envelope, &mut body);
+            // Per MS-OXCMAPIHTTP §3.2.5.1 / §4.1, the server MUST return the
+            // session-context cookie that identifies the new Session Context
+            // via Set-Cookie. Outlook stores it and echoes it back as a
+            // `Cookie: MapiContext=<opaque>` header on every subsequent
+            // Execute/Disconnect within that context. Without this, the
+            // client cannot bind its ROPs to the just-created session, so every
+            // Execute is dropped before reaching the dispatch layer. The
+            // opaque value is the UUID server-assigned to the session.
+            let cookie = format!("MapiContext={session_id}; Path=/mapi; HttpOnly");
             MapiResponse::success(
                 req.request_id,
                 "Connect",
                 Some("ExchangeGateway/0.1".into()),
                 body,
             )
+            .with_session_cookie(cookie)
         }
         LogonOutcome::Failure { logon_id, error } => {
             let mut body = Vec::new();
@@ -138,25 +148,30 @@ fn encode_logon_success(env: &RopLogonSuccess, out: &mut Vec<u8>) {
 /// dispatch to a per-ROP handler that may bridge to the Stalwart backend,
 /// and concatenate the per-ROP response bytes into a single Execute body.
 ///
-/// The session id is carried by the `X-ClientInfo` extension emitted at
-/// `RopLogon` time (the transport layer may also carry it on the cookie
-/// path); we parse the leading UUID out of `client_info`.
+/// Per MS-OXCMAPIHTTP §3.2.5.2 the Session Context is identified by the
+/// `Cookie: MapiContext=<opaque>` header the client echoes after Connect.
+/// We honour the cookie first and fall back to the (optional) X-ClientInfo
+/// extension UUID emitted at RopLogon time, so the in-process unit tests
+/// that drive this handler directly still resolve the session.
 async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
-    let session_id = match req.client_info.as_deref().and_then(parse_client_info_uuid) {
-        Some(id) => id,
-        None => {
-            // No session binding: return a transport-layer InvalidRequestBody
-            // (code 12) — the client must RopLogon first.
-            return MapiResponse::error(ResponseCode::InvalidRequestBody, req.request_id);
-        }
+    let session_id = crate::mapi::transport::cookie_value(&req.cookies, "MapiContext")
+        .and_then(|v| uuid::Uuid::parse_str(v).ok())
+        .or_else(|| req.client_info.as_deref().and_then(parse_client_info_uuid));
+    let Some(session_id) = session_id else {
+        // No session binding: return a transport-layer InvalidRequestBody
+        // (code 12) — the client must RopLogon (Connect) first.
+        return MapiResponse::error(ResponseCode::InvalidRequestBody, req.request_id);
     };
 
     let Some(snap) = state.sessions.get(&session_id) else {
         // Session expired/gone: a transport success wrapping a single
-        // ROP-level `NotFound` so the client re-Connects.
+        // ROP-level `NotFound` so the client re-Connects. Parse the ROP
+        // header bytes through a bounded `Buf` so an empty/truncated body
+        // cannot panic on `[1..]`.
+        let mut cur = Buf::new(&req.body);
+        let leading = cur.take_u8().unwrap_or(0);
+        let handle_index = cur.take_u8().unwrap_or(0);
         let mut body = Vec::new();
-        let leading = Buf::new(&req.body).take_u8().unwrap_or(0);
-        let handle_index = Buf::new(&req.body[1..]).take_u8().unwrap_or(0);
         RopErrorResponse {
             rop_id: RopId::from_u8(leading),
             output_handle_index: handle_index,
@@ -278,8 +293,13 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_OPEN_FOLDER => {
-            // §2.2.4.1.1: 4-byte header then FolderId(8) + OpenModeFlags(1)
-            let h4 = RopHeader4::decode(cur)?;
+            // §2.2.4.1.1: 4-byte header then FolderId(8) + OpenModeFlags(1).
+            // The dispatcher consumed the leading RopId byte before entering
+            // this branch, so use `decode_after_ropid` to read only the
+            // remaining LogonId·Input·Output bytes (RopHeader4::decode would
+            // re-consume a byte that is no longer present and silently
+            // misinterpret the following payload as a header).
+            let h4 = RopHeader4::decode_after_ropid(cur, rop_id)?;
             let req = decode_open_folder_body(cur)?;
             let _ = req;
             // Resolve the folder backend id from the input handle (the root
@@ -309,7 +329,7 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_GET_HIERARCHY_TABLE | RopId::ROP_GET_CONTENTS_TABLE => {
-            let h4 = RopHeader4::decode(cur)?;
+            let h4 = RopHeader4::decode_after_ropid(cur, rop_id)?;
             let _flags = RopOpenTableRequest::decode_body(cur)?;
             // Resolve the parent folder kind from the input handle.
             let (parent_backend, parent_kind) = sessions
@@ -570,13 +590,23 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_SET_MESSAGE_READ_FLAG => {
+            // Per MS-OXCROPS §2.2.6.11.1 the post-RopId bytes are
+            // LogonId · ResponseHandleIndex · InputHandleIndex · ReadFlags.
+            // Consume all three header bytes here: the InputHandleIndex is
+            // the Message handle, ResponseHandleIndex is what we echo back in
+            // the response, ReadFlags is the body.
             let _logon = cur.take_u8()?;
+            let response_handle_index = cur.take_u8()?;
             let input_handle_index = cur.take_u8()?;
             let req = RopSetMessageReadFlagRequest::decode(cur)?;
-            // `read_flag` is 0 ⇒ mark unread, non-zero ⇒ mark read. JMAP
-            // toggles `$seen` via `Email/set {keywords/$seen: true|null}`.
-            // spec: §2.2.7.3.1 ReadFlag is the message read status (not the
-            // MSGFLAG_READ bit position from §2.2.7.2.1 MessageStatusFlags).
+            // ReadFlags (MS-OXCMSG §2.2.3.11.1) is a BITMASK, not an
+            // equality. rfClearReadFlag (0x04) clears the mfRead bit,
+            // rfGenerateReceiptOnly (0x10) leaves mfRead unchanged, anything
+            // else (rfDefault 0x00 / rfSuppressReceipt 0x01) sets mfRead.
+            // Treat absent receipt implementation as a no-op bit-wise; we
+            // only persist `$seen`.
+            const RF_CLEAR_READ_FLAG: u8 = 0x04;
+            const RF_GENERATE_RECEIPT_ONLY: u8 = 0x10;
             let backend_id = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
                     Handle::Message { backend_id, .. } => Some(backend_id.clone()),
@@ -584,9 +614,14 @@ async fn execute_one_rop(
                 })
                 .flatten()
                 .unwrap_or_default();
-            let want_read = req.read_flag != 0;
+            let want_read = !(req.read_flag & RF_CLEAR_READ_FLAG != 0
+                || req.read_flag & RF_GENERATE_RECEIPT_ONLY != 0);
             let backend_owned = if backend_id.is_empty() { None } else { Some(backend_id.as_str()) };
-            let outcome: Option<RopErrorCode> = match (jmap, password, backend_owned) {
+            // Distinguishing ROP failures from transport success: when we
+            // cannot apply the patch (no JMAP config, no creds, no account
+            // id, missing message handle), return ROP-level `DiskError`
+            // rather than silently reporting `Success` (cubic #66944/cr #5227).
+            let outcome: RopErrorCode = match (jmap, password, backend_owned) {
                 (Some(jc), Some(pw), Some(id)) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -594,7 +629,7 @@ async fn execute_one_rop(
                         .ok()
                         .unwrap_or_default();
                     if account_id.is_empty() {
-                        None
+                        RopErrorCode::NotFound
                     } else {
                         let key = "keywords/$seen".to_string();
                         let update = if want_read {
@@ -603,18 +638,22 @@ async fn execute_one_rop(
                             serde_json::json!({ id: { key.clone(): serde_json::Value::Null } })
                         };
                         match jc.update_email(&account_id, &update, username, pw).await {
-                            Ok(()) => Some(RopErrorCode::Success),
-                            Err(_) => Some(RopErrorCode::DiskError),
+                            Ok(()) => RopErrorCode::Success,
+                            Err(_) => RopErrorCode::DiskError,
                         }
                     }
                 }
-                _ => None,
+                (None, _, _) => RopErrorCode::NotFound, // no JMAP backend configured
+                (_, None, _) => RopErrorCode::AccessDenied, // no credentials
+                (_, _, None) => RopErrorCode::NotFound,  // message handle not bound
             };
-            let return_value = outcome.unwrap_or(RopErrorCode::Success);
+            // ResponseHandleIndex echoes the request's ResponseHandleIndex
+            // (MS-OXCROPS §2.2.6.11.2), NOT the InputHandleIndex used to
+            // identify the message.
             RopErrorResponse {
                 rop_id,
-                output_handle_index: input_handle_index,
-                return_value,
+                output_handle_index: response_handle_index,
+                return_value: outcome,
             }
             .encode(out);
         }
@@ -752,11 +791,17 @@ fn encode_typed_null(out: &mut Vec<u8>, tag: &crate::mapi::data::PropertyTag, ro
 
 /// `Disconnect` RPC: drop the session if present, return 0.
 async fn handle_disconnect(req: MapiRequest, state: &MapiState) -> MapiResponse {
-    // The session id is not yet plumbed through the Phase-0 transport; if a
-    // session id arrives via X-ClientInfo it is parsed best-effort here.
-    if let Some(info) = &req.client_info
-        && let Ok(id) = uuid::Uuid::parse_str(info.split(':').next().unwrap_or(info))
-    {
+    // Per MS-OXCMAPIHTTP §3.2.5.5 the Session Context is identified by the
+    // `Cookie: MapiContext=<opaque>` header echoed from Connect; fall back to
+    // the X-ClientInfo extension UUID for the in-process unit path.
+    let id = crate::mapi::transport::cookie_value(&req.cookies, "MapiContext")
+        .and_then(|v| uuid::Uuid::parse_str(v).ok())
+        .or_else(|| {
+            req.client_info.as_deref().and_then(|info| {
+                uuid::Uuid::parse_str(info.split(':').next().unwrap_or(info)).ok()
+            })
+        });
+    if let Some(id) = id {
         state.sessions.remove(&id);
     }
     MapiResponse::success(req.request_id, "Disconnect", None, Vec::new())
@@ -779,6 +824,7 @@ mod tests {
             client_application: None,
             client_info: None,
             password: None,
+            cookies: Vec::new(),
             body: Vec::new(),
         };
         // The handler short-circuits before parsing because mapi_enabled is
@@ -798,6 +844,7 @@ mod tests {
             client_application: None,
             client_info: None,
             password: None,
+            cookies: Vec::new(),
             body: Vec::new(),
         };
         let resp = handle(req, &state).await;
@@ -815,6 +862,7 @@ mod tests {
             client_application: None,
             client_info: None,
             password: None,
+            cookies: Vec::new(),
             body: Vec::new(),
         };
         let resp = handle(req, &state).await;
@@ -835,6 +883,7 @@ mod tests {
             client_application: None,
             client_info: None,
             password: None,
+            cookies: Vec::new(),
             body: vec![0xFF, 7],
         };
         let resp = handle(req, &state).await;
@@ -858,6 +907,7 @@ mod tests {
             client_application: None,
             client_info: Some(format!("{{{}}}:0", stray.as_hyphenated())),
             password: None,
+            cookies: Vec::new(),
             body,
         };
         let resp = handle(req, &state).await;
@@ -896,6 +946,7 @@ mod tests {
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
             password: None,
+            cookies: Vec::new(),
             body,
         };
         let resp = handle(req, &state).await;
@@ -1016,23 +1067,103 @@ mod tests {
         assert_eq!(row_count, 1, "row_count");
         // First byte of row data is the StandardPropertyRow flag (0).
         assert_eq!(out_qr[9], 0u8, "row flag");
-        // PR_SUBJECT cell: 2-byte LE length (units+1) + UTF-16LE bytes + NUL.
-        // "Hello MAPI" is 10 code units → length = 10 + 1 = 11.
-        let subj_len = u16::from_le_bytes([out_qr[10], out_qr[11]]);
-        assert_eq!(subj_len, 11, "subject code-unit length+1");
+        // PR_SUBJECT cell per MS-OXCDATA §2.11.2.1: UTF-16LE code units
+        // INCLUDING the 0x0000 terminator, with NO length prefix.
+        // "Hello MAPI" is 10 code units → 22 bytes (no length word).
         let subj_u16: Vec<u16> = (0..10)
             .map(|i| {
-                u16::from_le_bytes([out_qr[12 + 2 * i], out_qr[13 + 2 * i]])
+                u16::from_le_bytes([out_qr[10 + 2 * i], out_qr[11 + 2 * i]])
             })
             .collect();
         let subj = String::from_utf16_lossy(&subj_u16);
         assert_eq!(subj, "Hello MAPI");
-        // PR_MID cell: 8-byte LE Integer64 == expected_mid.
-        let mid_off = 10 + 2 + 10 * 2 + 2; // skip len(2) + body(20) + NUL(2)
+        // Terminating NUL (0x0000) at out_qr[30..32].
+        assert_eq!(u16::from_le_bytes([out_qr[30], out_qr[31]]), 0, "subject NUL");
+        // PR_MID cell: 8-byte LE Integer64 == expected_mid immediately after.
+        let mid_off = 10 + 10 * 2 + 2; // skip body(20) + NUL(2)
         let packed = i64::from_le_bytes([
             out_qr[mid_off], out_qr[mid_off + 1], out_qr[mid_off + 2], out_qr[mid_off + 3],
             out_qr[mid_off + 4], out_qr[mid_off + 5], out_qr[mid_off + 6], out_qr[mid_off + 7],
         ]);
         assert_eq!(packed as u64, expected_mid, "PR_MID matches row id");
+    }
+
+    /// Regression: `RopOpenFolder` wire (`RopId(0x02)·LogonId·InputHandle·OutputHandle
+    /// ·FolderId(8 LE)·OpenModeFlags(1)`) must reach the dispatcher's
+    /// folder-open path with the **real** input/output-handle indices and not
+    /// bytes shifted by one. A previous implementation called
+    /// `RopHeader4::decode` after the dispatcher had already consumed the
+    /// leading `RopId` byte, so `RopHeader4` re-read the LogonId as the RopId,
+    /// the InputHandle as the LogonId, the OutputHandle as the InputHandle,
+    /// and the high byte of FolderId as the OutputHandle — corrupting both
+    /// the output-handle index the response echoes and the folder resolution.
+    #[tokio::test]
+    async fn execute_rop_open_folder_handles_header_after_ropid() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(cfg, std::sync::Arc::new(AuthVerifier::new(&Config::default())));
+        let sid = state.sessions.create(crate::mapi::session::SessionPrincipal {
+            email: "u@example.com".into(),
+            basic_auth: true,
+        });
+        const INPUT_HANDLE: u8 = 7;
+        const OUTPUT_HANDLE: u8 = 11;
+        const FOLDER_ID: u64 = 0x0123_4567_89AB_CDEF;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(INPUT_HANDLE, crate::mapi::session::Handle::Folder {
+                backend_id: "I".into(),
+                kind: crate::mapi::session::FolderKind::Mail,
+            });
+        });
+
+        // Wire: RopId·LogonId·Input·Output·FolderId(8 LE)·OpenModeFlags(1) = 13 bytes.
+        let mut body = vec![0x02u8, /*LogonId*/ 0x00, INPUT_HANDLE, OUTPUT_HANDLE];
+        body.extend_from_slice(&FOLDER_ID.to_le_bytes());
+        body.push(0); // OpenModeFlags (Open mode = 0).
+
+        let mut cur = crate::mapi::rops::Buf::new(&body);
+        cur.take_u8().ok(); // consume RopId — matches the runtime dispatcher.
+        let mut out = Vec::new();
+        let snap = state.sessions.get(&sid).expect("session");
+        execute_one_rop(
+            crate::mapi::rops::RopId::ROP_OPEN_FOLDER,
+            &mut cur,
+            &mut out,
+            &sid,
+            &state.sessions,
+            &snap,
+            None,
+            &Config::default(),
+            "u@example.com",
+            None,
+            0,
+        )
+        .await
+        .expect("open folder dispatch");
+
+        // RopOpenFolderSuccess: RopId(0x02) · OutputHandleIndex · ReturnValue(4 LE)
+        // · HasRules(1) · IsGhosted(1).
+        assert_eq!(out.len(), 8, "open_folder response length");
+        assert_eq!(out[0], 0x02, "echoed RopId");
+        assert_eq!(out[1], OUTPUT_HANDLE, "output handle index (NOT shifted)");
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv), RopErrorCode::Success,
+            "open_folder return value"
+        );
+        assert_eq!(out[6], 0, "has_rules");
+        assert_eq!(out[7], 0, "is_ghosted");
+
+        // The output handle must now point at the same folder the input
+        // handle resolved to ("I"); a header-skew bug would have resolved it
+        // from handle index == high byte of FolderId (i.e. index 0xEF), and
+        // that handle doesn't exist on the session.
+        let snap2 = state.sessions.get(&sid).expect("session2");
+        match snap2.handles.get(&OUTPUT_HANDLE) {
+            Some(crate::mapi::session::Handle::Folder { backend_id, .. }) => {
+                assert_eq!(backend_id, "I", "open_folder installed output handle");
+            }
+            other => panic!("output handle not a Folder: {other:?}"),
+        }
     }
 }

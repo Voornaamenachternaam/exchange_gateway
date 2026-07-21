@@ -38,7 +38,11 @@ use serde::Deserialize;
 
 /// The minimum required claims Outlook's New-OAuth HMA path needs. We resolve
 /// the user's mailbox handle from `preferred_username` (UPN) first, then `oid`.
-#[derive(Debug, Clone)]
+///
+/// A custom `Debug` impl is provided so logging the principal (or any error
+/// wrapping one) never emits the bearer token, which is a secret. The default
+/// derived `Debug` would print `raw_token` verbatim.
+#[derive(Clone)]
 pub struct Principal {
     /// User Principal Name (typically the email address).
     pub upn: Option<String>,
@@ -48,6 +52,20 @@ pub struct Principal {
     pub tid: Option<String>,
     /// The raw bearer token, surfaced for downstream backend bridging.
     pub raw_token: String,
+}
+
+impl std::fmt::Debug for Principal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never log the raw token — it is a credential. Emit a fixed
+        // "**redacted**" sentinel so downstream `[trace] ?principal` calls
+        // (and any error wrapping a Principal) cannot leak it.
+        f.debug_struct("Principal")
+            .field("upn", &self.upn)
+            .field("oid", &self.oid)
+            .field("tid", &self.tid)
+            .field("raw_token", &"**redacted**")
+            .finish()
+    }
 }
 
 /// Errors returned by the verifier. The HTTP layer maps these to a single

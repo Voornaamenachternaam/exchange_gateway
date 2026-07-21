@@ -383,8 +383,27 @@ pub struct RopHeader4 {
 }
 
 impl RopHeader4 {
+    /// Decode the full 4-byte RopHeader4 (`RopId·LogonId·Input·Output`)
+    /// from the start of a ROP frame. Use this when the cursor is positioned
+    /// at the frame's `RopId` byte.
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let rop_id = RopId::from_u8(cur.take_u8()?);
+        let logon_id = cur.take_u8()?;
+        let input_handle_index = cur.take_u8()?;
+        let output_handle_index = cur.take_u8()?;
+        Ok(Self {
+            rop_id,
+            logon_id,
+            input_handle_index,
+            output_handle_index,
+        })
+    }
+    /// Decode the trailing 3 bytes of a RopHeader4 (`LogonId·Input·Output`)
+    /// when the dispatcher has already consumed the leading `RopId` byte
+    /// and passed the same `RopId` in. This avoids re-consuming a byte that
+    /// is no longer present and silently misinterpreting the following
+    /// payload bytes as header fields.
+    pub fn decode_after_ropid(cur: &mut Buf<'_>, rop_id: RopId) -> Result<Self, DecodeError> {
         let logon_id = cur.take_u8()?;
         let input_handle_index = cur.take_u8()?;
         let output_handle_index = cur.take_u8()?;
