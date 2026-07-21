@@ -1,0 +1,1034 @@
+// src/mapi/store.rs
+//
+// The bridge between MAPI property tags and the Stalwart backends
+// (JMAP/CalDAV/CardDAV). The dispatcher in `handler.rs` uses this module to:
+//   * turn a JMAP `Mailbox` role into a MAPI `FolderKind` + synthetic 64-bit
+//     folder id,
+//   * turn a JMAP `JmapEmail` (or a parsed vCard / iCalendar event) into the
+//     ordered `PropertyValue` cells a `RopQueryRows`/`RopGetPropertiesSpecific`
+//     response serialises for the requested column set.
+//
+// This module is deliberately free of async / network I/O so it is fully
+// unit-testable: backend-fetch happens in `handler.rs` which hands typed
+// backend objects (`JmapEmail`, `JmapMailbox`, parsed vCard/iCalendar) to
+// the pure converters here. This keeps the conversion logic auditable
+// against MS-OXCDATA and the []MS-OXPROPS] property table without dragging
+// the JMAP/CardDAV stack into the unit tests.
+//
+// The property-id constants below are the well-known `PidTag*` identifiers
+// the Outlook client queries on mail table rows and message GetProperties;
+// they come straight from []MS-OXPROPS] and are stable across Outlook builds.
+// Named properties (the 0x8000-bit set) Outlook synthesises per-mailbox are
+// resolved lazily and returned as `PropertyValue::Null` until the named-property
+// table is wired in Phase 2.
+
+use crate::jmap::{JmapEmail, JmapMailbox};
+use crate::mapi::data::{PropertyRowEntry, PropertyTag, PropertyType, PropertyValue};
+
+// ----------------------------------------------------------------------------
+// Well-known PidTag PropertyId constants (MS-OXPROPS), numeric form, without
+// the 0x8000 named bit. Listed here as u16 so they directly populate
+// `PropertyTag.property_id`.
+// ----------------------------------------------------------------------------
+
+/// PidTagFolderId — folder id, 0000_6710 (Integer64). Returned in a hierarchy
+/// table rowset and on `RopOpenFolder`.
+pub const PR_FOLDER_ID: u16 = 0x6710;
+/// PidTagParentFolderId — 0000_6715 (Integer64).
+pub const PR_PARENT_FOLDER_ID: u16 = 0x6715;
+/// PidTagDisplayName — 3001 (String).
+pub const PR_DISPLAY_NAME: u16 = 0x3001;
+/// PidTagContainerClass — 3613 (String). "IPF.Note" / "IPF.Appointment" / "IPF.Contact".
+pub const PR_CONTAINER_CLASS: u16 = 0x3613;
+/// PidTagContentCount — 3602 (Integer32).
+pub const PR_CONTENT_COUNT: u16 = 0x3602;
+/// PidTagContentUnread — 3603 (Integer32).
+pub const PR_CONTENT_UNREAD: u16 = 0x3603;
+/// PidTagSubfolders — 360A (Boolean).
+pub const PR_SUBFOLDERS: u16 = 0x360A;
+/// PidTagChildCount — 360D (Integer32).
+pub const PR_CHILD_COUNT: u16 = 0x360D;
+
+/// PidTagMessageClass — 001A (String). "IPM.Note" / "IPM.Appointment" / "IPM.Contact".
+pub const PR_MESSAGE_CLASS: u16 = 0x001A;
+/// PidTagSubject — 0037 (String).
+pub const PR_SUBJECT: u16 = 0x0037;
+/// PidTagSubjectPrefix + NormalizeSubject collapsed — 0x003D (String) is the
+/// normalised subject; Outlook typically reads 0x0037.
+pub const PR_NORMALIZED_SUBJECT: u16 = 0x0E1D;
+/// PidTagBody — 1000 (String8/native). The gateway returns the plain-text
+/// body value from JMAP `bodyValues`.
+pub const PR_BODY: u16 = 0x1000;
+/// PidTagBodyHtml — 1013 (String). HTML body.
+pub const PR_BODY_HTML: u16 = 0x1013;
+/// PidTagNativeBody — 0x1016 — content type hint we leave NULL for Phase 1.
+pub const PR_NATIVE_BODY: u16 = 0x1016;
+
+/// PidTagSenderName — 0C1A (String).
+pub const PR_SENDER_NAME: u16 = 0x0C1A;
+/// PidTagSenderEmailAddress — 0C1F (String).
+pub const PR_SENDER_EMAIL: u16 = 0x0C1F;
+/// PidTagSenderEntryId — 0C19 (Binary). We synthesise a stable 28-byte
+/// one-off entry id (MAPI one-off) per sender.
+pub const PR_SENDER_ENTRYID: u16 = 0x0C19;
+/// PidTagSentRepresentingName — 0042 (String).
+pub const PR_SENT_REPRESENTING_NAME: u16 = 0x0042;
+/// PidTagSentRepresentingEmailAddress — 0065 (String).
+pub const PR_SENT_REPRESENTING_EMAIL: u16 = 0x0065;
+
+/// PidTagMessageDeliveryTime — 0E06 (Time). When the email arrived (JMAP
+/// `receivedAt`).
+pub const PR_MESSAGE_DELIVERY_TIME: u16 = 0x0E06;
+/// PidTagClientSubmitTime — 0039 (Time). When the sender hit send (`sentAt`).
+pub const PR_CLIENT_SUBMIT_TIME: u16 = 0x0039;
+/// PidTagMessageSize (incl server envelope) — 0E08 (Integer32).
+pub const PR_MESSAGE_SIZE: u16 = 0x0E08;
+/// PidTagHasAttachments — 0E1B (Boolean).
+pub const PR_HAS_ATTACHMENTS: u16 = 0x0E1B;
+/// PidTagFlags — 0E08 reused? — PidTagMessageFlags is 0E07 (Integer32).
+pub const PR_MESSAGE_FLAGS: u16 = 0x0E07;
+/// PidTagImportance — 0017 (Integer32).
+pub const PR_IMPORTANCE: u16 = 0x0017;
+/// PidTagSensitivity — 0036 (Integer32).
+pub const PR_SENSITIVITY: u16 = 0x0036;
+/// PidTagInternetMessageId — 1035 (String).
+pub const PR_INTERNET_MESSAGE_ID: u16 = 0x1035;
+/// PidTagInReplyToId — 1042 (String).
+pub const PR_IN_REPLY_TO_ID: u16 = 0x1042;
+/// PidTagInternetReferences — 1039 (String).
+pub const PR_INTERNET_REFERENCES: u16 = 0x1039;
+/// PidTagConversationId — 0x3013 (Binary, 16 bytes) — hashed thread id.
+pub const PR_CONVERSATION_ID: u16 = 0x3013;
+/// PidTagEntryId — 0FFF (Binary). The message entry id we synthesise.
+pub const PR_ENTRYID: u16 = 0x0FFF;
+/// PidTagParentFolderId on a message — 0E08? — PidTagParentEntryId = 0E09.
+pub const PR_PARENT_ENTRYID: u16 = 0x0E09;
+/// PidTagRecordKey — 0FF9 (Binary). We return the JMAP id bytes.
+pub const PR_RECORD_KEY: u16 = 0x0FF9;
+/// PidTagSearchKey — 300B (Binary).
+pub const PR_SEARCH_KEY: u16 = 0x300B;
+/// PidTagMid — 6748 (Integer64). The message's folder-relative id.
+pub const PR_MID: u16 = 0x6748;
+/// PidTagChangeKey — 65E2 (Binary). The per-revision key; we derive from
+/// JMAP blob/etag. Outlook uses it for sync de-dupe.
+pub const PR_CHANGE_KEY: u16 = 0x65E2;
+/// PidTagLastModificationTime — 3008 (Time).
+pub const PR_LAST_MODIFICATION_TIME: u16 = 0x3008;
+/// PidTagLastModifierName — 3FFB String (often empty for JMAP).
+pub const PR_LAST_MODIFIER_NAME: u16 = 0x3FFB;
+/// PidTagRead — 0E69 Boolean (subset of MessageFlags; Outlook reads both).
+pub const PR_READ: u16 = 0x0E69;
+/// PidTagUnread — 0E67 Boolean inverse.
+pub const PR_UNREAD: u16 = 0x0E67;
+/// PidTagHasNamedProperties — 0x6546 Boolean. We always return false (JMAP).
+pub const PR_HAS_NAMED_PROPERTIES: u16 = 0x6546;
+
+// ----------------------------------------------------------------------------
+// Folder-id mapping
+// ----------------------------------------------------------------------------
+
+/// Fold the JMAP mailbox id (a backend string) into a stable 64-bit MAPI
+/// folder id. Outlook uses this id verbatim on `RopOpenFolder` and as the row
+/// key of a hierarchy table, so the mapping must be total+idempotent across
+/// calls and connections. A non-cryptographic FNV-1a-style hash is sufficient:
+/// the id is a server-side handle only and is validated by the backend-id
+/// lookup on open.
+pub fn folder_id_from_backend(backend_id: &str) -> u64 {
+    // FNV-1a 64-bit, seeded with a domain separator so the same backend id
+    // maps to distinct MAPI ids for mail vs calendar vs contacts folders.
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for b in backend_id.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    // Reserve the low bit so id 0 is never produced (0 == the sentinel the
+    // client treats as "no folder"); branch with bit 1 to keep it nonzero.
+    h |= 2;
+    h
+}
+
+/// Inverse: best-effort recovery of the backend id is not needed (the
+/// dispatcher keeps the live Handle with the original id), so this is a
+/// no-op placeholder kept for symmetry with the JMAP/CardDAV bridges.
+pub fn _backend_id_from_folder(_folder_id: u64) -> Option<String> {
+    None
+}
+
+/// Map a JMAP `Mailbox` role (RFC 8621 s5.1 `role`) to the gateway's
+/// `FolderKind`. Only the canonical Outlook folders have a role; arbitrary
+/// user-created folders default to `Mail`.
+pub fn folder_kind_for_role(role: Option<&str>) -> crate::mapi::session::FolderKind {
+    use crate::mapi::session::FolderKind;
+    match role {
+        Some("inbox") => FolderKind::Mail,
+        Some("drafts") => FolderKind::Mail,
+        Some("sent") => FolderKind::Mail,
+        Some("trash") => FolderKind::Mail,
+        Some("junk") => FolderKind::Mail,
+        Some("archive") => FolderKind::Mail,
+        // CalDAV/JMAP calendar collections live outside the JMAP Mailbox set;
+        // we tag them Calendar/Contacts at the contents-table-open step.
+        _ => FolderKind::Mail,
+    }
+}
+
+/// MAPI message-class strings for the three folder kinds.
+pub fn container_class_for(kind: crate::mapi::session::FolderKind) -> &'static str {
+    use crate::mapi::session::FolderKind;
+    match kind {
+        FolderKind::Mail => "IPF.Note",
+        FolderKind::Calendar => "IPF.Appointment",
+        FolderKind::Contacts => "IPF.Contact",
+        FolderKind::Root => "IPF",
+    }
+}
+
+/// MAPI message classes for the three folder kinds (the *row* message class,
+/// distinct from the folder container class).
+pub fn message_class_for(kind: crate::mapi::session::FolderKind) -> &'static str {
+    use crate::mapi::session::FolderKind;
+    match kind {
+        FolderKind::Mail => "IPM.Note",
+        FolderKind::Calendar => "IPM.Appointment",
+        FolderKind::Contacts => "IPM.Contact",
+        FolderKind::Root => "IPM",
+    }
+}
+
+/// The display name Outlook shows for a folder when the backend mailbox id
+/// is one of the canonical JMAP roles. Falls back to the backend id parsed
+/// for the leaf name.
+pub fn folder_display_name(role: Option<&str>, backend_id: &str) -> String {
+    match role {
+        Some("inbox") => "Inbox".to_string(),
+        Some("drafts") => "Drafts".to_string(),
+        Some("sent") => "Sent Items".to_string(),
+        Some("trash") => "Deleted Items".to_string(),
+        Some("junk") => "Junk Email".to_string(),
+        Some("archive") => "Archive".to_string(),
+        Some("outbox") => "Outbox".to_string(),
+        _ => backend_id.rsplit('/').next().unwrap_or(backend_id).to_string(),
+    }
+}
+
+// ----------------------------------------------------------------------------
+// FILETIME conversion: JMAP `receivedAt`/`sentAt` (ISO-8601 millis since
+// epoch) -> MAPI `PtypTime` (FILETIME, 100-ns ticks since 1601-01-01 UTC).
+// ----------------------------------------------------------------------------
+
+/// 100-ns ticks between 1601-01-01 and 1970-01-01 (the Windows epoch offset).
+const FILETIME_EPOCH_OFFSET: i64 = 116_444_736_000_000_000; // 100-ns ticks
+
+fn iso8601_to_filetime(iso: Option<&str>) -> Option<u64> {
+    let s = iso?;
+    // JMAP timestamps are RFC 3339 / ISO 8601 with millisecond precision
+    // (e.g. "2024-09-12T13:45:00.123Z"). Fall back to seconds precision.
+    let dt = chrono::DateTime::parse_from_rfc3339(s).ok()?;
+    let millis = dt.timestamp_millis();
+    // Checked arithmetic: malformed or extreme timestamps (pre-1601 / far
+    // future) yield None instead of silently wrapping into a bogus FILETIME.
+    let ticks = millis.checked_mul(10_000)?.checked_add(FILETIME_EPOCH_OFFSET)?;
+    u64::try_from(ticks).ok()
+}
+
+// ----------------------------------------------------------------------------
+// Conversion: JmapEmail -> PropertyValue cells for a requested column set
+// ----------------------------------------------------------------------------
+
+/// The numeric flags Outlook reads on `PidTagMessageFlags` (MS-OXPROPS).
+/// All defined bits are listed for protocol fidelity even though only the
+/// subset Outlook branches on is referenced by Phase-1 conversion code.
+#[allow(dead_code)]
+mod msgflag {
+    // Per MS-OXCMSG §2.2.1.6 (v20250520) PidTagMessageFlags:
+    //   mfRead       0x00000001
+    //   mfUnmodified 0x00000002
+    //   mfSubmitted  0x00000004
+    //   mfUnsent     0x00000008
+    //   mfHasAttach  0x00000010
+    //   mfFromMe     0x00000020
+    //   mfResend     0x00000080
+    pub const READ: u32 = 0x0000_0001;
+    pub const UNMODIFIED: u32 = 0x0000_0002;
+    pub const SUBMITTED: u32 = 0x0000_0004;
+    pub const UNSENT: u32 = 0x0000_0008;
+    pub const HAS_ATTACH: u32 = 0x0000_0010;
+    pub const READ_RECEIPT_REQUESTED: u32 = 0x0000_0080;
+    pub const ORIGIN_INTERNET: u32 = 0x2000_0000;
+}
+
+fn core_message_flags(email: &JmapEmail, kind: crate::mapi::session::FolderKind) -> u32 {
+    use crate::mapi::session::FolderKind;
+    let mut f = 0u32;
+    if is_read(email) {
+        f |= msgflag::READ;
+    }
+    if email.has_attachment.unwrap_or(false) {
+        f |= msgflag::HAS_ATTACH;
+    }
+    if email.is_draft() {
+        // UNSENT bit on drafts
+        f |= msgflag::UNSENT;
+    }
+    if matches!(kind, FolderKind::Mail) {
+        f |= msgflag::ORIGIN_INTERNET;
+    }
+    f
+}
+
+fn is_read(email: &JmapEmail) -> bool {
+    email
+        .keywords
+        .as_ref()
+        .is_some_and(|k| k.contains_key("$seen"))
+}
+
+/// Coerce a `u64` count into the MAPI Integer32 domain by saturating at
+/// `i32::MAX`, avoiding the silent wrap that `as i32` produces for counts
+/// above 2,147,483,647.
+fn saturate_i32(n: u64) -> i32 {
+    i32::try_from(n).unwrap_or(i32::MAX)
+}
+
+/// Plain-text body per RFC 8621 §4.1.4: `textBody[0].partId` indexes
+/// `bodyValues`. Falls back to the HTML body's partId only when no text
+/// part exists, mirroring the email::from_jmap helper used elsewhere.
+fn email_body_text(email: &JmapEmail) -> Option<String> {
+    let bv = email.body_values.as_ref()?;
+    if let Some(part) = email.text_body.as_ref().and_then(|t| t.first())
+        && let Some(v) = bv.get(&part.part_id)
+    {
+        return Some(v.value.clone());
+    }
+    email
+        .html_body
+        .as_ref()
+        .and_then(|h| h.first())
+        .and_then(|part| bv.get(&part.part_id))
+        .map(|v| v.value.clone())
+}
+
+/// HTML body per RFC 8621 §4.1.4: `htmlBody[0].partId` indexes `bodyValues`.
+fn email_body_html(email: &JmapEmail) -> Option<String> {
+    let bv = email.body_values.as_ref()?;
+    email
+        .html_body
+        .as_ref()
+        .and_then(|h| h.first())
+        .and_then(|part| bv.get(&part.part_id))
+        .map(|v| v.value.clone())
+}
+
+/// Convert a JmapEmail into the `PropertyValue` cell set for the requested
+/// MAPI column tags, in column-order. Unknown tags return
+/// `PropertyValue::Null` so the row's StandardPropertyRow stays aligned; the
+/// client treats NULL as "property absent". For named properties we return
+/// Null too (named mapping is Phase 2).
+pub fn email_to_cells(
+    email: &JmapEmail,
+    column_set: &[PropertyTag],
+    kind: crate::mapi::session::FolderKind,
+    mailbox_id: &str,
+) -> Vec<PropertyValue> {
+    let mut out = Vec::with_capacity(column_set.len());
+    for tag in column_set {
+        let val = cell_for_email(email, tag, kind, mailbox_id);
+        out.push(val);
+    }
+    out
+}
+
+fn cell_for_email(
+    email: &JmapEmail,
+    tag: &PropertyTag,
+    kind: crate::mapi::session::FolderKind,
+    mailbox_id: &str,
+) -> PropertyValue {
+    use PropertyType as T;
+    // Coerce the requested type to the scalar we will return; if the client
+    // asks for a property with an incompatible type we return a per-type NULL
+    // so the row decoder does not mis-slice subsequent columns.
+    let id = tag.property_id;
+    let want = tag.property_type;
+    macro_rules! or_null {
+        ($val:expr, $pat:expr) => {{
+            if !ttype_matches(want, $pat) {
+                return PropertyValue::Null;
+            }
+            $val
+        }};
+    }
+    match id {
+        PR_SUBJECT => PropertyValue::String(or_null!(
+            email.subject.clone().unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_MESSAGE_CLASS => PropertyValue::String(or_null!(
+            message_class_for(kind).to_string(),
+            T::PTYP_STRING
+        )),
+        PR_NORMALIZED_SUBJECT => PropertyValue::String(or_null!(
+            email.subject.clone().unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_BODY => {
+            // Per RFC 8621 §4.1.4, `bodyValues` is keyed by `partId` from
+            // `textBody`. Resolve PR_BODY through `textBody[0].partId`; fall
+            // back to the HTML part only when no text part exists. Iterating
+            // `bodyValues.values().next()` is non-deterministic and can return
+            // the HTML body as PR_BODY (or vice-versa).
+            let txt = email_body_text(email).unwrap_or_default();
+            PropertyValue::String8(or_null!(txt, T::PTYP_STRING8))
+        }
+        PR_BODY_HTML => {
+            // Resolve through `htmlBody[0].partId`; null if no HTML part.
+            let html = email_body_html(email).unwrap_or_default();
+            PropertyValue::String(or_null!(html, T::PTYP_STRING))
+        }
+        PR_SENDER_NAME => PropertyValue::String(or_null!(
+            email
+                .from
+                .as_ref()
+                .and_then(|a| a.first())
+                .and_then(|a| a.name.clone())
+                .unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_SENDER_EMAIL => PropertyValue::String(or_null!(
+            email
+                .from
+                .as_ref()
+                .and_then(|a| a.first())
+                .and_then(|a| a.email.clone())
+                .unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_SENDER_ENTRYID => PropertyValue::Binary(or_null!(
+            oneoff_entry_id(
+                email
+                    .sender
+                    .as_ref()
+                    .or(email.from.as_ref())
+                    .and_then(|a| a.first())
+                    .and_then(|a| a.email.as_deref())
+                    .unwrap_or(""),
+                email
+                    .sender
+                    .as_ref()
+                    .or(email.from.as_ref())
+                    .and_then(|a| a.first())
+                    .and_then(|a| a.name.as_deref())
+                    .unwrap_or(""),
+                crate::mapi::store::ENTRIESKIND_SMTP,
+            ),
+            T::PTYP_BINARY
+        )),
+        PR_SENT_REPRESENTING_NAME => PropertyValue::String(or_null!(
+            email
+                .from
+                .as_ref()
+                .and_then(|a| a.first())
+                .and_then(|a| a.name.clone())
+                .unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_SENT_REPRESENTING_EMAIL => PropertyValue::String(or_null!(
+            email
+                .from
+                .as_ref()
+                .and_then(|a| a.first())
+                .and_then(|a| a.email.clone())
+                .unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_MESSAGE_DELIVERY_TIME => match iso8601_to_filetime(email.received_at.as_deref()) {
+            Some(ft) => PropertyValue::Time(or_null!(ft, T::PTYP_TIME)),
+            None => PropertyValue::Null,
+        },
+        PR_CLIENT_SUBMIT_TIME => match iso8601_to_filetime(email.sent_at.as_deref()) {
+            Some(ft) => PropertyValue::Time(or_null!(ft, T::PTYP_TIME)),
+            None => PropertyValue::Null,
+        },
+        PR_MESSAGE_SIZE => PropertyValue::Integer32(or_null!(
+            email.size.unwrap_or(0) as i32,
+            T::PTYP_INTEGER32
+        )),
+        PR_HAS_ATTACHMENTS => PropertyValue::Boolean(or_null!(
+            email.has_attachment.unwrap_or(false),
+            T::PTYP_BOOLEAN
+        )),
+        PR_MESSAGE_FLAGS => PropertyValue::Integer32(or_null!(
+            core_message_flags(email, kind) as i32,
+            T::PTYP_INTEGER32
+        )),
+        PR_IMPORTANCE => PropertyValue::Integer32(or_null!(
+            importance_for(email),
+            T::PTYP_INTEGER32
+        )),
+        PR_SENSITIVITY => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
+        PR_INTERNET_MESSAGE_ID => PropertyValue::String(or_null!(
+            email.message_id.clone().unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_IN_REPLY_TO_ID => PropertyValue::String(or_null!(
+            email
+                .in_reply_to
+                .as_ref()
+                .and_then(|v| v.first())
+                .cloned()
+                .unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_INTERNET_REFERENCES => PropertyValue::String(or_null!(
+            email
+                .references
+                .as_ref()
+                .map(|v| v.join(" "))
+                .unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_CONVERSATION_ID => PropertyValue::Binary(or_null!(
+            conversation_id_for(email),
+            T::PTYP_BINARY
+        )),
+        PR_ENTRYID | PR_SEARCH_KEY => PropertyValue::Binary(or_null!(
+            message_entry_id(email, mailbox_id, kind),
+            T::PTYP_BINARY
+        )),
+        // PR_RECORD_KEY is a stable per-record backend key (MS-OXPROPS), NOT
+        // the EntryID. Splitting it here lets callers receive a constant
+        // backend identifier instead of one that changes with the synthesised
+        // entry id representation.
+        PR_RECORD_KEY => PropertyValue::Binary(or_null!(
+            email
+                .id
+                .as_deref()
+                .map(|id| id.as_bytes().to_vec())
+                .unwrap_or_default(),
+            T::PTYP_BINARY
+        )),
+        PR_PARENT_ENTRYID => PropertyValue::Binary(or_null!(
+            folder_entry_id(mailbox_id),
+            T::PTYP_BINARY
+        )),
+        PR_MID => PropertyValue::Integer64(or_null!(
+            message_id_from_jmap(email.id.as_deref().unwrap_or("")) as i64,
+            T::PTYP_INTEGER64
+        )),
+        PR_CHANGE_KEY => PropertyValue::Binary(or_null!(
+            change_key_for(email),
+            T::PTYP_BINARY
+        )),
+        PR_LAST_MODIFICATION_TIME => match iso8601_to_filetime(email.received_at.as_deref()) {
+            Some(ft) => PropertyValue::Time(or_null!(ft, T::PTYP_TIME)),
+            None => PropertyValue::Null,
+        },
+        PR_LAST_MODIFIER_NAME => PropertyValue::String8(or_null!(String::new(), T::PTYP_STRING8)),
+        PR_READ => PropertyValue::Boolean(or_null!(is_read(email), T::PTYP_BOOLEAN)),
+        PR_UNREAD => PropertyValue::Boolean(or_null!(!is_read(email), T::PTYP_BOOLEAN)),
+        PR_HAS_NAMED_PROPERTIES => PropertyValue::Boolean(or_null!(false, T::PTYP_BOOLEAN)),
+        PR_NATIVE_BODY => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
+        // Folder-level ids on a message request echo the parent folder id.
+        PR_FOLDER_ID => PropertyValue::Integer64(or_null!(
+            folder_id_from_backend(mailbox_id) as i64,
+            T::PTYP_INTEGER64
+        )),
+        PR_PARENT_FOLDER_ID => PropertyValue::Integer64(or_null!(
+            folder_id_from_backend(mailbox_id) as i64,
+            T::PTYP_INTEGER64
+        )),
+        _ => PropertyValue::Null,
+    }
+}
+
+fn importance_for(email: &JmapEmail) -> i32 {
+    // JMAP `$important` keyword maps to 1 (Normal). 0 == Low, 2 == High.
+    if email
+        .keywords
+        .as_ref()
+        .is_some_and(|k| k.contains_key("$important"))
+    {
+        return 1;
+    }
+    1 // default Normal
+}
+
+fn conversation_id_for(email: &JmapEmail) -> Vec<u8> {
+    // Hash the JMAP threadId (RFC 8621 s4.1.3) into a 16-byte MAPI
+    // ConversationId (PID 3013 is 16 bytes), so Outlook collapses threads.
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    let src = email.thread_id.as_deref().unwrap_or_else(|| {
+        email
+            .message_id
+            .as_deref()
+            .unwrap_or("")
+    });
+    for b in src.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&h.to_le_bytes());
+    out[8..].copy_from_slice(&(h.rotate_left(17) ^ h).to_le_bytes());
+    out.to_vec()
+}
+
+fn change_key_for(email: &JmapEmail) -> Vec<u8> {
+    // 4-byte GUID(0) + 4-byte junk + the JMAP id bytes, capped to 32 bytes.
+    let id = email.id.as_deref().unwrap_or("").as_bytes();
+    let mut out = Vec::with_capacity(8 + id.len().min(32));
+    out.extend_from_slice(&[0u8; 4]);
+    out.extend_from_slice(&[0u8; 4]);
+    out.extend_from_slice(&id[..id.len().min(32)]);
+    out
+}
+
+/// Aggregate JMAP message-id + mailbox-id into a stable 64-bit MAPI mid.
+pub fn message_id_from_jmap(jmap_id: &str) -> u64 {
+    folder_id_from_backend(jmap_id)
+}
+
+// ----------------------------------------------------------------------------
+// MAPI EntryId synthesis
+// ----------------------------------------------------------------------------
+
+/// Per Outlook's one-off entry id (MS-OXCDATA s2.6.3.3), the provider uid for
+/// an SMTP address. The 16-byte GUID `00020D01-....` is the MAPI one-off
+/// provider uid; we synthesize the minimal entry id Outlook needs to display
+/// sender addresses.
+pub const ENTRIESKIND_SMTP: u8 = 0x00;
+
+/// Provider UID for the MAPI one-off entry id (MS-OXCDATA s2.6.3.3 / s2.6.2.1).
+/// Bytes: 00020D01 (one-off) — see PR_*_ENTRYID constants.
+const ONEOFF_PROVIDER_UID: [u8; 16] = [
+    0x81, 0x2b, 0x1f, 0xa4, 0xbe, 0xa3, 0x10, 0x19, 0x9d, 0x6e, 0x00, 0xdd, 0x01, 0x0f, 0x54, 0x40,
+];
+
+const MDB_PROVIDER_UID: [u8; 16] = [
+    0x1b, 0x55, 0xfa, 0x20, 0xaa, 0x66, 0x11, 0xcd, 0x9b, 0xc8, 0x00, 0xaa, 0x00, 0x2f, 0xc4, 0x5a,
+];
+
+/// Per MS-OXCDATA §2.2.5.1 One-Off EntryID Structure, synthesize a one-off
+/// entry id for an SMTP address. Layout: Flags(4)=0, ProviderUID(16),
+/// Version(2)=0, ControlWord(2) with the U bit selecting Unicode null widths,
+/// DisplayName (null-terminated), AddressType (null-terminated "SMTP"),
+/// EmailAddress (null-terminated). Fields are null-terminated, NOT length
+/// prefixed.
+pub fn oneoff_entry_id(email_addr: &str, display_name: &str, _kind: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(28 + email_addr.len() * 2 + display_name.len() * 2 + 5);
+    out.extend_from_slice(&0x00000000u32.to_le_bytes()); // Flags (long-term)
+    out.extend_from_slice(&ONEOFF_PROVIDER_UID); // 16 bytes
+    out.extend_from_slice(&0u16.to_le_bytes()); // Version = 0x0000
+    // Control word: U=1 (Unicode), Format=TextOnly=0x0006, MAE/M = 0.
+    // Word value = 0x0000 | (1<<0) = TextOnly with U bit. We want U=1 so the
+    // null terminators are 2 bytes (UTF-16). Use the documented HTML defaults:
+    // for a sender one-off, TextAndHtml=0x0016 with U bit 0x0001 -> 0x0017.
+    // Keep the canonical short form: U=1 | Format=TextOnly=0x0006.
+    let ctrl: u16 = 0x0001 | 0x0006; // U bit + TextOnly
+    out.extend_from_slice(&ctrl.to_le_bytes());
+    // DisplayName — null-terminated UTF-16LE (U=1 → 2-byte NUL).
+    for u in display_name.encode_utf16() {
+        out.extend_from_slice(&u.to_le_bytes());
+    }
+    out.extend_from_slice(&0u16.to_le_bytes()); // 2-byte NUL (U=1)
+    // AddressType — "SMTP", null-terminated ASCII (matches U=1 -> 2-byte NUL).
+    out.extend_from_slice(b"SMTP");
+    out.extend_from_slice(&0u16.to_le_bytes());
+    // EmailAddress — null-terminated UTF-16LE.
+    for u in email_addr.encode_utf16() {
+        out.extend_from_slice(&u.to_le_bytes());
+    }
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+/// Synthesise the message entry id (MS-OXCDATA s2.6.3.5 "Folder entry id":
+/// flags(4) + provider uid(16) + folder id (8 LE) + message id (8 LE) +
+/// instance id (8 LE)) so Outlook can re-open the message by id.
+pub fn message_entry_id(email: &JmapEmail, mailbox_id: &str, kind: crate::mapi::session::FolderKind) -> Vec<u8> {
+    let mut out = Vec::with_capacity(28 + mailbox_id.len() + 16);
+    out.extend_from_slice(&0x01000000u32.to_le_bytes()); // flags: MAPI message
+    out.extend_from_slice(&MDB_PROVIDER_UID);
+    out.extend_from_slice(&folder_id_from_backend(mailbox_id).to_le_bytes());
+    out.extend_from_slice(&message_id_from_jmap(email.id.as_deref().unwrap_or("")).to_le_bytes());
+    // Instance id == message id for the non-recurring case.
+    out.extend_from_slice(&message_id_from_jmap(email.id.as_deref().unwrap_or("")).to_le_bytes());
+    let _ = kind;
+    out
+}
+
+/// Synthesise a folder entry id (4 flags + 16 provider uid + 8 folder id).
+pub fn folder_entry_id(mailbox_id: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(28);
+    out.extend_from_slice(&0x01000000u32.to_le_bytes());
+    out.extend_from_slice(&MDB_PROVIDER_UID);
+    out.extend_from_slice(&folder_id_from_backend(mailbox_id).to_le_bytes());
+    out
+}
+
+// ----------------------------------------------------------------------------
+// Folder-row conversion: JmapMailbox -> PropertyValue cells
+// ----------------------------------------------------------------------------
+
+/// Convert a JmapMailbox (RFC 8621 s5.1) into the cells for a hierarchy-table
+/// row, in the requested column order.
+pub fn mailbox_to_cells(
+    mbx: &JmapMailbox,
+    column_set: &[PropertyTag],
+) -> Vec<PropertyValue> {
+    let backend_id = mbx.id.as_deref().unwrap_or("");
+    let mut out = Vec::with_capacity(column_set.len());
+    for tag in column_set {
+        let want = tag.property_type;
+        let v = match tag.property_id {
+            PR_FOLDER_ID => {
+                if !ttype_matches(want, PropertyType::PTYP_INTEGER64) {
+                    PropertyValue::Null
+                } else {
+                    PropertyValue::Integer64(folder_id_from_backend(backend_id) as i64)
+                }
+            }
+            PR_PARENT_FOLDER_ID => {
+                if !ttype_matches(want, PropertyType::PTYP_INTEGER64) {
+                    PropertyValue::Null
+                } else {
+                    // Top-level JMAP mailboxes have no parentId. Returning
+                    // the folder's own id would self-cycle, which Outlook
+                    // cannot handle when building the hierarchy tree. Map a
+                    // missing parent to the synthetic root folder id that
+                    // RopLogon installs as handle 0.
+                    let pid = mbx.parent_id.as_deref().unwrap_or("ROOT");
+                    PropertyValue::Integer64(folder_id_from_backend(pid) as i64)
+                }
+            }
+            PR_DISPLAY_NAME => {
+                let name = match mbx.name.as_deref() {
+                    Some(n) if !n.is_empty() => n.to_string(),
+                    _ => folder_display_name(mbx.role.as_deref(), backend_id),
+                };
+                if ttype_matches(want, PropertyType::PTYP_STRING) {
+                    PropertyValue::String(name)
+                } else if ttype_matches(want, PropertyType::PTYP_STRING8) {
+                    PropertyValue::String8(name)
+                } else {
+                    PropertyValue::Null
+                }
+            }
+            PR_CONTAINER_CLASS => {
+                let kind = folder_kind_for_role(mbx.role.as_deref());
+                let class = container_class_for(kind).to_string();
+                if ttype_matches(want, PropertyType::PTYP_STRING) {
+                    PropertyValue::String(class)
+                } else {
+                    PropertyValue::Null
+                }
+            }
+            PR_CONTENT_COUNT => {
+                if ttype_matches(want, PropertyType::PTYP_INTEGER32) {
+                    PropertyValue::Integer32(saturate_i32(mbx.total_emails.unwrap_or(0)))
+                } else {
+                    PropertyValue::Null
+                }
+            }
+            PR_CONTENT_UNREAD => {
+                if ttype_matches(want, PropertyType::PTYP_INTEGER32) {
+                    PropertyValue::Integer32(saturate_i32(mbx.unread_emails.unwrap_or(0)))
+                } else {
+                    PropertyValue::Null
+                }
+            }
+            PR_SUBFOLDERS => {
+                // RFC 8621 §5.1 doesn't expose child counts; the MAPI
+                // hierarchy table is the authoritative source for "has
+                // children". Returning Null (Flag=0x0a "not supported") is
+                // safer than conflating it with message counts.
+                PropertyValue::Null
+            }
+            PR_CHILD_COUNT => {
+                if ttype_matches(want, PropertyType::PTYP_INTEGER32) {
+                    PropertyValue::Integer32(0)
+                } else {
+                    PropertyValue::Null
+                }
+            }
+            PR_ENTRYID => {
+                if ttype_matches(want, PropertyType::PTYP_BINARY) {
+                    PropertyValue::Binary(folder_entry_id(backend_id))
+                } else {
+                    PropertyValue::Null
+                }
+            }
+            _ => PropertyValue::Null,
+        };
+        out.push(v);
+    }
+    out
+}
+
+// ----------------------------------------------------------------------------
+// Row packaging: cells + the row id -> PropertyRowEntry ready to encode
+// ----------------------------------------------------------------------------
+
+/// Bundle a single message/folder cells set into a single
+/// `PropertyRowEntry`(tag, value) per cell, suitable for direct
+/// `RopGetPropertiesSpecific` serialization.
+pub fn cells_to_row(
+    row_id: u64,
+    column_set: &[PropertyTag],
+    cells: Vec<PropertyValue>,
+) -> Vec<PropertyRowEntry> {
+    let _ = row_id;
+    column_set
+        .iter()
+        .zip(cells)
+        .map(|(tag, value)| PropertyRowEntry {
+            tag: *tag,
+            value,
+        })
+        .collect()
+}
+
+// ----------------------------------------------------------------------------
+// Type-compat helpers
+// ----------------------------------------------------------------------------
+
+/// Build a property-cell vector of typed NULLs, one per requested tag, sized
+/// for each column's declared type so the row decoder skips the right byte
+/// length per MS-OXCDATA s2.11.2. Returned cells are `PropertyValue::Null`
+/// / `Boolean(false)` / `String("")` / etc. as appropriate for the type.
+/// Used by the GetProperties* arms as a fallback when no backend object was
+/// resolved for the input handle.
+pub fn typed_null_cells(column_set: &[PropertyTag]) -> Vec<PropertyValue> {
+    column_set
+        .iter()
+        .map(typed_null_for_tag)
+        .collect()
+}
+
+/// Emit a typed NULL value for one property tag. The variant chosen matches
+/// the column's declared `PropertyType` so the wire encoding (`PropertyValue::
+/// encode`) writes the canonical zero/empty bytes the client expects.
+pub fn typed_null_for_tag(tag: &PropertyTag) -> PropertyValue {
+    use crate::mapi::data::PropertyType as T;
+    match tag.property_type {
+        T::PTYP_INTEGER16 => PropertyValue::Integer16(0),
+        T::PTYP_INTEGER32 | T::PTYP_FLOATING32 | T::PTYP_FLOATING_TIME | T::PTYP_ERROR_CODE => {
+            PropertyValue::Integer32(0)
+        }
+        T::PTYP_INTEGER64 | T::PTYP_FLOATING64 | T::PTYP_CURRENCY | T::PTYP_TIME => {
+            PropertyValue::Integer64(0)
+        }
+        T::PTYP_BOOLEAN => PropertyValue::Boolean(false),
+        T::PTYP_STRING => PropertyValue::String(String::new()),
+        T::PTYP_STRING8 => PropertyValue::String8(String::new()),
+        T::PTYP_BINARY => PropertyValue::Binary(Vec::new()),
+        T::PTYP_GUID => PropertyValue::Guid([0u8; 16]),
+        _ => PropertyValue::Null,
+    }
+}
+
+/// Whether `want` is a compatible MAPI property type for `actual`. Used to
+/// shape NULLs when the client asks for the wrong scalar type (the spec lets
+/// the server return a typed value, but Outlook tolerates NULL better than a
+/// type-mismatch).
+fn ttype_matches(want: PropertyType, actual: PropertyType) -> bool {
+    if want == actual {
+        return true;
+    }
+    // An Ask for PTYP_UNSPECIFIED (0x0000) means "give us whatever type the
+    // server has"; accept anything.
+    if want == PropertyType::PTYP_UNSPECIFIED {
+        return true;
+    }
+    // PTYP_STRING and PTYP_STRING8 are interchangeable per s2.11.1.2.
+    let stringy = |t: PropertyType| {
+        matches!(t, PropertyType::PTYP_STRING | PropertyType::PTYP_STRING8)
+    };
+    stringy(want) && stringy(actual)
+}
+
+// ----------------------------------------------------------------------------
+// Tests
+// ----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jmap::JmapEmail;
+    use crate::mapi::session::FolderKind;
+
+    fn email(subject: &str, seen: bool) -> JmapEmail {
+        let mut kws = std::collections::HashMap::new();
+        kws.insert("$seen".to_string(), seen);
+        JmapEmail {
+            id: Some("M-test".to_string()),
+            blob_id: None,
+            thread_id: Some("T-1".to_string()),
+            mailbox_ids: None,
+            keywords: Some(kws),
+            size: Some(12345),
+            received_at: Some("2025-01-01T00:00:00Z".to_string()),
+            sent_at: None,
+            has_attachment: Some(false),
+            from: None,
+            to: None,
+            cc: None,
+            bcc: None,
+            reply_to: None,
+            subject: Some(subject.to_string()),
+            preview: None,
+            body_values: None,
+            text_body: None,
+            html_body: None,
+            attachments: None,
+            body_structure: None,
+            header_raw: None,
+            sender: None,
+            message_id: Some("id@host".to_string()),
+            in_reply_to: None,
+            references: None,
+        }
+    }
+
+    #[test]
+    fn folder_id_is_total_and_nonzero() {
+        let a = folder_id_from_backend("I");
+        let b = folder_id_from_backend("I");
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
+        assert_ne!(folder_id_from_backend("I"), folder_id_from_backend("J"));
+    }
+
+    #[test]
+    fn email_subject_cell_string() {
+        let e = email("hi", false);
+        let tag = PropertyTag::new(PropertyType::PTYP_STRING, PR_SUBJECT);
+        let cells = email_to_cells(&e, &[tag], FolderKind::Mail, "I");
+        assert_eq!(cells.len(), 1);
+        assert!(
+            matches!(&cells[0], PropertyValue::String(s) if s == "hi"),
+            "got {:?}",
+            cells[0]
+        );
+    }
+
+    #[test]
+    fn message_flags_read_bit_set_when_seen() {
+        let e = email("s", true);
+        let tag = PropertyTag::new(PropertyType::PTYP_INTEGER32, PR_MESSAGE_FLAGS);
+        let cells = email_to_cells(&e, &[tag], FolderKind::Mail, "I");
+        let PropertyValue::Integer32(flags) = &cells[0] else {
+            panic!("expected int32");
+        };
+        assert!((*flags as u32) & msgflag::READ != 0);
+    }
+
+    #[test]
+    fn unknown_property_returns_null() {
+        let e = email("s", false);
+        let tag = PropertyTag::new(PropertyType::PTYP_INTEGER32, 0xFFFF);
+        let cells = email_to_cells(&e, &[tag], FolderKind::Mail, "I");
+        assert!(matches!(cells[0], PropertyValue::Null));
+    }
+
+    #[test]
+    fn wrong_type_returns_null() {
+        let e = email("s", false);
+        // Ask for subject as INTEGER32 — incompatible, server returns NULL.
+        let tag = PropertyTag::new(PropertyType::PTYP_INTEGER32, PR_SUBJECT);
+        let cells = email_to_cells(&e, &[tag], FolderKind::Mail, "I");
+        assert!(matches!(cells[0], PropertyValue::Null));
+    }
+
+    #[test]
+    fn message_delivery_time_filetime() {
+        let e = email("s", false);
+        let tag = PropertyTag::new(PropertyType::PTYP_TIME, PR_MESSAGE_DELIVERY_TIME);
+        let cells = email_to_cells(&e, &[tag], FolderKind::Mail, "I");
+        let PropertyValue::Time(ft) = &cells[0] else {
+            panic!("expected time");
+        };
+        // 2025-01-01T00:00:00Z -> 1704067200_000ms -> in 100-ns ticks + offset
+        assert!(*ft > FILETIME_EPOCH_OFFSET as u64);
+    }
+
+    #[test]
+    fn oneoff_entry_id_has_provider_uid() {
+        let id = oneoff_entry_id("u@x.com", "U", ENTRIESKIND_SMTP);
+        assert!(id.len() >= 4 + 16 + 2);
+        // Provider UID at offset 4
+        assert_eq!(&id[4..20], &ONEOFF_PROVIDER_UID);
+    }
+
+    #[test]
+    fn message_entry_id_shape() {
+        let e = email("s", false);
+        let id = message_entry_id(&e, "I", FolderKind::Mail);
+        // 4 (flags) + 16 (provider uid) + 8 (folder id) + 8 (msg id) + 8 (inst id) = 44
+        assert_eq!(id.len(), 44);
+        assert_eq!(&id[4..20], &MDB_PROVIDER_UID);
+    }
+
+    #[test]
+    fn conversation_id_is_16_bytes() {
+        let e = email("s", false);
+        let id = conversation_id_for(&e);
+        assert_eq!(id.len(), 16);
+    }
+
+    #[test]
+    fn mailbox_row_columns() {
+        let mbx = JmapMailbox {
+            id: Some("I".to_string()),
+            name: Some("Inbox".to_string()),
+            parent_id: None,
+            role: Some("inbox".to_string()),
+            sort_order: None,
+            total_emails: Some(42),
+            unread_emails: Some(7),
+            total_threads: None,
+            unread_threads: None,
+            is_subscribed: None,
+        };
+        let cols = vec![
+            PropertyTag::new(PropertyType::PTYP_INTEGER64, PR_FOLDER_ID),
+            PropertyTag::new(PropertyType::PTYP_STRING, PR_DISPLAY_NAME),
+            PropertyTag::new(PropertyType::PTYP_INTEGER32, PR_CONTENT_COUNT),
+        ];
+        let cells = mailbox_to_cells(&mbx, &cols);
+        assert!(matches!(cells[0], PropertyValue::Integer64(_)));
+        assert!(matches!(&cells[1], PropertyValue::String(s) if s == "Inbox"));
+        assert!(matches!(cells[2], PropertyValue::Integer32(42)));
+    }
+
+    #[test]
+    fn container_class_for_kinds() {
+        assert_eq!(container_class_for(FolderKind::Mail), "IPF.Note");
+        assert_eq!(
+            container_class_for(FolderKind::Calendar),
+            "IPF.Appointment"
+        );
+        assert_eq!(container_class_for(FolderKind::Contacts), "IPF.Contact");
+    }
+
+    #[test]
+    fn folder_display_name_known_roles() {
+        assert_eq!(folder_display_name(Some("inbox"), "x"), "Inbox");
+        assert_eq!(folder_display_name(Some("trash"), "x"), "Deleted Items");
+        // unknown role -> leaf of backend id
+        assert_eq!(folder_display_name(None, "a/b/Custom"), "Custom");
+    }
+
+    #[test]
+    fn iso8601_to_filetime_stable() {
+        let ft_a = iso8601_to_filetime(Some("2025-01-01T00:00:00Z"));
+        let ft_b = iso8601_to_filetime(Some("2025-01-01T00:00:00Z"));
+        assert_eq!(ft_a, ft_b);
+        assert!(iso8601_to_filetime(None).is_none());
+        assert!(iso8601_to_filetime(Some("garbage")).is_none());
+    }
+}

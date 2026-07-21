@@ -38,6 +38,11 @@ const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
 const ENV_RATE_LIMIT_ENABLED: &str = "GATEWAY_RATE_LIMIT_ENABLED";
 const ENV_RATE_LIMIT_REQUESTS_PER_MINUTE: &str = "GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE";
 const ENV_RATE_LIMIT_MAX_CONCURRENT: &str = "GATEWAY_RATE_LIMIT_MAX_CONCURRENT";
+const ENV_MAPI_ENABLED: &str = "GATEWAY_MAPI_ENABLED";
+const ENV_MAPI_HMA_ENABLED: &str = "GATEWAY_MAPI_HMA_ENABLED";
+const ENV_MAPI_OIDC_ISSUER: &str = "GATEWAY_MAPI_OIDC_ISSUER";
+const ENV_MAPI_OIDC_AUDIENCE: &str = "GATEWAY_MAPI_OIDC_AUDIENCE";
+const ENV_MAPI_ORG: &str = "GATEWAY_MAPI_ORG";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -109,6 +114,29 @@ pub struct Config {
     pub rate_limit_requests_per_minute: u32,
     #[serde(default = "default_rate_limit_max_concurrent")]
     pub rate_limit_max_concurrent: usize,
+    // MAPI over HTTP (MS-OXCMAPIHTTP) server surface. Default off — the
+    // surface is opt-in and never weakens the existing EWS/EAS posture.
+    // Enabled by setting GATEWAY_MAPI_ENABLED=1. The HMA bearer validator
+    // (oidc.rs) is enabled separately by GATEWAY_MAPI_HMA_ENABLED and
+    // requires an OAuth issuer URL + audience; without it the MAPI/HTTP
+    // route validates sessions via Basic auth only.
+    #[serde(default)]
+    pub mapi_enabled: bool,
+    #[serde(default)]
+    pub mapi_hma_enabled: bool,
+    #[serde(default)]
+    pub mapi_oidc_issuer: String,
+    #[serde(default)]
+    pub mapi_oidc_audience: String,
+    /// Optional organisation name that the gateway requires in the `/o=...`
+    /// slot of incoming `legacyExchangeDN`s at `RopLogon`. When empty
+    /// (the default), the cross-tenant DN gate is disabled. Configured via
+    /// `GATEWAY_MAPI_ORG`. The previous derivation from `mail_domain` was
+    /// unsafe: it produced a DNS label (e.g. `example`) that never matches
+    /// the org name Outlook sends (`First Organization`, `ExampleOrg`),
+    /// rejecting every legitimate logon.
+    #[serde(default)]
+    pub mapi_org: String,
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -650,6 +678,47 @@ fn apply_environment_overrides(cfg: &mut Config) {
     if cfg.force_caldav_calendar {
         cfg.prefer_jmap_calendar = false;
     }
+
+    // MAPI over HTTP (MS-OXCMAPIHTTP) surface — opt-in, default off.
+    if let Some(val) = get_env_with_fallback(ENV_MAPI_ENABLED, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_MAPI_ENABLED);
+        cfg.mapi_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+    if let Some(val) = get_env_with_fallback(ENV_MAPI_HMA_ENABLED, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_MAPI_HMA_ENABLED);
+        cfg.mapi_hma_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+    apply_env_string(cfg, get_env_with_fallback(ENV_MAPI_OIDC_ISSUER, None), |c, v| {
+        c.mapi_oidc_issuer = v;
+    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_MAPI_OIDC_AUDIENCE, None),
+        |c, v| {
+            c.mapi_oidc_audience = v;
+        },
+    );
+    apply_env_string(cfg, get_env_with_fallback(ENV_MAPI_ORG, None), |c, v| {
+        c.mapi_org = v;
+    });
+    // Co-validation: enabling HMA requires an issuer and an audience.
+    if cfg.mapi_hma_enabled
+        && (cfg.mapi_oidc_issuer.is_empty() || cfg.mapi_oidc_audience.is_empty())
+    {
+        tracing::warn!(
+            "GATEWAY_MAPI_HMA_ENABLED is set but issuer/audience is empty; \
+             HMA bearer validation disabled"
+        );
+        cfg.mapi_hma_enabled = false;
+    }
+    if cfg.mapi_enabled {
+        tracing::info!(
+            "MAPI/HTTP endpoint enabled (HMA enabled: {})",
+            cfg.mapi_hma_enabled
+        );
+    }
 }
 
 fn extract_host_from_caldav(url_str: &str) -> Option<String> {
@@ -741,6 +810,24 @@ impl Default for Config {
             rate_limit_enabled: true,
             rate_limit_requests_per_minute: 120,
             rate_limit_max_concurrent: 1000,
+            mapi_enabled: false,
+            mapi_hma_enabled: false,
+            mapi_oidc_issuer: String::new(),
+            mapi_oidc_audience: String::new(),
+            mapi_org: String::new(),
+        }
+    }
+}
+
+impl Config {
+    /// Test helper: a Config seeded with `mail_domain` and the MAPI surface
+    /// disabled (the production default). Avoids the `Public` Default fields
+    /// dance in unit tests that only care about domain resolution.
+    #[cfg(test)]
+    pub fn test_with_mail_domain(mail_domain: &str) -> Self {
+        Config {
+            mail_domain: mail_domain.to_string(),
+            ..Config::default()
         }
     }
 }

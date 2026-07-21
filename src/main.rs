@@ -303,6 +303,195 @@ fn build_response(
     resp
 }
 
+/// MAPI/HTTP (MS-OXCMAPIHTTP) route handler. Two endpoints share this
+/// handler: `/mapi/emsmdb` (mailbox RPCs) and `/mapi/nspi` (address-book
+/// RPCs). When `GATEWAY_MAPI_ENABLED=false`, `AppState.mapi` is `None` and
+/// the handler returns 404 so the surface is invisible unless opted in.
+///
+/// The `endpoint` argument identifies which physical path the request
+/// landed on so that mailbox ROPs (Connect/Execute/Disconnect) sent to
+/// `/mapi/nspi`, or address-book RPCs (Bind/QueryRows/ResolveNames) sent to
+/// `/mapi/emsmdb`, are rejected with `InvalidRequestType` (code 5) rather
+/// than being silently processed against the wrong RPC family — per
+/// MS-OXCMAPIHTTP §2.2.5 the emsmdb endpoint serves the mailbox RPC set and
+/// the nspi endpoint serves the NSPI RPC set.
+///
+/// Phase 0 wires the transport parse → orchestrator → render pipeline.
+/// The orchestrator (`mapi::handler::handle`) currently implements
+/// Connect/Disconnect/Execute-skeleton; deeper ROPs land in Phase 1.
+async fn mapi_http_path(
+    endpoint: &'static str,
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let start = std::time::Instant::now();
+    let mapi_state = match state.mapi.as_ref() {
+        Some(s) => s.clone(),
+        None => {
+            // Endpoint not enabled — return 404 so the route is invisible
+            // to clients that did not receive a MAPI <Protocol> block from
+            // Autodiscover.
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    };
+
+    let enabled = state.cfg.mapi_enabled;
+    let basic_password = extract_basic_password(&headers);
+    let mut req = match exchange_gateway::mapi::transport::parse_request(
+        &headers,
+        body.to_vec(),
+        enabled,
+    ) {
+        Ok(r) => r,
+        Err(hdr_err) => {
+            let code = hdr_err.to_response_code();
+            let request_id = headers
+                .get("x-requestid")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let resp = exchange_gateway::mapi::transport::MapiResponse::error(code, request_id);
+            let (status, hdrs_out, ct, body_out) = resp.render();
+            info!(
+                target: "http",
+                path = "/mapi/...",
+                response_code = code.as_u8(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "MAPI/HTTP transport header-reject"
+            );
+            return render_mapi(status, hdrs_out, ct, body_out);
+        }
+    };
+    req.password = basic_password;
+
+    // Reject RPC-family/endpoint mismatches (MS-OXCMAPIHTTP §2.2.5):
+    // mailbox RPCs (Connect/Execute/Disconnect/NotificationPoll +
+    // already-recognised address-book verbs) must hit `/mapi/emsmdb`, and
+    // NSPI RPCs must hit `/mapi/nspi`. Outlook never sends mailbox RPCs to
+    // `/mapi/nspi` but a misconfigured proxy or attacker might; guard here
+    // with the transport-layer `InvalidRequestType` (code 5).
+    if let Err(resp) = check_endpoint_rpc_family(endpoint, &req) {
+        let response_code = resp.code.as_u8();
+        let (status, hdrs_out, ct, body_out) = resp.render();
+        info!(
+            target: "http",
+            path = endpoint,
+            response_code,
+            elapsed_ms = start.elapsed().as_millis(),
+            "MAPI/HTTP RPC-family mismatch"
+        );
+        return render_mapi(status, hdrs_out, ct, body_out);
+    }
+
+    let resp = exchange_gateway::mapi::handler::handle(req, &mapi_state).await;
+    let response_code = resp.code.as_u8();
+    let (status, hdrs_out, ct, body_out) = resp.render();
+    info!(
+        target: "http",
+        path = "/mapi/...",
+        response_code = response_code,
+        elapsed_ms = start.elapsed().as_millis(),
+        "MAPI/HTTP request completed"
+    );
+    render_mapi(status, hdrs_out, ct, body_out)
+}
+
+/// Render a MAPI/HTTP response tuple (status, headers, content-type, body)
+/// into an axum `Response`. The content-type is `application/mapi-http` per
+/// MS-OXCMAPIHTTP §2.2.3.2.2.
+fn render_mapi(
+    status: StatusCode,
+    hdrs: axum::http::HeaderMap,
+    content_type: &'static str,
+    body: Vec<u8>,
+) -> Response {
+    let mut resp = (status, body).into_response();
+    resp.headers_mut().extend(hdrs);
+    if let Ok(ct) = HeaderValue::from_str(content_type) {
+        resp.headers_mut().insert(
+            header::CONTENT_TYPE,
+            ct,
+        );
+    }
+    resp
+}
+
+/// Extract the password from an `Authorization: Basic <b64>` header, returning
+/// only the password component (the username lives in the ROP's Essdn). Returns
+/// `None` for absent, malformed, non-Basic, or invalid base64/UTF-8 — the
+/// MAPI logon handler treats `None` as anonymous and rejects with
+/// `AnonymousNotAllowed`.
+///
+/// Per RFC 7235 the auth-scheme token is case-insensitive; Outlook and curl
+/// both send `Basic ` but other conformant clients may use any case
+/// (`basic `, `BASIC `). Match the prefix case-insensitively rather than
+/// enumerating only two spellings.
+fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
+    use base64::Engine;
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let rest = strip_auth_scheme_basic(raw)?;
+    let decoded = base64::engine::general_purpose::STANDARD.decode(rest).ok()?;
+    let plain = String::from_utf8(decoded).ok()?;
+    let (_user, pass) = plain.split_once(':')?;
+    if pass.is_empty() {
+        None
+    } else {
+        Some(pass.to_string())
+    }
+}
+
+/// Strip a case-insensitive `Basic ` auth-scheme prefix from the
+/// `Authorization` header value, returning the credential remainder.
+fn strip_auth_scheme_basic(raw: &str) -> Option<&str> {
+    let scheme_end = raw
+        .find([' ', '\t'])
+        .filter(|&i| i > 0)?;
+    let (scheme, rest) = raw.split_at(scheme_end);
+    if !scheme.eq_ignore_ascii_case("Basic") {
+        return None;
+    }
+    // Skip the single separating SP/HT; treat the rest as the credential.
+    let rest = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\t'))?;
+    Some(rest)
+}
+
+/// Reject RPC-family/endpoint mismatches (MS-OXCMAPIHTTP §2.2.5): mailbox
+/// ROP verbs (Connect/Execute/Disconnect/NotificationWait/PING) only belong
+/// on `/mapi/emsmdb`, and address-book RPCs only belong on `/mapi/nspi`.
+/// Returns `Err(MapiResponse)` with `InvalidRequestType` (code 5) when a
+/// verb is sent to the wrong endpoint, so the dispatcher never processes a
+/// mailbox ROP against the address-book surface or vice-versa.
+fn check_endpoint_rpc_family(
+    endpoint: &str,
+    req: &exchange_gateway::mapi::transport::MapiRequest,
+) -> Result<(), exchange_gateway::mapi::transport::MapiResponse> {
+    use exchange_gateway::mapi::transport::{MapiResponse, ResponseCode, RpcKind};
+    let is_emsmdb = endpoint == "/mapi/emsmdb";
+    match req.kind {
+        RpcKind::Mailbox(_) => {
+            if is_emsmdb {
+                Ok(())
+            } else {
+                Err(MapiResponse::error(
+                    ResponseCode::InvalidRequestType,
+                    req.request_id.clone(),
+                ))
+            }
+        }
+        RpcKind::AddressBook => {
+            if is_emsmdb {
+                Err(MapiResponse::error(
+                    ResponseCode::InvalidRequestType,
+                    req.request_id.clone(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize advanced logging system with fallback to basic logging on error
@@ -346,16 +535,56 @@ async fn main() -> anyhow::Result<()> {
 
     let app_state = Arc::new(AppState::new(config.clone(), storage));
 
+    // Idle-session sweeper (#3593666961): if MAPI/HTTP is enabled, run
+    // `SessionManager::sweep_idle` at the configured/idle-TTL cadence so
+    // abandoned Connect+Execute sessions (e.g. a soft-kill of the Outlook
+    // client, lost laptop, etc.) actually expire rather than leaking
+    // forever. Falls out of scope when `mapi` is `None` (disabled).
+    if let Some(mapi_state) = app_state.mapi.as_ref() {
+        let sessions = mapi_state.sessions.clone();
+        let idle_secs = exchange_gateway::mapi::session::SessionManager::default_idle_secs();
+        tokio::spawn(async move {
+            // Run at the same cadence as the idle TTL so a sweep lands
+            // roughly one TTL after a session goes quiet.
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(idle_secs));
+            interval.tick().await; // first immediate tick - skip.
+            loop {
+                interval.tick().await;
+                let removed = sessions.sweep_idle();
+                if removed > 0 {
+                    debug!(target: "mapi", removed, "idle sessions swept");
+                }
+            }
+        });
+    }
+
+
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_handler))
-        .route("/EWS/Exchange.asmx", post(ews::handle))
-        .route("/EWS/{*path}", post(ews::handle))
-        .route("/Microsoft-Server-ActiveSync", any(eas::handle))
-        .route("/autodiscover/autodiscover.xml", any(autodiscover_xml))
-        .route("/Autodiscover/Autodiscover.xml", any(autodiscover_xml))
-        .route("/autodiscover/autodiscover.svc", post(autodiscover_soap))
-        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap))
+        .route("/EWS/Exchange.asmx", post(ews::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        .route("/EWS/{*path}", post(ews::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        .route("/Microsoft-Server-ActiveSync", any(eas::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        // MAPI/HTTP advertises up to 128 MiB per request (MS-OXCMAPIHTTP);
+        // apply the larger body limit per-route, not globally, so the smaller
+        // 4 MiB cap on EWS/EAS/Autodiscover does not silently reject large
+        // ROP batches before `mapi::transport::parse_request` ever runs. The
+        // transport layer's own `MAX_MAPI_BODY_BYTES` check is the
+        // authoritative envelope bound.
+        .route(
+            "/mapi/emsmdb",
+            post(|st, h, b| mapi_http_path("/mapi/emsmdb", st, h, b))
+                .layer(RequestBodyLimitLayer::new(exchange_gateway::mapi::transport::MAX_MAPI_BODY_BYTES)),
+        )
+        .route(
+            "/mapi/nspi",
+            post(|st, h, b| mapi_http_path("/mapi/nspi", st, h, b))
+                .layer(RequestBodyLimitLayer::new(exchange_gateway::mapi::transport::MAX_MAPI_BODY_BYTES)),
+        )
+        .route("/autodiscover/autodiscover.xml", any(autodiscover_xml).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        .route("/Autodiscover/Autodiscover.xml", any(autodiscover_xml).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        .route("/autodiscover/autodiscover.svc", post(autodiscover_soap).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         .route(
@@ -386,7 +615,6 @@ async fn main() -> anyhow::Result<()> {
         .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
             REQUEST_TIMEOUT_SECS,
         )))
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(CompressionLayer::new())
         .layer(SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
