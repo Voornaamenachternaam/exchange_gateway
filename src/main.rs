@@ -338,31 +338,28 @@ async fn mapi_http_path(
 
     let enabled = state.cfg.mapi_enabled;
     let basic_password = extract_basic_password(&headers);
-    let mut req = match exchange_gateway::mapi::transport::parse_request(
-        &headers,
-        body.to_vec(),
-        enabled,
-    ) {
-        Ok(r) => r,
-        Err(hdr_err) => {
-            let code = hdr_err.to_response_code();
-            let request_id = headers
-                .get("x-requestid")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            let resp = exchange_gateway::mapi::transport::MapiResponse::error(code, request_id);
-            let (status, hdrs_out, ct, body_out) = resp.render();
-            info!(
-                target: "http",
-                path = "/mapi/...",
-                response_code = code.as_u8(),
-                elapsed_ms = start.elapsed().as_millis(),
-                "MAPI/HTTP transport header-reject"
-            );
-            return render_mapi(status, hdrs_out, ct, body_out);
-        }
-    };
+    let mut req =
+        match exchange_gateway::mapi::transport::parse_request(&headers, body.to_vec(), enabled) {
+            Ok(r) => r,
+            Err(hdr_err) => {
+                let code = hdr_err.to_response_code();
+                let request_id = headers
+                    .get("x-requestid")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let resp = exchange_gateway::mapi::transport::MapiResponse::error(code, request_id);
+                let (status, hdrs_out, ct, body_out) = resp.render();
+                info!(
+                    target: "http",
+                    path = "/mapi/...",
+                    response_code = code.as_u8(),
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "MAPI/HTTP transport header-reject"
+                );
+                return render_mapi(status, hdrs_out, ct, body_out);
+            }
+        };
     req.password = basic_password;
 
     // Reject RPC-family/endpoint mismatches (MS-OXCMAPIHTTP §2.2.5):
@@ -409,10 +406,7 @@ fn render_mapi(
     let mut resp = (status, body).into_response();
     resp.headers_mut().extend(hdrs);
     if let Ok(ct) = HeaderValue::from_str(content_type) {
-        resp.headers_mut().insert(
-            header::CONTENT_TYPE,
-            ct,
-        );
+        resp.headers_mut().insert(header::CONTENT_TYPE, ct);
     }
     resp
 }
@@ -431,7 +425,9 @@ fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
     use base64::Engine;
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let rest = strip_auth_scheme_basic(raw)?;
-    let decoded = base64::engine::general_purpose::STANDARD.decode(rest).ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(rest)
+        .ok()?;
     let plain = String::from_utf8(decoded).ok()?;
     let (_user, pass) = plain.split_once(':')?;
     if pass.is_empty() {
@@ -444,9 +440,7 @@ fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
 /// Strip a case-insensitive `Basic ` auth-scheme prefix from the
 /// `Authorization` header value, returning the credential remainder.
 fn strip_auth_scheme_basic(raw: &str) -> Option<&str> {
-    let scheme_end = raw
-        .find([' ', '\t'])
-        .filter(|&i| i > 0)?;
+    let scheme_end = raw.find([' ', '\t']).filter(|&i| i > 0)?;
     let (scheme, rest) = raw.split_at(scheme_end);
     if !scheme.eq_ignore_ascii_case("Basic") {
         return None;
@@ -558,13 +552,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_handler))
-        .route("/EWS/Exchange.asmx", post(ews::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
-        .route("/EWS/{*path}", post(ews::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
-        .route("/Microsoft-Server-ActiveSync", any(eas::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        .route(
+            "/EWS/Exchange.asmx",
+            post(ews::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/EWS/{*path}",
+            post(ews::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/Microsoft-Server-ActiveSync",
+            any(eas::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
+        )
         // MAPI/HTTP advertises up to 128 MiB per request (MS-OXCMAPIHTTP);
         // apply the larger body limit per-route, not globally, so the smaller
         // 4 MiB cap on EWS/EAS/Autodiscover does not silently reject large
@@ -573,18 +575,32 @@ async fn main() -> anyhow::Result<()> {
         // authoritative envelope bound.
         .route(
             "/mapi/emsmdb",
-            post(|st, h, b| mapi_http_path("/mapi/emsmdb", st, h, b))
-                .layer(RequestBodyLimitLayer::new(exchange_gateway::mapi::transport::MAX_MAPI_BODY_BYTES)),
+            post(|st, h, b| mapi_http_path("/mapi/emsmdb", st, h, b)).layer(
+                RequestBodyLimitLayer::new(exchange_gateway::mapi::transport::MAX_MAPI_BODY_BYTES),
+            ),
         )
         .route(
             "/mapi/nspi",
-            post(|st, h, b| mapi_http_path("/mapi/nspi", st, h, b))
-                .layer(RequestBodyLimitLayer::new(exchange_gateway::mapi::transport::MAX_MAPI_BODY_BYTES)),
+            post(|st, h, b| mapi_http_path("/mapi/nspi", st, h, b)).layer(
+                RequestBodyLimitLayer::new(exchange_gateway::mapi::transport::MAX_MAPI_BODY_BYTES),
+            ),
         )
-        .route("/autodiscover/autodiscover.xml", any(autodiscover_xml).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
-        .route("/Autodiscover/Autodiscover.xml", any(autodiscover_xml).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
-        .route("/autodiscover/autodiscover.svc", post(autodiscover_soap).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
-        .route("/Autodiscover/Autodiscover.svc", post(autodiscover_soap).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)))
+        .route(
+            "/autodiscover/autodiscover.xml",
+            any(autodiscover_xml).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/Autodiscover/Autodiscover.xml",
+            any(autodiscover_xml).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/autodiscover/autodiscover.svc",
+            post(autodiscover_soap).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
+        )
+        .route(
+            "/Autodiscover/Autodiscover.svc",
+            post(autodiscover_soap).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
+        )
         .route("/autodiscover/autodiscover.json", get(autodiscover_json))
         .route("/Autodiscover/autodiscover.json", get(autodiscover_json))
         .route(

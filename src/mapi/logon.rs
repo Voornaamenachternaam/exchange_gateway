@@ -185,7 +185,10 @@ pub async fn logon_basic(
 /// fixed SLongTermID structures; the mailbox GUID is a stable deterministic
 /// value derived from the email's domain so repeated Connects resolve to the
 /// same mailbox identity.
-pub fn build_success_envelope(req: &RopLogonRequest, folder_ids: &[[u8; 52]; 9]) -> RopLogonSuccess {
+pub fn build_success_envelope(
+    req: &RopLogonRequest,
+    folder_ids: &[[u8; 52]; 9],
+) -> RopLogonSuccess {
     // Mailbox GUID is opaque to the client; zero is a valid initial value.
     // Phase 1 will populate a real per-mailbox GUID.
     RopLogonSuccess {
@@ -274,15 +277,15 @@ mod tests {
 
     #[test]
     fn rejects_dn_without_recipients_container() {
-        assert_eq!(recipient_local_name("/o=Org/ou=ou/cn=Something/cn=user"), None);
+        assert_eq!(
+            recipient_local_name("/o=Org/ou=ou/cn=Something/cn=user"),
+            None
+        );
     }
 
     #[test]
     fn rejects_empty_recipient_name() {
-        assert_eq!(
-            recipient_local_name("/o=Org/ou=ou/cn=Recipients/cn="),
-            None
-        );
+        assert_eq!(recipient_local_name("/o=Org/ou=ou/cn=Recipients/cn="), None);
     }
 
     #[test]

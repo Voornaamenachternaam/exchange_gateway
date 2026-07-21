@@ -137,7 +137,10 @@ pub enum FxEvent {
     Marker(Marker),
     /// A property-tag-prefixed property-value blob, emitted verbatim so the
     /// producer controls the typed encoding.
-    Property { tag: u32, bytes: Vec<u8> },
+    Property {
+        tag: u32,
+        bytes: Vec<u8>,
+    },
 }
 
 /// The balance-checked tokenizer. Reading the marker/code-point stream and
@@ -215,17 +218,26 @@ impl<'a> Tokenizer<'a> {
     /// omits the outer length and serializes via their own 2-byte count per
     /// MS-OXCDATA §2.11. Bounded by the remaining buffer so an exaggerated
     /// length must fail closed.
-    fn read_property_payload(&mut self, property_type: crate::mapi::data::PropertyType) -> Result<Vec<u8>, DecodeError> {
+    fn read_property_payload(
+        &mut self,
+        property_type: crate::mapi::data::PropertyType,
+    ) -> Result<Vec<u8>, DecodeError> {
         use crate::mapi::data::PropertyType as Pt;
         // PtypBoolean is 2 bytes in FastTransfer per §2.2.4.1.3, not the 1
         // byte MS-OXCDATA fixed_size() returns for the property-row path.
         if property_type == Pt::PTYP_BOOLEAN {
-            let bytes = self.buf.get(self.pos..self.pos + 2).ok_or(DecodeError::Insufficient)?;
+            let bytes = self
+                .buf
+                .get(self.pos..self.pos + 2)
+                .ok_or(DecodeError::Insufficient)?;
             self.pos += 2;
             return Ok(bytes.to_vec());
         }
         if let Some(n) = property_type.fixed_size() {
-            let bytes = self.buf.get(self.pos..self.pos + n).ok_or(DecodeError::Insufficient)?;
+            let bytes = self
+                .buf
+                .get(self.pos..self.pos + n)
+                .ok_or(DecodeError::Insufficient)?;
             self.pos += n;
             return Ok(bytes.to_vec());
         }
@@ -237,7 +249,11 @@ impl<'a> Tokenizer<'a> {
             if count > self.remaining() {
                 return Err(DecodeError::ExcessLength);
             }
-            let bytes = self.buf.get(self.pos..self.pos + count).ok_or(DecodeError::Insufficient)?.to_vec();
+            let bytes = self
+                .buf
+                .get(self.pos..self.pos + count)
+                .ok_or(DecodeError::Insufficient)?
+                .to_vec();
             self.pos += count;
             return Ok(bytes);
         }
@@ -409,11 +425,30 @@ mod tests {
     #[test]
     fn marker_table_roundtrips() {
         for v in [
-            0x40090003u32, 0x400A0003, 0x400B0003, 0x400C0003, 0x40100003,
-            0x400D0003, 0x40010003, 0x40020003, 0x40030003, 0x40040003,
-            0x40000003, 0x400E0003, 0x40120003, 0x407D0003, 0x40130003,
-            0x40140003, 0x402F0003, 0x403A0003, 0x403B0003, 0x4074000B,
-            0x4075000B, 0x40150003, 0x407B0102, 0x40180003,
+            0x40090003u32,
+            0x400A0003,
+            0x400B0003,
+            0x400C0003,
+            0x40100003,
+            0x400D0003,
+            0x40010003,
+            0x40020003,
+            0x40030003,
+            0x40040003,
+            0x40000003,
+            0x400E0003,
+            0x40120003,
+            0x407D0003,
+            0x40130003,
+            0x40140003,
+            0x402F0003,
+            0x403A0003,
+            0x403B0003,
+            0x4074000B,
+            0x4075000B,
+            0x40150003,
+            0x407B0102,
+            0x40180003,
         ] {
             let m = Marker::from_u32(v);
             assert_eq!(m.value(), v, "v={v:#010x}");
@@ -444,8 +479,14 @@ mod tests {
         buf.extend_from_slice(&Marker::StartTopFld.value().to_le_bytes());
         buf.extend_from_slice(&Marker::EndFolder.value().to_le_bytes());
         let mut t = Tokenizer::new(&buf);
-        assert!(matches!(t.next_event().unwrap(), Some(FxEvent::Marker(Marker::StartTopFld))));
-        assert!(matches!(t.next_event().unwrap(), Some(FxEvent::Marker(Marker::EndFolder))));
+        assert!(matches!(
+            t.next_event().unwrap(),
+            Some(FxEvent::Marker(Marker::StartTopFld))
+        ));
+        assert!(matches!(
+            t.next_event().unwrap(),
+            Some(FxEvent::Marker(Marker::EndFolder))
+        ));
         assert!(t.next_event().unwrap().is_none());
         assert!(t.open.is_empty());
     }

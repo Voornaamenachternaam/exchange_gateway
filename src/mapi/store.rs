@@ -209,7 +209,11 @@ pub fn folder_display_name(role: Option<&str>, backend_id: &str) -> String {
         Some("junk") => "Junk Email".to_string(),
         Some("archive") => "Archive".to_string(),
         Some("outbox") => "Outbox".to_string(),
-        _ => backend_id.rsplit('/').next().unwrap_or(backend_id).to_string(),
+        _ => backend_id
+            .rsplit('/')
+            .next()
+            .unwrap_or(backend_id)
+            .to_string(),
     }
 }
 
@@ -229,7 +233,9 @@ fn iso8601_to_filetime(iso: Option<&str>) -> Option<u64> {
     let millis = dt.timestamp_millis();
     // Checked arithmetic: malformed or extreme timestamps (pre-1601 / far
     // future) yield None instead of silently wrapping into a bogus FILETIME.
-    let ticks = millis.checked_mul(10_000)?.checked_add(FILETIME_EPOCH_OFFSET)?;
+    let ticks = millis
+        .checked_mul(10_000)?
+        .checked_add(FILETIME_EPOCH_OFFSET)?;
     u64::try_from(ticks).ok()
 }
 
@@ -451,10 +457,9 @@ fn cell_for_email(
             Some(ft) => PropertyValue::Time(or_null!(ft, T::PTYP_TIME)),
             None => PropertyValue::Null,
         },
-        PR_MESSAGE_SIZE => PropertyValue::Integer32(or_null!(
-            email.size.unwrap_or(0) as i32,
-            T::PTYP_INTEGER32
-        )),
+        PR_MESSAGE_SIZE => {
+            PropertyValue::Integer32(or_null!(email.size.unwrap_or(0) as i32, T::PTYP_INTEGER32))
+        }
         PR_HAS_ATTACHMENTS => PropertyValue::Boolean(or_null!(
             email.has_attachment.unwrap_or(false),
             T::PTYP_BOOLEAN
@@ -463,10 +468,9 @@ fn cell_for_email(
             core_message_flags(email, kind) as i32,
             T::PTYP_INTEGER32
         )),
-        PR_IMPORTANCE => PropertyValue::Integer32(or_null!(
-            importance_for(email),
-            T::PTYP_INTEGER32
-        )),
+        PR_IMPORTANCE => {
+            PropertyValue::Integer32(or_null!(importance_for(email), T::PTYP_INTEGER32))
+        }
         PR_SENSITIVITY => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
         PR_INTERNET_MESSAGE_ID => PropertyValue::String(or_null!(
             email.message_id.clone().unwrap_or_default(),
@@ -489,10 +493,9 @@ fn cell_for_email(
                 .unwrap_or_default(),
             T::PTYP_STRING
         )),
-        PR_CONVERSATION_ID => PropertyValue::Binary(or_null!(
-            conversation_id_for(email),
-            T::PTYP_BINARY
-        )),
+        PR_CONVERSATION_ID => {
+            PropertyValue::Binary(or_null!(conversation_id_for(email), T::PTYP_BINARY))
+        }
         PR_ENTRYID | PR_SEARCH_KEY => PropertyValue::Binary(or_null!(
             message_entry_id(email, mailbox_id, kind),
             T::PTYP_BINARY
@@ -509,18 +512,14 @@ fn cell_for_email(
                 .unwrap_or_default(),
             T::PTYP_BINARY
         )),
-        PR_PARENT_ENTRYID => PropertyValue::Binary(or_null!(
-            folder_entry_id(mailbox_id),
-            T::PTYP_BINARY
-        )),
+        PR_PARENT_ENTRYID => {
+            PropertyValue::Binary(or_null!(folder_entry_id(mailbox_id), T::PTYP_BINARY))
+        }
         PR_MID => PropertyValue::Integer64(or_null!(
             message_id_from_jmap(email.id.as_deref().unwrap_or("")) as i64,
             T::PTYP_INTEGER64
         )),
-        PR_CHANGE_KEY => PropertyValue::Binary(or_null!(
-            change_key_for(email),
-            T::PTYP_BINARY
-        )),
+        PR_CHANGE_KEY => PropertyValue::Binary(or_null!(change_key_for(email), T::PTYP_BINARY)),
         PR_LAST_MODIFICATION_TIME => match iso8601_to_filetime(email.received_at.as_deref()) {
             Some(ft) => PropertyValue::Time(or_null!(ft, T::PTYP_TIME)),
             None => PropertyValue::Null,
@@ -561,12 +560,10 @@ fn conversation_id_for(email: &JmapEmail) -> Vec<u8> {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = FNV_OFFSET;
-    let src = email.thread_id.as_deref().unwrap_or_else(|| {
-        email
-            .message_id
-            .as_deref()
-            .unwrap_or("")
-    });
+    let src = email
+        .thread_id
+        .as_deref()
+        .unwrap_or_else(|| email.message_id.as_deref().unwrap_or(""));
     for b in src.as_bytes() {
         h ^= u64::from(*b);
         h = h.wrapping_mul(FNV_PRIME);
@@ -649,7 +646,11 @@ pub fn oneoff_entry_id(email_addr: &str, display_name: &str, _kind: u8) -> Vec<u
 /// Synthesise the message entry id (MS-OXCDATA s2.6.3.5 "Folder entry id":
 /// flags(4) + provider uid(16) + folder id (8 LE) + message id (8 LE) +
 /// instance id (8 LE)) so Outlook can re-open the message by id.
-pub fn message_entry_id(email: &JmapEmail, mailbox_id: &str, kind: crate::mapi::session::FolderKind) -> Vec<u8> {
+pub fn message_entry_id(
+    email: &JmapEmail,
+    mailbox_id: &str,
+    kind: crate::mapi::session::FolderKind,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(28 + mailbox_id.len() + 16);
     out.extend_from_slice(&0x01000000u32.to_le_bytes()); // flags: MAPI message
     out.extend_from_slice(&MDB_PROVIDER_UID);
@@ -676,10 +677,7 @@ pub fn folder_entry_id(mailbox_id: &str) -> Vec<u8> {
 
 /// Convert a JmapMailbox (RFC 8621 s5.1) into the cells for a hierarchy-table
 /// row, in the requested column order.
-pub fn mailbox_to_cells(
-    mbx: &JmapMailbox,
-    column_set: &[PropertyTag],
-) -> Vec<PropertyValue> {
+pub fn mailbox_to_cells(mbx: &JmapMailbox, column_set: &[PropertyTag]) -> Vec<PropertyValue> {
     let backend_id = mbx.id.as_deref().unwrap_or("");
     let mut out = Vec::with_capacity(column_set.len());
     for tag in column_set {
@@ -785,10 +783,7 @@ pub fn cells_to_row(
     column_set
         .iter()
         .zip(cells)
-        .map(|(tag, value)| PropertyRowEntry {
-            tag: *tag,
-            value,
-        })
+        .map(|(tag, value)| PropertyRowEntry { tag: *tag, value })
         .collect()
 }
 
@@ -803,10 +798,7 @@ pub fn cells_to_row(
 /// Used by the GetProperties* arms as a fallback when no backend object was
 /// resolved for the input handle.
 pub fn typed_null_cells(column_set: &[PropertyTag]) -> Vec<PropertyValue> {
-    column_set
-        .iter()
-        .map(typed_null_for_tag)
-        .collect()
+    column_set.iter().map(typed_null_for_tag).collect()
 }
 
 /// Emit a typed NULL value for one property tag. The variant chosen matches
@@ -845,9 +837,8 @@ fn ttype_matches(want: PropertyType, actual: PropertyType) -> bool {
         return true;
     }
     // PTYP_STRING and PTYP_STRING8 are interchangeable per s2.11.1.2.
-    let stringy = |t: PropertyType| {
-        matches!(t, PropertyType::PTYP_STRING | PropertyType::PTYP_STRING8)
-    };
+    let stringy =
+        |t: PropertyType| matches!(t, PropertyType::PTYP_STRING | PropertyType::PTYP_STRING8);
     stringy(want) && stringy(actual)
 }
 
@@ -1008,10 +999,7 @@ mod tests {
     #[test]
     fn container_class_for_kinds() {
         assert_eq!(container_class_for(FolderKind::Mail), "IPF.Note");
-        assert_eq!(
-            container_class_for(FolderKind::Calendar),
-            "IPF.Appointment"
-        );
+        assert_eq!(container_class_for(FolderKind::Calendar), "IPF.Appointment");
         assert_eq!(container_class_for(FolderKind::Contacts), "IPF.Contact");
     }
 
