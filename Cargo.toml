@@ -6,12 +6,7 @@ edition = "2024"
 rust-version = "1.97.0"
 
 [dependencies]
-# HMA / Entra ID OAuth for the MAPI over HTTP (MS-OXCMAPIHTTP) surface.
-# High-quality, widely-audited crate for JWT signature verification + claims
-# validation (RS256/ES256 + exp/nbf/iss/aud). Prefer this over hand-rolled
-# crypto per the project's code priority: new high-quality dependency before
-# custom code.
-jsonwebtoken = "^9.3"
+jsonwebtoken = "^10.4.0"
 reqwest = { version = "^0.13.4", default-features = false, features = ["json", "rustls", "cookies", "blocking"] }
 async-trait = "^0.1.89"
 tokio = { version = "^1.52.3", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
