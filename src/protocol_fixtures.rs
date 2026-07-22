@@ -150,6 +150,7 @@ pub fn autodiscover_response(host: &str, email: &str) -> String {
         None,
         &format!("mail.{}", email.rsplit('@').next().unwrap_or(host)),
         true,
+        &crate::autodiscover::AuthAdvert::Basic,
     )
     .2
 }

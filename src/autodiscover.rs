@@ -40,6 +40,83 @@ pub fn oab_url(host: &str) -> String {
     format!("https://{}/OAB/{}/", host, OAB_SERVER_GUID)
 }
 
+/// What the EXCH/EXPR `<Protocol>` blocks advertise under `<AuthPackage>` and
+/// the surrounding Modern-Auth elements.
+///
+/// MS-OXDSCLI §2.2.4.1.1.2 models `<AuthPackage>` as a protocol-level setting
+/// whose value informs the client which authentication scheme the server
+/// expects (`Basic`, `Digest`, `NTLM`, `Kerberos`, `Negotiate`, `OAuth2`, ...).
+/// For Hybrid Modern Auth (HMA) the well-known advertisement Exchange uses is
+/// `OAuth2/CertificateBased` together with a sibling `<OauthUrl>` (the OAuth2
+/// authorization-server URL) and a `<CompactDomain>` (the issuer/tenant host).
+/// New Outlook for Windows prefers Modern Auth when it is advertised and only
+/// falls back to Basic when it is the sole scheme — advertising `Basic` alone
+/// forces the legacy basic prompt and, in some tenants, refuses provisioning.
+///
+/// The gateway remains backwards-compatible: when HMA is not configured we keep
+/// advertising `Basic` exactly as before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthAdvert {
+    /// Legacy basic authentication — `<AuthPackage>Basic</AuthPackage>`.
+    Basic,
+    /// Hybrid Modern Auth — `<AuthPackage>OAuth2/CertificateBased</AuthPackage>`
+    /// plus `<OauthUrl>` and `<CompactDomain>`.
+    ///
+    /// The `oauth_url` is the OIDC issuer / authorization-server base URL the
+    /// client uses to acquire bearer tokens for the MAPI/HTTP + EWS endpoints.
+    Modern {
+        /// OIDC issuer / OAuth2 authorization-server base URL.
+        oauth_url: String,
+    },
+}
+
+impl AuthAdvert {
+    /// The `<AuthPackage>` element value to render.
+    pub fn auth_package_value(&self) -> &'static str {
+        match self {
+            AuthAdvert::Basic => "Basic",
+            AuthAdvert::Modern { .. } => "OAuth2/CertificateBased",
+        }
+    }
+
+    /// Extra sibling elements to render immediately after `<AuthPackage>` in
+    /// EXCH/EXPR blocks (empty for Basic, `<OauthUrl>`+`<CompactDomain>` for
+    /// Modern Auth).
+    pub fn extra_elements(&self) -> String {
+        match self {
+            AuthAdvert::Basic => String::new(),
+            AuthAdvert::Modern { oauth_url } => {
+                // The compact domain is the OAuth2 issuer host authority; it is
+                // advertised so Outlook maps the mailbox to the right tenant.
+                let compact_domain =
+                    host_authority(oauth_url).unwrap_or_else(|| oauth_url.clone());
+                format!(
+                    "<OauthUrl>{}</OauthUrl><CompactDomain>{}</CompactDomain>",
+                    xml_escape(oauth_url),
+                    xml_escape(&compact_domain),
+                )
+            }
+        }
+    }
+}
+
+/// Parse the host:authority component out of an issuer URL for `<CompactDomain>`.
+/// Accepts `https://login.example.com/...` and bare `login.example.com`.
+fn host_authority(url: &str) -> Option<String> {
+    let after_scheme = url
+        .split("://")
+        .nth(1)
+        .map(|rest| rest.to_string())
+        .unwrap_or_else(|| url.to_string());
+    let host = after_scheme.split(['/', '?', '#']).next()?;
+    let host = host.split(':').next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AutodiscoverJsonParams {
     #[serde(rename = "Protocol")]
@@ -313,11 +390,14 @@ pub fn handle_autodiscover_xml(
     accept_language: Option<&str>,
     mail_host: &str,
     include_imap_smtp: bool,
+    auth_advert: &AuthAdvert,
 ) -> AdResponse {
     let schema = detect_response_schema(body);
     match schema {
         ResponseSchema::MobileSync => handle_mobilesync_xml(host, email, accept_language),
-        ResponseSchema::Outlook => handle_outlook_xml(host, email, mail_host, include_imap_smtp),
+        ResponseSchema::Outlook => {
+            handle_outlook_xml(host, email, mail_host, include_imap_smtp, auth_advert)
+        }
     }
 }
 
@@ -379,12 +459,15 @@ fn handle_outlook_xml(
     email: &str,
     mail_host: &str,
     include_imap_smtp: bool,
+    auth_advert: &AuthAdvert,
 ) -> AdResponse {
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
     let mail_host_escaped = xml_escape(mail_host);
     let oab_base = oab_url(host);
     let oab_url_escaped = xml_escape(&oab_base);
+    let auth_package = auth_advert.auth_package_value();
+    let auth_extra = auth_advert.extra_elements();
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
@@ -414,8 +497,8 @@ fn handle_outlook_xml(
 <LoginName>{email}</LoginName>
 <DomainRequired>off</DomainRequired>
 <SPA>off</SPA>
-<AuthPackage>Basic</AuthPackage>
-<CertPrincipalName>None</CertPrincipalName>
+<AuthPackage>{auth_package}</AuthPackage>
+{auth_extra}<CertPrincipalName>None</CertPrincipalName>
 <SSL>on</SSL>
 <AuthRequired>on</AuthRequired>
 </Protocol>
@@ -425,8 +508,8 @@ fn handle_outlook_xml(
 <SSL>on</SSL>
 <SPA>off</SPA>
 <CertPrincipalName>None</CertPrincipalName>
-<AuthPackage>Basic</AuthPackage>
-<LoginName>{email}</LoginName>
+<AuthPackage>{auth_package}</AuthPackage>
+{auth_extra}<LoginName>{email}</LoginName>
 <ServerExclusiveConnect>on</ServerExclusiveConnect>
 <TTL>1</TTL>
 <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
@@ -461,6 +544,8 @@ fn handle_outlook_xml(
         host = host_escaped,
         email = email_escaped,
         oab_url = oab_url_escaped,
+        auth_package = auth_package,
+        auth_extra = auth_extra,
         imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
             format!(
                 r#"<Protocol>
@@ -621,6 +706,7 @@ mod tests {
             "user@example.com",
             "mail.example.com",
             true,
+            &AuthAdvert::Basic,
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("outlook/responseschema/2006a"));
@@ -629,6 +715,9 @@ mod tests {
         assert!(body.contains("<Type>EXCH</Type>"));
         assert!(body.contains("<Type>EXPR</Type>"));
         assert!(body.contains("<ServerExclusiveConnect>on</ServerExclusiveConnect>"));
+        // By default (Basic) the EXCH/EXPR blocks advertise Basic auth only.
+        assert_eq!(body.matches("<AuthPackage>Basic</AuthPackage>").count(), 2);
+        assert!(!body.contains("OAuth2"));
     }
 
     #[test]
@@ -638,6 +727,7 @@ mod tests {
             "user@example.com",
             "mail.example.com",
             false,
+            &AuthAdvert::Basic,
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("<Type>mapiHttp</Type>"));
@@ -670,6 +760,7 @@ mod tests {
             "user@example.com",
             "mail.example.com",
             false,
+            &AuthAdvert::Basic,
         );
         assert_eq!(status, StatusCode::OK);
         let expected = oab_url("mail.example.com");
@@ -679,6 +770,67 @@ mod tests {
             occurrences, 2,
             "OABUrl must be advertised in both EXCH and EXPR Protocol blocks"
         );
+    }
+
+    #[test]
+    fn test_outlook_response_advertises_modern_auth_when_configured() {
+        // When HMA is configured the EXCH/EXPR blocks MUST advertise
+        // `<AuthPackage>OAuth2/CertificateBased</AuthPackage>` together with
+        // `<OauthUrl>` and `<CompactDomain>` so New Outlook for Windows
+        // provisions the account via Modern Auth instead of forcing the
+        // legacy Basic prompt (audit §1.2). Without this advertisement New
+        // Outlook refuses native account provisioning in HMA-only tenants.
+        let advert = AuthAdvert::Modern {
+            oauth_url: "https://login.example.com/".to_string(),
+        };
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            false,
+            &advert,
+        );
+        assert_eq!(status, StatusCode::OK);
+        // Both EXCH and EXPR blocks advertise the Modern Auth package.
+        assert_eq!(
+            body.matches("<AuthPackage>OAuth2/CertificateBased</AuthPackage>").count(),
+            2,
+            "EXCH and EXPR blocks must advertise OAuth2/CertificateBased"
+        );
+        // No Basic advertisement leaks once HMA is configured.
+        assert!(!body.contains("<AuthPackage>Basic</AuthPackage>"));
+        // OauthUrl is advertised in both blocks with the configured issuer URL.
+        assert_eq!(body.matches("<OauthUrl>https://login.example.com/</OauthUrl>").count(), 2);
+        // CompactDomain is the issuer host authority, advertised in both blocks.
+        assert_eq!(body.matches("<CompactDomain>login.example.com</CompactDomain>").count(), 2);
+    }
+
+    #[test]
+    fn test_outlook_response_basic_auth_is_default() {
+        // By default (no HMA configured) the EXCH/EXPR blocks advertise Basic
+        // auth only — backwards-compatible with the existing posture.
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            false,
+            &AuthAdvert::Basic,
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.matches("<AuthPackage>Basic</AuthPackage>").count(), 2);
+        assert!(!body.contains("<OauthUrl>"));
+        assert!(!body.contains("<CompactDomain>"));
+    }
+
+    #[test]
+    fn test_host_authority_parses_issuer_urls() {
+        assert_eq!(
+            host_authority("https://login.microsoftonline.com/tenant/v2.0").as_deref(),
+            Some("login.microsoftonline.com")
+        );
+        assert_eq!(host_authority("https://login.example.com:443/").as_deref(), Some("login.example.com"));
+        assert_eq!(host_authority("login.example.com").as_deref(), Some("login.example.com"));
+        assert_eq!(host_authority(""), None);
     }
 
     #[test]
@@ -707,6 +859,7 @@ mod tests {
             None,
             "mail.example.com",
             true,
+            &AuthAdvert::Basic,
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("mobilesync/responseschema/2006"));
@@ -726,6 +879,7 @@ mod tests {
             None,
             "mail.example.com",
             true,
+            &AuthAdvert::Basic,
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
@@ -742,6 +896,7 @@ mod tests {
             None,
             "mail.example.com",
             true,
+            &AuthAdvert::Basic,
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
