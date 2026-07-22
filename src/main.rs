@@ -60,6 +60,23 @@ fn redact_email(email: &str) -> String {
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 
+/// Build the authentication advertisement the Autodiscover Outlook response
+/// renders in its EXCH/EXPR `<Protocol>` blocks. When MAPI/HTTP HMA is
+/// configured (`GATEWAY_MAPI_HMA_ENABLED` with a populated
+/// `GATEWAY_MAPI_OIDC_ISSUER`) the gateway advertises Modern Auth
+/// (`OAuth2/CertificateBased` + `<OauthUrl>` + `<CompactDomain>`) so New
+/// Outlook for Windows provisions the account via Modern Auth; otherwise it
+/// advertises Basic auth (backwards-compatible).
+fn autodiscover_auth_advert(cfg: &Config) -> autodiscover::AuthAdvert {
+    if cfg.mapi_hma_enabled && !cfg.mapi_oidc_issuer.is_empty() {
+        autodiscover::AuthAdvert::Modern {
+            oauth_url: cfg.mapi_oidc_issuer.clone(),
+        }
+    } else {
+        autodiscover::AuthAdvert::Basic
+    }
+}
+
 async fn autodiscover_xml(
     State(state): State<Arc<AppState>>,
     method: axum::http::Method,
@@ -106,6 +123,7 @@ async fn autodiscover_xml(
         accept_language,
         &state.cfg.mail_host,
         state.smtp_client.is_some(),
+        &autodiscover_auth_advert(&state.cfg),
     );
 
     let elapsed_ms = start.elapsed().as_millis();

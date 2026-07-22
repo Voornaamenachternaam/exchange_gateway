@@ -88,6 +88,22 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
   single contiguous `Range` honoured (multi-range unsupported, falls back to
   whole file). NOT yet wired: the audit's broader §2d GAL/NSPI stub (out of
   scope for the OABUrl gap).
+- **Autodiscover AuthPackage / HMA advertisement** — closes audit gap §1.2.
+  `handle_outlook_xml` (and `handle_autodiscover_xml` which delegates to it)
+  takes an `&AuthAdvert` describing what the EXCH + EXPR `<Protocol>` blocks
+  advertise under `<AuthPackage>`. `AuthAdvert::Basic` keeps the legacy
+  `<AuthPackage>Basic</AuthPackage>` (default, backwards-compatible).
+  `AuthAdvert::Modern { oauth_url }` renders
+  `<AuthPackage>OAuth2/CertificateBased</AuthPackage>` plus sibling
+  `<OauthUrl>{oauth_url}</OauthUrl>` and
+  `<CompactDomain>{issuer_host}</CompactDomain>` (issuer host extracted by
+  `host_authority`) in BOTH blocks so New Outlook for Windows provisions via
+  Modern Auth (HMA). `main::autodiscover_auth_advert(&cfg)` builds the advert
+  from `Config`: `Modern` when `mapi_hma_enabled && !mapi_oidc_issuer.is_empty()`
+  (the same gate that wires `oidc::TokenVerifier` on the bearer path), else
+  `Basic`. The SOAP `handle_autodiscover_soap` advertises Basic as before
+  (EWS clients use the SOAP GetUserSettings surface, not the EXCH/EXPR
+  Protocol blocks, so HMA advertisement there is not required for §1.2).
 
 ## MAPI/HTTP dispatcher & ROP codec conventions (IMPORTANT)
 - **RPC types** (transport.rs): Connect / Execute / Disconnect / NotificationWait / PING. The
