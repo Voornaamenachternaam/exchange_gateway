@@ -64,6 +64,30 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
 - Backend: JMAP for email read/sync/send, SMTP for send + iMIP meeting transport,
   CalDAV authoritative for calendar/free-busy, CardDAV for contacts. Do NOT use
   IMAP (vestigial/unused).
+- **OAB (Offline Address Book)** — `src/oab.rs` (MS-OXOAB + MS-OXWOAB). Closes
+  audit gap §1.1. Autodiscover advertises `<OABUrl>` (in EXCH + EXPR Protocol
+  blocks of `handle_outlook_xml`) plus `OABUrl`/`ExternalOABUrl`/`InternalOABUrl`
+  SOAP user settings — built by `autodiscover::oab_url(host)` →
+  `https://{host}/OAB/{OAB_SERVER_GUID}/` (the GUID constant lives in
+  `autodiscover.rs`; it is intentionally stable so a client cache survives a
+  container restart). Route `/OAB/{guid}/{file}` → `main::oab_download` →
+  `oab::handle_oab`, which rejects unknown GUIDs with 404, authenticates via
+  Basic auth + the shared `AuthVerifier` (no creds ⇒ 401 `Basic realm=...`),
+  serves `oab.xml` (the OAB manifest with `<OABVersion>3`, `<ContentVersion>`,
+  `<Size>`, `<Hash>` = SHA-256, ETag/Last-Modified) and the binary full OAB
+  generated as an **OAB v3 details file** (MS-OXOAB §3.2 — `OAB_HDR` +
+  `B2_REC` per recipient carrying X500 DN via `synth_dn`, SMTP, display name,
+  alias; bDispType=DT_MAIL_USER, bObjType=MAPI_MAILUSER). v3 details is the
+  uncompressed OAB container (v4 `.lzx` needs an LZX delta codec that no Rust
+  crate provides). Payload is built from `AppState.directory` via
+  `search_blocking("*", Some(5000))` on the blocking pool (the directory
+  rejects `""` as `InvalidQuery`; an unsupported wildcard falls back to a
+  header-only empty OAB). Size + ETag are derived from the SAME built bytes
+  (helpers `payload_etag`, `oab_size_and_etag`) so the manifest's `<Size>`/
+  `<Hash>` match the served file. Conditional GET (`If-None-Match`) ⇒ 304;
+  single contiguous `Range` honoured (multi-range unsupported, falls back to
+  whole file). NOT yet wired: the audit's broader §2d GAL/NSPI stub (out of
+  scope for the OABUrl gap).
 
 ## MAPI/HTTP dispatcher & ROP codec conventions (IMPORTANT)
 - **RPC types** (transport.rs): Connect / Execute / Disconnect / NotificationWait / PING. The

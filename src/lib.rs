@@ -23,6 +23,7 @@ pub mod meeting;
 pub mod metrics;
 pub mod models;
 pub mod notifications;
+pub mod oab;
 pub mod oidc;
 pub mod oof;
 pub mod permission;

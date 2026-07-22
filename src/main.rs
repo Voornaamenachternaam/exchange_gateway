@@ -15,7 +15,8 @@ use axum::{
 };
 use exchange_gateway::{
     autodiscover, config::Config, eas, ews, logging, metrics::REGISTRY, metrics::record_http,
-    models::AppState, rate_limit::check_rate_limit, storage::Storage, validation::validate_request,
+    models::AppState, oab, rate_limit::check_rate_limit, storage::Storage,
+    validation::validate_request,
 };
 use prometheus::{Encoder, TextEncoder};
 use tokio::net::TcpListener;
@@ -284,6 +285,23 @@ async fn autodiscover_json_v1(
     }
 
     build_response(status, &hdrs, body_out)
+}
+
+/// Offline Address Book (OAB) download handler — MS-OXOAB / MS-OXWOAB.
+///
+/// Serves the OAB virtual directory advertised by `autodiscover::oab_url` so
+/// Outlook for Windows can download a directory-backed offline address book
+/// instead of hitting a 404 (audit gap §1.1). Delegates to [`oab::handle_oab`]
+/// which authenticates via Basic auth against the shared [`AuthVerifier`],
+/// serves the `oab.xml` manifest and a real OAB v3 details binary generated
+/// from the operator-configured directory. See `src/oab.rs` for the format
+/// and security details.
+async fn oab_download(
+    State(state): State<Arc<AppState>>,
+    Path((guid, file)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    oab::handle_oab(State(state), guid, file, headers).await
 }
 
 fn build_response(
@@ -611,6 +629,14 @@ async fn main() -> anyhow::Result<()> {
             "/Autodiscover/autodiscover.json/v1.0/{email}",
             get(autodiscover_json_v1),
         )
+        // Offline Address Book (MS-OXOAB / MS-OXWOAB) download endpoint.
+        // Serves the OAB virtual directory advertised by Autodiscover under
+        // `/OAB/{OAB_SERVER_GUID}/` — both the `oab.xml` manifest and the
+        // generated OAB v3 details binary land on this single route since the
+        // file name is the trailing path segment. The body limit matches the
+        // cap used by MAPI/HTTP so a large GAL serialisation is never clipped
+        // by the route itself.
+        .route("/OAB/{guid}/{file}", get(oab_download))
         .with_state(app_state.clone())
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
