@@ -23,6 +23,23 @@ const MOBILESYNC_RESPONSE_NS: &str =
 const OUTLOOK_RESPONSE_NS: &str =
     "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a";
 
+/// Stable server-wide OAB directory GUID the gateway advertises in
+/// Autodiscover and serves under `/OAB/{guid}/`. The value is a fixed,
+/// well-formed UUIDv4 (RFC 4122) chosen once for the gateway — Outlook treats
+/// the path segment only as an opaque OAB virtual-directory identifier, so a
+/// constant is correct and keeps the advertised `<OABUrl>` stable across
+/// restarts (a per-restart random GUID would invalidate clients' cached OAB
+/// and force a full re-download on every container restart).
+pub const OAB_SERVER_GUID: &str = "9b3a7c4d-2e1f-4a8b-9c0d-1e2f3a4b5c6d";
+
+/// Build the OAB directory URL advertised in Autodiscover (MS-OXDSCLI
+/// §2.2.4.1.1.2 `<OABUrl>`). Always ends with a trailing slash because it is
+/// a virtual directory: clients append `oab.xml` and the individual OAB
+/// files to this base.
+pub fn oab_url(host: &str) -> String {
+    format!("https://{}/OAB/{}/", host, OAB_SERVER_GUID)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AutodiscoverJsonParams {
     #[serde(rename = "Protocol")]
@@ -366,6 +383,8 @@ fn handle_outlook_xml(
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
     let mail_host_escaped = xml_escape(mail_host);
+    let oab_base = oab_url(host);
+    let oab_url_escaped = xml_escape(&oab_base);
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
@@ -391,6 +410,7 @@ fn handle_outlook_xml(
 <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
 <UMUrl>https://{host}/EWS/Exchange.asmx</UMUrl>
 <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
+<OABUrl>{oab_url}</OABUrl>
 <LoginName>{email}</LoginName>
 <DomainRequired>off</DomainRequired>
 <SPA>off</SPA>
@@ -415,6 +435,7 @@ fn handle_outlook_xml(
 <EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
 <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
 <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
+<OABUrl>{oab_url}</OABUrl>
 </Protocol>
 <Protocol>
 <Type>mapiHttp</Type>
@@ -439,6 +460,7 @@ fn handle_outlook_xml(
         OUTLOOK_RESPONSE_NS = OUTLOOK_RESPONSE_NS,
         host = host_escaped,
         email = email_escaped,
+        oab_url = oab_url_escaped,
         imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
             format!(
                 r#"<Protocol>
@@ -475,6 +497,8 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
     let email = extract_email_from_soap(body).unwrap_or_default();
     let email_escaped = xml_escape(&email);
     let host_escaped = xml_escape(host);
+    let oab_base = oab_url(host);
+    let oab_url_escaped = xml_escape(&oab_base);
 
     let settings = format!(
         r#"<a:UserSetting><a:Name>UserDisplayName</a:Name><a:Value>Stalwart Mail</a:Value></a:UserSetting>
@@ -487,6 +511,9 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>InternalEmwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>OABUrl</a:Name><a:Value>{oab_url}</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>ExternalOABUrl</a:Name><a:Value>{oab_url}</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalOABUrl</a:Name><a:Value>{oab_url}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>MobileSyncServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
@@ -497,6 +524,7 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>ActiveDirectoryServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>"#,
         email = email_escaped,
         host = host_escaped,
+        oab_url = oab_url_escaped,
     );
 
     let xml = format!(
@@ -618,6 +646,52 @@ mod tests {
         assert!(body.contains("https://mail.example.com/mapi/emsmdb?MailboxId=user@example.com"));
         // AddressBook ExternalUrl points to the NSPI endpoint separately.
         assert!(body.contains("https://mail.example.com/mapi/nspi?MailboxId=user@example.com"));
+    }
+
+    #[test]
+    fn test_oab_url_helper_format() {
+        // The OABUrl is a virtual-directory URL: it MUST end with a trailing
+        // slash because clients append `oab.xml` and the OAB data files to it
+        // directly (MS-OXDSCLI §2.2.4.1.1.2.4 `<OABUrl>`).
+        let url = oab_url("mail.example.com");
+        assert!(url.starts_with("https://mail.example.com/OAB/"));
+        assert!(url.ends_with('/'));
+        assert_eq!(url, format!("https://mail.example.com/OAB/{}/", OAB_SERVER_GUID));
+    }
+
+    #[test]
+    fn test_outlook_response_includes_oab_url() {
+        // Both EXCH and EXPR Protocol blocks MUST advertise `<OABUrl>` per
+        // MS-OXDSCLI §2.2.4.1.1.2.4 so Outlook can download the offline address
+        // book; without it New Outlook shows an empty GAL and broken recipient
+        // resolution.
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            false,
+        );
+        assert_eq!(status, StatusCode::OK);
+        let expected = oab_url("mail.example.com");
+        // Two occurrences: one in EXCH, one in EXPR.
+        let occurrences = body.matches(&expected).count();
+        assert_eq!(
+            occurrences, 2,
+            "OABUrl must be advertised in both EXCH and EXPR Protocol blocks"
+        );
+    }
+
+    #[test]
+    fn test_soap_response_includes_oab_url() {
+        // The SOAP autodiscover (GetUserSettings) MUST also surface an OABUrl
+        // user setting for clients that resolve settings via the SOAP endpoint.
+        let body = "<Autodiscover xmlns=\"http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006\"><Request><EMailAddress>user@example.com</EMailAddress></Request></Autodiscover>";
+        let (status, _hdrs, out) = handle_autodiscover_soap("mail.example.com", body);
+        assert_eq!(status, StatusCode::OK);
+        assert!(out.contains("<a:Name>OABUrl</a:Name>"));
+        assert!(out.contains("<a:Name>ExternalOABUrl</a:Name>"));
+        assert!(out.contains("<a:Name>InternalOABUrl</a:Name>"));
+        assert!(out.contains(&oab_url("mail.example.com")));
     }
 
     #[test]
